@@ -26,6 +26,11 @@ var interactive = [];
 var dialogs = [];
 var overlays = [];
 var inputs = [];
+var iframes = [];
+document.querySelectorAll('iframe').forEach(function(el) {
+  var src = el.getAttribute('src');
+  if (src) iframes.push({ src: src });
+});
 document.querySelectorAll('form').forEach(function(form, fi) {
   var fields = [];
   form.querySelectorAll('input, select, textarea').forEach(function(el) {
@@ -84,7 +89,7 @@ document.querySelectorAll('div[class*="overlay"], div[class*="modal"], div[class
     if (!existing) overlays.push({ selector: buildSelector(el), text: (el.textContent || '').trim().slice(0, 150), tag: el.tagName.toLowerCase() });
   }
 })();
-return { url: window.location.href, title: document.title, forms: forms, inputs: inputs, interactive: interactive, dialogs: dialogs, overlays: overlays, textContent: (document.body && document.body.innerText || '').slice(0, 10000) };
+return { url: window.location.href, title: document.title, forms: forms, inputs: inputs, interactive: interactive, dialogs: dialogs, overlays: overlays, textContent: (document.body && document.body.innerText || '').slice(0, 10000), iframes: iframes };
 })();`;
 
 const FRAME_SNAPSHOT_SRC = `(function() {
@@ -156,6 +161,7 @@ export interface DOMSnapshot {
   }>;
   textContent: string;
   hash: string;
+  iframes: Array<{ src: string }>;
 }
 
 function hashSnapshot(data: Omit<DOMSnapshot, 'hash'>): string {
@@ -163,7 +169,18 @@ function hashSnapshot(data: Omit<DOMSnapshot, 'hash'>): string {
 }
 
 export async function takeSnapshot(page: Page): Promise<DOMSnapshot> {
-  const base: Omit<DOMSnapshot, 'hash'> = await page.evaluate(TAKE_SNAPSHOT_SRC);
+  const raw: any = await page.evaluate(TAKE_SNAPSHOT_SRC);
+  const base: Omit<DOMSnapshot, 'hash'> = {
+    url: raw.url,
+    title: raw.title,
+    forms: raw.forms,
+    inputs: raw.inputs,
+    interactive: raw.interactive,
+    dialogs: raw.dialogs,
+    overlays: raw.overlays,
+    textContent: raw.textContent,
+    iframes: raw.iframes || [],
+  };
 
   return {
     ...base,
@@ -261,6 +278,15 @@ export async function takeSnapshotDeep(page: import('playwright').Page): Promise
   for (const frame of frames) {
     if (frame === page.mainFrame()) continue;
     try {
+      const frameUrl = frame.url();
+      // Check if this frame's URL matches an iframe src from the main snapshot
+      const matchingIframe = main.iframes.find(i => frameUrl.endsWith(i.src) || i.src.endsWith(frameUrl));
+      if (matchingIframe) {
+        matchingIframe.src = frameUrl;
+      } else if (!main.iframes.some(i => i.src === frameUrl)) {
+        main.iframes.push({ src: frameUrl });
+      }
+
       const frameSnapshot = await frame.evaluate(FRAME_SNAPSHOT_SRC);
 
       var fs = frameSnapshot as { forms: any[]; interactive: any[] };
@@ -269,7 +295,7 @@ export async function takeSnapshotDeep(page: import('playwright').Page): Promise
     } catch { /* cross-origin iframe — skip */ }
   }
 
-  main.hash = hashSnapshot({ url: main.url, title: main.title, forms: main.forms, inputs: main.inputs, interactive: main.interactive, dialogs: main.dialogs, overlays: main.overlays, textContent: main.textContent });
+  main.hash = hashSnapshot({ url: main.url, title: main.title, forms: main.forms, inputs: main.inputs, interactive: main.interactive, dialogs: main.dialogs, overlays: main.overlays, textContent: main.textContent, iframes: main.iframes });
   return main;
 }
 

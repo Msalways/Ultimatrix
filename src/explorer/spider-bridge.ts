@@ -338,14 +338,21 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
   const formEndpoints = formsToEndpoints(forms);
 
   // Merge endpoints: prefer mined (has response data) over form-created
+  // Filter out trace-only endpoints with no params — they're likely resource/favicon fetches
+  const formActionPaths = new Set(formEndpoints.map(e => `${e.method}:${e.path}`));
+  const routePaths = new Set(crawl.routes.map(r => r.path));
   const endpointSeen = new Set<string>();
   const allEndpoints: AppModelEndpoint[] = [];
   for (const ep of [...minedEndpoints, ...formEndpoints]) {
     const key = `${ep.method}:${ep.path}`;
-    if (!endpointSeen.has(key)) {
-      endpointSeen.add(key);
-      allEndpoints.push(ep);
+    if (endpointSeen.has(key)) continue;
+    // Skip trace-only endpoints with no params and no body — likely resource fetches
+    if (ep.params.length === 0 && !ep.bodyFields?.length
+        && !formActionPaths.has(key) && !routePaths.has(ep.path)) {
+      continue;
     }
+    endpointSeen.add(key);
+    allEndpoints.push(ep);
   }
 
   // Content score routes → classify rich vs thin

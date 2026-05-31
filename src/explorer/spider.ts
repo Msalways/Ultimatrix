@@ -1,6 +1,6 @@
 import type { Page } from 'playwright';
 import type { BrowserSessionManager, TraceEntry, MacroStep } from '../core/browser-session';
-import { takeSnapshot, isSamePage } from './dom-observer';
+import { takeSnapshot, takeSnapshotDeep, isSamePage } from './dom-observer';
 import type { DOMSnapshot } from './dom-observer';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -85,7 +85,7 @@ export class SpiderCrawler {
         const page = await this.manager.getOrCreate(this.sessionId);
 
         // Take full DOM snapshot — replaces manual form counting + link extraction
-        const snapshot = await takeSnapshot(page);
+        const snapshot = await takeSnapshotDeep(page);
         snapshots.push(snapshot);
 
         const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
@@ -95,6 +95,17 @@ export class SpiderCrawler {
           }))
         );
         const resolvedLinks = this.resolveLinks(links, finalUrl, baseUrl);
+
+        // Extract iframe src URLs as discoverable routes
+        const iframeSrcs = snapshot.iframes.map(ifr => ifr.src);
+        for (const src of iframeSrcs) {
+          try {
+            const absUrl = new URL(src, finalUrl).href;
+            if (!visited.has(absUrl) && !queue.some(q => q.url === absUrl)) {
+              queue.push({ url: absUrl, depth: depth + 1 });
+            }
+          } catch { /* ignore invalid iframe src */ }
+        }
 
         routes.push({
           path: new URL(finalUrl).pathname,
@@ -427,7 +438,7 @@ export class SpiderCrawler {
         // Process result page
         if (navigated && newUrl !== currentUrl) {
           if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
-            const resultSnapshot = await takeSnapshot(page);
+            const resultSnapshot = await takeSnapshotDeep(page);
             snapshots.push(resultSnapshot);
 
             const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
@@ -445,7 +456,7 @@ export class SpiderCrawler {
             }
           }
         } else {
-          const afterSnapshot = await takeSnapshot(page);
+          const afterSnapshot = await takeSnapshotDeep(page);
           if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], afterSnapshot)) {
             snapshots.push(afterSnapshot);
 
@@ -533,7 +544,7 @@ export class SpiderCrawler {
 
           // Capture the result page as a parameterized endpoint
           if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
-            const resultSnapshot = await takeSnapshot(page);
+            const resultSnapshot = await takeSnapshotDeep(page);
             snapshots.push(resultSnapshot);
 
             const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
@@ -552,7 +563,7 @@ export class SpiderCrawler {
           }
         } else {
           // No navigation — DOM might have changed (AJAX)
-          const afterSnapshot = await takeSnapshot(page);
+          const afterSnapshot = await takeSnapshotDeep(page);
           if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], afterSnapshot)) {
             snapshots.push(afterSnapshot);
           }
@@ -584,7 +595,7 @@ export class SpiderCrawler {
         if (btn) {
           await btn.click().catch(() => {});
           await page.waitForTimeout(1000);
-          const after = await takeSnapshot(page);
+          const after = await takeSnapshotDeep(page);
           if (!isSamePage(snapshot, after)) snapshots.push(after);
         }
       } catch {}
@@ -597,7 +608,7 @@ export class SpiderCrawler {
         if (btn) {
           await btn.click().catch(() => {});
           await page.waitForTimeout(1000);
-          const after = await takeSnapshot(page);
+          const after = await takeSnapshotDeep(page);
           if (!isSamePage(snapshot, after)) snapshots.push(after);
         }
       } catch {}
@@ -638,7 +649,7 @@ export class SpiderCrawler {
         const newUrl = page.url();
         if (navigated && newUrl !== currentUrl) {
           if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
-            const resultSnapshot = await takeSnapshot(page);
+            const resultSnapshot = await takeSnapshotDeep(page);
             snapshots.push(resultSnapshot);
             const links = await page.evaluate(() =>
               Array.from(document.querySelectorAll('a[href]')).map((a) => ({
@@ -653,7 +664,7 @@ export class SpiderCrawler {
             }
           }
         } else {
-          const after = await takeSnapshot(page);
+          const after = await takeSnapshotDeep(page);
           if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], after)) {
             snapshots.push(after);
             const links = await page.evaluate(() =>
@@ -754,7 +765,7 @@ export class SpiderCrawler {
 
       const newUrl = page.url();
       if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
-        const resultSnapshot = await takeSnapshot(page);
+        const resultSnapshot = await takeSnapshotDeep(page);
         snapshots.push(resultSnapshot);
         visited.add(newUrl);
         const baseUrl = new URL(currentUrl).origin;
