@@ -197,7 +197,7 @@ export class AutonomousOrchestrator {
         const { SpiderCrawler } = await import('../explorer/spider');
         const mgr = getSharedBrowserManager();
         const spider = new SpiderCrawler(mgr);
-        const crawlResult = await spider.crawl(targetUrl, 2);
+        const crawlResult = await spider.crawl(targetUrl, 2, undefined, this.outputDir);
         spiderRoutes = crawlResult.totalRoutes;
         const { spiderResultToAppModel } = await import('../explorer/spider-bridge');
         const bridgeResult = spiderResultToAppModel(crawlResult, targetUrl);
@@ -233,7 +233,19 @@ export class AutonomousOrchestrator {
     const appModel = readAppModel(this.appModelPath);
     const plan = createAttackPlan({ maxConcurrency: 4 });
     const newH = deriveHypotheses(appModel, plan, 'spider');
-    plan.hypotheses = plan.hypotheses.concat(newH);
+
+    // Filter: skip hypotheses for thin routes (low content score pages)
+    const thinUrls = new Set((appModel as any).thinRoutes || []);
+    const filteredH = newH.filter(h => {
+      if (h.type === 'param' && thinUrls.has(h.endpoint)) return false;
+      if (h.type === 'form' && thinUrls.has(h.action)) return false;
+      return true;
+    });
+    if (filteredH.length < newH.length) {
+      log.dim(`Filtered out ${newH.length - filteredH.length} hypotheses for thin routes`);
+    }
+    plan.hypotheses = plan.hypotheses.concat(filteredH);
+
     const prioritized = prioritize(plan, appModel.findings);
     updateAppModelSection(this.appModelPath, 'hypotheses', prioritized, true);
 
@@ -371,6 +383,47 @@ Start by reading the forms section.`),
       }
 
       messages.push(new HumanMessage(userInput));
+    }
+
+    // ── Re-discovery of thin routes (if new findings exist) ──
+    const finalAppModel = readAppModel(this.appModelPath);
+    const thinUrlsForRediscovery = (finalAppModel as any).thinRoutes as string[] | undefined;
+    if (thinUrlsForRediscovery && thinUrlsForRediscovery.length > 0 && finalAppModel.findings.length > 0) {
+      log.info(`Re-crawling ${thinUrlsForRediscovery.length} thin routes (${finalAppModel.findings.length} findings exist)...`);
+      try {
+        const { SpiderCrawler } = await import('../explorer/spider');
+        const mgr3 = getSharedBrowserManager();
+        const rediscThinSet = new Set(thinUrlsForRediscovery);
+        for (const thinUrl of thinUrlsForRediscovery) {
+          log.dim(`  Re-visiting thin route: ${thinUrl}`);
+          const thinSpider = new SpiderCrawler(mgr3);
+          const thinResult = await thinSpider.crawl(thinUrl, 1, undefined, this.outputDir);
+          if (thinResult.totalRoutes > 0) {
+            const { spiderResultToAppModel } = await import('../explorer/spider-bridge');
+            const thinBridge = spiderResultToAppModel(thinResult, thinUrl);
+            updateAppModelSection(this.appModelPath, 'forms', thinBridge.model.forms, true);
+            updateAppModelSection(this.appModelPath, 'endpoints', thinBridge.model.endpoints, true);
+            log.success(`  Re-discovered ${thinResult.totalRoutes} route(s) from ${thinUrl}`);
+          }
+        }
+        // Generate new hypotheses from re-discovered content
+        const refreshedModel = readAppModel(this.appModelPath);
+        const { deriveHypotheses, prioritize: prioritize2 } = await import('../core/attack-plan');
+        const newFromRedisc = deriveHypotheses(refreshedModel, plan, 'spider');
+        const filteredRedisc = newFromRedisc.filter(h => {
+          if (h.type === 'param' && rediscThinSet.has(h.endpoint)) return false;
+          if (h.type === 'form' && rediscThinSet.has(h.action)) return false;
+          return true;
+        });
+        if (filteredRedisc.length > 0) {
+          plan.hypotheses = plan.hypotheses.concat(filteredRedisc);
+          const rePrioritized = prioritize2(plan, refreshedModel.findings);
+          updateAppModelSection(this.appModelPath, 'hypotheses', rePrioritized, true);
+          log.success(`Added ${filteredRedisc.length} new hypotheses from re-discovery`);
+        }
+      } catch (e) {
+        log.warn(`Re-discovery failed: ${e}`);
+      }
     }
 
     // ── Compile report ──

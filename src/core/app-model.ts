@@ -34,6 +34,9 @@ export interface AppModelEndpoint {
   responseStatus: number;
   contentType: string;
   bodyPreview: string;
+  bodyFormat?: 'json' | 'xml' | 'form' | 'graphql';
+  bodyFields?: Array<{ name: string; type: string }>;
+  authHeaders?: Record<string, string>;
 }
 
 // ── Forms ──
@@ -129,6 +132,10 @@ export interface AppModel {
     cookies: Record<string, string>;
     tokens: string[];
     sessions: Record<string, { label: string; filePath: string; savedAt: string; url: string }>;
+    storageStatePath?: string;
+    loginMethod?: string;
+    loginFields?: string[];
+    capturedAt?: number;
   };
   workflow: {
     nodes: WorkflowNode[];
@@ -163,6 +170,14 @@ export interface AppModel {
     reason: string;
     timestamp: number;
   }>;
+  thinRoutes: Array<{
+    url: string;
+    path: string;
+    title: string;
+    initialScore: number;
+    snapshotHash: string;
+    discoveredAt: number;
+  }>;
   currentPage: {
     url: string;
     title: string;
@@ -193,7 +208,7 @@ export type AppModelSection = keyof AppModel;
 export const DEFAULT_MODEL: AppModel = {
   target: '',
   techStack: [],
-  auth: { type: 'unknown', loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
+  auth: { type: 'unknown', loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {}, storageStatePath: '', loginMethod: '', loginFields: [], capturedAt: 0 },
   workflow: { nodes: [], edges: [] },
   endpoints: [],
   forms: [],
@@ -211,6 +226,7 @@ export const DEFAULT_MODEL: AppModel = {
   oastCallbacks: [],
   workerActions: [],
   coverage: [],
+  thinRoutes: [],
   currentPage: { url: '', title: '', lastUpdatedAt: 0, snapshotHash: '' },
   warnings: [],
   eventLog: [],

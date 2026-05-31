@@ -911,6 +911,12 @@ toolRegistry.register({
     const { getLlmConfig } = await import('../core/app-model-path');
     const llmConfig = getLlmConfig();
 
+    // Read auth context from app model
+    const storageStatePath = model.auth?.storageStatePath;
+    const loginEndpoint = model.auth?.loginEndpoint;
+    const loginMethod = model.auth?.loginMethod;
+    const loginFields = model.auth?.loginFields;
+
     let oastBaseUrl: string | undefined;
     try {
       const { getOastServer } = await import('../oast');
@@ -922,7 +928,10 @@ toolRegistry.register({
 
     return new Promise((resolve) => {
       const worker = new Worker(workerPath, {
-        workerData: { hypothesis, llmConfig, appModelPath: modelPath, oastBaseUrl },
+        workerData: {
+          hypothesis, llmConfig, appModelPath: modelPath, oastBaseUrl,
+          storageStatePath, loginEndpoint, loginMethod, loginFields,
+        },
         execArgv: isDev ? ['--import', 'tsx'] : [],
       });
       // Fire-and-forget: worker findings persisted to app model asynchronously

@@ -2,6 +2,8 @@ import type { Page } from 'playwright';
 import type { BrowserSessionManager, TraceEntry, MacroStep } from '../core/browser-session';
 import { takeSnapshot, isSamePage } from './dom-observer';
 import type { DOMSnapshot } from './dom-observer';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface AuthConfig {
   username: string;
@@ -33,6 +35,10 @@ export interface CrawlResult {
   localStorage: Record<string, string>;
   sessionStorage: Record<string, string>;
   techStack: string[];
+  storageStatePath: string;
+  loginEndpoint: string;
+  loginMethod: string;
+  loginFields: string[];
 }
 
 const STATIC_EXT = /\.(css|js|woff2?|png|svg|ico|map|jpg|jpeg|gif|webp|ttf|eot|pdf)$/i;
@@ -48,7 +54,7 @@ export class SpiderCrawler {
     this.sessionId = sessionId;
   }
 
-  async crawl(targetUrl: string, maxDepth = 3, authConfig?: AuthConfig): Promise<CrawlResult> {
+  async crawl(targetUrl: string, maxDepth = 3, authConfig?: AuthConfig, outputDir?: string): Promise<CrawlResult> {
     const startTime = Date.now();
     const baseUrl = new URL(targetUrl).origin;
     const visited = new Set<string>();
@@ -60,6 +66,10 @@ export class SpiderCrawler {
     const aggregatedSessionStorage: Record<string, string> = {};
     const techHints = new Set<string>();
     let queue: Array<{ url: string; depth: number }> = [{ url: this.normalize(targetUrl), depth: 0 }];
+    let storageStatePath = '';
+    let loginEndpoint = '';
+    let loginMethod = '';
+    const loginFields: string[] = [];
 
     // Start trace + recording
     await this.manager.startTrace(this.sessionId);
@@ -178,6 +188,11 @@ export class SpiderCrawler {
           await this.exploreFormsOnPage(page, snapshot.forms, finalUrl, visited, queue, depth, snapshots, maxDepth);
         }
 
+        // Phase 2D: Explore standalone inputs outside forms (search bars, inline editors, SPAs)
+        if (snapshot.inputs.length > 0) {
+          await this.exploreStandaloneInputs(page, snapshot.inputs, finalUrl, visited, queue, depth, snapshots, maxDepth);
+        }
+
         // Phase 3: Extract SPA hash routes from links and enqueue them
         const spaRoutes = this.extractHashRoutes(links, finalUrl, baseUrl);
         for (const route of spaRoutes) {
@@ -186,9 +201,43 @@ export class SpiderCrawler {
           }
         }
 
-        // Phase 4: Detect auth forms and attempt login (only with configured credentials)
-        if (snapshot.forms.length > 0 && this.isAuthForm(snapshot.forms) && authConfig) {
-          await this.attemptAuthFlow(page, snapshot, finalUrl, visited, queue, depth, snapshots, maxDepth, authConfig);
+        // Phase 4: Detect auth forms and attempt login
+        if (snapshot.forms.length > 0 && this.isAuthForm(snapshot.forms)) {
+          if (authConfig) {
+            await this.attemptAuthFlow(page, snapshot, finalUrl, visited, queue, depth, snapshots, maxDepth, authConfig);
+          }
+          // Even without creds, note the login endpoint for LLM-guided auth
+          const authForm = snapshot.forms.find((f) => {
+            const types = f.fields.map((fd) => fd.type.toLowerCase());
+            return types.includes('password');
+          });
+          if (authForm && !loginEndpoint) {
+            try {
+              loginEndpoint = new URL(authForm.action, finalUrl).href;
+            } catch { loginEndpoint = authForm.action || finalUrl; }
+            loginMethod = authForm.method.toUpperCase();
+            for (const f of authForm.fields || []) {
+              if (f.name) loginFields.push(f.name);
+            }
+          }
+        }
+
+        // Export storage state if browser now has session cookies
+        if (!storageStatePath && outputDir) {
+          try {
+            const ctxCookies = await page.context().cookies();
+            const hasSession = ctxCookies.some(
+              (c) => /session|token|auth|sid|jwt|connect\.sid|phpsessid|jsessionid/i.test(c.name)
+            );
+            if (hasSession) {
+              const state = await page.context().storageState();
+              const authDir = path.join(outputDir, '.auth');
+              fs.mkdirSync(authDir, { recursive: true });
+              const ssFile = path.join(authDir, 'storage-state.json');
+              fs.writeFileSync(ssFile, JSON.stringify(state, null, 2));
+              storageStatePath = ssFile;
+            }
+          } catch {}
         }
       } catch (err) {
         errors.push({ url, error: String(err) });
@@ -234,6 +283,10 @@ export class SpiderCrawler {
       localStorage: aggregatedLocalStorage,
       sessionStorage: aggregatedSessionStorage,
       techStack: Array.from(techHints),
+      storageStatePath,
+      loginEndpoint,
+      loginMethod,
+      loginFields,
     };
   }
 
@@ -422,6 +475,98 @@ export class SpiderCrawler {
           }
         } catch {}
       }
+    }
+  }
+
+  private async exploreStandaloneInputs(
+    page: Page,
+    inputs: DOMSnapshot['inputs'],
+    currentUrl: string,
+    visited: Set<string>,
+    queue: Array<{ url: string; depth: number }>,
+    depth: number,
+    snapshots: DOMSnapshot[],
+    maxDepth: number,
+  ): Promise<void> {
+    const baseUrl = new URL(currentUrl).origin;
+    const domain = new URL(currentUrl).hostname;
+
+    for (const input of inputs) {
+      try {
+        const value = this.guessFieldValue(
+          { name: input.name, type: input.type, placeholder: input.placeholder, required: false },
+          domain,
+        );
+        if (value === null) continue;
+
+        await this.manager.fill(this.sessionId, input.selector, value);
+
+        // Submit: click nearby button or press Enter
+        let navigated = false;
+        try {
+          await Promise.all([
+            page.waitForURL((u) => u.href !== currentUrl, { timeout: 8000 }),
+            input.nearButton
+              ? this.manager.click(this.sessionId, input.nearButton)
+              : page.keyboard.press('Enter'),
+          ]);
+          navigated = true;
+        } catch {
+          await page.waitForTimeout(2000);
+        }
+
+        const newUrl = page.url();
+
+        // If navigation happened and URL has query params, discover real param names
+        if (navigated && newUrl !== currentUrl) {
+          const resultUrl = new URL(newUrl);
+          const discoveredParams: string[] = [];
+          resultUrl.searchParams.forEach((v, k) => {
+            if (v === value) discoveredParams.push(k);
+          });
+          if (discoveredParams.length > 0) {
+            input.resolvedParam = discoveredParams[0];
+          } else if (resultUrl.searchParams.size > 0) {
+            // Fallback: use first param even if value doesn't match (encoding/transformation)
+            input.resolvedParam = resultUrl.searchParams.keys().next().value;
+          }
+
+          // Capture the result page as a parameterized endpoint
+          if (!visited.has(newUrl) && !STATIC_EXT.test(newUrl)) {
+            const resultSnapshot = await takeSnapshot(page);
+            snapshots.push(resultSnapshot);
+
+            const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
+              Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+                href: (a as HTMLAnchorElement).getAttribute('href') || '',
+                text: ((a as HTMLAnchorElement).textContent || '').trim().slice(0, 60),
+              })),
+            );
+            const resolved = this.resolveLinks(links, newUrl, baseUrl);
+            visited.add(newUrl);
+            for (const link of resolved) {
+              if (!visited.has(link) && depth + 1 <= maxDepth) {
+                queue.push({ url: link, depth: depth + 1 });
+              }
+            }
+          }
+        } else {
+          // No navigation — DOM might have changed (AJAX)
+          const afterSnapshot = await takeSnapshot(page);
+          if (snapshots.length > 0 && !isSamePage(snapshots[snapshots.length - 1], afterSnapshot)) {
+            snapshots.push(afterSnapshot);
+          }
+        }
+      } catch {
+        // Best effort — don't fail the crawl for one input
+      }
+
+      // Navigate back to continue crawl
+      try {
+        if (page.url() !== currentUrl) {
+          await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+        }
+      } catch {}
     }
   }
 

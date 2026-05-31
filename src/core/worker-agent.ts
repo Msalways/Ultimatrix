@@ -12,6 +12,10 @@ interface WorkerConfig {
   oastBaseUrl?: string;
   budget?: number;
   timeoutMs?: number;
+  storageStatePath?: string;
+  loginEndpoint?: string;
+  loginMethod?: string;
+  loginFields?: string[];
 }
 
 export interface WorkerAttempt {
@@ -58,7 +62,23 @@ async function runWorker(): Promise<void> {
   const timeoutMs = config.timeoutMs ?? TIMEOUT_MS;
   const oastUrl = config.oastBaseUrl;
 
+  // ── Initialize Playwright API context from storage state ──
+  let apiContext: import('playwright').APIRequestContext | null = null;
+  try {
+    const { request } = await import('playwright');
+    if (config.storageStatePath) {
+      apiContext = await request.newContext({ storageState: config.storageStatePath });
+    }
+  } catch {
+    process.stderr.write('[worker] Playwright import failed (falling back to raw fetch)\n');
+  }
+
+  async function cleanup(): Promise<void> {
+    if (apiContext) try { await apiContext.dispose(); } catch {}
+  }
+
   const timer = setTimeout(() => {
+    cleanup();
     sendResult({
       hypothesisId: hypothesis.id,
       vulnerable: false,
@@ -86,7 +106,7 @@ async function runWorker(): Promise<void> {
     let baselineTimingMs = 0;
     try {
       const basePayload = param ? `baseline_${Date.now()}` : '';
-      const baseline = await sendHttpRequest(ep, param, method, basePayload, {}, 'form');
+      const baseline = await sendHttpRequest(ep, param, method, basePayload, {}, 'form', apiContext);
       if (baseline) baselineTimingMs = baseline.timingMs;
     } catch { /* baseline is optional */ }
 
@@ -106,17 +126,62 @@ async function runWorker(): Promise<void> {
     let lastBodyExcerpt = '';
     let lastHeaders: Record<string, string> = {};
 
+    // ── Auto re-login handler ──
+    let sessionExpired = false;
+    async function ensureSession(): Promise<boolean> {
+      if (!sessionExpired || !config.loginEndpoint || !apiContext) return true;
+      try {
+        process.stderr.write('[worker] Session expired — re-logging in...\n');
+        let loginBody: string | undefined;
+        if (config.loginFields?.length) {
+          const creds: Record<string, string> = {};
+          for (const f of config.loginFields) {
+            creds[f] = 'test_auto_login';
+          }
+          loginBody = JSON.stringify(creds);
+        }
+        const loginRes = await apiContext!.fetch(config.loginEndpoint, {
+          method: config.loginMethod || 'POST',
+          data: loginBody,
+          timeout: 30000,
+        });
+        if (loginRes.ok()) {
+          sessionExpired = false;
+          process.stderr.write('[worker] Re-login successful\n');
+          return true;
+        }
+        process.stderr.write(`[worker] Re-login failed: ${loginRes.status()}\n`);
+        return false;
+      } catch (e) {
+        process.stderr.write(`[worker] Re-login error: ${e}\n`);
+        return false;
+      }
+    }
+
     for (let i = 0; i < budget; i++) {
       process.stderr.write(`[worker] attempt ${i + 1}/${budget} starting...\n`);
 
       const payloadResult = await generatePayload(
         model, hypothesis.technique, ep, param, method, lastResponseText, budget, i,
         oastCallbackUrl, domain, lastHeaders,
+        (hypothesis as any).bodyFormat,
       );
       if (!payloadResult) { process.stderr.write(`[worker] attempt ${i + 1}: generatePayload failed\n`); continue; }
 
       const contentType = payloadResult.bodyType === 'xml' ? 'xml' : 'form';
-      const response = await sendHttpRequest(ep, param, method, payloadResult.payload, payloadResult.headers, contentType);
+
+      // Send request (may trigger re-auth if session expired)
+      let response = await sendHttpRequest(ep, param, method, payloadResult.payload, payloadResult.headers, contentType, apiContext);
+      if (!response) continue;
+
+      // If 401 and we have auth, mark session expired and retry after re-login
+      if (response.status === 401 && (apiContext || config.loginEndpoint)) {
+        sessionExpired = true;
+        const reAuthed = await ensureSession();
+        if (reAuthed) {
+          response = await sendHttpRequest(ep, param, method, payloadResult.payload, payloadResult.headers, contentType, apiContext);
+        }
+      }
       if (!response) continue;
 
       lastStatus = response.status;
@@ -145,7 +210,7 @@ async function runWorker(): Promise<void> {
         if (followUpUrl !== ep) {
           storedUrl = followUpUrl;
           storedPayload = payloadResult.payload;
-          const storedRes = await sendHttpRequest(followUpUrl, '', 'GET', '', {}, 'form');
+          const storedRes = await sendHttpRequest(followUpUrl, '', 'GET', '', {}, 'form', apiContext);
           if (storedRes) {
             storedAnalysis = await analyzeResponse(
               model, hypothesis.technique, payloadResult.payload,
@@ -192,6 +257,7 @@ async function runWorker(): Promise<void> {
           ? `${hypothesis.action} [fields: ${hypothesis.fields.join(', ')}]`
           : `${hypothesis.endpoint}${hypothesis.param ? '?' + hypothesis.param : ''}`;
 
+        await cleanup();
         sendResult({
           hypothesisId: hypothesis.id,
           vulnerable: true,
@@ -221,6 +287,7 @@ async function runWorker(): Promise<void> {
               : `${hypothesis.endpoint}${hypothesis.param ? '?' + hypothesis.param : ''}`;
 
             clearTimeout(timer);
+            await cleanup();
             sendResult({
               hypothesisId: hypothesis.id,
               vulnerable: true,
@@ -238,6 +305,7 @@ async function runWorker(): Promise<void> {
     }
 
     clearTimeout(timer);
+    await cleanup();
     const payloads = attempts.map((a) => a.payload);
     const target = hypothesis.type === 'form'
       ? `${hypothesis.action} [fields: ${hypothesis.fields.join(', ')}]`
@@ -256,6 +324,7 @@ async function runWorker(): Promise<void> {
     process.exit(0);
   } catch (err) {
     clearTimeout(timer);
+    await cleanup();
     sendResult({
       hypothesisId: hypothesis.id,
       vulnerable: false,
@@ -290,6 +359,7 @@ async function generatePayload(
   oastCallbackUrl: string | null,
   domain: string,
   lastHeaders: Record<string, string>,
+  bodyFormatHint?: string,
 ): Promise<{ payload: string; headers: Record<string, string>; bodyType?: 'form' | 'xml' } | null> {
   const TECH_DESC: Record<string, string> = {
     sqli: 'SQL injection — use SQL special characters like quotes, UNION, OR to trigger database errors or modify queries',
@@ -307,6 +377,7 @@ async function generatePayload(
   const hasOast = oastCallbackUrl && (technique === 'ssrf' || technique === 'xxe' || technique === 'open-redirect');
   const oastHint = hasOast ? `\nOAST callback URL available (for blind detection): ${oastCallbackUrl}` : '';
   const jwtHint = technique === 'sqli' && endpoint.includes('login') ? '\nIf this is a JWT login endpoint, try setting alg to "none" or "None".' : '';
+  const formatHint = bodyFormatHint ? `\nTarget expects ${bodyFormatHint} format. Output bodyType as "${bodyFormatHint}".` : '';
 
   const messages = [
     msg('system', 'You are a web security tester. Output ONLY valid JSON, no other text. Generate creative, varied payloads specific to the target context.'),
@@ -317,8 +388,9 @@ Method: ${method}
 Domain: ${domain}
 Last attempt info: ${lastResponse.slice(0, 1500)}
 Attempt ${attempt + 1}/${budget}
-${oastHint}
+ ${oastHint}
 ${jwtHint}
+${formatHint}
 
 Generate a test string that might trigger a ${technique} vulnerability.
 For techniques: ssrf, xxe, open-redirect — embed the OAST callback URL in the payload if provided.
@@ -419,6 +491,7 @@ async function sendHttpRequest(
   payload: string,
   additionalHeaders: Record<string, string>,
   bodyType: 'form' | 'xml',
+  apiContext?: import('playwright').APIRequestContext | null,
 ): Promise<{ status: number; headers: Record<string, string>; body: string; timingMs: number } | null> {
   try {
     const testUrl = method === 'GET' && param
@@ -439,6 +512,24 @@ async function sendHttpRequest(
     }
 
     const start = Date.now();
+
+    if (apiContext) {
+      const res = await apiContext.fetch(testUrl, {
+        method,
+        headers,
+        data: body,
+        timeout: 30000,
+      });
+      const timingMs = Date.now() - start;
+      const resBody = await res.text();
+      const resHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(res.headers())) {
+        resHeaders[k.toLowerCase()] = v;
+      }
+      return { status: res.status(), headers: resHeaders, body: resBody, timingMs };
+    }
+
+    // Fallback: raw fetch (no auth context)
     const res = await fetch(testUrl, {
       method,
       headers,
@@ -449,7 +540,6 @@ async function sendHttpRequest(
     const resBody = await res.text();
     const resHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => { resHeaders[k.toLowerCase()] = v; });
-
     return { status: res.status, headers: resHeaders, body: resBody, timingMs };
   } catch (err) {
     process.stderr.write(`[worker] HTTP error: ${err instanceof Error ? err.message : String(err)}\n`);

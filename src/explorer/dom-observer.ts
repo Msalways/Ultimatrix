@@ -25,12 +25,34 @@ var forms = [];
 var interactive = [];
 var dialogs = [];
 var overlays = [];
+var inputs = [];
 document.querySelectorAll('form').forEach(function(form, fi) {
   var fields = [];
   form.querySelectorAll('input, select, textarea').forEach(function(el) {
     fields.push({ name: el.name || el.id || 'field_' + fi + '_' + fields.length, type: (el.type || el.tagName.toLowerCase()), placeholder: (el.placeholder || ''), required: el.required || el.hasAttribute('required') });
   });
   forms.push({ selector: 'form:nth-of-type(' + (fi + 1) + ')', action: (form.action || ''), method: (form.method || 'get'), fields: fields });
+});
+/* Standalone inputs outside forms — common in SPAs, search bars, chat inputs, inline editors */
+document.querySelectorAll('input:not(form input):not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea:not(form textarea), [contenteditable]:not(form [contenteditable]):not([contenteditable="false"])').forEach(function(el) {
+  var nearBtn = null;
+  var parent = el.parentElement;
+  if (parent) {
+    var siblingBtn = parent.querySelector('button, input[type="submit"], input[type="button"], [role="button"]');
+    if (siblingBtn) {
+      nearBtn = buildSelector(siblingBtn);
+    } else if (parent.parentElement) {
+      var uncleBtn = parent.parentElement.querySelector('button, input[type="submit"], input[type="button"], [role="button"]');
+      if (uncleBtn) nearBtn = buildSelector(uncleBtn);
+    }
+  }
+  inputs.push({
+    selector: buildSelector(el),
+    name: el.getAttribute('name') || el.id || '',
+    type: el.getAttribute('type') || (el.tagName.toLowerCase() === 'textarea' ? 'textarea' : el.getAttribute('contenteditable') ? 'contenteditable' : 'text'),
+    placeholder: el.getAttribute('placeholder') || '',
+    nearButton: nearBtn,
+  });
 });
 document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"], [role="button"]').forEach(function(el) {
   var tag = el.tagName.toLowerCase();
@@ -62,7 +84,7 @@ document.querySelectorAll('div[class*="overlay"], div[class*="modal"], div[class
     if (!existing) overlays.push({ selector: buildSelector(el), text: (el.textContent || '').trim().slice(0, 150), tag: el.tagName.toLowerCase() });
   }
 })();
-return { url: window.location.href, title: document.title, forms: forms, interactive: interactive, dialogs: dialogs, overlays: overlays, textContent: (document.body && document.body.innerText || '').slice(0, 10000) };
+return { url: window.location.href, title: document.title, forms: forms, inputs: inputs, interactive: interactive, dialogs: dialogs, overlays: overlays, textContent: (document.body && document.body.innerText || '').slice(0, 10000) };
 })();`;
 
 const FRAME_SNAPSHOT_SRC = `(function() {
@@ -104,6 +126,14 @@ export interface DOMSnapshot {
     action: string;
     method: string;
     fields: Array<{ name: string; type: string; placeholder: string; required: boolean }>;
+  }>;
+  inputs: Array<{
+    selector: string;
+    name: string;
+    type: string;
+    placeholder: string;
+    nearButton: string | null;
+    resolvedParam?: string;
   }>;
   interactive: Array<{
     tag: string;
@@ -239,7 +269,7 @@ export async function takeSnapshotDeep(page: import('playwright').Page): Promise
     } catch { /* cross-origin iframe — skip */ }
   }
 
-  main.hash = hashSnapshot({ url: main.url, title: main.title, forms: main.forms, interactive: main.interactive, dialogs: main.dialogs, overlays: main.overlays, textContent: main.textContent });
+  main.hash = hashSnapshot({ url: main.url, title: main.title, forms: main.forms, inputs: main.inputs, interactive: main.interactive, dialogs: main.dialogs, overlays: main.overlays, textContent: main.textContent });
   return main;
 }
 
