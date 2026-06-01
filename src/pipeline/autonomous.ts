@@ -34,6 +34,7 @@ export class AutonomousOrchestrator {
   private waitingForInputResolver: ((text: string) => void) | null = null;
   private inputChannel: string[] = [];
   private autoContinue: boolean;
+  private lastWorkerCheck: number = 0;
 
   constructor(config: {
     model: BaseChatModel;
@@ -358,6 +359,41 @@ Start by reading the forms section.`),
         process.stdout.write(colors.info(`\n${responseText.trim()}\n`));
       }
 
+      // ── Graceful termination conditions ──
+      const appModelNow = readAppModel(this.appModelPath);
+      const hypsNow = Array.isArray(appModelNow.hypotheses) ? appModelNow.hypotheses : [];
+      const pendingCount = hypsNow.filter((h: any) => h.status === 'pending').length;
+      const runningCount = hypsNow.filter((h: any) => h.status === 'running').length;
+      const doneCount = hypsNow.filter((h: any) => h.status === 'done').length;
+      const findingsNow = Array.isArray(appModelNow.findings) ? appModelNow.findings.length : 0;
+
+      // Condition A: LLM signaled coverage complete
+      if (/coverage complete|all done|finished/i.test(responseText)) {
+        process.stdout.write(colors.success('\nStrategist declared coverage complete.\n'));
+        break;
+      }
+
+      // Condition B: No pending or running hypotheses → all work dispatched
+      if (pendingCount === 0 && runningCount === 0 && doneCount > 0) {
+        process.stdout.write(colors.dim(`\nAll ${doneCount} hypotheses resolved (${findingsNow} findings). Stopping.\n`));
+        break;
+      }
+
+      // Condition C: No pending, running workers exist but haven't reported findings — wait one turn
+      if (pendingCount === 0 && runningCount > 0 && doneCount === 0 && turnCount > 2) {
+        // Reset lastWorkerCheck or increment wait counter
+        this.lastWorkerCheck = this.lastWorkerCheck || 0;
+        if (findingsNow > 0) {
+          this.lastWorkerCheck = 0;
+        } else {
+          this.lastWorkerCheck = (this.lastWorkerCheck as number) + 1;
+          if ((this.lastWorkerCheck as number) >= 3) {
+            process.stdout.write(colors.warn(`\nWaiting for ${runningCount} workers — no results for 3 turns. Stopping.\n`));
+            break;
+          }
+        }
+      }
+
       turnCount++;
 
       if (turnCount % SAVE_INTERVAL === 0) {
@@ -385,15 +421,50 @@ Start by reading the forms section.`),
       messages.push(new HumanMessage(userInput));
     }
 
-    // ── Re-discovery of thin routes (if new findings exist) ──
+    // ── Re-discovery of thin routes ──
+    // Two triggers:
+    //   1. Findings exist → re-crawl in case unlocked new content
+    //   2. Thin route has a rich parent → likely gated content, re-crawl unconditionally
     const finalAppModel = readAppModel(this.appModelPath);
-    const thinUrlsForRediscovery = (finalAppModel as any).thinRoutes as string[] | undefined;
-    if (thinUrlsForRediscovery && thinUrlsForRediscovery.length > 0 && finalAppModel.findings.length > 0) {
-      log.info(`Re-crawling ${thinUrlsForRediscovery.length} thin routes (${finalAppModel.findings.length} findings exist)...`);
+    const thinRoutesMeta = (finalAppModel as any).thinRoutes as Array<{
+      url: string; path: string; title: string;
+      initialScore: number; snapshotHash: string; discoveredAt: number;
+    }> | undefined;
+    const findingsExist = (finalAppModel.findings?.length || 0) > 0;
+
+    // Find thin routes whose parent is a rich (non-thin) route — likely gated
+    const richParentThinUrls: string[] = [];
+    if (thinRoutesMeta) {
+      const allRouteUrls = new Set((finalAppModel.workflow as any)?.nodes?.map((n: any) => n.url) || []);
+      for (const tr of thinRoutesMeta) {
+        const parentUrl = (finalAppModel.workflow as any)?.edges
+          ?.filter((e: any) => e.toId === `spider-${tr.path.replace(/[^a-zA-Z0-9]/g, '_') || 'root'}`)
+          ?.map((e: any) => {
+            const parentNode = (finalAppModel.workflow as any)?.nodes?.find((n: any) => n.id === e.fromId);
+            return parentNode?.url;
+          })
+          ?.find(Boolean);
+        if (parentUrl && allRouteUrls.has(parentUrl)) {
+          // Check if the parent wasn't itself thin
+          const parentIsThin = thinRoutesMeta.some((tr2: any) => tr2.url === parentUrl);
+          if (!parentIsThin) richParentThinUrls.push(tr.url);
+        }
+      }
+    }
+
+    const thinUrlsForRediscovery = [
+      ...new Set([
+        ...(findingsExist ? (thinRoutesMeta?.map((t: any) => t.url) || []) : []),
+        ...richParentThinUrls,
+      ]),
+    ];
+
+    if (thinUrlsForRediscovery.length > 0) {
+      log.info(`Re-crawling ${thinUrlsForRediscovery.length} thin route(s)${findingsExist ? ' (findings exist)' : ' (gated content detection)'}...`);
       try {
         const { SpiderCrawler } = await import('../explorer/spider');
         const mgr3 = getSharedBrowserManager();
-        const rediscThinSet = new Set(thinUrlsForRediscovery);
+        const rediscThinSet = new Set(thinUrlsForRediscovery.map(u => new URL(u).pathname));
         for (const thinUrl of thinUrlsForRediscovery) {
           log.dim(`  Re-visiting thin route: ${thinUrl}`);
           const thinSpider = new SpiderCrawler(mgr3);

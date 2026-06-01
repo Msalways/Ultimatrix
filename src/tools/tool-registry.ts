@@ -926,6 +926,57 @@ toolRegistry.register({
       }
     } catch { /* best effort */ }
 
+    // Check for existing hypothesis with same key — avoid duplicates
+    const matchKey = `${method}:${endpoint}:${param || ''}:${technique}`;
+    const existingHyps = Array.isArray(model.hypotheses) ? model.hypotheses : [];
+    const existingMatch = existingHyps.find((h: any) =>
+      `${h.method}:${h.endpoint}:${h.param || ''}:${h.technique}` === matchKey
+    );
+    if (existingMatch) {
+      const existingStatus = (existingMatch as any).status;
+      if (existingStatus === 'running') {
+        return JSON.stringify({
+          status: 'already_running',
+          workerId: (existingMatch as any).id,
+          technique, endpoint, param: param || '',
+          summary: `Worker already running for ${technique} on ${endpoint}${param ? '?'+param : ''}`,
+        });
+      }
+      if (existingStatus === 'done') {
+        return JSON.stringify({
+          status: 'already_tested',
+          workerId: (existingMatch as any).id,
+          technique, endpoint, param: param || '',
+          summary: `Already tested ${technique} on ${endpoint}${param ? '?'+param : ''}`,
+        });
+      }
+      // pending → repurpose the existing hypothesis
+      hypothesis.id = existingMatch.id;
+      hypothesis.status = 'running' as const;
+      // Update existing pending hypothesis to running
+      const updatedHyps = existingHyps.map((h: any) =>
+        h.id === hypothesis.id ? { ...h, status: 'running', startedAt: Date.now() } : h
+      );
+      updateAppModelSection(modelPath, 'hypotheses', updatedHyps, true);
+    } else {
+      const existing = existingHyps.length ? [...existingHyps] : [];
+      existing.push(hypothesis);
+      updateAppModelSection(modelPath, 'hypotheses', existing, true);
+    }
+
+    function updateHypothesisStatus(status: string, extra?: Record<string, unknown>): void {
+      try {
+        const cur = readAppModel(modelPath);
+        const hyps = Array.isArray(cur.hypotheses) ? [...cur.hypotheses] : [];
+        const idx = hyps.findIndex((h: any) => h.id === hypothesis.id);
+        if (idx >= 0) {
+          (hyps[idx] as Record<string, unknown>).status = status;
+          if (extra) Object.assign(hyps[idx] as Record<string, unknown>, extra);
+          updateAppModelSection(modelPath, 'hypotheses', hyps, true);
+        }
+      } catch { /* best effort */ }
+    }
+
     return new Promise((resolve) => {
       const worker = new Worker(workerPath, {
         workerData: {
@@ -934,11 +985,17 @@ toolRegistry.register({
         },
         execArgv: isDev ? ['--import', 'tsx'] : [],
       });
-      // Fire-and-forget: worker findings persisted to app model asynchronously
+      let resultReceived = false;
       worker.on('message', (result) => {
+        resultReceived = true;
         if (result.attempts?.length > 0) {
           updateAppModelSection(modelPath, 'workerActions', result.attempts);
         }
+        updateHypothesisStatus('done', {
+          completedAt: Date.now(),
+          vulnerable: !!result.vulnerable,
+          confidence: result.confidence || 0,
+        });
         if (result.vulnerable && result.confidence >= 0.5) {
           const cur = readAppModel(modelPath);
           const finding = {
@@ -959,6 +1016,9 @@ toolRegistry.register({
         process.stderr.write(`[spawn_worker] Worker error: ${err.message}\n`);
       });
       worker.on('exit', (code) => {
+        if (!resultReceived) {
+          updateHypothesisStatus('error', { completedAt: Date.now(), exitCode: code });
+        }
         if (code !== 0) process.stderr.write(`[spawn_worker] Worker exited with code ${code}\n`);
       });
       resolve(JSON.stringify({
@@ -1013,6 +1073,41 @@ toolRegistry.register({
       hypothesisId: z.string().describe('The hypothesis ID to update'),
       status: z.enum(['done', 'error']).describe('New status'),
     }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'check_workers',
+  category: 'utility',
+  description: 'Check status of all spawned workers — running count, completed count, pending count, and recent findings. Use this after spawning workers to wait for results before spawning more.',
+  tags: ['strategist', 'worker'],
+  factory: () => tool(async () => {
+    const path = getAppModelPath();
+    const model = readAppModel(path);
+    const hypotheses = Array.isArray(model.hypotheses) ? model.hypotheses : [];
+    const findings = Array.isArray(model.findings) ? model.findings : [];
+    let running = 0, pending = 0, done = 0, error = 0;
+    for (const h of hypotheses) {
+      const status = (h as any).status;
+      if (status === 'running') running++;
+      else if (status === 'pending') pending++;
+      else if (status === 'done') done++;
+      else if (status === 'error') error++;
+    }
+    return JSON.stringify({
+      total: hypotheses.length,
+      running,
+      pending,
+      done,
+      error,
+      findingsCount: findings.length,
+      stalled: running === 0 && pending === 0 && error === 0 && done > 0,
+      summary: `${running} running, ${pending} pending, ${done} done, ${error} error — ${findings.length} finding(s)`,
+    });
+  }, {
+    name: 'check_workers',
+    description: 'Check status of all spawned workers',
+    schema: z.object({}),
   }),
 });
 
