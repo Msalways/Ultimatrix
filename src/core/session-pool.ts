@@ -342,6 +342,29 @@ export class SessionPool {
     return cookies.map((c) => ({ name: c.name, value: c.value, domain: c.domain }));
   }
 
+  async setCookies(id: string, cookies: Array<Partial<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: 'Strict' | 'Lax' | 'None'; url: string }>>): Promise<number> {
+    const session = this.requireSession(id);
+    const sanitized = cookies
+      .filter((c) => c.name && c.value !== undefined && c.value !== null && c.value !== '')
+      .map((c) => {
+        const out: Record<string, unknown> = { name: c.name, value: c.value };
+        if (c.url) out.url = c.url;
+        else {
+          if (c.domain) out.domain = c.domain;
+          if (c.path) out.path = c.path;
+        }
+        if (c.expires !== undefined) out.expires = c.expires;
+        if (c.httpOnly !== undefined) out.httpOnly = c.httpOnly;
+        if (c.secure !== undefined) out.secure = c.secure;
+        if (c.sameSite) out.sameSite = c.sameSite;
+        return out;
+      });
+    if (sanitized.length === 0) return 0;
+    await session.context.addCookies(sanitized as any);
+    session.lastActivityAt = Date.now();
+    return sanitized.length;
+  }
+
   async getPage(id: string): Promise<Page> {
     const session = this.requireSession(id);
     session.lastActivityAt = Date.now();

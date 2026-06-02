@@ -182,6 +182,91 @@ describe('AutonomousV3Orchestrator', () => {
     expect(visitedOrder).toEqual(['n1', 'n2']);
     expect(result.completedNodes).toBe(2);
   });
+
+  it('runs workers in parallel when enableConcurrency: true (maxConcurrency >= 2)', async () => {
+    for (let i = 0; i < 3; i++) {
+      graph.addNode(makeNode(`n${i}`, `https://x.com/api${i}`));
+      graph.markReachable(`n${i}`);
+    }
+    let concurrentPeak = 0;
+    let inFlight = 0;
+    const factory = vi.fn(async () => {
+      inFlight++;
+      concurrentPeak = Math.max(concurrentPeak, inFlight);
+      await new Promise((r) => setTimeout(r, 100));
+      inFlight--;
+      return makeResult(false, 0);
+    });
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory, enableConcurrency: true, maxConcurrency: 3,
+    });
+    await orch.run();
+    expect(concurrentPeak).toBeGreaterThan(1);
+  });
+
+  it('forces sequential execution when maxConcurrency: 1', async () => {
+    for (let i = 0; i < 3; i++) {
+      graph.addNode(makeNode(`n${i}`, `https://x.com/api${i}`));
+      graph.markReachable(`n${i}`);
+    }
+    let concurrentPeak = 0;
+    let inFlight = 0;
+    const factory = vi.fn(async () => {
+      inFlight++;
+      concurrentPeak = Math.max(concurrentPeak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return makeResult(false, 0);
+    });
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory, enableConcurrency: true, maxConcurrency: 1,
+    });
+    await orch.run();
+    expect(concurrentPeak).toBe(1);
+  });
+
+  it('invokes the injected strategy and passes timeoutMs/expectedSeverity to the worker', async () => {
+    graph.addNode(makeNode('n1', 'https://x.com/api/v1/users'));
+    graph.markReachable('n1');
+    let capturedTimeout: number | undefined;
+    let capturedSeverity: string | undefined;
+    const factory = vi.fn(async (input) => {
+      capturedTimeout = input.timeoutMs;
+      capturedSeverity = input.expectedSeverity;
+      return makeResult(false, 0);
+    });
+    const customStrategy = {
+      resolve: vi.fn(async () => ({
+        technique: 'xss' as const,
+        method: 'GET',
+        param: 'q',
+        timeoutMs: 42_000,
+        expectedSeverity: 'critical' as const,
+      })),
+    };
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory, strategy: customStrategy,
+    });
+    await orch.run();
+    expect(customStrategy.resolve).toHaveBeenCalledTimes(1);
+    expect(capturedTimeout).toBe(42_000);
+    expect(capturedSeverity).toBe('critical');
+  });
+
+  it('halves concurrency when a worker reports rateLimited', async () => {
+    for (let i = 0; i < 4; i++) {
+      graph.addNode(makeNode(`n${i}`, `https://x.com/api${i}`));
+      graph.markReachable(`n${i}`);
+    }
+    const rateLimitedResult: WorkerSpawnResult = { ...makeResult(false, 0), rateLimited: true };
+    const factory = vi.fn(async () => rateLimitedResult);
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory, enableConcurrency: true, maxConcurrency: 8,
+    });
+    const result = await orch.run();
+    expect(result.rateLimitEvents).toBeGreaterThan(0);
+    expect(result.effectiveMaxConcurrency).toBeLessThan(8);
+  });
 });
 
 function makeResult(vulnerable: boolean, confidence: number, evidence: any[] = []): WorkerSpawnResult {

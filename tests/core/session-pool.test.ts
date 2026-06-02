@@ -212,6 +212,40 @@ describe('SessionPool', () => {
     });
   });
 
+  describe('setCookies', () => {
+    it('pre-injects cookies into a session via Playwright storage state format', async () => {
+      await pool.getOrCreate('s1');
+      const count = await pool.setCookies('s1', [
+        { name: 'lvl1', value: 'solved', domain: 'xss-game.appspot.com', path: '/' },
+        { name: 'session', value: 'abc123', domain: '.appspot.com', path: '/' },
+      ]);
+      expect(count).toBe(2);
+      const cookies = await pool.getCookies('s1');
+      const names = cookies.map((c) => c.name).sort();
+      expect(names).toContain('lvl1');
+      expect(names).toContain('session');
+    });
+
+    it('skips cookies missing name or value', async () => {
+      await pool.getOrCreate('s1');
+      const count = await pool.setCookies('s1', [
+        { name: 'good', value: 'ok' } as any,
+        { name: '', value: 'x' } as any,
+        { name: 'x', value: '' } as any,
+      ]);
+      expect(count).toBe(1);
+    });
+
+    it('uses url field when provided, otherwise domain+path', async () => {
+      await pool.getOrCreate('s1');
+      const count = await pool.setCookies('s1', [
+        { name: 'with-url', value: '1', url: 'https://example.com/x' },
+        { name: 'with-domain', value: '2', domain: 'example.com', path: '/y' },
+      ]);
+      expect(count).toBe(2);
+    });
+  });
+
   describe('screenshot', () => {
     it('captures a screenshot to the configured directory', async () => {
       await pool.getOrCreate('s1');

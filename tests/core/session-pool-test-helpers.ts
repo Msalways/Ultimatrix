@@ -126,6 +126,15 @@ function makeMockContext(id: string, map: Map<string, MockContext>): MockContext
       async cookies() {
         return cookies;
       },
+      async addCookies(added: Cookie[]) {
+        for (const a of added) {
+          if (!a.name || a.value === undefined || a.value === null) continue;
+          const existing = cookies.findIndex((c) => c.name === a.name && (c.domain ?? a.domain) === (a.domain ?? c.domain) && (c.path ?? '/') === (a.path ?? '/'));
+          const normalized: Cookie = { name: a.name, value: a.value, domain: a.domain, path: a.path ?? '/' };
+          if (existing >= 0) cookies[existing] = normalized;
+          else cookies.push(normalized);
+        }
+      },
       request: undefined as any,
       async close() {
         map.delete(`${id}-browser`);
@@ -154,6 +163,7 @@ export function makeMockBrowserFactory(trackIn: Map<string, MockContext>) {
       };
       const browserCtx = {
         cookies: ctx.context.cookies,
+        addCookies: ctx.context.addCookies,
         request: ctx.request,
         close: ctx.context.close,
       };
@@ -174,6 +184,7 @@ export interface Browser {
 }
 export interface BrowserContext {
   cookies: () => Promise<Cookie[]>;
+  addCookies: (cookies: Cookie[]) => Promise<void>;
   request: any;
   close: () => Promise<void>;
 }

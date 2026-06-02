@@ -11,10 +11,10 @@
  * invoked from `src/cli/index.ts` when the user passes `--v3`.
  */
 
-import { AutonomousV3Orchestrator, type WorkerFactory, type WorkerSpawnInput, type WorkerSpawnResult, type OnFindingHandler, type OnNodeUpdateHandler } from './autonomous-v3';
+import { AutonomousV3Orchestrator, type WorkerSpawnInput, type WorkerSpawnResult, type OnFindingHandler, type OnNodeUpdateHandler, type NodeStrategy } from './autonomous-v3';
 import type { WorkflowStateGraph } from '../core/workflow-state';
 import type { SessionPool } from '../core/session-pool';
-import { readAppModel, compileReport, updateAppModelSection } from '../core/app-model';
+import { readAppModel, compileReport, updateAppModelSection, type AppModel } from '../core/app-model';
 import fs from 'fs';
 import type { Finding, ScanTarget } from '../core/types';
 
@@ -30,25 +30,46 @@ export interface AssessV3Options {
   perTechniqueBudget?: number;
   maxRuntimeMs?: number;
   maxNodes?: number;
+  enableConcurrency?: boolean;
+  maxConcurrency?: number;
+  sleepBetweenNodesMs?: number;
   workerRunner: WorkerRunner;
+  appModel?: AppModel;
+  strategy?: NodeStrategy;
   onFinding?: OnFindingHandler;
   onNodeUpdate?: OnNodeUpdateHandler;
+  onLog?: (msg: string) => void;
   shouldAbort?: () => boolean;
 }
 
-export async function runAssessV3(opts: AssessV3Options): Promise<{ findings: Finding[]; reportPath: string; terminatedBy: string }> {
+export interface AssessV3Result {
+  findings: Finding[];
+  reportPath: string;
+  terminatedBy: string;
+  effectiveMaxConcurrency: number;
+  rateLimitEvents: number;
+  durationMs: number;
+}
+
+export async function runAssessV3(opts: AssessV3Options): Promise<AssessV3Result> {
   const orch = new AutonomousV3Orchestrator({
     graph: opts.graph,
     pool: opts.pool,
     workerFactory: opts.workerRunner,
+    appModel: opts.appModel,
+    strategy: opts.strategy,
     onFinding: (finding, node) => {
       updateAppModelSection(opts.appModelPath, 'findings', [finding], true);
       opts.onFinding?.(finding, node);
     },
     onNodeUpdate: opts.onNodeUpdate,
+    onLog: opts.onLog,
     perTechniqueBudget: opts.perTechniqueBudget,
     maxRuntimeMs: opts.maxRuntimeMs,
     maxNodes: opts.maxNodes,
+    enableConcurrency: opts.enableConcurrency,
+    maxConcurrency: opts.maxConcurrency,
+    sleepBetweenNodesMs: opts.sleepBetweenNodesMs,
     shouldAbort: opts.shouldAbort,
   });
 
@@ -73,5 +94,12 @@ export async function runAssessV3(opts: AssessV3Options): Promise<{ findings: Fi
     timestamp: new Date().toISOString(),
   }));
 
-  return { findings, reportPath, terminatedBy: result.terminatedBy };
+  return {
+    findings,
+    reportPath,
+    terminatedBy: result.terminatedBy,
+    effectiveMaxConcurrency: result.effectiveMaxConcurrency,
+    rateLimitEvents: result.rateLimitEvents,
+    durationMs: result.durationMs,
+  };
 }

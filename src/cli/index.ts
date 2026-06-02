@@ -87,6 +87,10 @@ program
   .addOption(new Option('--fresh', 'Delete previous output and re-crawl from scratch').hideHelp())
   .addOption(new Option('--v3', 'Use the workflow-DAG-driven orchestrator (AutonomousV3) with multi-session RBAC').hideHelp())
   .addOption(new Option('--max-runtime <seconds>', 'Max runtime in seconds for v3 orchestrator').default('1800').hideHelp())
+  .addOption(new Option('--max-concurrency <n>', 'v3: max parallel workers (default 4)').default('4').hideHelp())
+  .addOption(new Option('--sleep-between-nodes <ms>', 'v3: delay between dispatching nodes (default 0)').default('0').hideHelp())
+  .addOption(new Option('--cookies-from <file>', 'v3: Playwright storage state JSON to pre-inject into default session').hideHelp())
+  .addOption(new Option('--no-concurrency', 'v3: disable parallel workers (sequential only)').hideHelp())
   .action(async (opts) => {
     const config = await loadRuntimeConfig({ ...opts });
 
@@ -193,7 +197,11 @@ program
       type WorkerRunner = import('../pipeline/assess-v3-runner').WorkerRunner;
       const model = readAppModel(appModelPath);
       const graph = new WorkflowStateGraph();
+      const targetNodeId = 'target';
+      graph.addNode({ id: targetNodeId, url: target, title: target, type: 'page', authRequired: false, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
+      graph.markReachable(targetNodeId);
       for (const visited of (model.visitedUrls || []).slice(0, 50)) {
+        if (visited === target) continue;
         const id = `n-${Buffer.from(visited).toString('base64url').slice(0, 16)}`;
         graph.addNode({ id, url: visited, title: visited, type: 'page', authRequired: false, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
       }
@@ -203,7 +211,19 @@ program
       }
       graph.refreshReachable();
       const pool = new SessionPool({ headless: !opts.headless, networkCaptureEnabled: true });
-      const llmConfig = config.scan as any;
+      if (opts.cookiesFrom) {
+        const storageStatePath = path.resolve(opts.cookiesFrom);
+        if (!fs.existsSync(storageStatePath)) {
+          log.error(`cookies-from: file not found: ${storageStatePath}`);
+          process.exit(1);
+        }
+        log.info(`Loading storage state from ${storageStatePath}`);
+        const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf-8'));
+        const cookies = (state.cookies || []) as Array<Record<string, unknown>>;
+        const count = await pool.setCookies('default', cookies as any);
+        log.success(`Pre-injected ${count} cookies into default session`);
+      }
+      const llmConfig = config.provider as any;
       const workerRunner: WorkerRunner = async (input) => {
         const { runReasoningWorker } = await import('../agents/worker');
         const result = await runReasoningWorker({
@@ -211,8 +231,8 @@ program
           appModelPath,
           sessionPool: pool,
           activeSessionId: input.activeSessionId ?? undefined,
-          llmConfig: { provider: llmConfig?.provider || 'minimaxai', apiKey: llmConfig?.apiKey || '', model: llmConfig?.model || '' },
-          timeoutMs: 90_000,
+          llmConfig: { provider: llmConfig?.name || 'minimaxai', apiKey: llmConfig?.apiKey || '', model: llmConfig?.model || '' },
+          timeoutMs: 120_000,
         } as any);
         return {
           vulnerable: result.vulnerable,
@@ -227,6 +247,7 @@ program
         };
       };
       log.info('v3 orchestrator: workflow-DAG + multi-session RBAC');
+      const enableConcurrency = opts.concurrency !== false;
       const result = await runAssessV3({
         target: { url: target } as ScanTarget,
         graph,
@@ -238,10 +259,16 @@ program
         maxRuntimeMs: (parseInt(opts.maxRuntime, 10) || 1800) * 1000,
         perTechniqueBudget: 3,
         maxNodes: 200,
+        enableConcurrency,
+        maxConcurrency: parseInt(opts.maxConcurrency, 10) || 4,
+        sleepBetweenNodesMs: parseInt(opts.sleepBetweenNodes, 10) || 0,
         shouldAbort: () => ac.signal.aborted,
       });
       log.success(`v3 orchestrator finished (terminated: ${result.terminatedBy})`);
       log.info(`Report: ${result.reportPath}`);
+      if (result.rateLimitEvents > 0) {
+        log.info(`Rate-limit backoff: ${result.rateLimitEvents} events → effective concurrency: ${result.effectiveMaxConcurrency}`);
+      }
       process.exit(0);
     }
 
