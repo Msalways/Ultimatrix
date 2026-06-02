@@ -3,7 +3,7 @@ export { ReportGenerator } from './pipeline/report-generator';
 export { AutonomousOrchestrator } from './pipeline/autonomous';
 export { providerRegistry, type ProviderConfig, type ProviderFactory, ProviderRegistry } from './providers/provider-registry';
 export { toolRegistry } from './tools/tool-registry';
-export { readAppModel, writeAppModel, type AppModel, DEFAULT_MODEL } from './core/app-model';
+export { readAppModel, writeAppModel, updateAppModelSection, compileReport, type AppModel, DEFAULT_MODEL } from './core/app-model';
 export { setLlmConfig, getLlmConfig } from './core/app-model-path';
 export { SessionPool, getDefaultSessionPool, resetDefaultSessionPool } from './core/session-pool';
 export { WorkflowStateGraph } from './core/workflow-state';

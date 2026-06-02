@@ -14,9 +14,12 @@ const {
   WorkflowStateGraph,
   SessionPool,
   DEFAULT_MODEL,
+  readAppModel,
+  compileReport,
+  updateAppModelSection,
+  writeAppModel,
 } = require('../dist/index.js');
 const fsWrite = require('fs');
-const { writeAppModel } = require('../dist/index.js');
 
 const TARGET = 'https://xss-game.appspot.com/level1/frame?query=test';
 const OUT_DIR = path.resolve(process.argv[2] || './output-xss-smoke');
@@ -90,6 +93,12 @@ const REFLECTED_PAYLOAD = '<script>alert("ultimatrix-smoke-test")</script>';
     maxConcurrency: 1,
     onFinding: (finding, node) => {
       console.log(`[orch] FINDING: ${finding.type} severity=${finding.severity} endpoint=${finding.endpoint} param=${finding.param}`);
+      try {
+        const r = updateAppModelSection(appModelPath, 'findings', [finding], true);
+        if (r && typeof r.then === 'function') r.catch((e) => console.log(`[orch] persist error: ${e.message}`));
+      } catch (e) {
+        console.log(`[orch] persist error: ${e.message}`);
+      }
     },
     onNodeUpdate: (node, status) => {
       console.log(`[orch] node ${node.id} → ${status}`);
@@ -126,6 +135,15 @@ const REFLECTED_PAYLOAD = '<script>alert("ultimatrix-smoke-test")</script>';
   }
 
   await pool.closeAll();
+
+  await new Promise((r) => setTimeout(r, 200));
+
+  const finalModel = readAppModel(appModelPath);
+  const reportModel = { ...finalModel, findings: result.findings.length > 0 ? result.findings : (finalModel.findings || []) };
+  const reportHtml = compileReport(reportModel, 'html');
+  const reportPath = path.join(OUT_DIR, 'final-security-report.html');
+  fsWrite.writeFileSync(reportPath, reportHtml);
+  console.log(`[smoke] wrote report: ${reportPath} (${reportHtml.length} bytes); findings in model: ${reportModel.findings.length}`);
 
   console.log(`\n[smoke] PASS: v3 orchestrator completed end-to-end against xss-game L1`);
   process.exit(result.findings.length > 0 ? 0 : 1);
