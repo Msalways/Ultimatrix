@@ -1,6 +1,6 @@
 {
   "name": "ultimatrix",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "description": "AI-powered security team-in-a-box. Multi-agent security testing platform with AutoGen-style orchestration.",
   "main": "dist/index.cjs",
   "module": "dist/index.js",

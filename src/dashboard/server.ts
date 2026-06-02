@@ -2,11 +2,50 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { AgentDecision } from '../agents/middleware/agent-decision-emitter';
+import type { SessionMeta } from '../core/session-pool';
 
 export interface DashboardEvent {
-  type: 'navigate' | 'finding' | 'screenshot' | 'model_update' | 'tool_call' | 'risk_change' | 'session' | 'status' | 'error';
+  type: 'navigate' | 'finding' | 'screenshot' | 'model_update' | 'tool_call' | 'risk_change' | 'session' | 'session_switch' | 'session_diff' | 'status' | 'error' | 'agent_decision';
   data: Record<string, unknown>;
   timestamp: string;
+}
+
+export function agentDecisionToEvent(d: AgentDecision): DashboardEvent {
+  return {
+    type: 'agent_decision',
+    data: {
+      id: d.id,
+      agent: d.agent,
+      tool: d.tool,
+      args: d.args,
+      decision: d.decision,
+      risk: d.risk,
+      source: d.source,
+    },
+    timestamp: d.timestamp,
+  };
+}
+
+export function sessionSwitchToEvent(meta: SessionMeta): DashboardEvent {
+  return {
+    type: 'session_switch',
+    data: {
+      sessionId: meta.id,
+      label: meta.label,
+      role: meta.role,
+      authenticated: meta.authenticated,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+export function sessionDiffToEvent(args: { url: string; sessionA: string; sessionB: string; leakDetected: boolean; notes: string[] }): DashboardEvent {
+  return {
+    type: 'session_diff',
+    data: { ...args },
+    timestamp: new Date().toISOString(),
+  };
 }
 
 export interface DashboardServer {

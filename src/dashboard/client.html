@@ -104,6 +104,7 @@ header .target-info { font-size:13px; color:var(--text-muted); }
 .badge-session { background:rgba(139,148,158,0.15); color:var(--text-muted); }
 .badge-status { background:rgba(139,148,158,0.15); color:var(--text-muted); }
 .badge-screenshot { background:rgba(88,166,255,0.15); color:var(--blue); }
+.badge-agent_decision { background:rgba(63,185,80,0.15); color:var(--green); }
 .screenshot-panel {
   border-top:1px solid var(--border); padding:8px 12px; max-height:200px; overflow:hidden;
 }
@@ -113,6 +114,42 @@ header .target-info { font-size:13px; color:var(--text-muted); }
 .screenshot-panel img {
   max-width:100%; max-height:160px; border-radius:4px; border:1px solid var(--border);
 }
+.timeline-panel {
+  border-top:1px solid var(--border); max-height:280px; overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.timeline-header {
+  padding:8px 12px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.timeline-header h3 { font-size:12px; text-transform:uppercase; color:var(--text-muted); }
+.timeline-content {
+  flex:1; overflow-y:auto; padding:8px 12px; font-size:12px;
+}
+.timeline-entry {
+  padding:6px 0; border-bottom:1px solid rgba(48,54,61,0.3);
+  display:flex; align-items:flex-start; gap:8px;
+}
+.timeline-entry .agent-tag {
+  font-size:10px; padding:1px 6px; border-radius:3px;
+  background:rgba(88,166,255,0.15); color:var(--blue);
+  white-space:nowrap; font-weight:600;
+}
+.timeline-entry .tool-tag {
+  font-size:10px; padding:1px 6px; border-radius:3px;
+  background:rgba(139,148,158,0.15); color:var(--text-muted);
+  white-space:nowrap; font-family:'Courier New',monospace;
+}
+.timeline-entry .decision {
+  flex:1; color:var(--text); font-style:italic; font-size:11px;
+  line-height:1.4;
+}
+.timeline-entry .risk-pill {
+  font-size:10px; padding:1px 6px; border-radius:3px;
+  font-weight:600; white-space:nowrap;
+}
+.timeline-entry .source-llm { color:var(--green); }
+.timeline-entry .source-fallback { color:var(--text-muted); }
 footer {
   background:var(--surface); border-top:1px solid var(--border);
   padding:8px 20px; display:flex; align-items:center; gap:12px; font-size:13px;
@@ -157,6 +194,14 @@ footer {
         <div class="stat-value" id="statMacros">0</div>
         <div class="stat-label">Recorded Macros</div>
       </div>
+      <div class="stat-card" style="grid-column:span 2">
+        <div class="stat-value" id="active-session">--</div>
+        <div class="stat-label">Active Session (v3 RBAC)</div>
+      </div>
+    </div>
+
+    <div class="findings-breakdown" id="session-diff" style="font-family:monospace;font-size:12px;color:var(--text-muted);min-height:24px;padding:8px">
+      [session_diff events will appear here]
     </div>
 
     <div class="findings-breakdown">
@@ -185,6 +230,14 @@ footer {
     <div class="screenshot-panel" id="screenshotPanel" style="display:none">
       <h3>Latest Screenshot</h3>
       <img id="screenshotImg" alt="Screenshot">
+    </div>
+
+    <div class="timeline-panel">
+      <div class="timeline-header">
+        <h3>Agent Decision Timeline</h3>
+        <span style="font-size:11px;color:var(--text-muted)" id="timelineCount">0 events</span>
+      </div>
+      <div class="timeline-content" id="timelineContent"></div>
     </div>
   </div>
 </div>
@@ -217,6 +270,8 @@ const workflowGraph = document.getElementById('workflowGraph');
 const screenshotImg = document.getElementById('screenshotImg');
 const screenshotPanel = document.getElementById('screenshotPanel');
 const eventCountEl = document.getElementById('eventCount');
+const timelineContent = document.getElementById('timelineContent');
+const timelineCount = document.getElementById('timelineCount');
 
 let sevCounts = { critical:0, high:0, medium:0, low:0 };
 let endpoints = new Set();
@@ -278,13 +333,62 @@ function handleEvent(ev) {
       addLog(ev);
       if (d.action === 'macro_record_stop' || d.action === 'macro_saved') { macros++; updateStats(); }
       break;
+    case 'session_switch':
+      addLog(ev);
+      renderSessionSwitch(d);
+      break;
+    case 'session_diff':
+      addLog(ev);
+      renderSessionDiff(d);
+      break;
     case 'status':
       statusText.textContent = d.message || statusText.textContent;
       break;
     case 'error':
       addLog(ev);
       break;
+    case 'agent_decision':
+      addLog(ev);
+      addTimelineEntry(d);
+      break;
   }
+}
+
+let timelineEvents = 0;
+function addTimelineEntry(d) {
+  timelineEvents++;
+  timelineCount.textContent = timelineEvents + ' events';
+  const row = document.createElement('div');
+  row.className = 'timeline-entry';
+
+  const agent = document.createElement('span');
+  agent.className = 'agent-tag';
+  agent.textContent = d.agent || 'agent';
+  row.appendChild(agent);
+
+  const tool = document.createElement('span');
+  tool.className = 'tool-tag';
+  tool.textContent = d.tool || '';
+  row.appendChild(tool);
+
+  const dec = document.createElement('span');
+  dec.className = 'decision source-' + (d.source || 'fallback');
+  dec.textContent = d.decision || '';
+  row.appendChild(dec);
+
+  if (typeof d.risk === 'number' && d.risk > 0) {
+    const risk = document.createElement('span');
+    risk.className = 'risk-pill';
+    risk.textContent = '⚠ ' + d.risk.toFixed(1);
+    const c = d.risk >= 7 ? 'var(--critical)' : d.risk >= 4 ? 'var(--high)' : 'var(--text-muted)';
+    risk.style.background = c + '30';
+    risk.style.color = c;
+    row.appendChild(risk);
+  }
+
+  timelineContent.appendChild(row);
+  if (autoScrollCb.checked) timelineContent.scrollTop = timelineContent.scrollHeight;
+  while (timelineContent.children.length > 200) timelineContent.removeChild(timelineContent.firstChild);
 }
 
 function addLog(ev) {
@@ -318,6 +422,7 @@ function addLog(ev) {
     case 'session': msg.textContent = (d.action || '?') + ' — ' + (d.id || ''); break;
     case 'error': msg.textContent = '\u2717 ' + (d.message || '?'); break;
     case 'status': msg.textContent = d.message || ''; break;
+    case 'agent_decision': msg.textContent = '\u25B6 ' + (d.agent || 'agent') + ': ' + (d.decision || ''); break;
     default: msg.textContent = JSON.stringify(d); break;
   }
   row.appendChild(msg);
@@ -338,6 +443,29 @@ function updateStats() {
 
 function updateGraph() {
   workflowGraph.textContent = 'Nodes: ' + workflowNodes + '\nTarget: ' + (targetUrl || '...') + '\nEndpoints: ' + endpoints.size;
+}
+
+const activeSessionIndicator = document.getElementById('active-session');
+const sessionDiffPanel = document.getElementById('session-diff');
+
+function renderSessionSwitch(d) {
+  if (!d.sessionId) return;
+  activeSessionIndicator.textContent = d.sessionId;
+  activeSessionIndicator.dataset.role = d.role || '';
+  activeSessionIndicator.dataset.auth = d.authenticated ? 'auth' : 'anon';
+  activeSessionIndicator.style.background = d.authenticated ? 'var(--medium)' : 'var(--text-muted)';
+}
+
+function renderSessionDiff(d) {
+  if (!d.url) return;
+  const text = [
+    d.leakDetected ? '[LEAK]' : '[MATCH]',
+    d.sessionA + ' vs ' + d.sessionB,
+    d.url,
+    (d.notes || []).join('; '),
+  ].join(' | ');
+  sessionDiffPanel.textContent = text;
+  sessionDiffPanel.style.color = d.leakDetected ? 'var(--critical)' : 'var(--text-muted)';
 }
 </script>
 </body>

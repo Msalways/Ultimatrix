@@ -35,6 +35,8 @@ export class AutonomousOrchestrator {
   private inputChannel: string[] = [];
   private autoContinue: boolean;
   private lastWorkerCheck: number = 0;
+  private lastFindingCount: number = 0;
+  private readonly inFlightWorkers = new Set<Promise<void>>();
 
   constructor(config: {
     model: BaseChatModel;
@@ -78,6 +80,52 @@ export class AutonomousOrchestrator {
     } else {
       this.inputChannel.push(text);
     }
+  }
+
+  private async waitForInFlightWorkers(): Promise<void> {
+    const startTime = Date.now();
+    const maxWaitMs = 180_000;
+    const pollMs = 2000;
+    let lastStatusLine = '';
+    while (Date.now() - startTime < maxWaitMs) {
+      this.purgeCompletedWorkers();
+      const model = readAppModel(this.appModelPath);
+      const hyps = Array.isArray(model.hypotheses) ? model.hypotheses : [];
+      const runningDisk = hyps.filter((h: any) => h.status === 'running').length;
+      const running = runningDisk + this.inFlightWorkers.size;
+      const done = hyps.filter((h: any) => h.status === 'done').length;
+      const error = hyps.filter((h: any) => h.status === 'error').length;
+      const pending = hyps.filter((h: any) => h.status === 'pending').length;
+      const statusLine = `workers: ${running} running (${this.inFlightWorkers.size} tracked, ${runningDisk} on disk), ${done} done, ${error} error, ${pending} pending`;
+      if (statusLine !== lastStatusLine) {
+        process.stdout.write(colors.dim(`\n  ⏳ Waiting for in-flight workers — ${statusLine}\n`));
+        lastStatusLine = statusLine;
+      }
+      if (running === 0) return;
+      const allSettled = Promise.allSettled([...this.inFlightWorkers]);
+      const timeout = new Promise((r) => setTimeout(r, pollMs));
+      await Promise.race([allSettled, timeout]);
+    }
+    process.stdout.write(colors.warn(`\n  ⚠ Worker wait timed out after ${maxWaitMs / 1000}s, proceeding with report.\n`));
+  }
+
+  private purgeCompletedWorkers(): void {
+    for (const p of this.inFlightWorkers) {
+      if ((p as any).status === 'fulfilled' || (p as any).status === 'rejected') {
+        this.inFlightWorkers.delete(p);
+      }
+    }
+  }
+
+  trackInFlightWorker(id: string, promise: Promise<unknown>): void {
+    const wrapped = promise
+      .then(() => undefined)
+      .catch((e) => {
+        process.stderr.write(`[autonomous] in-flight worker ${id} failed: ${String(e)}\n`);
+      });
+    (wrapped as any).status = 'pending';
+    wrapped.finally(() => { (wrapped as any).status = 'fulfilled'; });
+    this.inFlightWorkers.add(wrapped);
   }
 
   private async savePartialReport(turn: number, finalModel?: AppModel): Promise<void> {
@@ -261,6 +309,7 @@ export class AutonomousOrchestrator {
     systemPrompt += `\n\nAttack plan has ${prioritized.length} hypotheses. Read them with read_attack_plan, then spawn workers.`;
 
     const allTools = toolRegistry.getAll();
+    toolRegistry.setWorkerTracker((id, promise) => this.trackInFlightWorker(id, promise));
     const askUserTool = createAskUserTool();
     const allToolsWithAskUser = [...allTools, askUserTool];
     const boundModel = (this.model as any).bindTools(allToolsWithAskUser);
@@ -362,10 +411,24 @@ Start by reading the forms section.`),
       // ── Graceful termination conditions ──
       const appModelNow = readAppModel(this.appModelPath);
       const hypsNow = Array.isArray(appModelNow.hypotheses) ? appModelNow.hypotheses : [];
-      const pendingCount = hypsNow.filter((h: any) => h.status === 'pending').length;
       const runningCount = hypsNow.filter((h: any) => h.status === 'running').length;
       const doneCount = hypsNow.filter((h: any) => h.status === 'done').length;
+      const errorCount = hypsNow.filter((h: any) => h.status === 'error').length;
       const findingsNow = Array.isArray(appModelNow.findings) ? appModelNow.findings.length : 0;
+
+      // Compute unique endpoint×param combos
+      const allCombos = new Set<string>();
+      const coveredCombos = new Set<string>();
+      for (const h of hypsNow) {
+        const hObj = h as any;
+        const combo = `${hObj.method || 'GET'}:${hObj.endpoint || ''}:${hObj.param || ''}`;
+        allCombos.add(combo);
+        if (hObj.status === 'running' || hObj.status === 'done' || hObj.status === 'error') {
+          coveredCombos.add(combo);
+        }
+      }
+      const uncoveredCombos = allCombos.size - coveredCombos.size;
+      const resolvedCount = doneCount + errorCount;
 
       // Condition A: LLM signaled coverage complete
       if (/coverage complete|all done|finished/i.test(responseText)) {
@@ -373,22 +436,21 @@ Start by reading the forms section.`),
         break;
       }
 
-      // Condition B: No pending or running hypotheses → all work dispatched
-      if (pendingCount === 0 && runningCount === 0 && doneCount > 0) {
-        process.stdout.write(colors.dim(`\nAll ${doneCount} hypotheses resolved (${findingsNow} findings). Stopping.\n`));
+      // Condition B: All unique endpoint×param combos have at least one hypothesis dispatched
+      if (uncoveredCombos === 0 && runningCount === 0) {
+        process.stdout.write(colors.dim(`\nAll ${allCombos.size} endpoint×param combos resolved (${resolvedCount} done, ${findingsNow} findings). Stopping.\n`));
         break;
       }
 
-      // Condition C: No pending, running workers exist but haven't reported findings — wait one turn
-      if (pendingCount === 0 && runningCount > 0 && doneCount === 0 && turnCount > 2) {
-        // Reset lastWorkerCheck or increment wait counter
-        this.lastWorkerCheck = this.lastWorkerCheck || 0;
-        if (findingsNow > 0) {
+      // Condition C: Workers running but no new findings for 3+ consecutive turns
+      if (uncoveredCombos === 0 && runningCount > 0) {
+        if (findingsNow > this.lastFindingCount) {
+          this.lastFindingCount = findingsNow;
           this.lastWorkerCheck = 0;
         } else {
-          this.lastWorkerCheck = (this.lastWorkerCheck as number) + 1;
-          if ((this.lastWorkerCheck as number) >= 3) {
-            process.stdout.write(colors.warn(`\nWaiting for ${runningCount} workers — no results for 3 turns. Stopping.\n`));
+          this.lastWorkerCheck++;
+          if (this.lastWorkerCheck >= 3) {
+            process.stdout.write(colors.warn(`\nWaiting for ${runningCount} workers — no new findings for 3 turns. Stopping.\n`));
             break;
           }
         }
@@ -420,6 +482,9 @@ Start by reading the forms section.`),
 
       messages.push(new HumanMessage(userInput));
     }
+
+    // ── Wait for in-flight workers to finish before exiting ──
+    await this.waitForInFlightWorkers();
 
     // ── Re-discovery of thin routes ──
     // Two triggers:
@@ -509,6 +574,11 @@ Start by reading the forms section.`),
       this.emitDashboardEvent('status', { message: 'Running finding triage' });
       const { triageFinding, applyTriageToFindings } = await import('../triage');
       const decisions = finalModel.findings.map(f => triageFinding(f, finalModel.findings));
+      for (let di = 0; di < decisions.length; di++) {
+        const d = decisions[di];
+        const f = finalModel.findings[di];
+        log.dim(`  [${d.status}] ${f.type} on ${f.endpoint} (${f.param}): ${d.reason}`);
+      }
       const triaged = applyTriageToFindings(finalModel.findings, decisions);
       const removed = finalModel.findings.length - triaged.length;
       if (removed > 0) {

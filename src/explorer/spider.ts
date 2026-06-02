@@ -4,6 +4,9 @@ import { takeSnapshot, takeSnapshotDeep, isSamePage } from './dom-observer';
 import type { DOMSnapshot } from './dom-observer';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { WorkflowStateGraph } from '../core/workflow-state';
+import type { SessionPool } from '../core/session-pool';
+import type { AuthFlow } from '../core/auth-flow';
 
 export interface AuthConfig {
   username: string;
@@ -54,7 +57,13 @@ export class SpiderCrawler {
     this.sessionId = sessionId;
   }
 
-  async crawl(targetUrl: string, maxDepth = 3, authConfig?: AuthConfig, outputDir?: string): Promise<CrawlResult> {
+  async crawl(
+    targetUrl: string,
+    maxDepth = 3,
+    authConfig?: AuthConfig,
+    outputDir?: string,
+    options?: { workflowState?: WorkflowStateGraph; sessionPool?: SessionPool; authFlow?: AuthFlow; envCreds?: Record<string, Record<string, string>> },
+  ): Promise<CrawlResult> {
     const startTime = Date.now();
     const baseUrl = new URL(targetUrl).origin;
     const visited = new Set<string>();
@@ -70,6 +79,10 @@ export class SpiderCrawler {
     let loginEndpoint = '';
     let loginMethod = '';
     const loginFields: string[] = [];
+    const workflowState = options?.workflowState;
+    const sessionPool = options?.sessionPool;
+    const authFlow = options?.authFlow;
+    const envCreds = options?.envCreds;
 
     // Start trace + recording
     await this.manager.startTrace(this.sessionId);
@@ -116,6 +129,35 @@ export class SpiderCrawler {
           linkCount: resolvedLinks.length,
           visitedAt: Date.now(),
         });
+
+        if (workflowState) {
+          const isAuth = /\/(login|signin|admin|account|profile|me|dashboard|user)/i.test(finalUrl);
+          const isApi = /\/api\//.test(finalUrl);
+          const isLoginPage = this.isAuthForm(snapshot.forms) || /\/(login|signin)/i.test(finalUrl);
+          const nodeType: 'page' | 'api' | 'login' = isLoginPage ? 'login' : isApi ? 'api' : 'page';
+          const nodeId = workflowState.generateId(nodeType === 'login' ? 'login' : nodeType === 'api' ? 'api' : 'page');
+          const node = workflowState.addNode({
+            id: nodeId,
+            url: finalUrl,
+            title: snapshot.title || '(no title)',
+            type: nodeType,
+            authRequired: isAuth || isLoginPage,
+            authVerified: isLoginPage && aggregatedCookies && Object.keys(aggregatedCookies).length > 0,
+            discoveredFrom: null,
+            discoveryMethod: 'navigation',
+            status: nodeType === 'login' ? 'reachable' : 'reachable',
+          });
+          if (depth === 0) {
+            // first page — keep reachable but no parent
+          } else if (routes.length > 1) {
+            const prevId = routes[routes.length - 2] ? workflowState.getNode(`page-${(routes.length - 1).toString(36)}`)?.id : null;
+            // edge from previous to current — try to find prev by URL match
+            const prevNodes = workflowState.getNodes().filter((n) => n.url !== finalUrl);
+            const last = prevNodes[prevNodes.length - 1];
+            if (last) workflowState.addEdge({ fromId: last.id, toId: nodeId, trigger: 'navigation', label: 'crawl' });
+          }
+          void node; // suppress unused warning
+        }
 
         // Capture cookies from browser context
         const ctxCookies = await page.context().cookies();
@@ -278,6 +320,20 @@ export class SpiderCrawler {
     }
 
     const spiderRecording = this.manager.stopRecording(this.sessionId);
+
+    if (authFlow && sessionPool) {
+      try {
+        const page = await this.manager.getOrCreate(this.sessionId);
+        const pageText = await page.evaluate(() => (globalThis as any).document?.body?.innerText || '').catch(() => '');
+        const navLinks = await page.evaluate(() =>
+          Array.from((globalThis as any).document?.querySelectorAll('a[href]') || []).map((a: any) => a.getAttribute('href') || ''),
+        ).catch(() => []);
+        const formActions = snapshots.flatMap((s) => s.forms.map((f) => f.action));
+        await authFlow.discoverAndPopulate(page, baseUrl, { pageText, formActions, navLinks });
+      } catch (e) {
+        errors.push({ url: '<auth-flow>', error: `auth flow failed: ${String(e)}` });
+      }
+    }
 
     return {
       baseUrl,

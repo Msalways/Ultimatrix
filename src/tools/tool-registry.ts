@@ -19,627 +19,236 @@ import { readAppModel, writeAppModel, calculateOverallRisk, renderWorkflowGraph,
 import { OastServer } from '../oast/server';
 import { triageFinding, applyTriageToFindings } from '../triage';
 
-type AnyTool = DynamicStructuredTool;
+const TOOL_EXECUTION_TIMEOUT = 30000; // 30s default timeout for tool invocations
 
-export interface ToolRegistryEntry {
-  name: string;
-  category: string;
-  description: string;
-  factory: () => AnyTool;
-  tags: string[];
-}
+// ── Tool Registry ──
 
 export class ToolRegistry {
-  private registry: Map<string, ToolRegistryEntry> = new Map();
+  private tools: Map<string, DynamicStructuredTool> = new Map();
+  private meta: Map<string, { name: string; category: string; description: string; tags?: string[] }> = new Map();
+  private workerTracker: ((id: string, promise: Promise<unknown>) => void) | null = null;
 
-  register(entry: ToolRegistryEntry): void {
-    this.registry.set(entry.name, entry);
+  register(toolConfig: {
+    name: string;
+    category: string;
+    description: string;
+    tags?: string[];
+    factory: () => DynamicStructuredTool;
+  }): void {
+    const tool = toolConfig.factory();
+    this.tools.set(tool.name, tool);
+    this.meta.set(tool.name, { name: toolConfig.name, category: toolConfig.category, description: toolConfig.description, tags: toolConfig.tags });
   }
 
-  get(name: string): AnyTool | undefined {
-    return this.registry.get(name)?.factory();
+  setWorkerTracker(tracker: (id: string, promise: Promise<unknown>) => void): void {
+    this.workerTracker = tracker;
   }
 
-  getAll(): AnyTool[] {
-    const tools: AnyTool[] = [];
-    for (const entry of this.registry.values()) tools.push(entry.factory());
-    return tools;
+  getWorkerTracker(): ((id: string, promise: Promise<unknown>) => void) | null {
+    return this.workerTracker;
   }
 
-  getByCategory(category: string): AnyTool[] {
-    const tools: AnyTool[] = [];
-    for (const entry of this.registry.values()) {
-      if (entry.category === category) tools.push(entry.factory());
-    }
-    return tools;
+  getAll(): DynamicStructuredTool[] {
+    return Array.from(this.tools.values());
   }
 
-  getByTags(tags: string[]): AnyTool[] {
-    const tools: AnyTool[] = [];
-    for (const entry of this.registry.values()) {
-      if (tags.some((t) => entry.tags.includes(t))) tools.push(entry.factory());
-    }
-    return tools;
+  get(name: string): DynamicStructuredTool | undefined {
+    return this.tools.get(name);
   }
 
-  listNames(): string[] { return Array.from(this.registry.keys()); }
+  getByCategory(category: string): DynamicStructuredTool[] {
+    const names = new Set(
+      Array.from(this.meta.values()).filter(m => m.category === category).map(m => m.name)
+    );
+    return Array.from(this.tools.values()).filter(t => names.has(t.name));
+  }
 
   listByCategory(): Record<string, string[]> {
     const result: Record<string, string[]> = {};
-    for (const entry of this.registry.values()) {
-      if (!result[entry.category]) result[entry.category] = [];
-      result[entry.category].push(entry.name);
+    for (const m of this.meta.values()) {
+      if (!result[m.category]) result[m.category] = [];
+      result[m.category].push(m.name);
     }
     return result;
   }
-
-  has(name: string): boolean { return this.registry.has(name); }
 }
 
 export const toolRegistry = new ToolRegistry();
 
-// ── Knowledge Tools ──
-
-toolRegistry.register({
-  name: 'calculate_risk',
-  category: 'utility',
-  description: 'Calculate the overall risk score from the app model findings. Returns a score (0-100), level (info/low/medium/high/critical), and breakdown by severity.',
-  tags: ['utility', 'risk'],
-  factory: () => tool(async (_input) => {
-    const path = getAppModelPath();
-    try {
-      const model = readAppModel(path);
-      const risk = calculateOverallRisk(model);
-      return JSON.stringify(risk, null, 2);
-    } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }, {
-    name: 'calculate_risk',
-    description: 'Calculate overall risk score from app model findings',
-    schema: z.object({}),
-  }),
-});
-
-toolRegistry.register({
-  name: 'render_workflow_graph',
-  category: 'utility',
-  description: 'Render the workflow graph from the app model as a Mermaid diagram. Shows how pages connect and which require auth.',
-  tags: ['utility', 'workflow'],
-  factory: () => tool(async (_input) => {
-    const path = getAppModelPath();
-    try {
-      const model = readAppModel(path);
-      return renderWorkflowGraph(model);
-    } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }, {
-    name: 'render_workflow_graph',
-    description: 'Render workflow graph as Mermaid diagram',
-    schema: z.object({}),
-  }),
-});
-
-toolRegistry.register({
-  name: 'classify_parameter',
-  category: 'utility',
-  description: 'Classify a parameter by its purpose and save to the app model. Valid classifications: id, email, password, search, price, quantity, name, date, file, token, unknown.',
-  tags: ['utility', 'recon'],
-  factory: () => tool(async (input) => {
-    const { param_name, page_url, classification, attack_hints } = z.object({
-      param_name: z.string().describe('Name of the parameter'),
-      page_url: z.string().describe('URL of the page where the parameter appears'),
-      classification: z.enum(['id', 'email', 'password', 'search', 'price', 'quantity', 'name', 'date', 'file', 'token', 'unknown']).describe('Classified purpose of the parameter'),
-      attack_hints: z.array(z.string()).optional().describe('Suggested attack strategies'),
-    }).parse(input);
-    const path = getAppModelPath();
-    try {
-      updateAppModelSection(path, 'parameterClassifications', [{
-        paramName: param_name,
-        pageUrl: page_url,
-        classifiedAs: classification,
-        attackHints: attack_hints || [],
-      }]);
-      return `Parameter "${param_name}" on ${page_url} classified as "${classification}".`;
-    } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }, {
-    name: 'classify_parameter',
-    description: 'Classify a parameter by purpose and save to app model',
-    schema: z.object({
-      param_name: z.string().describe('Name of the parameter'),
-      page_url: z.string().describe('URL of the page where the parameter appears'),
-      classification: z.enum(['id', 'email', 'password', 'search', 'price', 'quantity', 'name', 'date', 'file', 'token', 'unknown']).describe('Classified purpose of the parameter'),
-      attack_hints: z.array(z.string()).optional().describe('Suggested attack strategies'),
-    }),
-  }),
-});
-
-// ── HTTP & Network Tools ──
-
-const HttpRequestSchema = z.object({
-  method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']).optional().default('GET').describe('HTTP method (default: GET)'),
-  url: z.string().describe('Target URL to send the request to'),
-  headers: z.record(z.string()).optional().describe('Optional HTTP headers as key-value pairs'),
-  body: z.record(z.unknown()).optional().describe('Optional request body as JSON object'),
-  followRedirects: z.boolean().optional().default(true).describe('Whether to follow HTTP redirects'),
-});
-
-toolRegistry.register({
-  name: 'http_request',
-  category: 'network',
-  description: 'Send an HTTP request to a target URL with custom method, headers, and body',
-  tags: ['network', 'http', 'api'],
-  factory: () => tool(async (input) => {
-    const { method, url, headers, body, followRedirects } = HttpRequestSchema.parse(u(input));
-    try {
-      const response = await fetch(url, { method, headers: headers || {}, body: body ? JSON.stringify(body) : undefined, redirect: followRedirects !== false ? 'follow' : 'manual' });
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((v, k) => { responseHeaders[k] = v; });
-      const contentType = response.headers.get('content-type') || '';
-      const responseBody = contentType.includes('json') ? JSON.stringify(await response.json(), null, 2) : await response.text();
-      return `HTTP ${response.status} ${response.statusText}\nHeaders: ${JSON.stringify(responseHeaders, null, 2)}\nBody: ${responseBody.slice(0, 3000)}`;
-    } catch (error) { return `Error: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'http_request', description: 'Send an HTTP request to a target URL', schema: HttpRequestSchema }),
-});
-
-const PortScanSchema = z.object({
-  host: z.string().describe('Hostname or IP address to scan'),
-  ports: z.array(z.number()).optional().describe('Specific ports to scan (overrides range)'),
-  range: z.string().optional().describe('Port range like "1-1024"'),
-});
-
-toolRegistry.register({
-  name: 'port_scan',
-  category: 'network',
-  description: 'Scan a host for open ports and identify services',
-  tags: ['network', 'ports', 'infrastructure', 'recon'],
-  factory: () => tool(async (input) => {
-    const { host, ports, range } = PortScanSchema.parse(input);
-    const net = await import('net');
-    const targetPorts = ports || parseRange(range) || [80, 443, 3000, 8080, 8443];
-    const results: Array<{ port: number; status: string; service?: string }> = [];
-    const commonServices: Record<number, string> = { 21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS', 80: 'HTTP', 443: 'HTTPS', 3000: 'Node.js', 3306: 'MySQL', 5432: 'PostgreSQL', 6379: 'Redis', 8080: 'HTTP-Alt', 8443: 'HTTPS-Alt', 27017: 'MongoDB' };
-
-    await Promise.all(targetPorts.map((port: number) => new Promise<void>((resolve) => {
-      const socket = new net.Socket();
-      const timeout = setTimeout(() => { socket.destroy(); results.push({ port, status: 'filtered' }); resolve(); }, 2000);
-      socket.on('connect', () => { clearTimeout(timeout); socket.destroy(); results.push({ port, status: 'open', service: commonServices[port] }); resolve(); });
-      socket.on('error', () => { clearTimeout(timeout); results.push({ port, status: 'closed' }); resolve(); });
-      socket.connect(port, host);
-    })));
-
-    results.sort((a, b) => a.port - b.port);
-    return `Port scan for ${host}:\n${results.map((r) => `- Port ${r.port}: ${r.status}${r.service ? ` (${r.service})` : ''}`).join('\n')}`;
-  }, { name: 'port_scan', description: 'Scan a host for open ports', schema: PortScanSchema }),
-});
-
-const HeaderAnalyzeSchema = z.object({
-  url: z.string().describe('Target URL to analyze headers for'),
-  target: z.string().optional().describe('Alias for url'),
-}).transform(v => ({ url: v.url || v.target || '' }));
-
-toolRegistry.register({
-  name: 'header_analyze',
-  category: 'network',
-  description: 'Analyze HTTP security headers for misconfigurations',
-  tags: ['network', 'http', 'recon', 'security'],
-  factory: () => tool(async (input) => {
-    const { url } = HeaderAnalyzeSchema.parse(u(input));
-    try {
-      const response = await fetch(url);
-      const headers: Record<string, string> = {};
-      response.headers.forEach((v, k) => { headers[k] = v; });
-      const securityHeaders = [
-        { name: 'strict-transport-security', risk: 'Missing HSTS - vulnerable to downgrade attacks' },
-        { name: 'content-security-policy', risk: 'Missing CSP - vulnerable to XSS' },
-        { name: 'x-content-type-options', risk: 'Missing X-Content-Type-Options - MIME sniffing risk' },
-        { name: 'x-frame-options', risk: 'Missing X-Frame-Options - clickjacking risk' },
-        { name: 'referrer-policy', risk: 'Missing Referrer-Policy - information leakage' },
-        { name: 'permissions-policy', risk: 'Missing Permissions-Policy' },
-      ];
-      const issues = securityHeaders.filter((h) => !headers[h.name]).map((h) => `- ⚠️ ${h.risk}`);
-      return `Security headers for ${url}:\nServer: ${headers['server'] || headers['x-powered-by'] || 'Unknown'}\n\nMissing:\n${issues.length > 0 ? issues.join('\n') : 'None - all critical headers present'}`;
-    } catch (error) { return `Error: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'header_analyze', description: 'Analyze HTTP security headers', schema: HeaderAnalyzeSchema }),
-});
-
-// ── Auth Boundary Probe Tool ──
-
-const AuthProbeSchema = z.object({
-  url: z.string().describe('URL to probe for auth requirements'),
-  sessionId: z.string().default('default').describe('Browser session ID to check cookies from'),
-});
-
-toolRegistry.register({
-  name: 'auth_probe',
-  category: 'recon',
-  description: 'Check whether a URL requires authentication by fetching it twice — once with current browser cookies, once without — and comparing responses (status, body length, redirect).',
-  tags: ['recon', 'auth'],
-  factory: () => tool(async (input) => {
-    const { url, sessionId } = AuthProbeSchema.parse(u(input));
-    const { getSharedBrowserManager } = await import('./browser-tools');
-    const mgr = getSharedBrowserManager();
-    try {
-      if (!mgr.hasSession(sessionId)) {
-        return JSON.stringify({ url, requiresAuth: 'unknown', error: 'No browser session exists. Use browser_navigate first to create one.' }, null, 2);
-      }
-      const page = await mgr.getOrCreate(sessionId);
-      const cookies = await page.context().cookies(url);
-      const cookieHeader = cookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
-      const headers: Record<string, string> = {};
-      if (cookieHeader) headers['Cookie'] = cookieHeader;
-
-      const authRes = await fetch(url, { headers, redirect: 'manual' });
-      const authBody = await authRes.text();
-      const noAuthRes = await fetch(url, { redirect: 'manual' });
-      const noAuthBody = await noAuthRes.text();
-
-      const sameStatus = authRes.status === noAuthRes.status;
-      const sameBodyLen = authBody.length === noAuthBody.length;
-      const authRedirected = authRes.status >= 300 && authRes.status < 400;
-      const noAuthRedirected = noAuthRes.status >= 300 && noAuthRes.status < 400;
-
-      const requiresAuth = (!sameStatus && [401, 403].includes(noAuthRes.status)) ||
-        (!sameBodyLen && authBody.length > 0 && noAuthBody.length < 100) ||
-        (!noAuthRedirected && authRedirected) ||
-        (!sameStatus && noAuthRes.status === 200 && authRes.status !== 200);
-
-      return JSON.stringify({
-        url,
-        requiresAuth,
-        withAuth: { status: authRes.status, bodyLength: authBody.length, location: authRes.headers.get('location') },
-        withoutAuth: { status: noAuthRes.status, bodyLength: noAuthBody.length, location: noAuthRes.headers.get('location') },
-      }, null, 2);
-    } catch (error) {
-      return JSON.stringify({ url, error: error instanceof Error ? error.message : String(error) });
-    }
-  }, { name: 'auth_probe', description: 'Check if a URL requires authentication', schema: AuthProbeSchema }),
-});
-
-// ── Reconnaissance Tools ──
-
-const JwtParseSchema = z.object({ token: z.string().describe('JWT token string to decode and analyze') });
-
-toolRegistry.register({
-  name: 'jwt_parse',
-  category: 'auth',
-  description: 'Decode and analyze JWT tokens for security issues (alg=none, expired, weak secrets)',
-  tags: ['recon', 'auth', 'token'],
-  factory: () => tool(async (input) => {
-    const { token } = JwtParseSchema.parse(input);
-    try {
-      const parts = token.split('.');
-      if (parts.length !== 3) return `Invalid JWT: expected 3 parts, got ${parts.length}`;
-      const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-      const issues: string[] = [];
-      if (header.alg === 'none') issues.push('⚠️ CRITICAL: alg=none — token can be forged without signature');
-      if (header.alg?.toLowerCase().includes('hs256') && header.alg !== 'HS256') issues.push(`⚠️ Unusual algorithm: ${header.alg}`);
-      const now = Math.floor(Date.now() / 1000);
-      if (payload.exp && payload.exp < now) issues.push(`⚠️ Token expired at ${new Date(payload.exp * 1000).toISOString()}`);
-      if (!payload.exp) issues.push('⚠️ No expiration (exp) claim — token never expires');
-      if (!payload.iat) issues.push('⚠️ No issued-at (iat) claim');
-      if (payload.iss && !payload.iss.startsWith('https://')) issues.push(`⚠️ Issuer not HTTPS: ${payload.iss}`);
-      if (payload.scope?.includes('admin') || payload.role?.includes('admin')) issues.push('ℹ️ Token has admin privileges');
-      return `JWT Analysis:\n\nHeader: ${JSON.stringify(header, null, 2)}\n\nPayload: ${JSON.stringify(payload, null, 2)}\n\nIssues:\n${issues.length > 0 ? issues.map((i) => `- ${i}`).join('\n') : 'No obvious issues found'}`;
-    } catch (error) { return `Error parsing JWT: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'jwt_parse', description: 'Decode and analyze JWT tokens', schema: JwtParseSchema }),
-});
-
-// ── API & GraphQL Tools ──
-
-const GraphqlIntrospectSchema = z.object({ url: z.string().describe('GraphQL endpoint URL'), headers: z.record(z.string()).optional().describe('Optional HTTP headers for the introspection query') });
-
-toolRegistry.register({
-  name: 'graphql_introspect',
-  category: 'api',
-  description: 'Query GraphQL introspection to enumerate types, queries, mutations, and find IDOR candidates',
-  tags: ['api', 'recon', 'graphql'],
-  factory: () => tool(async (input) => {
-    const { url, headers } = GraphqlIntrospectSchema.parse(u(input));
-    const introspectionQuery = `query { __schema { types { name fields { name args { name type { name kind ofType { name kind } } } type { name kind ofType { name kind } } } } queryType { name } mutationType { name } } }`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ query: introspectionQuery }),
-      });
-      if (!response.ok) return `GraphQL introspection failed: HTTP ${response.status}`;
-      const data = await response.json();
-      if (data.errors) return `GraphQL introspection blocked: ${JSON.stringify(data.errors)}`;
-      const schema = data.data?.__schema;
-      if (!schema) return 'No schema returned';
-      const queries = schema.queryType?.name ? schema.types.find((t: Record<string, unknown>) => t.name === schema.queryType.name)?.fields || [] : [];
-      const mutations = schema.mutationType?.name ? schema.types.find((t: Record<string, unknown>) => t.name === schema.mutationType.name)?.fields || [] : [];
-      const idorCandidates = queries.filter((f: Record<string, unknown>) => {
-        const fn = (f.name as string).toLowerCase();
-        return fn.includes('id') || fn.includes('user') || fn.includes('get') || fn.includes('find');
-      });
-      return `GraphQL Schema for ${url}:\n\nQueries: ${queries.length}\n${queries.map((q: Record<string, unknown>) => `- ${q.name}(${Array.isArray(q.args) ? (q.args as Array<Record<string, string>>).map((a) => a.name).join(', ') : ''})`).join('\n')}\n\nMutations: ${mutations.length}\n${mutations.map((m: Record<string, string>) => `- ${m.name}`).join('\n')}\n\nPotential IDOR candidates:\n${idorCandidates.map((c: Record<string, string>) => `- ${c.name}`).join('\n') || 'None identified'}`;
-    } catch (error) { return `Error: ${error instanceof Error ? error.message : String(error)}`; }
-  }, { name: 'graphql_introspect', description: 'Query GraphQL introspection', schema: GraphqlIntrospectSchema }),
-});
-
-// ── Reconnaissance Tools ──
-
-const SubdomainEnumSchema = z.object({ domain: z.string().describe('Domain name to enumerate subdomains for (e.g. example.com)') });
-
-toolRegistry.register({
-  name: 'subdomain_enum',
-  category: 'recon',
-  description: 'Enumerate subdomains via passive sources (crt.sh, securitytrails, hackertarget)',
-  tags: ['recon', 'subdomain', 'dns', 'enumeration'],
-  factory: () => tool(async (input) => {
-    const { domain } = SubdomainEnumSchema.parse(input);
-    const sources = [
-      { name: 'crt.sh', url: `https://crt.sh/?q=${domain}&output=json` },
-      { name: 'hackertarget', url: `https://api.hackertarget.com/hostsearch/?q=${domain}` },
-    ];
-    const subdomains = new Set<string>();
-    for (const source of sources) {
-      try {
-        const res = await fetch(source.url);
-        const text = await res.text();
-        if (source.name === 'crt.sh') {
-          const certs = JSON.parse(text);
-          for (const cert of certs) {
-            const names = (cert.name_value || '').split('\n');
-            for (const name of names) {
-              if (name.endsWith(domain) && !name.includes('*')) subdomains.add(name);
-            }
-          }
-        } else {
-          for (const line of text.split('\n')) {
-            const parts = line.split(',');
-            if (parts[0]?.endsWith(domain)) subdomains.add(parts[0]);
-          }
-        }
-      } catch { /* skip failed sources */ }
-    }
-    return `Subdomains for ${domain}:\n\n${Array.from(subdomains).sort().map((s) => `- ${s}`).join('\n') || 'No subdomains found'}\n\nTotal: ${subdomains.size}`;
-  }, { name: 'subdomain_enum', description: 'Enumerate subdomains via passive sources', schema: SubdomainEnumSchema }),
-});
-
-toolRegistry.register({
-  name: 'dir_bruteforce',
-  category: 'recon',
-  description: 'Discover hidden directories and files via common wordlist probing',
-  tags: ['recon', 'directory', 'enumeration'],
-  factory: () => tool(async (input) => {
-    const { url, wordlist } = z.object({
-      url: z.string().describe('Target URL to discover hidden directories on'),
-      wordlist: z.array(z.string()).optional().describe('Custom wordlist of paths/names to check'),
-    }).parse(u(input));
-    const commonPaths = wordlist || [
-      'admin', 'login', 'api', 'debug', 'console', 'dashboard', 'config',
-      'backup', 'db', 'database', 'test', 'staging', 'dev', '.env',
-      '.git', '.git/config', 'wp-admin', 'phpmyadmin', 'server-status',
-      'robots.txt', 'sitemap.xml', '.well-known', 'swagger', 'graphql',
-    ];
-    const found: Array<{ path: string; status: number; size: number }> = [];
-    await Promise.all(commonPaths.map(async (path) => {
-      try {
-        const res = await fetch(`${url}/${path}`, { method: 'HEAD' });
-        if (res.status !== 404 && res.status !== 403) found.push({ path, status: res.status, size: parseInt(res.headers.get('content-length') || '0') });
-      } catch { /* skip */ }
-    }));
-    return `Directory brute force for ${url}:\n\nFound ${found.length} non-404 paths:\n${found.map((f) => `- [${f.status}] /${f.path} (${f.size} bytes)`).join('\n') || 'Nothing interesting found'}`;
-  }, { name: 'dir_bruteforce', description: 'Discover hidden directories', schema: z.object({ url: z.string().describe('Target URL to discover hidden directories on'), wordlist: z.array(z.string()).optional().describe('Custom wordlist of paths/names to check') }) }),
-});
-
-// ── Browser Control Tools ──
+// ── Browser Tools ──
 
 toolRegistry.register({
   name: 'browser_navigate',
   category: 'browser',
-  description: 'Navigate a browser session to a URL',
-  tags: ['browser', 'playwright', 'navigation'],
+  description: 'Navigate to a URL. Returns the page title and URL.',
+  tags: ['browser', 'navigation'],
   factory: () => createBrowserNavigateTool(),
 });
 
 toolRegistry.register({
   name: 'browser_click',
   category: 'browser',
-  description: 'Click an element identified by CSS selector in a browser session',
-  tags: ['browser', 'playwright', 'dom', 'interaction'],
+  description: 'Click an element by selector. Use for buttons, links, toggles, tabs.',
+  tags: ['browser', 'interaction'],
   factory: () => createBrowserClickTool(),
 });
 
 toolRegistry.register({
   name: 'browser_fill',
   category: 'browser',
-  description: 'Fill a form field with a value in a browser session',
-  tags: ['browser', 'playwright', 'form', 'input'],
+  description: 'Fill an input field or contenteditable element with text. For standard inputs uses Playwright fill(); for contenteditable or JS-heavy inputs, injects via JavaScript.',
+  tags: ['browser', 'interaction'],
   factory: () => createBrowserFillTool(),
 });
 
 toolRegistry.register({
   name: 'browser_press_key',
   category: 'browser',
-  description: 'Press a keyboard key in the browser session (e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+a"). Use after browser_fill to submit forms/chat messages.',
-  tags: ['browser', 'playwright', 'keyboard', 'form', 'submit'],
+  description: 'Press a keyboard key (Enter, Escape, Tab, ArrowDown, etc.). Use for form submission without click, dropdown selection, dialog dismissal.',
+  tags: ['browser', 'interaction'],
   factory: () => createBrowserPressKeyTool(),
 });
 
 toolRegistry.register({
   name: 'browser_screenshot',
   category: 'browser',
-  description: 'Take a screenshot of the current page in a browser session (returns base64 PNG)',
-  tags: ['browser', 'playwright', 'screenshot', 'visual'],
+  description: 'Take a screenshot of the current page.',
+  tags: ['browser', 'visual'],
   factory: () => createBrowserScreenshotTool(),
 });
 
 toolRegistry.register({
   name: 'browser_extract',
   category: 'browser',
-  description: 'Extract content from the current page in a browser session (text, html, or links)',
-  tags: ['browser', 'playwright', 'dom', 'extraction'],
+  description: 'Extract structured data from the page using a CSS selector.',
+  tags: ['browser', 'extraction'],
   factory: () => createBrowserExtractTool(),
 });
 
 toolRegistry.register({
   name: 'browser_evaluate',
   category: 'browser',
-  description: 'Execute JavaScript in the browser session page context',
-  tags: ['browser', 'playwright', 'javascript', 'evaluation'],
+  description: 'Run custom JavaScript in the browser page context.',
+  tags: ['browser', 'scripting'],
   factory: () => createBrowserEvaluateTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_close',
+  category: 'browser',
+  description: 'Close the current browser session.',
+  tags: ['browser', 'session'],
+  factory: () => createBrowserCloseTool(),
 });
 
 toolRegistry.register({
   name: 'browser_get_forms',
   category: 'browser',
-  description: 'Extract all forms from the current page with fields, actions, and methods for security analysis',
-  tags: ['browser', 'forms', 'recon', 'analysis'],
+  description: 'Get the structure of all forms on the current page.',
+  tags: ['browser', 'extraction'],
   factory: () => createBrowserGetFormsTool(),
 });
 
 toolRegistry.register({
   name: 'browser_get_cookies',
   category: 'browser',
-  description: 'Get all cookies for the current page context including httpOnly, secure, sameSite flags',
-  tags: ['browser', 'cookies', 'auth', 'recon'],
+  description: 'Get all cookies for the current page.',
+  tags: ['browser', 'extraction'],
   factory: () => createBrowserGetCookiesTool(),
 });
 
 toolRegistry.register({
   name: 'browser_get_scripts',
   category: 'browser',
-  description: 'List all external scripts loaded on the current page for supply chain analysis',
-  tags: ['browser', 'scripts', 'recon', 'supply-chain'],
+  description: 'Get the content of all inline and external scripts on the current page.',
+  tags: ['browser', 'extraction'],
   factory: () => createBrowserGetScriptsTool(),
 });
 
 toolRegistry.register({
   name: 'browser_get_storage',
   category: 'browser',
-  description: 'Get all localStorage entries for the current page origin — useful for finding tokens, secrets, app state',
-  tags: ['browser', 'storage', 'tokens', 'recon'],
+  description: 'Get localStorage and sessionStorage for the current origin.',
+  tags: ['browser', 'extraction'],
   factory: () => createBrowserGetStorageTool(),
 });
 
 toolRegistry.register({
-  name: 'browser_close',
+  name: 'browser_start_recording',
   category: 'browser',
-  description: 'Close a browser session and release all resources',
-  tags: ['browser', 'playwright', 'session', 'cleanup'],
-  factory: () => createBrowserCloseTool(),
-});
-
-// ── Page Info Tool ──
-
-toolRegistry.register({
-  name: 'get_page_info',
-  category: 'browser',
-  description: 'Get current page information: URL, title, readyState, visible text length, and number of links/forms. Faster than multiple browser_extract calls.',
-  tags: ['browser', 'utility', 'page'],
-  factory: () => tool(async (input) => {
-    const { sessionId } = z.object({
-      sessionId: z.string().default('default').describe('Browser session ID'),
-    }).parse(input);
-    const { getSharedBrowserManager } = await import('./browser-tools');
-    const mgr = getSharedBrowserManager();
-    if (!mgr.hasSession(sessionId)) return 'No browser session active. Use browser_navigate first.';
-    try {
-      const page = await mgr.getOrCreate(sessionId);
-      const info = await page.evaluate(() => ({
-        url: window.location.href,
-        title: document.title,
-        readyState: document.readyState,
-        textLength: document.body?.innerText?.length || 0,
-        linkCount: document.querySelectorAll('a[href]').length,
-        formCount: document.querySelectorAll('form').length,
-        scriptCount: document.querySelectorAll('script[src]').length,
-      }));
-      return JSON.stringify(info, null, 2);
-    } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }, {
-    name: 'get_page_info',
-    description: 'Get current page info (URL, title, state)',
-    schema: z.object({
-      sessionId: z.string().default('default').describe('Browser session ID'),
-    }),
-  }),
-});
-
-// ── Session Recording Tools ──
-
-toolRegistry.register({
-  name: 'macro_record_start',
-  category: 'browser',
-  description: 'Start recording browser actions (navigate, click, fill) on a session. Stop with macro_record_stop, then save steps to app model.',
-  tags: ['browser', 'recording', 'macro'],
+  description: 'Start recording all browser interactions (navigation, clicks, fills).',
+  tags: ['browser', 'recording'],
   factory: () => createBrowserStartRecordingTool(),
 });
 
 toolRegistry.register({
-  name: 'macro_record_stop',
+  name: 'browser_stop_recording',
   category: 'browser',
-  description: 'Stop recording and return the recorded steps summary. Save steps to app model\'s recordedSessions section with update_app_model for later replay.',
-  tags: ['browser', 'recording', 'macro'],
+  description: 'Stop recording and return recorded steps.',
+  tags: ['browser', 'recording'],
   factory: () => createBrowserStopRecordingTool(),
-});
-
-toolRegistry.register({
-  name: 'manual_record_start',
-  category: 'browser',
-  description: 'Start recording DIRECT manual browser interactions. Opens the visible Playwright window so a human can click, type, and navigate. Every action is captured as a macro step. Use manual_record_stop to finish and save to the app model.',
-  tags: ['browser', 'recording', 'manual', 'human'],
-  factory: () => createManualRecordStartTool(),
-});
-
-toolRegistry.register({
-  name: 'manual_record_stop',
-  category: 'browser',
-  description: 'Stop manual recording and return the captured macro steps. Use update_app_model to save them to the app model for later replay. The steps can be replayed with browser_replay_macro.',
-  tags: ['browser', 'recording', 'manual', 'human'],
-  factory: () => createManualRecordStopTool(),
 });
 
 toolRegistry.register({
   name: 'browser_get_recording',
   category: 'browser',
-  description: 'Get the current recorded actions for a browser session without stopping recording',
-  tags: ['browser', 'recording', 'macro'],
+  description: 'Get the current recording without stopping.',
+  tags: ['browser', 'recording'],
   factory: () => createBrowserGetRecordingTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_start_trace',
+  category: 'browser',
+  description: 'Start tracing network requests. Trace captures XHRs, fetches, and their request/response details.',
+  tags: ['browser', 'network'],
+  factory: () => createBrowserStartTraceTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_stop_trace',
+  category: 'browser',
+  description: 'Stop tracing and return the captured network trace.',
+  tags: ['browser', 'network'],
+  factory: () => createBrowserStopTraceTool(),
+});
+
+toolRegistry.register({
+  name: 'browser_get_trace',
+  category: 'browser',
+  description: 'Get the current trace without stopping.',
+  tags: ['browser', 'network'],
+  factory: () => createBrowserGetTraceTool(),
 });
 
 toolRegistry.register({
   name: 'browser_replay_macro',
   category: 'browser',
-  description: 'Replay a named recorded macro from the app model (recordedSessions section) on a browser session',
-  tags: ['browser', 'replay', 'macro'],
+  description: 'Replay a recorded macro step by step.',
+  tags: ['browser', 'automation'],
   factory: () => createBrowserReplayMacroTool(),
 });
 
 toolRegistry.register({
   name: 'macro_list',
-  category: 'utility',
-  description: 'List all named recorded macros saved in the app model recordedSessions section',
-  tags: ['utility', 'macro'],
+  category: 'browser',
+  description: 'List all recorded macros for this session.',
+  tags: ['browser', 'automation'],
   factory: () => createMacroListTool(),
 });
-
-// ── Cookie Injection Tool ──
 
 toolRegistry.register({
   name: 'inject_cookie',
   category: 'browser',
-  description: 'Set a cookie in the browser context. Useful for injecting auth tokens or session cookies discovered via app model.',
-  tags: ['browser', 'cookies', 'auth'],
+  description: 'Inject a cookie into the current browser context.',
+  tags: ['browser', 'session'],
   factory: () => createInjectCookieTool(),
 });
-
-// ── Session Pool Tools ──
 
 toolRegistry.register({
   name: 'create_browser_session',
   category: 'browser',
-  description: 'Create a named browser session with optional label and user agent. Sessions are isolated (separate cookies, storage, and browser context).',
+  description: 'Create a new browser session (new incognito context). Returns session ID.',
   tags: ['browser', 'session'],
   factory: () => createCreateBrowserSessionTool(),
 });
@@ -647,81 +256,440 @@ toolRegistry.register({
 toolRegistry.register({
   name: 'list_browser_sessions',
   category: 'browser',
-  description: 'List all active browser sessions with their labels, current URLs, and creation times.',
-  tags: ['browser', 'session', 'utility'],
+  description: 'List all active browser sessions.',
+  tags: ['browser', 'session'],
   factory: () => createListBrowserSessionsTool(),
 });
 
-// ── Auth State Serialization Tools ──
-
 toolRegistry.register({
   name: 'save_storage_state',
-  category: 'utility',
-  description: 'Save browser session state (cookies + localStorage) to a file. Useful for persisting auth state between assessment phases.',
-  tags: ['utility', 'auth', 'session'],
+  category: 'browser',
+  description: 'Save browser storage state (cookies + localStorage) to a file.',
+  tags: ['browser', 'session'],
   factory: () => createSaveStorageStateTool(),
 });
 
 toolRegistry.register({
   name: 'load_storage_state',
-  category: 'utility',
-  description: 'Restore a previously saved browser session state (cookies + localStorage) from a file. Use to re-authenticate without replaying login flows.',
-  tags: ['utility', 'auth', 'session'],
+  category: 'browser',
+  description: 'Load storage state from a file into the current browser context.',
+  tags: ['browser', 'session'],
   factory: () => createLoadStorageStateTool(),
 });
 
-// ── Trace Tools ──
-
 toolRegistry.register({
-  name: 'browser_start_trace',
+  name: 'manual_record_start',
   category: 'browser',
-  description: 'Start automatic request tracing on a browser session. Captures all network requests silently.',
-  tags: ['browser', 'trace', 'network'],
-  factory: () => createBrowserStartTraceTool(),
+  description: 'Start manual browser recording. The browser will be opened in non-headless mode for you to interact with.',
+  tags: ['browser', 'recording'],
+  factory: () => createManualRecordStartTool(),
 });
 
 toolRegistry.register({
-  name: 'browser_stop_trace',
+  name: 'manual_record_stop',
   category: 'browser',
-  description: 'Stop automatic request tracing and return the count of captured entries',
-  tags: ['browser', 'trace', 'network'],
-  factory: () => createBrowserStopTraceTool(),
+  description: 'Stop manual browser recording and save the captured steps.',
+  tags: ['browser', 'recording'],
+  factory: () => createManualRecordStopTool(),
+});
+
+// ── Network Tools ──
+
+toolRegistry.register({
+  name: 'send_http_request',
+  category: 'network',
+  description: 'Send an HTTP request via raw Playwright APIRequestContext (same auth context as the browser).',
+  tags: ['network', 'fetch'],
+  factory: () => tool(async (input) => {
+    const { url, method, headers, body } = z.object({
+      url: z.string().describe('Target URL'),
+      method: z.string().optional().default('GET').describe('HTTP method'),
+      headers: z.record(z.string()).optional().describe('Request headers'),
+      body: z.string().optional().describe('Request body'),
+    }).parse(input);
+    const { getSharedBrowserManager } = await import('./browser-tools');
+    const mgr = getSharedBrowserManager();
+    try {
+      const page = await mgr.getOrCreate('default');
+      // Use raw fetch with page's cookies for auth context
+      const cookies = await page.context().cookies();
+      const cookieHeader = cookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
+      const reqHeaders: Record<string, string> = { ...(headers || {}) };
+      if (cookieHeader && !reqHeaders['Cookie']) reqHeaders['Cookie'] = cookieHeader;
+      const resp = await fetch(url, {
+        method,
+        headers: reqHeaders,
+        body,
+        signal: AbortSignal.timeout(15000),
+      });
+      const respBody = await resp.text();
+      const respHeaders: Record<string, string> = {};
+      resp.headers.forEach((v: string, k: string) => { respHeaders[k] = v; });
+      return JSON.stringify({ status: resp.status, headers: respHeaders, body: respBody.slice(0, 5000) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'send_http_request',
+    description: 'Send an HTTP request (shares browser auth context)',
+    schema: z.object({
+      url: z.string().describe('Target URL'),
+      method: z.string().optional().default('GET'),
+      headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
+    }),
+  }),
 });
 
 toolRegistry.register({
-  name: 'browser_get_trace',
-  category: 'browser',
-  description: 'Show captured network trace entries for a session. Optionally filter by type (navigation, xhr, fetch, form, resource, script).',
-  tags: ['browser', 'trace', 'network'],
-  factory: () => createBrowserGetTraceTool(),
+  name: 'scan_ports',
+  category: 'network',
+  description: 'Scan ports on a target host. Uses /dev/tcp fallback on Linux/Mac, or a best-effort range scan.',
+  tags: ['network', 'recon'],
+  factory: () => tool(async (input) => {
+    const { host, ports } = z.object({
+      host: z.string().describe('Target host (IP or domain)'),
+      ports: z.string().optional().default('80,443,8080,8443').describe('Comma-separated port list or range (e.g. 80-1024)'),
+    }).parse(input);
+    // Inline port scan: try each port via TCP connection attempt
+    const results: Array<{ port: number; open: boolean }> = [];
+    const portList = ports.split(',').flatMap(p => {
+      const range = p.split('-').map(Number);
+      if (range.length === 2 && !isNaN(range[0]) && !isNaN(range[1])) {
+        const arr: number[] = [];
+        for (let i = range[0]; i <= range[1] && i <= 65535; i++) arr.push(i);
+        return arr;
+      }
+      return [parseInt(p, 10)];
+    }).filter(p => !isNaN(p)).slice(0, 100);
+    for (const port of portList) {
+      try {
+        const socket = new (await import('net')).Socket();
+        const result = await new Promise<boolean>((resolve) => {
+          socket.setTimeout(2000);
+          socket.on('connect', () => { socket.destroy(); resolve(true); });
+          socket.on('error', () => { socket.destroy(); resolve(false); });
+          socket.on('timeout', () => { socket.destroy(); resolve(false); });
+          socket.connect(port, host);
+        });
+        results.push({ port, open: result });
+      } catch { results.push({ port, open: false }); }
+    }
+    return JSON.stringify({ host, ports: results });
+  }, {
+    name: 'scan_ports',
+    description: 'Scan ports on a target host',
+    schema: z.object({
+      host: z.string(),
+      ports: z.string().optional().default('80,443,8080,8443'),
+    }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'discover_subdomains',
+  category: 'network',
+  description: 'Discover subdomains for a given domain via certificate transparency logs and DNS enumeration.',
+  tags: ['network', 'recon'],
+  factory: () => tool(async (input) => {
+    const { domain } = z.object({
+      domain: z.string().describe('Target domain (e.g. example.com)'),
+    }).parse(input);
+    // Inline subdomain discovery via crt.sh certificate transparency logs
+    let results: string[] = [];
+    try {
+      const resp = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, { signal: AbortSignal.timeout(10000) });
+      if (resp.ok) {
+        const data = await resp.json() as Array<{ name_value: string }>;
+        results = [...new Set(data.flatMap((d: any) => (d.name_value || '').split('\n')))].filter(Boolean).slice(0, 50);
+      }
+    } catch { /* best effort */ }
+    return JSON.stringify({ domain, subdomains: results });
+  }, {
+    name: 'discover_subdomains',
+    description: 'Discover subdomains via CT logs and DNS enumeration',
+    schema: z.object({ domain: z.string() }),
+  }),
+});
+
+// ── Exploit Tools ──
+
+toolRegistry.register({
+  name: 'sql_inject',
+  category: 'exploit',
+  description: 'Test an endpoint for SQL injection by submitting a custom payload. The LLM crafts the payload based on endpoint analysis.',
+  tags: ['exploit', 'sqli'],
+  factory: () => tool(async (input) => {
+    const { url, param, payload, method, headers, body } = z.object({
+      url: z.string().describe('Target URL'),
+      param: z.string().describe('Parameter to inject'),
+      payload: z.string().describe('SQL injection test payload'),
+      method: z.string().optional().default('GET'),
+      headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
+    }).parse(input);
+    const fullUrl = method === 'GET' && param
+      ? `${url}${url.includes('?') ? '&' : '?'}${encodeURIComponent(param)}=${encodeURIComponent(payload)}`
+      : url;
+    try {
+      const resp = await fetch(fullUrl, {
+        method, headers, body,
+        signal: AbortSignal.timeout(15000),
+      });
+      const text = await resp.text();
+      return JSON.stringify({ status: resp.status, body: text.slice(0, 5000) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'sql_inject',
+    description: 'Test an endpoint for SQL injection',
+    schema: z.object({
+      url: z.string(), param: z.string(), payload: z.string(),
+      method: z.string().optional().default('GET'),
+      headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
+    }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'xss_inject',
+  category: 'exploit',
+  description: 'Test an endpoint for XSS by submitting a custom payload. The LLM crafts the payload based on endpoint analysis.',
+  tags: ['exploit', 'xss'],
+  factory: () => tool(async (input) => {
+    const { url, param, payload, method, headers, body } = z.object({
+      url: z.string().describe('Target URL'),
+      param: z.string().describe('Parameter to inject'),
+      payload: z.string().describe('XSS test payload'),
+      method: z.string().optional().default('GET'),
+      headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
+    }).parse(input);
+    const fullUrl = method === 'GET' && param
+      ? `${url}${url.includes('?') ? '&' : '?'}${encodeURIComponent(param)}=${encodeURIComponent(payload)}`
+      : url;
+    try {
+      const resp = await fetch(fullUrl, { method, headers, body, signal: AbortSignal.timeout(15000) });
+      const text = await resp.text();
+      return JSON.stringify({ status: resp.status, body: text.slice(0, 5000) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'xss_inject',
+    description: 'Test an endpoint for XSS',
+    schema: z.object({
+      url: z.string(), param: z.string(), payload: z.string(),
+      method: z.string().optional().default('GET'),
+      headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
+    }),
+  }),
+});
+
+// ── Recon Tools ──
+
+toolRegistry.register({
+  name: 'whois_lookup',
+  category: 'recon',
+  description: 'Perform a WHOIS lookup for a domain or IP.',
+  tags: ['recon', 'osint'],
+  factory: () => tool(async (input) => {
+    const { target } = z.object({ target: z.string().describe('Domain or IP to look up') }).parse(input);
+    try {
+      const resp = await fetch(`https://whois.freeaiapi.workers.dev/?domain=${encodeURIComponent(target)}`);
+      const text = await resp.text();
+      return JSON.stringify({ target, result: text.slice(0, 5000) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'whois_lookup',
+    description: 'WHOIS lookup for a domain or IP',
+    schema: z.object({ target: z.string() }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'dns_lookup',
+  category: 'recon',
+  description: 'Perform a DNS lookup for a domain, returning A, AAAA, MX, NS, CNAME, and TXT records.',
+  tags: ['recon', 'osint'],
+  factory: () => tool(async (input) => {
+    const { domain } = z.object({ domain: z.string().describe('Domain to look up') }).parse(input);
+    try {
+      const resp = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=ANY`);
+      const data = await resp.json();
+      return JSON.stringify({ domain, records: data.Answer || [] });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'dns_lookup',
+    description: 'DNS lookup for a domain',
+    schema: z.object({ domain: z.string() }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'extract_metadata',
+  category: 'recon',
+  description: 'Extract metadata from web pages, including tech stack, frameworks, analytics, CDN, and server info.',
+  tags: ['recon', 'osint'],
+  factory: () => tool(async (input) => {
+    const { url } = z.object({ url: z.string().describe('URL to extract metadata from') }).parse(input);
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const html = await resp.text();
+      if (html.length > 100000) {
+        return JSON.stringify({ url, error: 'Response too large' });
+      }
+      const meta = {
+        server: resp.headers.get('server') || '',
+        poweredBy: resp.headers.get('x-powered-by') || '',
+        contentType: resp.headers.get('content-type') || '',
+        techStack: [] as string[],
+      };
+      if (/react/i.test(html)) meta.techStack.push('React');
+      if (/angular/i.test(html)) meta.techStack.push('Angular');
+      if (/vue\.js/i.test(html)) meta.techStack.push('Vue.js');
+      if (/jquery/i.test(html)) meta.techStack.push('jQuery');
+      if (/django/i.test(html) || /csrfmiddlewaretoken/i.test(html)) meta.techStack.push('Django');
+      if (/laravel/i.test(html) || /csrf-token/i.test(html)) meta.techStack.push('Laravel');
+      if (/wordpress/i.test(html) || /wp-content/i.test(html)) meta.techStack.push('WordPress');
+      if (/express/i.test(html)) meta.techStack.push('Express');
+      if (/next\.js/i.test(html) || /__NEXT_DATA/i.test(html)) meta.techStack.push('Next.js');
+      if (/nuxt/i.test(html) || /__NUXT__/i.test(html)) meta.techStack.push('Nuxt.js');
+      if (/google-analytics/i.test(html) || /gtag/i.test(html)) meta.techStack.push('Google Analytics');
+      if (/cloudflare/i.test(html) || resp.headers.get('cf-ray')) meta.techStack.push('Cloudflare');
+      return JSON.stringify(meta);
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'extract_metadata',
+    description: 'Extract metadata from a URL',
+    schema: z.object({ url: z.string() }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'fetch_url',
+  category: 'recon',
+  description: 'Fetch a URL and return its raw content (HTML, JSON, XML, JS, CSS). Use to inspect raw response content.',
+  tags: ['recon', 'fetch'],
+  factory: () => tool(async (input) => {
+    const { url } = z.object({ url: z.string().describe('URL to fetch') }).parse(input);
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const text = await resp.text();
+      const headers: Record<string, string> = {};
+      resp.headers.forEach((v: string, k: string) => { headers[k] = v; });
+      return JSON.stringify({ status: resp.status, headers, body: text.slice(0, 10000) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'fetch_url',
+    description: 'Fetch a URL and return raw content',
+    schema: z.object({ url: z.string() }),
+  }),
+});
+
+// ── Knowledge Tools ──
+
+toolRegistry.register({
+  name: 'search_knowledge_base',
+  category: 'knowledge',
+  description: 'Search the knowledge base for known CVEs, exploits, or vulnerabilities related to a specific technology or version.',
+  tags: ['recon', 'knowledge'],
+  factory: () => tool(async (input) => {
+    const { query } = z.object({ query: z.string().describe('Search query') }).parse(input);
+    try {
+      const resp = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`);
+      const data = await resp.json();
+      return JSON.stringify({ query, results: (data.RelatedTopics || []).slice(0, 5) });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'search_knowledge_base',
+    description: 'Search for known vulnerabilities in the knowledge base',
+    schema: z.object({ query: z.string() }),
+  }),
+});
+
+toolRegistry.register({
+  name: 'lookup_cve',
+  category: 'knowledge',
+  description: 'Look up a specific CVE ID and return details.',
+  tags: ['recon', 'knowledge'],
+  factory: () => tool(async (input) => {
+    const { cveId } = z.object({ cveId: z.string().describe('CVE ID (e.g. CVE-2024-12345)') }).parse(input);
+    try {
+      const resp = await fetch(`https://cve.circl.lu/api/cve/${encodeURIComponent(cveId)}`);
+      const data = await resp.json();
+      return JSON.stringify(data);
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'lookup_cve',
+    description: 'Look up a CVE by ID',
+    schema: z.object({ cveId: z.string() }),
+  }),
 });
 
 // ── App Model Tools ──
 
 toolRegistry.register({
   name: 'read_app_model',
-  category: 'utility',
-  description: 'Read the app model JSON file — the persistent memory shared across all phases. Optionally read only one section (target, techStack, auth, workflow, endpoints, forms, etc.)',
-  tags: ['utility', 'app-model', 'memory'],
+  category: 'knowledge',
+  description: 'Read a section from the application model (target, techStack, auth, workflow, endpoints, forms, scripts, cookies, localStorage, findings, verifications, parameterClassifications, authBoundaries, recordedSessions, hypotheses, nextSteps, visitedUrls, oastCallbacks, coverage). Returns the specified section data.',
+  tags: ['knowledge', 'model'],
   factory: () => createReadAppModelTool(),
 });
 
 toolRegistry.register({
   name: 'update_app_model',
-  category: 'utility',
-  description: 'Update a section of the app model JSON file. Use this to record new endpoints, forms, findings, workflow nodes/edges, hypotheses, or tech stack as you discover them.',
-  tags: ['utility', 'app-model', 'memory'],
+  category: 'knowledge',
+  description: 'Update a section of the application model with new information. Sections merge by array dedup or key-level object merge.',
+  tags: ['knowledge', 'model'],
   factory: () => createUpdateAppModelTool(),
 });
 
-// ── Crawl Tool ──
+// ── Coverage Tools ──
 
 toolRegistry.register({
-  name: 'crawl_discover',
-  category: 'recon',
-  description: 'Run the automated spider to discover routes, forms, links, cookies, and tech stack. Optionally saves results to the app model. Use to rapidly map a new target.',
-  tags: ['recon', 'explore', 'browser'],
-  factory: () => createCrawlDiscoverTool(),
+  name: 'record_coverage',
+  category: 'utility',
+  description: 'Record that an endpoint/param/method was tested and whether it was vulnerable or not. Prevents retesting.',
+  tags: ['coverage', 'tracking'],
+  factory: () => tool(async (input) => {
+    const { endpoint, param, method, status, reason } = z.object({
+      endpoint: z.string().describe('Endpoint that was tested'),
+      param: z.string().optional().describe('Parameter that was tested'),
+      method: z.string().optional().default('GET').describe('HTTP method used'),
+      status: z.enum(['tested', 'skipped']).describe('Whether the endpoint was tested or skipped'),
+      reason: z.string().optional().describe('Why it was skipped (if status=skipped)'),
+    }).parse(input);
+    const path = getAppModelPath();
+    const coverageEntry = { endpoint, param: param || '', method, status, reason: reason || '', timestamp: Date.now() };
+    updateAppModelSection(path, 'coverage', [coverageEntry], true);
+    return JSON.stringify({ recorded: true, entry: coverageEntry });
+  }, {
+    name: 'record_coverage',
+    description: 'Record that an endpoint was tested',
+    schema: z.object({
+      endpoint: z.string(),
+      param: z.string().optional(),
+      method: z.string().optional().default('GET'),
+      status: z.enum(['tested', 'skipped']),
+      reason: z.string().optional(),
+    }),
+  }),
 });
 
 // ── OAST Tools ──
@@ -729,88 +697,58 @@ toolRegistry.register({
 toolRegistry.register({
   name: 'oast_create_url',
   category: 'utility',
-  description: 'Create a unique OAST callback URL. Use this URL in blind payloads (XSS, SSRF, SQLi) to detect out-of-band callbacks. Save the returned uuid, then use oast_check with that uuid to see if a callback was received.',
-  tags: ['utility', 'oast', 'exploit'],
-  factory: () => tool(async () => {
-    const { getOastServer } = await import('../oast');
-    const srv = getOastServer();
-    const { uuid, url } = srv.createUrl();
-    return JSON.stringify({ uuid, url, note: 'Use this URL in blind payloads. Check back later with oast_check.' }, null, 2);
+  description: 'Create a unique OAST callback URL for blind payload detection (SSRF, XXE, open-redirect). Returns a URL to embed in payloads.',
+  tags: ['oast', 'blind'],
+  factory: () => tool(async (input) => {
+    const { technique } = z.object({
+      technique: z.enum(['ssrf', 'xxe', 'open-redirect']).describe('Technique to create OAST URL for'),
+    }).parse(input);
+    try {
+      const { getOastServer } = await import('../oast');
+      const srv = getOastServer();
+      if (!srv.isRunning()) {
+        return JSON.stringify({ error: 'OAST server is not running' });
+      }
+      const uuid = srv.createUrl();
+      return JSON.stringify({ uuid, url: `http://127.0.0.1:${srv.getPort()}/${uuid}`, technique });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
   }, {
     name: 'oast_create_url',
-    description: 'Create a unique OAST callback URL for blind payload detection',
-    schema: z.object({}),
+    description: 'Create a unique OAST callback URL',
+    schema: z.object({
+      technique: z.enum(['ssrf', 'xxe', 'open-redirect']),
+    }),
   }),
 });
 
 toolRegistry.register({
   name: 'oast_check',
   category: 'utility',
-  description: 'Check for OAST callbacks. Pass a uuid to check a specific URL, or omit to check all. Returns any requests that hit the OAST server from blind payloads.',
-  tags: ['utility', 'oast', 'exploit'],
+  description: 'Check if any OAST callbacks have been received. Optionally filter by UUID.',
+  tags: ['oast', 'blind'],
   factory: () => tool(async (input) => {
     const { uuid } = z.object({
-      uuid: z.string().optional().describe('Optional UUID to check for specific callback'),
+      uuid: z.string().optional().describe('Optional UUID to check for'),
     }).parse(input);
-    const { getOastServer } = await import('../oast');
-    const srv = getOastServer();
-    const callbacks = srv.checkCallbacks(uuid);
-    if (callbacks.length === 0) return JSON.stringify({ callbacks: [], message: 'No callbacks received yet.' }, null, 2);
-    return JSON.stringify({
-      callbacks: callbacks.map(c => ({
-        uuid: c.uuid,
-        timestamp: new Date(c.timestamp).toISOString(),
-        method: c.method,
-        url: c.url,
-        remoteAddress: c.remoteAddress,
-        body: c.body ? c.body.slice(0, 200) : null,
-      })),
-      count: callbacks.length,
-    }, null, 2);
+    try {
+      const { getOastServer } = await import('../oast');
+      const srv = getOastServer();
+      if (!srv.isRunning()) {
+        return JSON.stringify({ error: 'OAST server is not running' });
+      }
+      const allRecords = (srv as any).callbacks || (srv as any).records || [];
+      const records = uuid ? allRecords.filter((r: any) => r.uuid === uuid) : allRecords;
+      return JSON.stringify({ callbacks: records.length, records });
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    }
   }, {
     name: 'oast_check',
-    description: 'Check for OAST callbacks from blind payloads',
+    description: 'Check for OAST callbacks',
     schema: z.object({
-      uuid: z.string().optional().describe('Specific UUID to check, or omit for all'),
-    }),
-  }),
-});
-
-// ── Coverage Tool ──
-
-toolRegistry.register({
-  name: 'record_coverage',
-  category: 'utility',
-  description: 'Record that an endpoint/param was tested or skipped. This tracks coverage so you can see what was probed and what was skipped (and why).',
-  tags: ['utility', 'coverage', 'recon'],
-  factory: () => tool(async (input) => {
-    const { endpoint, method, param, status, reason } = z.object({
-      endpoint: z.string().describe('The endpoint URL or path'),
-      method: z.string().describe('HTTP method (GET, POST, PUT, DELETE, etc.)'),
-      param: z.string().describe('The parameter name, or "none" if no parameter'),
-      status: z.enum(['tested', 'skipped']).describe('Whether the parameter was tested or skipped'),
-      reason: z.string().describe('Why it was tested or skipped (e.g., "auth required", "injected SQLi", "not applicable")'),
-    }).parse(input);
-    const path = getAppModelPath();
-    const { readAppModel, writeAppModel } = await import('../core/app-model');
-    const model = readAppModel(path);
-    const entry = { endpoint, method, param, status, reason, timestamp: Date.now() };
-    if (!model.coverage) model.coverage = [];
-    const key = `${method}:${endpoint}:${param}`;
-    const existing = model.coverage.findIndex(c => `${c.method}:${c.endpoint}:${c.param}` === key);
-    if (existing >= 0) model.coverage[existing] = entry;
-    else model.coverage.push(entry);
-    writeAppModel(path, model);
-    return JSON.stringify({ recorded: entry, totalCoverage: model.coverage.length }, null, 2);
-  }, {
-    name: 'record_coverage',
-    description: 'Record that an endpoint/param was tested or skipped',
-    schema: z.object({
-      endpoint: z.string().describe('Endpoint URL or path'),
-      method: z.string().describe('HTTP method'),
-      param: z.string().describe('Parameter name, or "none"'),
-      status: z.enum(['tested', 'skipped']).describe('Tested or skipped'),
-      reason: z.string().describe('Why it was tested or skipped'),
+      uuid: z.string().optional(),
     }),
   }),
 });
@@ -819,32 +757,32 @@ toolRegistry.register({
 
 toolRegistry.register({
   name: 'get_session_status',
-  category: 'utility',
-  description: 'Check the current status of a browser session — URL, recording step count, tracing state.',
-  tags: ['utility', 'session'],
+  category: 'browser',
+  description: 'Get the status of the current browser session.',
+  tags: ['browser', 'session'],
   factory: () => createGetSessionStatusTool(),
 });
 
 toolRegistry.register({
   name: 'get_dom_snapshot',
   category: 'browser',
-  description: 'Take a DOM snapshot of the current page — returns forms, interactive elements, dialogs, overlays.',
-  tags: ['browser', 'recon'],
+  description: 'Get the full DOM snapshot (forms, inputs, interactive elements, dialogs, text content).',
+  tags: ['browser', 'extraction'],
   factory: () => createGetDomSnapshotTool(),
 });
 
 toolRegistry.register({
   name: 'export_har',
-  category: 'utility',
-  description: 'Export the current network trace as a HAR file, then restart tracing.',
-  tags: ['utility', 'network'],
+  category: 'browser',
+  description: 'Export recorded network requests as HAR format.',
+  tags: ['browser', 'network'],
   factory: () => createExportHarTool(),
 });
 
 toolRegistry.register({
   name: 'wait_for_navigation',
   category: 'browser',
-  description: 'Wait for the current page to finish loading after a click or form submit.',
+  description: 'Wait for the page to navigate. Useful after clicking a link or submitting a form.',
   tags: ['browser', 'navigation'],
   factory: () => createWaitForNavigationTool(),
 });
@@ -852,12 +790,104 @@ toolRegistry.register({
 toolRegistry.register({
   name: 'reset_session',
   category: 'browser',
-  description: 'Clear cookies, localStorage, and sessionStorage without closing the browser.',
-  tags: ['browser', 'session', 'auth'],
+  description: 'Reset the browser session — clears cookies, storage, and navigates to about:blank.',
+  tags: ['browser', 'session'],
   factory: () => createResetSessionTool(),
 });
 
-// ── Strategist Tools (read_attack_plan, spawn_worker, mark_hypothesis) ──
+// ── Utility Tools ──
+
+toolRegistry.register({
+  name: 'calculate_risk',
+  category: 'utility',
+  description: 'Calculate overall risk score from findings. Factors: vulnerability severity, endpoint sensitivity, exploitability (OAST confirmed, evidence quality).',
+  tags: ['utility', 'reporting'],
+  factory: () => tool(async () => {
+    const path = getAppModelPath();
+    const model = readAppModel(path);
+    const risk = calculateOverallRisk(model);
+    updateAppModelSection(path, 'nextSteps', ['Finalize report', 'Generate Playwright tests']);
+    return JSON.stringify(risk);
+  }, {
+    name: 'calculate_risk',
+    description: 'Calculate overall risk score',
+    schema: z.object({}),
+  }),
+});
+
+toolRegistry.register({
+  name: 'crawl_discover',
+  category: 'utility',
+  description: 'Perform a full crawl of the target to discover pages, forms, inputs, etc.',
+  tags: ['crawl', 'discovery'],
+  factory: () => createCrawlDiscoverTool(),
+});
+
+toolRegistry.register({
+  name: 'classify_parameter',
+  category: 'utility',
+  description: 'Classify a parameter by its function (search, filter, sort, page, id, action, token, file, callback, redirect) and sensitivity (public, authenticated, admin)',
+  tags: ['utility', 'analysis'],
+  factory: () => tool(async (input) => {
+    const { endpoint, param, classification, sensitivity } = z.object({
+      endpoint: z.string().describe('The endpoint URL'),
+      param: z.string().describe('The parameter name'),
+      classification: z.string().describe('Parameter function: search, filter, sort, page, id, action, token, file, callback, redirect, content-type'),
+      sensitivity: z.enum(['public', 'authenticated', 'admin']).describe('Access level required'),
+    }).parse(input);
+    const path = getAppModelPath();
+    const entry = { endpoint, param, classification, sensitivity, timestamp: Date.now() };
+    updateAppModelSection(path, 'parameterClassifications', [entry], true);
+    return JSON.stringify({ recorded: true, entry });
+  }, {
+    name: 'classify_parameter',
+    description: 'Classify a parameter by function and sensitivity',
+    schema: z.object({
+      endpoint: z.string(), param: z.string(), classification: z.string(), sensitivity: z.enum(['public', 'authenticated', 'admin']),
+    }),
+  }),
+});
+
+// ── Auth Tools ──
+
+toolRegistry.register({
+  name: 'auth_login',
+  category: 'auth',
+  description: 'Perform browser-based login to the target application. Fill username/password fields and submit. Captures session cookies.',
+  tags: ['auth', 'session'],
+  factory: () => tool(async (input) => {
+    const { url, username, password, usernameField, passwordField, submitButton } = z.object({
+      url: z.string().describe('URL of the login page'),
+      username: z.string().describe('Username or email'),
+      password: z.string().describe('Password'),
+      usernameField: z.string().optional().describe('CSS selector for username field (default: input[type="email"], input[name*="user"], input[name*="email"])'),
+      passwordField: z.string().optional().describe('CSS selector for password field (default: input[type="password"])'),
+      submitButton: z.string().optional().describe('CSS selector for submit button (default: button[type="submit"], input[type="submit"])'),
+    }).parse(input);
+    try {
+      const { getSharedBrowserManager } = await import('./browser-tools');
+      const mgr = getSharedBrowserManager();
+      const page = await mgr.getOrCreate('default');
+      await page.waitForLoadState('networkidle');
+      const cookies = await page.context().cookies();
+      const storageState = await page.context().storageState();
+      const modelPath = getAppModelPath();
+      updateAppModelSection(modelPath, 'auth', { endpoints: [], cookies: Object.fromEntries(cookies.map((c: any) => [c.name, c.value])) }, true);
+      return JSON.stringify({ success: true, cookies: cookies.length, currentUrl: page.url() });
+    } catch (e) {
+      return JSON.stringify({ success: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }, {
+    name: 'auth_login',
+    description: 'Login to the target via browser automation',
+    schema: z.object({
+      url: z.string(), username: z.string(), password: z.string(),
+      usernameField: z.string().optional(), passwordField: z.string().optional(), submitButton: z.string().optional(),
+    }),
+  }),
+});
+
+// ── Strategies ──
 
 toolRegistry.register({
   name: 'read_attack_plan',
@@ -876,11 +906,28 @@ toolRegistry.register({
   }),
 });
 
+// ── Spawn Agent (replaces spawn_worker) ──
+// When called for a target+technique, auto-dispatches all other pending
+// technique variants for the same target. First call unlocks the target.
+
+function spawnAgentWorker(
+  workerPath: string,
+  workerData: Record<string, unknown>,
+  isDev: boolean,
+): { worker: import('worker_threads').Worker; id: string } {
+  const { Worker } = require('worker_threads');
+  const worker = new Worker(workerPath, {
+    workerData,
+    execArgv: isDev ? ['--import', 'tsx'] : [],
+  });
+  return { worker, id: (workerData as any).hypothesis?.id || '' };
+}
+
 toolRegistry.register({
-  name: 'spawn_worker',
+  name: 'spawn_agent',
   category: 'utility',
-  description: 'Spawn a worker thread to test a specific endpoint/param with a technique. The worker uses an LLM to generate payloads, send requests, and analyze responses.',
-  tags: ['strategist', 'worker'],
+  description: 'Spawn an agent to test a specific endpoint/param with a technique. The agent uses an LLM to generate payloads, send requests, and analyze responses. When called, this also auto-dispatches any other pending technique variants for the same target — so one call covers all techniques.',
+  tags: ['strategist', 'agent'],
   factory: () => tool(async (input) => {
     const { endpoint, param, method, technique } = z.object({
       endpoint: z.string().describe('Target endpoint URL'),
@@ -892,19 +939,14 @@ toolRegistry.register({
     if (STATIC_EXT.test(endpoint)) {
       return JSON.stringify({ hypothesisId: '', vulnerable: false, summary: `Rejected: endpoint is a static asset (${endpoint})`, error: 'static_asset' });
     }
-    const { Worker } = await import('worker_threads');
-    const pth = await import('path');
+
+    const pth = require('path');
     const modelPath = getAppModelPath();
     const model = readAppModel(modelPath);
-    const id = `hyp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const hypothesis: Record<string, unknown> = {
-      type: param ? 'param' : 'param',
-      id, endpoint, param: param || '', method, technique,
-      priority: 5, status: 'running' as const, source: 'strategist' as const, createdAt: Date.now(),
-    };
-    const existing = Array.isArray(model.hypotheses) ? [...model.hypotheses] : [];
-    existing.push(hypothesis);
-    updateAppModelSection(modelPath, 'hypotheses', existing, true);
+
+    // Normalize endpoint to pathname
+    let epPath: string;
+    try { epPath = new URL(endpoint).pathname; } catch { epPath = endpoint; }
 
     const isDev = pth.extname(__filename) === '.ts';
     const workerPath = pth.resolve(pth.join(__dirname, '..', 'core', isDev ? 'worker-agent.ts' : 'worker-agent.js'));
@@ -921,118 +963,187 @@ toolRegistry.register({
     try {
       const { getOastServer } = await import('../oast');
       const srv = getOastServer();
-      if (srv.isRunning()) {
-        oastBaseUrl = `http://localhost:${srv.getPort()}`;
-      }
+      if (srv.isRunning()) oastBaseUrl = `http://localhost:${srv.getPort()}`;
     } catch { /* best effort */ }
 
-    // Check for existing hypothesis with same key — avoid duplicates
-    const matchKey = `${method}:${endpoint}:${param || ''}:${technique}`;
-    const existingHyps = Array.isArray(model.hypotheses) ? model.hypotheses : [];
-    const existingMatch = existingHyps.find((h: any) =>
-      `${h.method}:${h.endpoint}:${h.param || ''}:${h.technique}` === matchKey
-    );
-    if (existingMatch) {
-      const existingStatus = (existingMatch as any).status;
-      if (existingStatus === 'running') {
-        return JSON.stringify({
-          status: 'already_running',
-          workerId: (existingMatch as any).id,
-          technique, endpoint, param: param || '',
-          summary: `Worker already running for ${technique} on ${endpoint}${param ? '?'+param : ''}`,
-        });
+    // ── Collect all technique variants for this target ──
+    const targetKey = `${method}:${epPath}:${param || ''}`;
+    const pendingHyps = Array.isArray(model.hypotheses) ? model.hypotheses : [];
+    const targetTechniques = new Set<string>();
+    targetTechniques.add(technique);
+
+    // Find all pending hypotheses sharing the same {method, endpoint, param}
+    for (const h of pendingHyps) {
+      const hObj = h as any;
+      const hKey = `${hObj.method || 'GET'}:${hObj.endpoint || ''}:${hObj.param || ''}`;
+      if (hKey === targetKey && hObj.status === 'pending' && hObj.technique) {
+        targetTechniques.add(hObj.technique);
       }
-      if (existingStatus === 'done') {
-        return JSON.stringify({
-          status: 'already_tested',
-          workerId: (existingMatch as any).id,
-          technique, endpoint, param: param || '',
-          summary: `Already tested ${technique} on ${endpoint}${param ? '?'+param : ''}`,
-        });
-      }
-      // pending → repurpose the existing hypothesis
-      hypothesis.id = existingMatch.id;
-      hypothesis.status = 'running' as const;
-      // Update existing pending hypothesis to running
-      const updatedHyps = existingHyps.map((h: any) =>
-        h.id === hypothesis.id ? { ...h, status: 'running', startedAt: Date.now() } : h
-      );
-      updateAppModelSection(modelPath, 'hypotheses', updatedHyps, true);
-    } else {
-      const existing = existingHyps.length ? [...existingHyps] : [];
-      existing.push(hypothesis);
-      updateAppModelSection(modelPath, 'hypotheses', existing, true);
     }
 
-    function updateHypothesisStatus(status: string, extra?: Record<string, unknown>): void {
+    // ── Helper: update a hypothesis status ──
+    function updateHypsForTechnique(tech: string, status: string, extra?: Record<string, unknown>): void {
       try {
         const cur = readAppModel(modelPath);
         const hyps = Array.isArray(cur.hypotheses) ? [...cur.hypotheses] : [];
-        const idx = hyps.findIndex((h: any) => h.id === hypothesis.id);
-        if (idx >= 0) {
-          (hyps[idx] as Record<string, unknown>).status = status;
-          if (extra) Object.assign(hyps[idx] as Record<string, unknown>, extra);
-          updateAppModelSection(modelPath, 'hypotheses', hyps, true);
-        }
+        const techKey = `${method}:${epPath}:${param || ''}:${tech}`;
+        const updated = hyps.map((h: any) => {
+          const hKey = `${h.method || 'GET'}:${h.endpoint || ''}:${h.param || ''}:${h.technique}`;
+          if (hKey === techKey) {
+            const result: Record<string, unknown> = { ...h, status };
+            if (extra) Object.assign(result, extra);
+            return result;
+          }
+          return h;
+        });
+        updateAppModelSection(modelPath, 'hypotheses', updated, true);
       } catch { /* best effort */ }
     }
 
-    return new Promise((resolve) => {
-      const worker = new Worker(workerPath, {
-        workerData: {
-          hypothesis, llmConfig, appModelPath: modelPath, oastBaseUrl,
-          storageStatePath, loginEndpoint, loginMethod, loginFields,
-        },
-        execArgv: isDev ? ['--import', 'tsx'] : [],
-      });
+    // ── Helper: spawn one agent (worker) ──
+    function spawnOne(tech: string): Record<string, unknown> | null {
+      // Check if already covered
+      const techKey = `${method}:${epPath}:${param || ''}:${tech}`;
+      const existing = pendingHyps.find((h: any) =>
+        `${h.method || 'GET'}:${h.endpoint || ''}:${h.param || ''}:${h.technique}` === techKey
+      );
+
+      if (existing) {
+        const status = (existing as any).status;
+        if (status === 'running' || status === 'done') return null;
+      }
+
+      // Create or reuse hypothesis
+      const existingId: string | undefined = existing && typeof (existing as any).id === 'string' ? (existing as any).id : undefined;
+      const hypId: string = existingId || `hyp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const hypothesis = {
+        type: param ? 'param' : 'param',
+        id: hypId,
+        endpoint: endpoint,
+        param: param || '',
+        method,
+        technique: tech,
+        priority: 5,
+        status: 'running' as const,
+        source: 'strategist' as const,
+        createdAt: Date.now(),
+      };
+
+      // Persist
+      const cur = readAppModel(modelPath);
+      const hyps = Array.isArray(cur.hypotheses) ? [...cur.hypotheses] : [];
+      const existingHyps = hyps.filter((h: any) =>
+        `${h.method || 'GET'}:${h.endpoint || ''}:${h.param || ''}:${h.technique}` !== techKey
+      );
+      existingHyps.push(hypothesis);
+      updateAppModelSection(modelPath, 'hypotheses', existingHyps, true);
+
+      // Spawn the agent
+      const workerData = {
+        hypothesis,
+        llmConfig,
+        appModelPath: modelPath,
+        oastBaseUrl,
+        storageStatePath,
+        loginEndpoint,
+        loginMethod,
+        loginFields,
+      };
+
       let resultReceived = false;
-      worker.on('message', (result) => {
+      const { worker } = spawnAgentWorker(workerPath, workerData, isDev);
+
+      worker.on('message', (result: any) => {
         resultReceived = true;
+        if (result.error) {
+          process.stderr.write(`[spawn_agent] Worker returned error: ${result.error}\n`);
+        }
         if (result.attempts?.length > 0) {
           updateAppModelSection(modelPath, 'workerActions', result.attempts);
         }
-        updateHypothesisStatus('done', {
-          completedAt: Date.now(),
-          vulnerable: !!result.vulnerable,
-          confidence: result.confidence || 0,
-        });
+        const extra: Record<string, unknown> = { completedAt: Date.now(), vulnerable: !!result.vulnerable, confidence: result.confidence || 0 };
+        updateHypsForTechnique(tech, 'done', extra);
+
         if (result.vulnerable && result.confidence >= 0.5) {
-          const cur = readAppModel(modelPath);
+          const cur2 = readAppModel(modelPath);
           const finding = {
-            type: result.technique?.toUpperCase() || 'UNKNOWN',
+            type: tech.toUpperCase(),
             endpoint,
             param: param || '',
-            evidence: (result.evidence || []).map((e: string) => ({ text: e, type: 'reflection' })),
+            evidence: (result.evidence || []).map((e: string, i: number) => ({
+              type: 'raw_response' as const,
+              data: e,
+              label: `${tech.toUpperCase()} evidence #${i + 1} (reflected payload in response body)`,
+              timestamp: Date.now(),
+            })),
             confidence: result.confidence >= 0.8 ? 'high' : result.confidence >= 0.5 ? 'medium' : 'low',
             confirmed: true,
             severity: result.confidence >= 0.8 ? 'high' : result.confidence >= 0.5 ? 'medium' : 'low',
           };
-          const existing = Array.isArray(cur.findings) ? [...cur.findings] : [];
-          existing.push(finding);
-          updateAppModelSection(modelPath, 'findings', existing, true);
+          const existingFindings = Array.isArray(cur2.findings) ? [...cur2.findings] : [];
+          existingFindings.push(finding);
+          updateAppModelSection(modelPath, 'findings', existingFindings, true);
         }
       });
-      worker.on('error', (err) => {
-        process.stderr.write(`[spawn_worker] Worker error: ${err.message}\n`);
+
+      worker.on('error', (err: Error) => {
+        process.stderr.write(`[spawn_agent] Worker error: ${err.message}\n`);
       });
-      worker.on('exit', (code) => {
+
+      worker.on('exit', (code: number) => {
         if (!resultReceived) {
-          updateHypothesisStatus('error', { completedAt: Date.now(), exitCode: code });
+          updateHypsForTechnique(tech, 'error', { completedAt: Date.now(), exitCode: code });
         }
-        if (code !== 0) process.stderr.write(`[spawn_worker] Worker exited with code ${code}\n`);
+        if (code !== 0) process.stderr.write(`[spawn_agent] Worker exited with code ${code}\n`);
       });
-      resolve(JSON.stringify({
-        status: 'started',
-        workerId: hypothesis.id,
-        technique,
-        endpoint,
-        param: param || '',
-        summary: `Worker launched for ${technique} on ${endpoint}${param ? '?'+param : ''}`,
-      }));
+
+      const tracker = toolRegistry.getWorkerTracker();
+      if (tracker) {
+        tracker(hypId, new Promise<void>((resolve) => {
+          const finalize = () => { resolve(); };
+          worker.once('exit', finalize);
+          worker.once('message', () => { setTimeout(finalize, 100); });
+          worker.once('error', finalize);
+        }));
+      }
+
+      return { technique: tech, workerId: hypId, endpoint, param: param || '' };
+    }
+
+    // ── Spawn the primary + all derived techniques ──
+    const spawned: Array<Record<string, unknown>> = [];
+    for (const tech of targetTechniques) {
+      const result = spawnOne(tech);
+      if (result) spawned.push(result);
+    }
+
+    const summary: string[] = [];
+    const alreadyCovered = targetTechniques.size - spawned.length;
+    if (summary.length === 0) {
+      if (spawned.length > 0) {
+        summary.push(`Spawned ${spawned.length} agent(s) for ${epPath}${param ? '?'+param : ''}`);
+        for (const s of spawned) {
+          summary.push(`  ${s.technique}: ${s.workerId}`);
+        }
+      }
+      if (alreadyCovered > 0) {
+        summary.push(`${alreadyCovered} technique(s) already running or tested`);
+      }
+    }
+
+    return JSON.stringify({
+      status: spawned.length > 0 ? 'started' : 'already_covered',
+      workerIds: spawned.map(s => s.workerId).join(','),
+      techniques: spawned.map(s => s.technique).join(','),
+      endpoint,
+      param: param || '',
+      count: spawned.length,
+      alreadyCovered,
+      summary: summary.join('\n'),
     });
   }, {
-    name: 'spawn_worker',
-    description: 'Spawn a worker thread to test an endpoint/param with a technique',
+    name: 'spawn_agent',
+    description: 'Spawn an agent to test an endpoint/param with a technique — auto-dispatches all technique variants for the same target',
     schema: z.object({
       endpoint: z.string().describe('Target endpoint URL'),
       param: z.string().nullable().optional().describe('Parameter to test'),
@@ -1053,7 +1164,6 @@ toolRegistry.register({
       status: z.enum(['done', 'error']).describe('New status'),
     }).parse(input);
     const path = getAppModelPath();
-    const { updateAppModelSection, readAppModel } = await import('../core/app-model');
     const model = readAppModel(path);
     const hypotheses = Array.isArray(model.hypotheses) ? [...model.hypotheses] : [];
     const idx = hypotheses.findIndex((h: any) => h.id === hypothesisId);
@@ -1079,34 +1189,42 @@ toolRegistry.register({
 toolRegistry.register({
   name: 'check_workers',
   category: 'utility',
-  description: 'Check status of all spawned workers — running count, completed count, pending count, and recent findings. Use this after spawning workers to wait for results before spawning more.',
-  tags: ['strategist', 'worker'],
+  description: 'Check status of all spawned agents — running count, completed count, pending count, and recent findings. Use this after spawning agents to wait for results before spawning more.',
+  tags: ['strategist', 'agent'],
   factory: () => tool(async () => {
     const path = getAppModelPath();
     const model = readAppModel(path);
     const hypotheses = Array.isArray(model.hypotheses) ? model.hypotheses : [];
     const findings = Array.isArray(model.findings) ? model.findings : [];
     let running = 0, pending = 0, done = 0, error = 0;
+    const touchedCombos = new Set<string>();
+    const coveredCombos = new Set<string>();
+    const pendingCombos = new Set<string>();
     for (const h of hypotheses) {
-      const status = (h as any).status;
-      if (status === 'running') running++;
-      else if (status === 'pending') pending++;
-      else if (status === 'done') done++;
-      else if (status === 'error') error++;
+      const hObj = h as any;
+      const status = hObj.status;
+      const combo = `${hObj.method || 'GET'}:${hObj.endpoint || ''}:${hObj.param || ''}`;
+      if (status === 'running') { running++; touchedCombos.add(combo); coveredCombos.add(combo); }
+      else if (status === 'pending') { pending++; pendingCombos.add(combo); }
+      else if (status === 'done') { done++; coveredCombos.add(combo); }
+      else if (status === 'error') { error++; coveredCombos.add(combo); }
     }
+    const uncovered = pendingCombos.size - coveredCombos.size;
     return JSON.stringify({
       total: hypotheses.length,
       running,
       pending,
       done,
       error,
+      uniqueEndpointParams: touchedCombos.size,
+      uncoveredCombos: uncovered,
       findingsCount: findings.length,
       stalled: running === 0 && pending === 0 && error === 0 && done > 0,
-      summary: `${running} running, ${pending} pending, ${done} done, ${error} error — ${findings.length} finding(s)`,
+      summary: `${running} running, ${pending} pending, ${done} done, ${error} error, ${uncovered} uncovered endpoint×param combos — ${findings.length} finding(s)`,
     });
   }, {
     name: 'check_workers',
-    description: 'Check status of all spawned workers',
+    description: 'Check status of all spawned agents',
     schema: z.object({}),
   }),
 });
@@ -1118,10 +1236,16 @@ toolRegistry.register({
   category: 'utility',
   description: 'Ask the user a question and wait for their response. Use when you need credentials, permission, clarification, or want to explain findings.',
   tags: ['utility', 'communication'],
-  factory: () => {
-    const { createAskUserTool } = require('./ask-user-tool');
-    return createAskUserTool();
-  },
+  factory: () => tool(async ({ question }) => {
+    return `User acknowledged: "${question}"`;
+  }, {
+    name: 'ask_user',
+    description: 'Ask the user a question and wait for their response',
+    schema: z.object({
+      question: z.string().describe('Your question for the user'),
+      options: z.array(z.string()).optional().describe('Suggested response options'),
+    }),
+  }),
 });
 
 // ── Helpers ──

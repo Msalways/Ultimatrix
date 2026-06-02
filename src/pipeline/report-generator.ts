@@ -2,6 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import type { PipelineResult, Finding, Severity } from '../core/types';
 
+function escapeHTML(value: string | undefined | null): string {
+  if (value === undefined || value === null) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export class ReportGenerator {
   private result: PipelineResult;
 
@@ -22,27 +32,37 @@ export class ReportGenerator {
       this.result.riskScore >= 50 ? '#ea580c' :
       this.result.riskScore >= 25 ? '#ca8a04' : '#16a34a';
 
-    const findingsHTML = this.result.findings.map((f) => `
+    const findingsHTML = this.result.findings.map((f) => {
+      const title = escapeHTML(f.title);
+      const description = escapeHTML(f.description);
+      const location = escapeHTML(f.location);
+      const category = escapeHTML(f.category);
+      const agent = escapeHTML(f.agent);
+      const cweId = escapeHTML(f.cweId);
+      const evidence = escapeHTML(f.evidence);
+      const remediation = escapeHTML(f.remediation);
+      return `
       <div class="finding" style="border-left: 4px solid ${severityColors[f.severity]}; padding: 16px; margin: 12px 0; background: #fff; border-radius: 4px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h3 style="margin: 0;">${f.title}</h3>
-          <span class="badge" style="background: ${severityColors[f.severity]}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold;">${f.severity.toUpperCase()}</span>
+          <h3 style="margin: 0;">${title}</h3>
+          <span class="badge" style="background: ${severityColors[f.severity]}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold;">${escapeHTML(f.severity.toUpperCase())}</span>
         </div>
-        <p style="color: #666; margin: 8px 0;">${f.description}</p>
+        <p style="color: #666; margin: 8px 0;">${description}</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
-          <div><strong>Location:</strong> ${f.location}</div>
-          <div><strong>Category:</strong> ${f.category}</div>
-          <div><strong>Agent:</strong> ${f.agent}</div>
-          ${f.cweId ? `<div><strong>CWE:</strong> ${f.cweId}</div>` : ''}
+          <div><strong>Location:</strong> ${location}</div>
+          <div><strong>Category:</strong> ${category}</div>
+          <div><strong>Agent:</strong> ${agent}</div>
+          ${f.cweId ? `<div><strong>CWE:</strong> ${cweId}</div>` : ''}
         </div>
         <div style="margin-top: 12px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
-          <strong>Evidence:</strong><br><code>${f.evidence}</code>
+          <strong>Evidence:</strong><br><code>${evidence}</code>
         </div>
         <div style="margin-top: 8px; padding: 8px; background: #ecfdf5; border-radius: 4px;">
-          <strong>Remediation:</strong> ${f.remediation}
+          <strong>Remediation:</strong> ${remediation}
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -72,14 +92,14 @@ export class ReportGenerator {
   <div class="container">
     <div class="header">
       <h1>🛡️ Ultimatrix - Security Report</h1>
-      <p>Generated: ${this.result.metadata.completedAt} | Model: ${this.result.metadata.modelUsed}</p>
+      <p>Generated: ${escapeHTML(this.result.metadata.completedAt)} | Model: ${escapeHTML(this.result.metadata.modelUsed)}</p>
     </div>
 
     <div class="dashboard">
       <div class="card">
         <h3>Risk Score</h3>
         <div class="value risk-score">${this.result.riskScore}/100</div>
-        <div style="color: ${riskColor}; font-weight: bold;">${this.result.riskLevel.toUpperCase()}</div>
+        <div style="color: ${riskColor}; font-weight: bold;">${escapeHTML(this.result.riskLevel.toUpperCase())}</div>
       </div>
       <div class="card">
         <h3>Total Findings</h3>
@@ -101,7 +121,7 @@ export class ReportGenerator {
 
     <div class="summary">
       <h2>Summary</h2>
-      <p>${this.result.summary}</p>
+      <p>${escapeHTML(this.result.summary)}</p>
     </div>
 
     <div class="findings-section">

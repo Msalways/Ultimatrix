@@ -24,3 +24,9 @@ test-output/
 test-validate/
 test-server/
 *.tsbuildinfo
+
+.test-screenshots/
+output-xss-game/
+output-crapi-*/
+runs/
+crapi-validation-results.md

@@ -57,7 +57,7 @@ export class Viewport {
 
   async navigate(url: string): Promise<NavigationResult> {
     if (!this.page) throw new Error('Viewport not launched');
-    const response = await this.page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    const response = await this.page.goto(url, { waitUntil: 'load', timeout: 30000 });
     return {
       url: this.page.url(),
       title: await this.page.title(),

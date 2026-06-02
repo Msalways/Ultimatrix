@@ -70,6 +70,7 @@ export interface FindingEvidence {
   data: string;
   label: string;
   timestamp: number;
+  session?: string;
 }
 
 export interface AppModelFinding {
@@ -265,6 +266,25 @@ export function readAppModel(modelPath: string): AppModel {
   }
 }
 
+const modelWriteLocks = new Map<string, Promise<void>>();
+
+export async function writeAppModelAsync(modelPath: string, model: AppModel): Promise<void> {
+  const prev = modelWriteLocks.get(modelPath) || Promise.resolve();
+  const next = prev.then(() => new Promise<void>((resolve, reject) => {
+    try {
+      fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+      const tmpPath = modelPath + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(model, null, 2));
+      fs.renameSync(tmpPath, modelPath);
+      resolve();
+    } catch (e) {
+      reject(e);
+    }
+  })).catch(() => {});
+  modelWriteLocks.set(modelPath, next);
+  await next;
+}
+
 export function writeAppModel(modelPath: string, model: AppModel): void {
   fs.mkdirSync(path.dirname(modelPath), { recursive: true });
   const tmpPath = modelPath + '.tmp';
@@ -286,8 +306,27 @@ export function updateAppModelSection(modelPath: string, section: AppModelSectio
   } else {
     (model[section] as unknown) = data;
   }
-  writeAppModel(modelPath, model);
+  const payload = JSON.stringify(model, null, 2);
+  const prev = modelWriteLocks.get(modelPath) || Promise.resolve();
+  const next = prev.then(() => new Promise<void>((resolve, reject) => {
+    try {
+      fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+      const tmpPath = modelPath + '.tmp';
+      fs.writeFileSync(tmpPath, payload);
+      fs.renameSync(tmpPath, modelPath);
+      resolve();
+    } catch (e) {
+      reject(e);
+    }
+  })).catch((e) => { process.stderr.write(`[app-model] write error: ${String(e)}\n`); });
+  modelWriteLocks.set(modelPath, next);
   return model;
+}
+
+export function updateAppModelSectionAsync(modelPath: string, section: AppModelSection, data: unknown, merge = true): Promise<AppModel> {
+  const model = updateAppModelSection(modelPath, section, data, merge);
+  const pending = modelWriteLocks.get(modelPath) || Promise.resolve();
+  return pending.then(() => model);
 }
 
 // ── Risk Scoring ──

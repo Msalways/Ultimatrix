@@ -85,6 +85,8 @@ program
   .addOption(new Option('--max-calls <n>', 'Tool call limit').default('50').hideHelp())
   .addOption(new Option('--keep-browser', 'Keep browser open').hideHelp())
   .addOption(new Option('--fresh', 'Delete previous output and re-crawl from scratch').hideHelp())
+  .addOption(new Option('--v3', 'Use the workflow-DAG-driven orchestrator (AutonomousV3) with multi-session RBAC').hideHelp())
+  .addOption(new Option('--max-runtime <seconds>', 'Max runtime in seconds for v3 orchestrator').default('1800').hideHelp())
   .action(async (opts) => {
     const config = await loadRuntimeConfig({ ...opts });
 
@@ -182,9 +184,68 @@ program
     // ── Launch orchestrator (spider + strategist + auto-report) with concurrent REPL ──
     log.header('Assessment', target);
     const chatModel = await loadModel(config);
-    const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
-
     const ac = new AbortController();
+
+    if (opts.v3) {
+      const { WorkflowStateGraph } = await import('../core/workflow-state');
+      const { SessionPool } = await import('../core/session-pool');
+      const { runAssessV3 } = await import('../pipeline/assess-v3-runner');
+      type WorkerRunner = import('../pipeline/assess-v3-runner').WorkerRunner;
+      const model = readAppModel(appModelPath);
+      const graph = new WorkflowStateGraph();
+      for (const visited of (model.visitedUrls || []).slice(0, 50)) {
+        const id = `n-${Buffer.from(visited).toString('base64url').slice(0, 16)}`;
+        graph.addNode({ id, url: visited, title: visited, type: 'page', authRequired: false, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
+      }
+      for (const ep of (model.endpoints || []).slice(0, 50)) {
+        const id = `api-${Buffer.from(ep.path).toString('base64url').slice(0, 16)}`;
+        graph.addNode({ id, url: ep.path.startsWith('http') ? ep.path : `${model.target}${ep.path}`, title: ep.path, type: 'api', authRequired: !!ep.requiresAuth, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
+      }
+      graph.refreshReachable();
+      const pool = new SessionPool({ headless: !opts.headless, networkCaptureEnabled: true });
+      const llmConfig = config.scan as any;
+      const workerRunner: WorkerRunner = async (input) => {
+        const { runReasoningWorker } = await import('../agents/worker');
+        const result = await runReasoningWorker({
+          hypothesis: input.hypothesis,
+          appModelPath,
+          sessionPool: pool,
+          activeSessionId: input.activeSessionId ?? undefined,
+          llmConfig: { provider: llmConfig?.provider || 'minimaxai', apiKey: llmConfig?.apiKey || '', model: llmConfig?.model || '' },
+          timeoutMs: 90_000,
+        } as any);
+        return {
+          vulnerable: result.vulnerable,
+          confidence: result.confidence,
+          evidence: result.evidence,
+          payloads: result.payloads,
+          summary: result.summary,
+          technique: input.technique,
+          url: input.url,
+          error: result.error,
+          durationMs: 0,
+        };
+      };
+      log.info('v3 orchestrator: workflow-DAG + multi-session RBAC');
+      const result = await runAssessV3({
+        target: { url: target } as ScanTarget,
+        graph,
+        pool,
+        appModelPath,
+        outputDir: outDir,
+        format: (config.output?.format || 'html') as 'html' | 'markdown' | 'json',
+        workerRunner,
+        maxRuntimeMs: (parseInt(opts.maxRuntime, 10) || 1800) * 1000,
+        perTechniqueBudget: 3,
+        maxNodes: 200,
+        shouldAbort: () => ac.signal.aborted,
+      });
+      log.success(`v3 orchestrator finished (terminated: ${result.terminatedBy})`);
+      log.info(`Report: ${result.reportPath}`);
+      process.exit(0);
+    }
+
+    const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
     const orchestrator = new AutonomousOrchestrator({
       model: chatModel,
       target: { url: target } as ScanTarget,

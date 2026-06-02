@@ -79,7 +79,7 @@ export function deriveHypotheses(
   const targetOrigin = getOrigin(appModel.target);
 
   for (const ep of appModel.endpoints) {
-    const url = ep.path;
+    const url = joinUrl(targetOrigin, ep.path);
     if (isStaticAsset(url) || isThirdParty(url, targetOrigin)) continue;
     const method = ep.method || 'GET';
     const params = ep.params || [];
@@ -146,6 +146,13 @@ function getOrigin(target: string): string | null {
   } catch {
     return null;
   }
+}
+
+function joinUrl(origin: string | null, pathOrUrl: string): string {
+  if (!origin) return pathOrUrl;
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) return pathOrUrl;
+  if (pathOrUrl.startsWith('/')) return origin + pathOrUrl;
+  return origin + '/' + pathOrUrl;
 }
 
 export function prioritize(
@@ -270,6 +277,92 @@ function getDefaultTechniques(appModel: AppModel): Technique[] {
   }
 
   return techniques;
+}
+
+export type HypothesisDerivationMode = 'keyword' | 'llm';
+
+export interface DeriveHypothesesWithLLMOptions {
+  appModel: AppModel;
+  existingPlan: AttackPlan;
+  llmSelector: {
+    selectForEndpoint: (endpoint: AppModelEndpoint, appModel: AppModel) => Promise<{ techniques: Technique[]; reasoning: string; source: 'llm' | 'fallback'; error?: string }>;
+    selectForForm: (form: AppModelForm, appModel: AppModel) => Promise<{ techniques: Technique[]; reasoning: string; source: 'llm' | 'fallback'; error?: string }>;
+  };
+  source?: HypothesisSource;
+}
+
+export async function deriveHypothesesWithLLM(opts: DeriveHypothesesWithLLMOptions): Promise<Hypothesis[]> {
+  const { appModel, existingPlan, llmSelector, source = 'strategist' } = opts;
+  const newHypotheses: Hypothesis[] = [];
+  const existingKeys = new Set(
+    existingPlan.hypotheses.map((h) =>
+      h.type === 'param'
+        ? `${h.method}:${h.endpoint}:${h.param}:${h.technique}`
+        : `form:${h.action}:${h.fields.join(',')}:${h.technique}`,
+    ),
+  );
+  const targetOrigin = getOrigin(appModel.target);
+
+  for (const ep of appModel.endpoints) {
+    const url = joinUrl(targetOrigin, ep.path);
+    if (isStaticAsset(url) || isThirdParty(url, targetOrigin)) continue;
+    const method = ep.method || 'GET';
+    const params = ep.params || [];
+
+    let techniques: Technique[];
+    try {
+      const sel = await llmSelector.selectForEndpoint(ep, appModel);
+      techniques = sel.techniques;
+    } catch {
+      techniques = getDefaultTechniques(appModel);
+    }
+    if (techniques.length === 0) continue;
+
+    if (params.length === 0) {
+      for (const technique of techniques) {
+        const key = `${method}:${url}::${technique}`;
+        if (!existingKeys.has(key)) {
+          newHypotheses.push(createParamHypothesis(url, '', method, technique, source, 5));
+        }
+      }
+    } else {
+      for (const param of params) {
+        const paramName = param.name;
+        if (!paramName || paramName === 'undefined') continue;
+        for (const technique of techniques) {
+          const key = `${method}:${url}:${paramName}:${technique}`;
+          if (!existingKeys.has(key)) {
+            newHypotheses.push(createParamHypothesis(url, paramName, method, technique, source, 5));
+          }
+        }
+      }
+    }
+  }
+
+  for (const form of appModel.forms) {
+    const action = form.action;
+    if (isStaticAsset(action) || isThirdParty(action, targetOrigin)) continue;
+    const fieldNames = form.fields.map((f) => f.name).filter(Boolean);
+    if (fieldNames.length === 0) continue;
+
+    let techniques: Technique[];
+    try {
+      const sel = await llmSelector.selectForForm(form, appModel);
+      techniques = sel.techniques;
+    } catch {
+      techniques = getDefaultTechniques(appModel);
+    }
+    if (techniques.length === 0) continue;
+
+    for (const technique of techniques) {
+      const key = `form:${action}:${fieldNames.join(',')}:${technique}`;
+      if (!existingKeys.has(key)) {
+        newHypotheses.push(createFormHypothesis(action, fieldNames, technique, source, 5));
+      }
+    }
+  }
+
+  return newHypotheses;
 }
 
 function getTechniquesForParam(paramName: string, appModel: AppModel): Technique[] {
