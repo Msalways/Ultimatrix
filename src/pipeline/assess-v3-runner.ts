@@ -11,7 +11,7 @@
  * invoked from `src/cli/index.ts` when the user passes `--v3`.
  */
 
-import { AutonomousV3Orchestrator, type WorkerSpawnInput, type WorkerSpawnResult, type OnFindingHandler, type OnNodeUpdateHandler, type NodeStrategy } from './autonomous-v3';
+import { AutonomousV3Orchestrator, type WorkerSpawnInput, type WorkerSpawnResult, type OnFindingHandler, type OnNodeUpdateHandler, type OnBeforeNodeHandler, type NodeStrategy } from './autonomous-v3';
 import type { WorkflowStateGraph } from '../core/workflow-state';
 import type { SessionPool } from '../core/session-pool';
 import { readAppModel, compileReport, updateAppModelSection, type AppModel } from '../core/app-model';
@@ -38,6 +38,7 @@ export interface AssessV3Options {
   strategy?: NodeStrategy;
   onFinding?: OnFindingHandler;
   onNodeUpdate?: OnNodeUpdateHandler;
+  onBeforeNode?: OnBeforeNodeHandler;
   onLog?: (msg: string) => void;
   shouldAbort?: () => boolean;
 }
@@ -63,6 +64,7 @@ export async function runAssessV3(opts: AssessV3Options): Promise<AssessV3Result
       opts.onFinding?.(finding, node);
     },
     onNodeUpdate: opts.onNodeUpdate,
+    onBeforeNode: opts.onBeforeNode,
     onLog: opts.onLog,
     perTechniqueBudget: opts.perTechniqueBudget,
     maxRuntimeMs: opts.maxRuntimeMs,

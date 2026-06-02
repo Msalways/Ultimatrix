@@ -71,6 +71,12 @@ export interface OnNodeUpdateHandler {
   (node: WorkflowStateNode, status: 'in_progress' | 'completed' | 'failed'): void;
 }
 
+export type BeforeNodeDecision = 'proceed' | 'skip' | 'abort' | Promise<'proceed' | 'skip' | 'abort'>;
+
+export interface OnBeforeNodeHandler {
+  (node: WorkflowStateNode, spec: NodeSpec | null): BeforeNodeDecision;
+}
+
 /**
  * Per-node strategy resolver. Returns the test plan for a single node.
  * ALL per-node decisions are encapsulated here so the orchestrator
@@ -100,6 +106,7 @@ export interface AutonomousV3Options {
   strategy?: NodeStrategy;
   onFinding?: OnFindingHandler;
   onNodeUpdate?: OnNodeUpdateHandler;
+  onBeforeNode?: OnBeforeNodeHandler;
   perTechniqueBudget?: number;
   maxRuntimeMs?: number;
   maxNodes?: number;
@@ -137,6 +144,7 @@ export class AutonomousV3Orchestrator {
   private strategy: NodeStrategy;
   private onFinding?: OnFindingHandler;
   private onNodeUpdate?: OnNodeUpdateHandler;
+  private onBeforeNode?: OnBeforeNodeHandler;
   private perTechniqueBudget: number;
   private maxRuntimeMs: number;
   private maxNodes: number;
@@ -158,6 +166,7 @@ export class AutonomousV3Orchestrator {
     this.strategy = opts.strategy ?? defaultNodeStrategy;
     this.onFinding = opts.onFinding;
     this.onNodeUpdate = opts.onNodeUpdate;
+    this.onBeforeNode = opts.onBeforeNode;
     this.perTechniqueBudget = opts.perTechniqueBudget ?? DEFAULT_PER_TECHNIQUE_BUDGET;
     this.maxRuntimeMs = opts.maxRuntimeMs ?? DEFAULT_MAX_RUNTIME_MS;
     this.maxNodes = opts.maxNodes ?? DEFAULT_MAX_NODES;
@@ -217,6 +226,16 @@ export class AutonomousV3Orchestrator {
       if (!next) { terminatedBy = 'exhausted'; break; }
 
       const spec = await this.resolveSpec(next);
+      if (this.onBeforeNode) {
+        const decision = await this.onBeforeNode(next, spec);
+        if (decision === 'abort') { terminatedBy = 'abort'; break; }
+        if (decision === 'skip') {
+          this.graph.markFailed(next.id, 'skipped by user');
+          failed++;
+          processed++;
+          continue;
+        }
+      }
       if (!spec) {
         this.graph.markFailed(next.id, 'strategy could not resolve node');
         failed++;
@@ -270,6 +289,7 @@ export class AutonomousV3Orchestrator {
     let failed = 0;
     let processed = 0;
     let terminatedBy: OrchestrationResult['terminatedBy'] = 'exhausted';
+    let abortedByUser = false;
     const inFlight: Map<string, Promise<void>> = new Map();
     const processedIds = new Set<string>();
     const signal = { llmDriven: false };
@@ -286,6 +306,16 @@ export class AutonomousV3Orchestrator {
       const task = (async () => {
         try {
           const spec = await this.resolveSpec(next);
+          if (this.onBeforeNode) {
+            const decision = await this.onBeforeNode(next, spec);
+            if (decision === 'abort') { abortedByUser = true; return; }
+            if (decision === 'skip') {
+              this.graph.markFailed(next.id, 'skipped by user');
+              failed++;
+              processed++;
+              return;
+            }
+          }
           if (!spec) {
             this.graph.markFailed(next.id, 'strategy could not resolve node');
             failed++;
@@ -329,7 +359,7 @@ export class AutonomousV3Orchestrator {
     };
 
     while (true) {
-      if (this.shouldAbort?.()) { terminatedBy = 'abort'; break; }
+      if (this.shouldAbort?.() || abortedByUser) { terminatedBy = abortedByUser ? 'abort' : 'abort'; break; }
       if (Date.now() - start >= this.maxRuntimeMs) { terminatedBy = 'time'; break; }
       if (processed >= this.maxNodes) { terminatedBy = 'max-nodes'; break; }
       let scheduled = false;

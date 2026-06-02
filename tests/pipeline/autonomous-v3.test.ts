@@ -267,6 +267,40 @@ describe('AutonomousV3Orchestrator', () => {
     expect(result.rateLimitEvents).toBeGreaterThan(0);
     expect(result.effectiveMaxConcurrency).toBeLessThan(8);
   });
+
+  it('invokes onBeforeNode and skips when decision is "skip"', async () => {
+    graph.addNode(makeNode('n1', 'https://x.com/a'));
+    graph.addNode(makeNode('n2', 'https://x.com/b'));
+    graph.markReachable('n1');
+    graph.markReachable('n2');
+    const calls: string[] = [];
+    const factory = vi.fn(async (input) => { calls.push(input.workflowNodeId); return makeResult(false, 0); });
+    const decisions = ['skip', 'proceed'];
+    let i = 0;
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory,
+      onBeforeNode: () => decisions[i++ % decisions.length],
+    });
+    const result = await orch.run();
+    expect(calls).toEqual(['n2']);
+    expect(result.failedNodes).toBe(1);
+    expect(result.completedNodes).toBe(1);
+  });
+
+  it('aborts gracefully when onBeforeNode returns "abort"', async () => {
+    for (let i = 0; i < 3; i++) {
+      graph.addNode(makeNode(`n${i}`, `https://x.com/api${i}`));
+      graph.markReachable(`n${i}`);
+    }
+    const factory = vi.fn(async () => makeResult(false, 0));
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory,
+      onBeforeNode: () => 'abort',
+    });
+    const result = await orch.run();
+    expect(result.terminatedBy).toBe('abort');
+    expect(factory).not.toHaveBeenCalled();
+  });
 });
 
 function makeResult(vulnerable: boolean, confidence: number, evidence: any[] = []): WorkerSpawnResult {
