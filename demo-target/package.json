@@ -1,0 +1,12 @@
+{
+  "name": "ultimatrix-demo-target",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vulnerable-by-design Node/Express app used as a stable test surface for the Ultimatrix recon + specialist + chain engine pipeline.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-smoke.js"
+  },
+  "engines": { "node": ">=18" }
+}

@@ -37,39 +37,45 @@ program
   .description('AI-powered security testing')
   .version('2.0.0');
 
-// ── Default: no command → REPL ──
+// ── hunt: canonical combined flow (assess + interact + test) ──
 program
-  .action(async () => {
-    if (!hasAnyConfig()) {
-      log.warn('No provider configured. Run `ultimatrix init` or set env vars.');
-      log.info('');
-      log.info('Quick start:');
-      log.dim('  1. ultimatrix init          — interactive setup');
-      log.dim('  2. set OPENAI_API_KEY     — or AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY');
-      log.dim('  3. ultimatrix assess -t <url> — run assessment with env vars only');
-      process.exit(0);
-    }
-
-    const config = await loadRuntimeConfig();
-    const model = await loadModel(config);
-    const { startRepl } = await import('./repl');
-    await startRepl({
-      model,
-      targetUrl: config.scan?.target || '',
-      outputDir: config.output?.dir || './output',
-    });
+  .command('hunt')
+  .description('Canonical hunt — spider + recon + multi-session RBAC testing + chains + Playwright tests (replaces assess/interact/test)')
+  .option('-t, --target <url>', 'Target URL (required)')
+  .option('-o, --output <dir>', 'Output directory', './output')
+  .option('--guided', 'Step-by-step mode with prompts (default)', true)
+  .option('--auto', 'Autonomous mode (no prompts)')
+  .option('--depth <n>', 'Spider depth', '2')
+  .option('--max-runtime <seconds>', 'Hard time limit', '1800')
+  .option('--no-tests', 'Skip Playwright test generation')
+  .option('--tests-dir <dir>', 'Where to write Playwright tests', './playwright-tests')
+  .option('--no-chains', 'Skip attack chain engine')
+  .option('--no-recon', 'Skip recon layer (OAuth/GraphQL/JWT/cloud/framework)')
+  .option('--no-spider', 'Skip spider, load existing model instead')
+  .option('--existing-model <path>', 'Path to existing app-model.json')
+  .action(async (opts) => {
+    const { parseHuntFlags, runHunt } = await import('./hunt');
+    const huntOpts = parseHuntFlags([
+      '-t', opts.target || '',
+      '-o', opts.output,
+      opts.auto ? '--auto' : '--guided',
+      opts.tests === false ? '--no-tests' : '',
+      '--tests-dir', opts.testsDir,
+      '--depth', opts.depth,
+      '--max-runtime', opts.maxRuntime,
+      opts.chains === false ? '--no-chains' : '',
+      opts.recon === false ? '--no-recon' : '',
+      opts.spider === false ? '--no-spider' : '',
+      opts.existingModel ? '--existing-model' : '',
+      opts.existingModel || '',
+    ].filter(Boolean));
+    await runHunt(huntOpts);
   });
 
-// ── init: Interactive config wizard ──
-program
-  .command('init')
-  .description('Interactive setup wizard')
-  .action(runInit);
-
-// ── assess: LLM-driven security assessment ──
+// ── assess: deprecated alias for hunt ──
 program
   .command('assess')
-  .description('Security assessment — agent explores, records, and tests the target')
+  .description('[DEPRECATED] Use `hunt` instead. Security assessment — agent explores, records, and tests the target.')
   .option('-t, --target <url>', 'Target URL')
   .option('-o, --output <dir>', 'Output directory')
   .option('--headless', 'Run browser in headless mode (visible by default)')
@@ -92,11 +98,10 @@ program
   .addOption(new Option('--cookies-from <file>', 'v3: Playwright storage state JSON to pre-inject into default session').hideHelp())
   .addOption(new Option('--no-concurrency', 'v3: disable parallel workers (sequential only)').hideHelp())
   .action(async (opts) => {
+    log.warn('`assess` is deprecated. Use `ultimatrix hunt -t <url>` instead.');
     const config = await loadRuntimeConfig({ ...opts });
-
     const target = (opts.target || config.scan?.target || '').replace(/\/$/, '');
     if (!target) { log.error('No target specified. Use -t <url> or set scan.target in ultimatrix.yaml'); process.exit(1); }
-
     const outDir = path.resolve(opts.output || config.output?.dir || './output');
     if (opts.fresh && fs.existsSync(outDir)) {
       fs.rmSync(outDir, { recursive: true, force: true });
@@ -106,7 +111,6 @@ program
     const appModelPath = path.join(outDir, 'app-model.json');
     const { setAppModelPath } = await import('../core/app-model-path');
     setAppModelPath(appModelPath);
-
     if (opts.dryRun) {
       log.header('Dry Run', 'Validating configuration');
       log.info(`Target: ${target}`);
@@ -131,11 +135,8 @@ program
       log.success('Dry run complete. All checks passed.');
       process.exit(0);
     }
-
-    // ── Ingest artifacts if provided ──
     let initialModel: Partial<import('../core/app-model').AppModel> = {};
     if (opts.withOpenapi || opts.withHar || opts.withPostman || opts.withSrc) {
-      log.header('Ingesting artifacts', target);
       const { ingestAll } = await import('../ingestion');
       initialModel = ingestAll({
         openapi: opts.withOpenapi,
@@ -143,135 +144,31 @@ program
         postman: opts.withPostman,
         sourceDir: opts.withSrc,
       }, target);
-      log.info(`Ingested: ${initialModel.endpoints?.length || 0} endpoints`);
     }
-
-    // ── Create initial app model if artifacts provided ──
     if (Object.keys(initialModel).length > 0) {
       const { DEFAULT_MODEL } = await import('../core/app-model');
       const model: AppModel = {
-        ...DEFAULT_MODEL,
-        target,
+        ...DEFAULT_MODEL, target,
         techStack: initialModel.techStack || [],
         auth: { type: 'unknown' as const, loginEndpoint: '', endpoints: [], cookies: {}, tokens: [], sessions: {} },
         workflow: { nodes: [], edges: [] },
-        endpoints: initialModel.endpoints || [],
-        forms: initialModel.forms || [],
-        scripts: [],
-        cookies: initialModel.cookies || {},
-        localStorage: {},
-        findings: [],
-        verifications: [],
-        parameterClassifications: [],
-        authBoundaries: [],
-        recordedSessions: {},
-        hypotheses: initialModel.hypotheses || [],
-        nextSteps: initialModel.nextSteps || [],
-        visitedUrls: initialModel.visitedUrls || [],
-        oastCallbacks: [],
-        coverage: [],
+        endpoints: initialModel.endpoints || [], forms: initialModel.forms || [], scripts: [],
+        cookies: initialModel.cookies || {}, localStorage: {}, findings: [], verifications: [],
+        parameterClassifications: [], authBoundaries: [], recordedSessions: {},
+        hypotheses: initialModel.hypotheses || [], nextSteps: initialModel.nextSteps || [],
+        visitedUrls: initialModel.visitedUrls || [], oastCallbacks: [], coverage: [],
       };
       writeAppModel(appModelPath, model);
     }
-
-    // ── Start dashboard if requested ──
-    let dashboard: import('../dashboard/server').DashboardServer | undefined;
-    let stopDashboard: (() => void) | undefined;
-    if (opts.dashboard) {
-      const { startDashboard } = await import('../dashboard/server');
-      const server = startDashboard(3000);
-      dashboard = server;
-      stopDashboard = server.close;
-      log.info(`Dashboard: http://localhost:${server.port}`);
+    if (opts.v3) {
+      const { parseHuntFlags, runHunt } = await import('./hunt');
+      const huntOpts = parseHuntFlags(['-t', target, '-o', outDir, '--max-runtime', String(opts.maxRuntime), '--no-tests']);
+      await runHunt(huntOpts);
+      return;
     }
-
-    // ── Launch orchestrator (spider + strategist + auto-report) with concurrent REPL ──
-    log.header('Assessment', target);
+    // v1 fallback: REPL-based orchestrator
     const chatModel = await loadModel(config);
     const ac = new AbortController();
-
-    if (opts.v3) {
-      const { WorkflowStateGraph } = await import('../core/workflow-state');
-      const { SessionPool } = await import('../core/session-pool');
-      const { runAssessV3 } = await import('../pipeline/assess-v3-runner');
-      type WorkerRunner = import('../pipeline/assess-v3-runner').WorkerRunner;
-      const model = readAppModel(appModelPath);
-      const graph = new WorkflowStateGraph();
-      const targetNodeId = 'target';
-      graph.addNode({ id: targetNodeId, url: target, title: target, type: 'page', authRequired: false, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
-      graph.markReachable(targetNodeId);
-      for (const visited of (model.visitedUrls || []).slice(0, 50)) {
-        if (visited === target) continue;
-        const id = `n-${Buffer.from(visited).toString('base64url').slice(0, 16)}`;
-        graph.addNode({ id, url: visited, title: visited, type: 'page', authRequired: false, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
-      }
-      for (const ep of (model.endpoints || []).slice(0, 50)) {
-        const id = `api-${Buffer.from(ep.path).toString('base64url').slice(0, 16)}`;
-        graph.addNode({ id, url: ep.path.startsWith('http') ? ep.path : `${model.target}${ep.path}`, title: ep.path, type: 'api', authRequired: !!ep.requiresAuth, authVerified: false, discoveredFrom: null, discoveryMethod: 'navigation' });
-      }
-      graph.refreshReachable();
-      const pool = new SessionPool({ headless: !opts.headless, networkCaptureEnabled: true });
-      if (opts.cookiesFrom) {
-        const storageStatePath = path.resolve(opts.cookiesFrom);
-        if (!fs.existsSync(storageStatePath)) {
-          log.error(`cookies-from: file not found: ${storageStatePath}`);
-          process.exit(1);
-        }
-        log.info(`Loading storage state from ${storageStatePath}`);
-        const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf-8'));
-        const cookies = (state.cookies || []) as Array<Record<string, unknown>>;
-        const count = await pool.setCookies('default', cookies as any);
-        log.success(`Pre-injected ${count} cookies into default session`);
-      }
-      const llmConfig = config.provider as any;
-      const workerRunner: WorkerRunner = async (input) => {
-        const { runReasoningWorker } = await import('../agents/worker');
-        const result = await runReasoningWorker({
-          hypothesis: input.hypothesis,
-          appModelPath,
-          sessionPool: pool,
-          activeSessionId: input.activeSessionId ?? undefined,
-          llmConfig: { provider: llmConfig?.name || 'minimaxai', apiKey: llmConfig?.apiKey || '', model: llmConfig?.model || '' },
-          timeoutMs: 120_000,
-        } as any);
-        return {
-          vulnerable: result.vulnerable,
-          confidence: result.confidence,
-          evidence: result.evidence,
-          payloads: result.payloads,
-          summary: result.summary,
-          technique: input.technique,
-          url: input.url,
-          error: result.error,
-          durationMs: 0,
-        };
-      };
-      log.info('v3 orchestrator: workflow-DAG + multi-session RBAC');
-      const enableConcurrency = opts.concurrency !== false;
-      const result = await runAssessV3({
-        target: { url: target } as ScanTarget,
-        graph,
-        pool,
-        appModelPath,
-        outputDir: outDir,
-        format: (config.output?.format || 'html') as 'html' | 'markdown' | 'json',
-        workerRunner,
-        maxRuntimeMs: (parseInt(opts.maxRuntime, 10) || 1800) * 1000,
-        perTechniqueBudget: 3,
-        maxNodes: 200,
-        enableConcurrency,
-        maxConcurrency: parseInt(opts.maxConcurrency, 10) || 4,
-        sleepBetweenNodesMs: parseInt(opts.sleepBetweenNodes, 10) || 0,
-        shouldAbort: () => ac.signal.aborted,
-      });
-      log.success(`v3 orchestrator finished (terminated: ${result.terminatedBy})`);
-      log.info(`Report: ${result.reportPath}`);
-      if (result.rateLimitEvents > 0) {
-        log.info(`Rate-limit backoff: ${result.rateLimitEvents} events → effective concurrency: ${result.effectiveMaxConcurrency}`);
-      }
-      process.exit(0);
-    }
-
     const { AutonomousOrchestrator } = await import('../pipeline/autonomous');
     const orchestrator = new AutonomousOrchestrator({
       model: chatModel,
@@ -279,75 +176,16 @@ program
       outputDir: outDir,
       format: config.output?.format || 'html',
       appModelPath,
-      dashboard,
       maxToolCalls: opts.maxCalls ? parseInt(opts.maxCalls, 10) : undefined,
       keepBrowser: opts.keepBrowser || undefined,
       abortSignal: ac.signal,
     });
-
-    const readline = await import('readline');
-    const rli = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-    if (process.stdin.isTTY) {
-      process.stdout.write(colors.dim('Interactive mode: type a message, or /status  /findings  /close\n'));
-    }
-
-    let replRunning = true;
-    rli.on('line', (line: string) => {
-      if (!replRunning) return;
-      const trimmed = line.trim();
-      const lower = trimmed.toLowerCase();
-
-      if (lower === '/close' || lower === '/exit') {
-        log.warn('User requested early stop...');
-        ac.abort();
-        replRunning = false;
-        rli.close();
-      } else if (lower === '/status' || lower === '/s') {
-        try {
-          const model = JSON.parse(fs.readFileSync(appModelPath, 'utf-8'));
-          const hCount = model.hypotheses?.length ?? 0;
-          const fCount = model.findings?.length ?? 0;
-          const vUrls = model.visitedUrls?.length ?? 0;
-          const calls = model.oastCallbacks?.length ?? 0;
-          log.info(`Progress: ${vUrls} pages, ${hCount} hypotheses, ${fCount} findings, ${calls} OAST callbacks`);
-        } catch {
-          log.info('App model not yet available (spider still crawling)');
-        }
-      } else if (lower === '/findings' || lower === '/f') {
-        try {
-          const model = JSON.parse(fs.readFileSync(appModelPath, 'utf-8'));
-          if (!model.findings?.length) { log.info('No findings yet'); }
-          for (const f of model.findings || []) {
-            const sev = f.severity ?? 'info';
-            const label = sev === 'critical' ? colors.error : sev === 'high' ? colors.warn : colors.dim;
-            process.stdout.write(label(`  ${f.type}: ${f.description || f.title || 'n/a'} (${sev})\n`));
-          }
-        } catch {
-          log.info('App model not yet available');
-        }
-      } else if (trimmed && !lower.startsWith('/')) {
-        orchestrator.sendUserMessage(trimmed);
-      }
-    });
-
     const result = await orchestrator.run();
-    replRunning = false;
-    try { rli.close(); } catch { /* already closed */ }
-
-    if (stopDashboard) stopDashboard();
-
     if (fs.existsSync(result.reportPath)) {
       log.success(`Assessment complete. Report: ${result.reportPath}`);
     } else {
       log.warn('Assessment finished but no report file was generated.');
     }
-    log.divider();
-    log.header('Output', `Artifacts in ${outDir}`);
-    log.dim(`  app-model.json — session knowledge graph`);
-    log.dim(`  final-security-report.${config.output?.format || 'html'} — assessment results`);
-    log.dim(`  playwright/ — auto-generated Playwright test suite`);
-    await new Promise((r) => setTimeout(r, 500));
     process.exit(0);
   });
 
@@ -375,6 +213,7 @@ program
   .description('Live REPL chat loop with the autonomous agent. Type /record start for manual browser recording.')
   .option('-t, --target <url>', 'Target URL')
   .action(async (opts) => {
+    log.warn('`interact` is deprecated. Use `ultimatrix hunt -t <url> --guided` instead.');
     const config = await loadRuntimeConfig({ ...opts });
     const model = await loadModel(config);
     const { startRepl } = await import('./repl');

@@ -15,6 +15,9 @@ import { jwtSpecialist } from './jwt';
 import { graphqlSpecialist } from './graphql';
 import { wafMutatorSpecialist } from './waf-mutator';
 import { triageReviewerSpecialist } from './triage-reviewer';
+import { oauthSpecialist } from './oauth';
+import { cloudSpecialist } from './cloud';
+import { raceSpecialist } from './race';
 
 export const ALL_SPECIALISTS: SpecialistFactory[] = [
   xssSpecialist,
@@ -22,6 +25,9 @@ export const ALL_SPECIALISTS: SpecialistFactory[] = [
   jwtSpecialist,
   graphqlSpecialist,
   wafMutatorSpecialist,
+  oauthSpecialist,
+  cloudSpecialist,
+  raceSpecialist,
   triageReviewerSpecialist,
 ];
 
@@ -83,5 +89,8 @@ export {
   graphqlSpecialist,
   wafMutatorSpecialist,
   triageReviewerSpecialist,
+  oauthSpecialist,
+  cloudSpecialist,
+  raceSpecialist,
 };
 export type { SpecialistFactory, SpecialistToolkit };

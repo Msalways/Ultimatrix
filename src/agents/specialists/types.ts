@@ -32,4 +32,8 @@ export interface SpecialistToolkit {
   oastCheck?: any;
   poolTools?: PoolTools;
   sessionPool?: SessionPool;
+  // extension points for new specialist tool sets
+  oauthProbes?: Record<string, any>;
+  cloudProbes?: Record<string, any>;
+  raceProbes?: Record<string, any>;
 }

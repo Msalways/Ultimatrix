@@ -94,7 +94,7 @@ export function triageFinding(finding: AppModelFinding, existing: AppModelFindin
       status: 'downgraded',
       reason: `Downgraded from ${severity} to ${adjusted}: high-severity claim without HAR trace or screenshot evidence.`,
       adjustedSeverity: adjusted,
-      adjustedConfidence: confidence,
+      adjustedConfidence: String(confidence),
     };
   }
 
@@ -105,7 +105,7 @@ export function triageFinding(finding: AppModelFinding, existing: AppModelFindin
       status: 'downgraded',
       reason: `Adjusted severity from ${finding.severity} to ${severity} and confidence from ${finding.confidence} to ${confidence} based on evidence quality.`,
       adjustedSeverity: severity,
-      adjustedConfidence: confidence,
+      adjustedConfidence: String(confidence),
     };
   }
 
@@ -113,7 +113,7 @@ export function triageFinding(finding: AppModelFinding, existing: AppModelFindin
     candidateId,
     status: 'accepted',
     reason: `Evidence confirms the finding. Evidence types: ${finding.evidence.map(e => `${e.type} (${e.label})`).join(', ')}`,
-    adjustedConfidence: confidence,
+    adjustedConfidence: String(confidence),
   };
 }
 

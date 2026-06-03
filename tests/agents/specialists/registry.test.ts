@@ -35,24 +35,34 @@ function makeAppModel(overrides: Partial<AppModel> = {}): AppModel {
     hypotheses: [],
     nextSteps: [],
     visitedUrls: [],
+    oauthProviders: [],
+    graphqlEndpoints: [],
+    jwtTokens: [],
+    frameworks: [],
+    cloudProbes: [],
+    reconLog: [],
+    attackChains: [],
     ...overrides,
   } as AppModel;
 }
 
 describe('specialists registry', () => {
-  it('listAllSpecialistNames returns the 6 specialist names', () => {
+  it('listAllSpecialistNames returns the 9 specialist names', () => {
     const names = listAllSpecialistNames();
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(9);
     expect(names).toContain('xss-specialist');
     expect(names).toContain('idor-specialist');
     expect(names).toContain('jwt-specialist');
     expect(names).toContain('graphql-specialist');
     expect(names).toContain('waf-mutator-specialist');
+    expect(names).toContain('oauth-specialist');
+    expect(names).toContain('cloud-specialist');
+    expect(names).toContain('race-specialist');
     expect(names).toContain('triage-reviewer-specialist');
   });
 
-  it('ALL_SPECIALISTS has 6 factories', () => {
-    expect(ALL_SPECIALISTS).toHaveLength(6);
+  it('ALL_SPECIALISTS has 9 factories', () => {
+    expect(ALL_SPECIALISTS).toHaveLength(9);
   });
 });
 

@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![223 Tests](https://img.shields.io/badge/Tests-223%20passing-success.svg)](#testing)
+[![501 Tests](https://img.shields.io/badge/Tests-501%20passing-success.svg)](#testing)
 
 ---
 
@@ -14,10 +14,18 @@
 
 ```bash
 npm install
-npx tsx src/cli/index.ts assess -t https://your-app.com -o ./output
+npx tsx src/cli/index.ts hunt -t https://your-app.com -o ./output
 ```
 
-One command. Spider crawls, strategist fires parallel workers, findings persisted automatically.
+One command: spider → recon → multi-session RBAC testing → attack chains → Playwright regression tests → chain-first report.
+
+```bash
+# autonomous mode (no prompts)
+npx tsx src/cli/index.ts hunt -t https://your-app.com --auto
+
+# guided mode (default): prompts per node, slash commands inside
+npx tsx src/cli/index.ts hunt -t https://your-app.com --guided
+```
 
 ---
 
@@ -25,9 +33,31 @@ One command. Spider crawls, strategist fires parallel workers, findings persiste
 
 | Command | What it does |
 |---------|-------------|
-| `assess -t <url> -o ./out` | Spider crawl → strategist + workers → report + Playwright test |
+| **`hunt -t <url>`** | **Canonical flow:** spider + recon + multi-session RBAC + chains + Playwright tests |
+| `assess -t <url>` | *Deprecated:* alias for hunt (v1 REPL fallback for `--v3` flag) |
+| `interact -t <url>` | *Deprecated:* legacy chat REPL |
 | `verify -a <model.json> -t <url>` | Re-run findings against a fresh deployment |
-| `interact -t <url>` | Live REPL chat loop with the agent |
+
+## `hunt` flags
+
+```
+-t, --target <url>            Target URL (required)
+-o, --output <dir>            Output directory (default ./output)
+--guided / --auto             Prompt vs autonomous (default guided)
+--depth <n>                   Spider depth (default 2)
+--max-runtime <seconds>       Hard time limit (default 1800)
+--no-tests                    Skip Playwright test generation
+--tests-dir <dir>             Where to write Playwright tests
+--no-chains                   Skip attack chain engine
+--no-recon                    Skip recon layer (OAuth/GraphQL/JWT/cloud/framework)
+--no-spider                   Skip spider, load existing model
+--existing-model <path>       Resume from a previous app-model.json
+```
+
+In guided mode, you can type slash commands at any prompt:
+```
+/auto /guided /findings /test /report /add <url> /help /quit
+```
 | `init` | Interactive config wizard |
 
 ### `assess` flags

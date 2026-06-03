@@ -74,11 +74,15 @@ export interface FindingEvidence {
 }
 
 export interface AppModelFinding {
+  id?: string;
   type: string;
   endpoint: string;
   param: string;
+  method?: string;
+  payload?: string;
+  description?: string;
   evidence: FindingEvidence[];
-  confidence: string;
+  confidence: string | number;
   confirmed: boolean;
   severity: string;
 }
@@ -122,6 +126,98 @@ export interface BrowserSessionMeta {
 }
 
 // ── Top-level Model ──
+
+// ── Recon result shapes ──
+
+export interface OAuthProvider {
+  discoveryUrl: string;
+  issuer?: string;
+  authorizationEndpoint?: string;
+  tokenEndpoint?: string;
+  jwksUri?: string;
+  responseTypesSupported?: string[];
+  grantTypesSupported?: string[];
+  scopesSupported?: string[];
+  clientIds: string[];
+  registeredClients: Array<{
+    clientId: string;
+    discoveredAt: number;
+    source: 'discovery' | 'spider' | 'header';
+  }>;
+  discoveredAt: number;
+  raw?: string;
+}
+
+export interface GraphQLEndpoint {
+  url: string;
+  method: 'POST' | 'GET';
+  introspectionEnabled: boolean;
+  typeCount: number;
+  queryCount: number;
+  mutationCount: number;
+  fieldAuthzHints: Array<{ type: string; field: string; sensitivity: 'public' | 'user' | 'admin' }>;
+  discoveredAt: number;
+  evidence: string;
+}
+
+export interface JWTTokenInfo {
+  source: 'cookie' | 'header' | 'localStorage' | 'sessionStorage' | 'response';
+  sourceName: string;
+  raw: string;
+  header: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  expiresAt?: number;
+  isExpired: boolean;
+  algorithm: string;
+  algorithmVulnerable: boolean;
+  weakSecretSuspected: boolean;
+  capturedAt: number;
+}
+
+export interface FrameworkInfo {
+  name: string;
+  version?: string;
+  evidence: string;
+  discoveredAt: number;
+  hints: string[];
+}
+
+export interface CloudProbeResult {
+  probeId: string;
+  provider: 'aws' | 'gcp' | 'azure' | 'digitalocean' | 'oracle' | 'unknown';
+  metadataUrl: string;
+  surface: 'ssrf' | 'direct' | 'header' | 'dns';
+  status: 'leaked' | 'blocked' | 'timeout' | 'unknown' | 'inconclusive';
+  responseSnippet: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  discoveredAt: number;
+}
+
+export interface ReconLogEntry {
+  timestamp: number;
+  tool: 'oauth-discovery' | 'graphql-discovery' | 'jwt-discovery' | 'framework-fingerprint' | 'cloud-metadata-probe';
+  target: string;
+  status: 'found' | 'not-found' | 'error' | 'inconclusive';
+  durationMs: number;
+  detail: string;
+}
+
+export interface AttackChain {
+  id: string;
+  name: string;
+  steps: Array<{
+    step: number;
+    findingType: string;
+    endpoint: string;
+    evidenceRef: string;
+    description: string;
+  }>;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  confidence: number;
+  narrative: string;
+  exploitability: 'trivial' | 'moderate' | 'difficult';
+  discoveredAt: number;
+}
 
 export interface AppModel {
   target: string;
@@ -195,6 +291,14 @@ export interface AppModel {
   browserSessions: Record<string, BrowserSessionMeta>;
   navigationHistory: NavigationEntry[];
   errors: Array<{ timestamp: number; type: string; message: string; url?: string }>;
+  // ── New recon sections ──
+  oauthProviders: OAuthProvider[];
+  graphqlEndpoints: GraphQLEndpoint[];
+  jwtTokens: JWTTokenInfo[];
+  frameworks: FrameworkInfo[];
+  cloudProbes: CloudProbeResult[];
+  reconLog: ReconLogEntry[];
+  attackChains: AttackChain[];
   _meta: {
     startedAt: number;
     duration: number;
@@ -235,6 +339,13 @@ export const DEFAULT_MODEL: AppModel = {
   browserSessions: {},
   navigationHistory: [],
   errors: [],
+  oauthProviders: [],
+  graphqlEndpoints: [],
+  jwtTokens: [],
+  frameworks: [],
+  cloudProbes: [],
+  reconLog: [],
+  attackChains: [],
   _meta: { startedAt: 0, duration: 0, totalToolCalls: 0, lastUpdatedAt: 0, agentVersion: '' },
 };
 

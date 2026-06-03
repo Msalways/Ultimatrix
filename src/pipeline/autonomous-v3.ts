@@ -536,14 +536,74 @@ function heuristicSeverityForNode(node: WorkflowStateNode): AppModelFinding['sev
 
 function inferTechniqueFromEndpoint(ep: any): Technique {
   const path = String(ep.path || '').toLowerCase();
-  if (/:id\b|\/\d+\b|{\w+}/.test(path)) return 'idor';
-  if (/\/login|signin|auth/.test(path)) return 'open-redirect';
-  if (/\/redirect|url|callback/.test(path)) return 'open-redirect';
-  if (/\/api\/|\/v\d+\//.test(path)) return 'sqli';
-  if (/\.json$|\/search\?|q=|query=|search/.test(path)) return 'xss';
-  if (/\/upload|file|path|attachment/.test(path)) return 'path';
-  if (/\/exec|cmd|shell/.test(path)) return 'cmd';
-  if (/\/graphql/.test(path)) return 'sqli';
+  const method = String(ep.method || 'GET').toUpperCase();
+  const body = String(ep.body || ep.contentType || '').toLowerCase();
+
+  // OAuth / SSO / callback endpoints
+  if (/\/oauth|\/authorize|\/callback|\/redirect|response_type|client_id|redirect_uri/.test(path)) {
+    return 'open-redirect';
+  }
+
+  // SSRF — anything that takes a URL as a query param
+  if (/[?&](url|uri|target|dest|redirect|fetch|proxy|api_endpoint)=/.test(path)) {
+    return 'ssrf';
+  }
+
+  // SSTI — render/template endpoints
+  if (/\/render|\/template|\/view|\/compile|\/tpl/.test(path)) {
+    return 'ssti';
+  }
+
+  // Race condition — money/coupon/transfer/invite endpoints
+  if (/\/transfer|\/coupon|\/redeem|\/withdraw|\/claim|\/checkout|\/pay|\/vote|\/invite|\/register/.test(path) && method === 'POST') {
+    return 'race';
+  }
+
+  // JWT/auth token endpoints
+  if (/\/token|\/auth|\/login|\/signin|\/session/.test(path) && method === 'POST') {
+    return 'open-redirect';
+  }
+
+  // File upload — path traversal + bypass
+  if (/\/upload|\/file|\/attachment|\/media|\/image/.test(path) && method === 'POST') {
+    return 'path';
+  }
+
+  // GraphQL — SQLi-style introspection attacks
+  if (/\/graphql/.test(path)) {
+    return 'sqli';
+  }
+
+  // XML / XXE
+  if (/\.xml$|content-type.*xml/.test(path + body)) {
+    return 'xxe';
+  }
+
+  // File path with user-controlled ID
+  if (/:id\b|\/\d+\b|{\w+}/.test(path)) {
+    return 'idor';
+  }
+
+  // General API
+  if (/\/api\/|\/v\d+\//.test(path)) {
+    return 'sqli';
+  }
+
+  // Search / query strings
+  if (/\.json$|\/search\?|q=|query=|search/.test(path)) {
+    return 'xss';
+  }
+
+  // File/path manipulation
+  if (/\/upload|file|path|attachment/.test(path)) {
+    return 'path';
+  }
+
+  // Command exec
+  if (/\/exec|cmd|shell/.test(path)) {
+    return 'cmd';
+  }
+
   return 'xss';
 }
 
