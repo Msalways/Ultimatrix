@@ -313,6 +313,20 @@ program
     process.exit(result.summary.regressed > 0 ? 1 : 0);
   });
 
+program
+  .command('web')
+  .description('start the local web UI for the hunt')
+  .option('-p, --port <port>', 'port to listen on', process.env.PORT ?? '3000')
+  .option('-h, --host <host>', 'host to bind', process.env.HOST ?? '0.0.0.0')
+  .action(async (opts) => {
+    const { startWebServer } = await import('../web/server');
+    const port = parseInt(opts.port, 10);
+    const { port: actual } = await startWebServer({ port, host: opts.host });
+    console.log(`\n\x1b[1;32m▸ Ultimatrix web UI\x1b[0m`);
+    console.log(`  listening on http://localhost:${actual}`);
+    console.log(`  open the URL in a browser, then click \x1b[1mStart hunt\x1b[0m\n`);
+  });
+
 program.parse();
 
 // ── Core helpers ──

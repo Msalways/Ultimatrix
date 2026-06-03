@@ -1,7 +1,7 @@
 {
   "name": "ultimatrix",
   "version": "2.0.0",
-  "description": "AI-powered security team-in-a-box. Multi-agent security testing platform with AutoGen-style orchestration.",
+  "description": "AI security researcher. Composer + 21 primitives, dynamically spawns specialist agents. Real exploit chains across 10 attack classes.",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,13 +9,19 @@
     "ultimatrix": "./dist/cli/index.js"
   },
   "files": [
-    "dist/**/*"
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsx watch src/cli/index.ts",
     "cli": "tsx src/cli/index.ts",
     "demo": "tsx src/cli/index.ts demo",
+    "web": "tsx src/cli/index.ts web",
     "start": "tsx src/cli/index.ts",
     "lint": "tsc --noEmit",
     "test": "vitest run",
@@ -27,11 +33,25 @@
     "security",
     "pentesting",
     "ai-agents",
-    "autogen",
     "vulnerability-scanner",
-    "azure-ai",
     "red-team",
-    "devsecops"
+    "devsecops",
+    "llm",
+    "composer",
+    "primitives",
+    "recursion",
+    "spawn-agents",
+    "waf-bypass",
+    "idor",
+    "xss",
+    "sqli",
+    "ssti",
+    "ssrf",
+    "xxe",
+    "csrf",
+    "file-upload",
+    "open-redirect",
+    "security-headers"
   ],
   "author": "Ultimatrix Team",
   "license": "MIT",

@@ -111,12 +111,17 @@ export class HuntPrompt {
 
 export const SLASH_HELP = `
 Slash commands:
-  /auto            switch to autonomous mode
-  /guided          switch to step-by-step mode
+  /auto            switch to autonomous mode (LLM picks next plan)
+  /guided          switch to step-by-step mode (you approve each plan)
+  /plan            show the LLM's currently proposed plans
+  /attack <n>      execute plan #n
   /findings        list current findings
+  /agents          show the spawned agent tree
+  /chain           run LLM-reasoned chain analysis on accumulated findings
   /test            generate Playwright tests from findings
   /report          render the HTML report now
   /add <url>       add a URL to the workflow graph
+  /budget <time>   adjust the time budget (e.g. "15m", "60s")
   /help            this message
   /quit            exit the hunt
 `.trim();

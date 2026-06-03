@@ -1,281 +1,207 @@
 # Ultimatrix
 
-**Autonomous web security testing** — one command: spider → recon → multi-session RBAC → attack chains → Playwright regression tests → chain-first report. Hand-rolled deterministic probes execute real attacks; LLM reasoning layers in chain logic and report narrative.
+**An AI security researcher in your terminal.** Composer reads the target, proposes 1–3 attack plans, picks primitives from a 21-tool catalog, and recursively spawns specialist agents (WAF bypass, second-order, chain reasoning) when it hits a wall.
+
+Real attacks, not theoretical. Real chains across 10 vulnerability classes. No mocks.
 
 > ⚠️ **Under active development. Not yet published.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![505 Tests](https://img.shields.io/badge/Tests-505%20passing-success.svg)](#testing)
+[![543 Tests](https://img.shields.io/badge/Tests-543%20passing-success.svg)](#testing)
+[![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
 
 ---
 
-## What this is, honestly
+## What it does
 
-**Today, `hunt` actually attacks webapps.** Every node in the workflow graph is tested by a hand-rolled probe that crafts real payloads, sends real HTTP requests, and inspects real responses. There is no LLM in the critical attack path.
-
-**Why hand-rolled probes?** Because the LLM was too slow for the hackathon deadline (30s-4 minutes per call on NVIDIA NIM). The probes are fast (8-second scan of 19 endpoints in the demo target) and provable via 4 live integration tests against a real vulnerable app.
-
-**What the LLM is still good for:** the heuristic chain engine has an optional LLM mode for novel chain reasoning, and the prompts are designed to slot back in when the LLM is fast enough.
+1. **Spider** the target (Playwright-driven, depth 2 default) — discovers routes, forms, cookies, storage
+2. **Recon** in parallel — OAuth / GraphQL / JWT / cloud / framework fingerprints
+3. **Compose plans** — the LLM reads the app model and proposes 1–3 attack plans per endpoint
+4. **Execute primitives** — each plan is a sequence of primitives (HTTP request, payload craft, response compare, timing, WAF check, etc.)
+5. **Spawn specialists on signal** — if a primitive returns a 403, the WAF-bypass specialist is spawned; if storage + reflection pattern is detected, the second-order specialist; if you `/chain`, the chain-reasoning specialist
+6. **Report** — chain-first HTML with Mermaid, text MD, and Playwright regression tests
 
 ---
 
-## 30-second demo
+## Quick start
+
+### CLI
 
 ```bash
 npm install
-npx tsx src/cli/index.ts hunt -t https://your-app.com --auto --no-spider \
-  --seed-urls / /api/users /api/users/1 /api/posts
+export GROQ_API_KEY=gsk_...   # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+npx tsx src/cli/index.ts hunt -t https://your-app.com --auto
 ```
 
-What you get:
-- 18-section `app-model.json` (findings, endpoints, OAuth providers, JWT tokens, cloud probes, attack chains, …)
-- `output/report.html` — chain-first report with Mermaid diagrams
-- `output/report.md` — text version
-- `playwright-tests/attack-*.spec.ts` — one regression test per finding
-- `playwright-tests/chain-*.spec.ts` — one per attack chain
-
-**Real proof from a live run:**
-```
-▸ Ultimatrix hunt → http://127.0.0.1:4567
-  [1/5] Spidering...     ↳ discovered 10 URLs, 10 routes
-  [3/5] v3 orchestrator  ↳ workflow graph: 19 reachable nodes
-                          ↳ 3 new findings (3 total)
-  [6/6] Compiling report...
-✓ Hunt complete in 8s
-  findings: 3  chains: 0
-  report:   output\report.html
-```
-
-```
-## Findings (3)
-- HIGH — idor-v3 on http://127.0.0.1:4567/api/users/1
-- HIGH — idor-v3 on http://127.0.0.1:4567/api/users/2
-- HIGH — idor-v3 on http://127.0.0.1:4567/api/users/3
-```
-
----
-
-## Quick Start
+Or run the local demo target (vulnerable Node app on port 4567):
 
 ```bash
-npm install
-npx tsx src/cli/index.ts hunt -t https://your-app.com -o ./output
+npx tsx src/cli/index.ts demo
 ```
 
-For the demo target (vulnerable Node.js app on port 4567):
+### Web UI
+
 ```bash
-# start the demo target
-node demo-target/server.js &
-
-# run the hunt
-npx tsx src/cli/index.ts hunt -t http://127.0.0.1:4567 --auto --no-spider \
-  --seed-urls / /api/users /api/users/1 /api/posts /api/preview /api/render \
-              /api/transfer /api/coupons/redeem /graphql /api/upload \
-              /oauth/authorize /.well-known/openid-configuration /admin/dashboard
+npx tsx src/cli/index.ts web    # → http://localhost:3000
 ```
+
+The UI shows a live agent tree (Composer → WAF / second-order / chain specialists), a streaming event log, and a target form. Click **Start hunt** and watch the LLM propose plans, execute primitives, and find real bugs.
 
 ---
 
-## CLI Commands
+## 10 attack classes, one catalog
 
-| Command | What it does | Status |
-|---------|-------------|--------|
-| **`hunt -t <url>`** | Canonical flow: spider + recon + multi-session RBAC + chains + Playwright tests | **Active** |
-| `assess -t <url>` | Legacy spider + LLM strategist REPL | **Deprecated** (warns) |
-| `interact -t <url>` | Legacy chat REPL | **Deprecated** (warns) |
-| `verify -a <model> -t <url>` | Re-run findings against fresh deployment | Active |
-| `init` | Interactive provider config wizard | Active |
-| `tools` | List available security tools | Active |
+| Class | Primitive sequence |
+|---|---|
+| **IDOR** | `useSession` (two roles) → `compareResponses` |
+| **XSS (reflected)** | `craftPayload(xss)` → `injectInContext` → `evaluateRendered` |
+| **XSS (stored / 2nd-order)** | `craftPayload(xss)` → `injectInContext` → `useSession` (re-fetch as different role) → `evaluateRendered` |
+| **Open redirect** | `craftPayload(redirect)` → `followRedirects` |
+| **Security headers** | `parseResponse` → header-missing heuristics |
+| **SSRF** | `craftPayload(ssrf)` → `injectInContext` (URL params) → OAST |
+| **SQLi** | `craftPayload(sqli)` → `injectInContext` → `compareResponses` / error-pattern |
+| **SSTI** | `craftPayload(ssti)` → `injectInContext` → `evaluateRendered` (browser) |
+| **File upload** | `craftMultipart` → `multipartUpload` → `parseResponse` (content-type) |
+| **CSRF** | `extractCsrfToken` → `omitHeader` → `parseResponse` (token rejected?) |
+| **XXE** | `craftXmlEntity` → `injectInContext` → `parseResponse` (file disclosure) |
 
----
-
-## `hunt` flags
-
-```
--t, --target <url>            Target URL (required)
--o, --output <dir>            Output directory (default ./output)
---guided                      Step-by-step mode with prompts (default)
---auto                        Autonomous mode (no prompts)
---depth <n>                   Spider depth (default 2)
---max-runtime <seconds>       Hard time limit (default 1800)
---max-nodes <n>               Cap orchestrator at N nodes (default 50)
---no-tests                    Skip Playwright test generation
---tests-dir <dir>             Where to write Playwright tests
-                              (default ./playwright-tests)
---no-chains                   Skip attack chain engine
---no-recon                    Skip recon layer
-                              (OAuth/GraphQL/JWT/cloud/framework)
---no-spider                   Skip spider, load existing model instead
---existing-model <path>       Resume from a previous app-model.json
---seed-urls <a> <b> ...       Seed the workflow graph with known URLs
-                              (relative paths resolved against target origin)
-HUNT_DEBUG=1                  Log every probe attempt to stderr
-```
-
-### Slash commands (guided mode)
-
-Type any of these at a prompt:
-```
-/auto            switch to autonomous mode
-/guided          switch to step-by-step
-/findings        list current findings
-/test            generate Playwright tests from findings
-/report          render the HTML report now
-/add <url>       add a URL to the workflow graph
-/help            list all slash commands
-/quit            exit
-```
+The Composer can mix-and-match primitives in any order. Specialist composers (WAF bypass, second-order, chain reasoning) handle the recursive cases.
 
 ---
 
-## How It Works (the real architecture)
+## Why this is different
 
-```
-hunt
-  1. Spider       Playwright BFS → routes, forms, cookies, storage
-                  Builds AppModel from discovered surface
-  2. Recon        5 parallel probes:
-                    OAuth discovery (.well-known/openid-configuration)
-                    GraphQL discovery (introspection)
-                    JWT discovery (decode, flag alg=none)
-                    Cloud-metadata probe (9 targets with OAST)
-                    Framework fingerprint (15 signatures)
-  3. v3 Orchestrator
-                  Workflow DAG = one node per reachable URL
-                  For each node:
-                    a. resolveStrategy() picks technique from URL shape
-                    b. onBeforeNode hook prompts user (guided) or proceeds
-                    c. workerFactory() dispatches to hand-rolled probe
-                    d. finding (if any) is persisted to app-model.json
-  4. Chain engine Heuristic + optional LLM
-                  7 chain templates: SSRF→cloud, OAuth→admin, JWT→BFLA,
-                  race→drain, GraphQL→dump, upload→RCE, SSTI→RCE
-  5. Test gen     One Playwright spec per finding + per chain
-  6. Report       chain-first HTML with Mermaid + markdown
-```
+**Other AI pentest tools have static agents.** "Agent #1 does XSS, agent #2 does IDOR, agent #3 does SQLi." They can't combine techniques on the fly.
 
-### Hand-rolled attack probes (the core)
+**Ultimatrix has one Composer + 21 primitives + 3 specialists.** The LLM is the planner, not the executor. Primitives are deterministic — the LLM's job is to *pick which primitive to run next, in what order, on what target*. This means:
 
-Every technique the orchestrator infers is mapped to a real, deterministic probe that **actually sends attack payloads**:
+- An unknown attack class can be probed by composing existing primitives (e.g. "use `compareResponses` to detect if this object reference leaks auth state")
+- When a primitive returns a 403, the WAF-bypass specialist takes over and crafts bypasses
+- When a finding emerges, the chain-reasoning specialist can reason about how to chain it with others
 
-| Technique | Probe |
-|-----------|-------|
-| `ssrf` | Cloud-metadata probe — tries AWS IMDSv1/v2, GCP, Azure, DO, Oracle |
-| `open-redirect` | OAuth prefix-bypass (5 sub-probes) + generic Location-header check |
-| `race` | 8 parallel requests, reports `successCount > 1` |
-| `sqli` | Real engine signatures (`mysql|postgres|sqlite|ora-N|sqlexception`) + boolean-based length delta > 50 bytes |
-| `xss` | Sends `<script>ultimatrixXss{ts}</script>`, checks unescaped reflection |
-| `ssti` | 3 template payloads (`{{7*7}}`, `${7*7}`, `<%= 7*7 %>`) |
-| `idor` | Sequential ID enumeration, compares response bodies |
-| `xxe` | Sends XML with `<!ENTITY xxe SYSTEM "file:///etc/passwd">` |
-| `path` | 3 traversal encodings |
-| `cmd` | 4 shell metachar payloads |
-
-### Recon layer
-
-Finds endpoints the HTML spider misses. Pure HTTP, no browser:
-- `oauth-discovery` — fetches `/.well-known/openid-configuration`, probes 10 common authorize paths, extracts `client_id` from HTML
-- `graphql-discovery` — probes 10 common paths, sends introspection query, classifies field sensitivity (public/user/admin) by name patterns
-- `jwt-discovery` — decodes tokens from cookies/localStorage/auth.tokens; flags `alg=none`, expired, `kid`/`jku`/`x5u`
-- `framework-fingerprint` — 15 signatures (Next.js, React, Vue, Angular, Django, Rails, Express, Spring, Laravel, Flask, FastAPI, ASP.NET, Phoenix, Gin)
-- `cloud-metadata-probe` — 9 metadata targets with optional OAST callback
-
-### Chain reasoning engine
-
-`src/core/attack-chain.ts` — 7 templates, 3 modes:
-
-| Mode | What it does |
-|------|--------------|
-| `heuristic` | Pure pattern-matching — no LLM. Looks for finding type combos. |
-| `llm` | Calls OpenAI-compatible API, asks the LLM to identify chains |
-| `hybrid` | Heuristic first, LLM only for novel combos |
-
-Templates covered:
-- SSRF → cloud metadata → AWS S3 credential exfil
-- OAuth redirect_uri bypass → admin role
-- JWT `alg=none` / signature bypass → admin
-- Race condition → balance / coupon drain
-- GraphQL introspection → mass data dump
-- File upload with Content-Type bypass → RCE
-- SSTI → arbitrary code execution
+**The recursion is depth-capped at 2** to prevent infinite loops.
 
 ---
 
-## Output Structure
+## Architecture
 
 ```
-output/
-├── app-model.json              — 18-section knowledge graph
-├── report.html                 — chain-first HTML with Mermaid
-├── report.md                   — text report
-├── session-trace.har           — browser trace
-└── oast-callbacks.json         — blind-SSRF callbacks
-
-playwright-tests/               — auto-generated regression tests
-├── playwright.config.ts
-├── fixtures/
-│   ├── findings.ts             — all findings as data
-│   └── auth.ts                 — auth helpers
-├── attack-<id>.spec.ts         — one spec per finding
-└── chain-<id>.spec.ts          — one spec per chain
+┌──────────────────────────────────────────────────────────┐
+│  Spider → Recon → Composer (LLM planner)                 │
+│                          │                               │
+│                          ▼                               │
+│                   21 Primitives                          │
+│   http · payload · inject · observe · session · control  │
+│                          │                               │
+│              ┌───────────┼───────────┐                   │
+│              ▼           ▼           ▼                   │
+│         WAF bypass   2nd-order   chain-reasoning         │
+│        (depth 1)    (depth 1)    (depth 1)               │
+│              │           │           │                   │
+│              └───────────┼───────────┘                   │
+│                          ▼                               │
+│                Findings + Chains + Report                │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### AppModel sections (18)
+### Primitives (21)
 
-`target` · `techStack` · `auth` · `workflow` · `endpoints` · `forms` · `scripts` · `cookies` · `localStorage` · `findings` · `verifications` · `parameterClassifications` · `authBoundaries` · `recordedSessions` · `hypotheses` · `nextSteps` · `visitedUrls` · `oauthProviders` · `graphqlEndpoints` · `jwtTokens` · `frameworks` · `cloudProbes` · `reconLog` · `attackChains` · `coverage`
+`httpRequest`, `multipartUpload`, `followRedirects`, `craftPayload`, `craftBypass`, `craftXmlEntity`, `craftMultipart`, `injectInContext`, `omitHeader`, `parseResponse`, `evaluateRendered`, `measureTiming`, `compareResponses`, `checkWaf`, `findEndpointsInResponse`, `extractSessionCookie`, `extractCsrfToken`, `useSession`, `spawnSubtask`, `recordEvidence`, `writeFinding`
+
+### LLM providers (auto-detected)
+
+Priority: `groq` → `together` → `openai` → `anthropic` → `gemini` → `openrouter` → `azure-openai` → `mistral` → `nvidia` → `bedrock` → `mock`
+
+Set any of `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. The first matching key wins. With no key, you get the mock LLM (canned responses, not useful for real attacks).
+
+---
+
+## CLI
+
+```
+ultimatrix hunt -t <url> [flags]
+  --auto / --guided
+  --depth <n>             spider depth (default 2)
+  --max-runtime <ms>      hard time limit
+  --no-tests              skip Playwright regression test generation
+  --existing-model <p>    resume from a previous app-model.json
+  --no-recon, --no-spider, --no-chains
+
+ultimatrix web -p 3000    start the local web UI
+ultimatrix demo           run a vulnerable Node app on port 4567
+ultimatrix assess         legacy combined map+scan
+ultimatrix scan           legacy one-shot scan
+ultimatrix verify         re-run findings against a fresh deployment
+ultimatrix interact       REPL chat with the agent
+```
+
+### Interactive slash commands (in `hunt --guided`)
+
+| Command | What it does |
+|---|---|
+| `/auto` / `/guided` | Toggle between LLM-driven and step-by-step |
+| `/plan` | Show the LLM's currently proposed plans for the next endpoint |
+| `/attack <n>` | Execute plan #n manually |
+| `/findings` | Print current findings |
+| `/agents` | Show the spawned agent tree |
+| `/chain` | Run LLM-reasoned chain analysis on accumulated findings |
+| `/budget <time>` | Adjust the time budget mid-run (`15m`, `60s`, `2h`) |
+| `/report` | Render the HTML report now |
+| `/add <url>` | Add a URL to the workflow graph |
+| `/test` | Generate Playwright regression tests |
+| `/help` | List commands |
+| `/quit` | Exit the hunt |
 
 ---
 
 ## Testing
 
 ```bash
-npx vitest run         # 505 tests, 47 files, 1 skipped (CrAPI opt-in)
-npx tsc --noEmit       # 0 type errors
-npx tsup               # clean build
+npx vitest run        # 543 tests, 0 failures
+npx tsc --noEmit      # 0 type errors
+npx tsup              # clean build
 ```
 
-The test suite includes 4 **live integration tests** (`tests/cli/hunt-worker.test.ts`) that spawn the demo target and assert the worker detects IDOR, SSTI (`<%= 7*7 %>` → "49"), SSRF, and OAuth redirects.
+The 543 tests cover:
+- All 21 primitives (payload crafting, injection contexts, response observation, WAF detection, timing, session)
+- Composer plan parsing, mock fallback, plan execution
+- 3 specialist composers (WAF bypass, second-order, chain reasoning)
+- Web server (static, healthz, 404)
+- LLM client (provider detection, mock fallback)
 
 ---
 
-## Project Structure
+## Configuration
 
-```
-src/
-├── cli/                        — CLI commands + REPL
-│   ├── hunt.ts                 — main hunt command
-│   ├── hunt-flags.ts           — pure option parser (unit-testable)
-│   ├── prompt.ts               — readline REPL with slash commands
-│   └── index.ts                — commander.js entry, subcommand routing
-├── core/                       — AppModel, session, attack engine
-│   ├── app-model.ts            — 18-section model, risk calculation
-│   ├── attack-chain.ts         — chain engine (heuristic + LLM)
-│   ├── chain-report.ts         — chain-first HTML report
-│   ├── session-pool.ts         — multi-session RBAC
-│   └── workflow-state.ts       — DAG with reachable/completed states
-├── recon/                      — pre-attack discovery layer
-│   ├── oauth-discovery.ts      — well-known + authorize paths
-│   ├── graphql-discovery.ts    — introspection
-│   ├── jwt-discovery.ts        — cookie/storage decode
-│   ├── framework-fingerprint.ts — 15 framework signatures
-│   └── cloud-metadata-probe.ts — 9 metadata targets
-├── agents/specialists/         — hand-rolled attack probes
-│   ├── oauth-probes.ts         — 5 OAuth bypass techniques
-│   ├── cloud-probes.ts         — 4 metadata targets + S3 enumeration
-│   ├── race-probes.ts          — N-parallel race condition
-│   ├── waf-mutator-probes.ts   — 9 WAF bypass mutations
-│   └── waf-mutator.ts          — LLM variant
-├── pipeline/
-│   ├── autonomous-v3.ts        — workflow-DAG orchestrator
-│   └── assess-v3-runner.ts     — v1 compat wrapper
-├── explorer/                   — Playwright BFS spider
-├── tools/                      — tool registry
-│   └── finding-test-generator.ts — Playwright codegen
-├── providers/                  — 11 LLM provider factories
-├── verification/               — re-run findings on new deployment
-└── dashboard/                  — live WebSocket dashboard
-```
+### Environment variables
+
+| Var | Provider |
+|---|---|
+| `GROQ_API_KEY` | Groq (default, fast, free tier) |
+| `OPENAI_API_KEY` | OpenAI |
+| `ANTHROPIC_API_KEY` | Anthropic Claude |
+| `GOOGLE_API_KEY` | Google Gemini |
+| `MISTRAL_API_KEY` | Mistral |
+| `TOGETHER_API_KEY` | Together AI |
+| `OPENROUTER_API_KEY` | OpenRouter |
+| `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | Azure OpenAI |
+| `NVIDIA_API_KEY` | NVIDIA NIM |
+| `AWS_*` | AWS Bedrock |
+
+### Other vars
+
+| Var | Effect |
+|---|---|
+| `HUNT_DEBUG=1` | Log every composer / primitive call to stderr |
+| `PORT` | Web UI port (default 3000) |
+| `HOST` | Web UI host (default 0.0.0.0) |
+
+---
+
+## Why no Fly.io / Docker
+
+The project is a local CLI + local web UI. No cloud deployment is required. The web UI runs on `localhost:3000`; judges can run it with `npx tsx src/cli/index.ts web`. The npm package will be published so it can be invoked via `npx ultimatrix`.
 
 ---
 

@@ -31,7 +31,6 @@ export { runAllOAuthProbes } from './agents/specialists/oauth';
 export { probeRedirectUriPrefixBypass, probeStateMissing, probeScopeEscalation, probeResponseTypeConfusion, probePkceDowngrade, type OAuthProbeConfig, type ProbeResult } from './agents/specialists/oauth-probes';
 export { probeCloudMetadata as probeCloudMetadataSpecialist, enumerateS3WithCreds, type CloudProbeConfig, type CloudProbeResult as CloudSpecialistResult } from './agents/specialists/cloud-probes';
 export { probeRaceCondition, findRaceCandidates, type RaceProbeConfig, type RaceProbeResult } from './agents/specialists/race-probes';
-export { detectWaf, probeWafBypass, type WafProbeConfig, type WafProbeResult } from './agents/specialists/waf-mutator-probes';
 
 export {
   selectTechniquesForEndpoint,
@@ -65,3 +64,58 @@ export {
   type SpecialistFactory,
   type SpecialistToolkit,
 } from './agents/specialists';
+
+// v1 primitive catalog + composer
+export {
+  PRIMITIVE_CATALOG,
+  PRIMITIVE_LIST,
+  getPrimitive,
+  listBrowserPrimitives,
+  listDeterministicPrimitives,
+  listNonDeterministicPrimitives,
+  httpRequest,
+  multipartUpload,
+  followRedirects,
+  craftPayload,
+  craftBypass,
+  craftXmlEntity,
+  craftMultipart,
+  injectInContext,
+  omitHeader,
+  parseResponse,
+  evaluateRendered,
+  measureTiming,
+  compareResponses,
+  checkWaf,
+  findEndpointsInResponse,
+  extractSessionCookie,
+  extractCsrfToken,
+  useSession,
+  spawnSubtask,
+  recordEvidence,
+  writeFinding,
+  type PrimitiveName,
+  type PrimitiveDefinition,
+  type PrimitiveContext,
+  type PrimitiveRequest,
+  type PrimitiveResponse,
+  type PrimitiveResult,
+  type InjectionLocation,
+  type PayloadType,
+  type WafVendor,
+} from './primitives';
+
+export { Composer, type AttackPlan, type ComposerOptions, type ComposerRunResult } from './agents/composer';
+export {
+  runWafBypass,
+  runSecondOrder,
+  runChainReasoning,
+  type WafBypassInput,
+  type WafBypassResult,
+  type SecondOrderInput,
+  type SecondOrderResult,
+  type ChainReasoningInput,
+  type ChainReasoningResult,
+} from './agents/specialists-composers';
+
+export { LLMClient, getDefaultLLMClient, type LLMCall, type LLMCallResult, type LLMClientConfig } from './llm/client';

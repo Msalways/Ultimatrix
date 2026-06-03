@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ultimatrix — AI Security Operator</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --fg: #d4d4d4;
+    --muted: #6e7681;
+    --accent: #7ee787;
+    --accent2: #ffa657;
+    --danger: #ff7b72;
+    --warn: #d29922;
+    --info: #79c0ff;
+    --panel: #161b22;
+    --border: #30363d;
+    --mono: ui-monospace, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .subtitle { color: var(--muted); font-size: 12px; }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 1px;
+    background: var(--border);
+    height: calc(100vh - 57px);
+  }
+  .panel { background: var(--panel); padding: 16px; overflow: auto; }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    font-weight: 600;
+  }
+  .controls {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .controls input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 14px;
+    border-radius: 6px;
+  }
+  .controls button {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 8px 16px;
+    font-weight: 600;
+    font-family: var(--mono);
+    font-size: 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .controls button:disabled {
+    background: var(--muted);
+    cursor: not-allowed;
+  }
+  .log { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .log .ts { color: var(--muted); }
+  .log .ev-started { color: var(--accent2); }
+  .log .ev-done { color: var(--accent); }
+  .log .ev-error { color: var(--danger); }
+  .log .ev-plan { color: var(--info); }
+  .log .ev-finding { color: var(--accent); }
+  .log .ev-chain { color: var(--warn); }
+  .agent-tree { font-size: 12px; }
+  .agent-tree ul { list-style: none; padding-left: 16px; margin: 0; }
+  .agent-tree > ul { padding-left: 0; }
+  .agent-tree li::before { content: "├─ "; color: var(--muted); }
+  .agent-tree li:last-child::before { content: "└─ "; }
+  .agent-tree .node-composer { color: var(--accent2); font-weight: 600; }
+  .agent-tree .node-waf { color: var(--warn); }
+  .agent-tree .node-second-order { color: var(--info); }
+  .agent-tree .node-chain { color: var(--accent); }
+  .empty { color: var(--muted); font-style: italic; }
+  .status { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .status .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); margin-right: 6px;
+  }
+  .status.live .dot { background: var(--accent); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .findings { font-size: 12px; }
+  .findings .finding {
+    border-left: 3px solid var(--border);
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: var(--bg);
+  }
+  .findings .sev-critical { border-left-color: var(--danger); }
+  .findings .sev-high { border-left-color: var(--warn); }
+  .findings .sev-medium { border-left-color: var(--accent2); }
+  .findings .sev-low { border-left-color: var(--info); }
+  .findings .sev-info { border-left-color: var(--muted); }
+  .findings .finding .type { font-weight: 600; color: var(--accent); }
+  .findings .finding .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  a { color: var(--info); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ultimatrix</h1>
+  <span class="subtitle">AI security operator · composer + 21 primitives · Groq / OpenAI</span>
+  <div class="status" id="status"><span class="dot"></span><span id="status-text">idle</span></div>
+</header>
+<main>
+  <section class="panel controls">
+    <input type="url" id="target" placeholder="https://example.com" />
+    <button id="start">Start hunt</button>
+  </section>
+  <section class="panel">
+    <h2>Agent tree</h2>
+    <div class="agent-tree" id="tree">
+      <p class="empty">No agents spawned yet. Click <em>Start hunt</em>.</p>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Live log</h2>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+<script>
+(function () {
+  const $target = document.getElementById('target');
+  const $start = document.getElementById('start');
+  const $log = document.getElementById('log');
+  const $tree = document.getElementById('tree');
+  const $status = document.getElementById('status');
+  const $statusText = document.getElementById('status-text');
+
+  let ws = null;
+  let running = false;
+
+  function setStatus(text, live) {
+    $statusText.textContent = text;
+    $status.classList.toggle('live', !!live);
+  }
+
+  function logLine(text, cls) {
+    const ts = new Date().toISOString().slice(11, 19);
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="ts">${ts}</span> <span class="ev-${cls}">${escape(text)}</span>`;
+    $log.appendChild(div);
+    $log.scrollTop = $log.scrollHeight;
+  }
+
+  function escape(s) {
+    return String(s).replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  function renderTree(events) {
+    const composer = events.find((e) => e.technique && !e.specialist);
+    if (!composer) {
+      $tree.innerHTML = '<p class="empty">No agents spawned yet.</p>';
+      return;
+    }
+    const subs = events.filter((e) => e.specialist);
+    const subsHtml = subs.length === 0
+      ? ''
+      : '<ul>' + subs.map((s) => `<li><span class="node-${s.specialist}">${s.specialist} specialist</span>: ${escape(s.reason || '')}</li>`).join('') + '</ul>';
+    $tree.innerHTML = `<ul><li><span class="node-composer">Composer</span> → ${escape(composer.technique)} on ${escape(composer.url || '')}${subsHtml}</li></ul>`;
+  }
+
+  function start() {
+    const target = $target.value.trim();
+    if (!target) {
+      alert('Enter a target URL');
+      return;
+    }
+    if (running) return;
+    running = true;
+    $start.disabled = true;
+    $log.innerHTML = '';
+    setStatus('running', true);
+    logLine('connecting to /ws …', 'started');
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onopen = () => {
+      logLine('connected — sending start', 'started');
+      ws.send(JSON.stringify({ type: 'start', target, outputDir: './output' }));
+    };
+    ws.onmessage = (m) => {
+      const ev = JSON.parse(m.data);
+      const events = (window._ultimatrixEvents = window._ultimatrixEvents || []);
+      events.push(ev);
+      if (ev.type === 'started') logLine(`hunt started → ${ev.target}`, 'started');
+      else if (ev.type === 'done') {
+        logLine('hunt complete', 'done');
+        if (ev.outputDir) logLine(`report at ${ev.outputDir}/report.html`, 'done');
+        setStatus('done', false);
+        running = false; $start.disabled = false;
+      }
+      else if (ev.type === 'error') {
+        logLine(`error: ${ev.message}`, 'error');
+        setStatus('error', false);
+        running = false; $start.disabled = false;
+      }
+      else if (ev.type === 'plan') {
+        logLine(`plan: ${ev.technique} on ${ev.url} (primitives: ${(ev.primitives || []).join(' → ')})`, 'plan');
+        renderTree(events);
+      }
+      else if (ev.type === 'finding') {
+        logLine(`[${ev.severity}] ${ev.findingType} @ ${ev.endpoint} (conf=${ev.confidence})`, 'finding');
+      }
+      else if (ev.type === 'chain') {
+        logLine(`chain: ${ev.name} (${ev.severity}, ${(ev.steps || []).length} steps)`, 'chain');
+      }
+      else if (ev.type === 'primitive') {
+        logLine(`  ${ev.name} → ${ev.outcome || 'ok'}`, 'plan');
+      }
+    };
+    ws.onclose = () => {
+      if (running) { setStatus('disconnected', false); running = false; $start.disabled = false; }
+    };
+    ws.onerror = () => {
+      logLine('websocket error', 'error');
+      setStatus('error', false);
+      running = false; $start.disabled = false;
+    };
+  }
+
+  $start.addEventListener('click', start);
+  $target.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+})();
+</script>
+</body>
+</html>

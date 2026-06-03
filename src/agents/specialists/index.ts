@@ -1,9 +1,10 @@
 /**
  * src/agents/specialists/index.ts
  *
- * Registry of specialist sub-agents. Exports the per-scan selector
- * `selectSpecialistsForScan()` which uses the relevance heuristic
- * on each specialist to pick the minimal set for the current target.
+ * Legacy specialist registry — kept for backward compatibility. The v1
+ * hunt pipeline uses the dynamic Composer (src/agents/composer.ts) and
+ * the specialist composers (src/agents/specialists-composers/) instead.
+ * New code should import from those modules.
  */
 
 import type { SubAgent } from 'deepagents';
@@ -14,7 +15,6 @@ import { idorSpecialist } from './idor';
 import { jwtSpecialist } from './jwt';
 import { graphqlSpecialist } from './graphql';
 import { wafMutatorSpecialist } from './waf-mutator';
-import { triageReviewerSpecialist } from './triage-reviewer';
 import { oauthSpecialist } from './oauth';
 import { cloudSpecialist } from './cloud';
 import { raceSpecialist } from './race';
@@ -28,7 +28,6 @@ export const ALL_SPECIALISTS: SpecialistFactory[] = [
   oauthSpecialist,
   cloudSpecialist,
   raceSpecialist,
-  triageReviewerSpecialist,
 ];
 
 export interface SelectionResult {
@@ -40,20 +39,14 @@ export interface SelectionResult {
 export async function selectSpecialistsForScan(
   appModel: AppModel,
   toolkit: SpecialistToolkit,
-  options: { includeTriage?: boolean; alwaysInclude?: string[] } = {},
+  options: { alwaysInclude?: string[] } = {},
 ): Promise<SelectionResult> {
   const alwaysInclude = new Set(options.alwaysInclude || []);
-  const includeTriage = options.includeTriage ?? true;
   const selected: SubAgent[] = [];
   const selectedNames: string[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
 
   for (const factory of ALL_SPECIALISTS) {
-    const isTriage = factory.name === 'triage-reviewer-specialist';
-    if (isTriage && !includeTriage) {
-      skipped.push({ name: factory.name, reason: 'triage excluded by options' });
-      continue;
-    }
     if (alwaysInclude.has(factory.name)) {
       selected.push(factory.build(toolkit));
       selectedNames.push(factory.name);
@@ -88,7 +81,6 @@ export {
   jwtSpecialist,
   graphqlSpecialist,
   wafMutatorSpecialist,
-  triageReviewerSpecialist,
   oauthSpecialist,
   cloudSpecialist,
   raceSpecialist,

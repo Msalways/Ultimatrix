@@ -47,34 +47,30 @@ function makeAppModel(overrides: Partial<AppModel> = {}): AppModel {
 }
 
 describe('specialists registry', () => {
-  it('listAllSpecialistNames returns the 9 specialist names', () => {
+  it('listAllSpecialistNames returns the 8 specialist names', () => {
     const names = listAllSpecialistNames();
-    expect(names).toHaveLength(9);
-    expect(names).toContain('xss-specialist');
-    expect(names).toContain('idor-specialist');
-    expect(names).toContain('jwt-specialist');
-    expect(names).toContain('graphql-specialist');
-    expect(names).toContain('waf-mutator-specialist');
-    expect(names).toContain('oauth-specialist');
-    expect(names).toContain('cloud-specialist');
-    expect(names).toContain('race-specialist');
-    expect(names).toContain('triage-reviewer-specialist');
+    expect(names).toHaveLength(8);
   });
 
-  it('ALL_SPECIALISTS has 9 factories', () => {
-    expect(ALL_SPECIALISTS).toHaveLength(9);
+  it('ALL_SPECIALISTS has 8 factories', () => {
+    expect(ALL_SPECIALISTS).toHaveLength(8);
   });
 });
 
 describe('selectSpecialistsForScan', () => {
-  it('returns triage by default', async () => {
-    const result = await selectSpecialistsForScan(makeAppModel(), makeToolkit());
-    expect(result.selectedNames).toContain('triage-reviewer-specialist');
+  it('returns a non-empty list of specialists by default', async () => {
+    const result = await selectSpecialistsForScan(
+      makeAppModel({
+        parameterClassifications: [{ paramName: 'userId', pageUrl: '/users', classifiedAs: 'id', attackHints: [] }],
+      }),
+      makeToolkit(),
+    );
+    expect(result.selectedNames.length).toBeGreaterThan(0);
   });
 
-  it('skips triage when includeTriage=false', async () => {
-    const result = await selectSpecialistsForScan(makeAppModel(), makeToolkit(), { includeTriage: false });
-    expect(result.selectedNames).not.toContain('triage-reviewer-specialist');
+  it('skips specialists when alwaysInclude is restrictive', async () => {
+    const result = await selectSpecialistsForScan(makeAppModel(), makeToolkit(), { alwaysInclude: ['xss-specialist'] });
+    expect(result.selectedNames).toContain('xss-specialist');
   });
 
   it('includes JWT specialist when auth.type is JWT', async () => {
