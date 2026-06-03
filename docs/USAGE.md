@@ -1,385 +1,338 @@
-# Usage Guide
+# Ultimatrix — Usage Guide
 
-> **⚠️ DEPRECATED** — This file refers to the old "sentinel" architecture (HAR-based pipeline). See [USAGE.md](../USAGE.md) at the project root for current documentation.
->
-> **Removed in this version:**
-> - `sentinel run`, `sentinel demo`, `sentinel report` commands — replaced by `ultimatrix assess`
-> - HAR-based pipeline — replaced by autonomous spider + strategist
-> - Programmatic API (`createPipeline`, `createOpenAIModel`, etc.) — internal only, not public
-> - Manual test generation — replaced by auto-generated Playwright tests
-
-This guide covers practical usage of Ultimatrix for security testing.
-
-## Table of Contents
-1. [Basic Usage](#basic-usage)
-2. [CLI Commands](#cli-commands)
-3. [Programmatic API](#programmatic-api)
-4. [HAR File Format](#har-file-format)
-5. [Interpreting Results](#interpreting-results)
-6. [Common Scenarios](#common-scenarios)
+How to install, run, configure, and extend Ultimatrix.
 
 ---
 
-## Basic Usage
-
-### 1. Quick Demo
+## Prerequisites
 
 ```bash
-# Set API key
-export OPENAI_API_KEY=sk-...
-
-# Run demo with sample data
-node dist/cli/index.js demo
-```
-
-This generates a sample security report without needing a HAR file.
-
-### 2. Run with HAR File
-
-```bash
-# Export your browser session to HAR (Chrome DevTools → Network → Export HAR)
-# Then run:
-
-node dist/cli/index.js run \
-  --file /path/to/your-session.har \
-  --target https://api.yourapp.com
-```
-
-### 3. Generate Report
-
-```bash
-# From JSON results
-node dist/cli/index.js report \
-  --input results.json \
-  --output report.html
-```
-
----
-
-## CLI Commands
-
-### `sentinel run`
-
-Main command for security scanning.
-
-```bash
-# Basic usage
-sentinel run --file sample.har
-
-# Full options
-sentinel run \
-  --file sample.har \                    # HAR file path (required)
-  --target https://api.example.com \   # Target URL
-  --output report.html \                # Output file
-  --format html \                       # html, json, markdown
-  --api-key sk-... \                    # API key (or use env)
-  --model gpt-4o-mini                   # Model to use
-```
-
-### `sentinel demo`
-
-Run with sample data for demonstration.
-
-```bash
-sentinel demo --output demo.html --format html
-```
-
-### `sentinel test`
-
-Note: Live URL testing requires a HAR file. This command guides users.
-
-```bash
-sentinel test --target https://example.com
-# Output: "Use sentinel run --file <har> --target <url>"
-```
-
-### `sentinel report`
-
-Generate reports from previous results.
-
-```bash
-sentinel report --input results.json --format html
-```
-
-### `sentinel tools`
-
-List available tools and capabilities.
-
-```bash
-sentinel tools
-```
-
----
-
-## Programmatic API
-
-### Import the library
-
-```typescript
-import { 
-  createPipeline,
-  createOpenAIModel,
-  createTestRunner,
-  createReportGenerator,
-} from './dist/index.js';
-```
-
-### Simple Pipeline
-
-```typescript
-const pipeline = createPipeline({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const result = await pipeline.run({
-  harFile: './sample.har',
-  targetUrl: 'https://api.example.com',
-});
-
-console.log(result.report);  // HTML report
-```
-
-### Custom Agent Workflow
-
-```typescript
-import { 
-  createOpenAIModel,
-  createSemanticLinker,
-  createAuthAuditor,
-  createTestCaseGenerator,
-  createTestRunner,
-  createReportGenerator,
-  loadHAR,
-} from './dist/index.js';
-
-// 1. Setup
-const model = createOpenAIModel({ apiKey: process.env.OPENAI_API_KEY });
-
-// 2. Parse HAR
-const parsed = loadHAR('./sample.har');
-
-// 3. Build dependency graph
-const linker = createSemanticLinker({ model });
-const graphResult = await linker.analyze(JSON.stringify({ 
-  log: { entries: parsed.entries } 
-}));
-
-// 4. Audit authentication
-const auditor = createAuthAuditor({ model });
-const endpoints = graphResult.graph.nodes
-  .filter(n => n.location === 'request')
-  .map(n => ({ url: `${n.service}/${n.field}`, method: 'GET', headers: {} }));
-const authResult = await auditor.auditEndpoints(endpoints);
-
-// 5. Generate tests
-const generator = createTestCaseGenerator({ model });
-const testResult = await generator.generateTests(
-  graphResult.graph,
-  { endpoints: authResult.endpoints, issues: authResult.criticalIssues }
-);
-
-// 6. Run tests
-const runner = createTestRunner({ headless: true });
-const testRunResult = await runner.runTests(
-  testResult.testCases,
-  'https://api.example.com'
-);
-await runner.cleanup();
-
-// 7. Generate report
-const reportGen = createReportGenerator({ targetUrl: 'https://api.example.com' });
-const report = reportGen.generateHTML(
-  graphResult.graph,
-  { endpoints: authResult.endpoints },
-  testRunResult
-);
-
-// Save report
-import * as fs from 'fs';
-fs.writeFileSync('./report.html', report);
-```
-
----
-
-## HAR File Format
-
-### What is HAR?
-
-HAR (HTTP Archive) captures browser network traffic including:
-- All HTTP requests/responses
-- Headers, cookies, body content
-- Timing information
-
-### How to Export HAR
-
-#### Chrome
-1. Open DevTools (F12)
-2. Go to Network tab
-3. Perform actions you want to capture
-4. Click "Export HAR" (down arrow icon)
-
-#### Firefox
-1. Open DevTools (F12)
-2. Go to Network tab
-3. Perform actions
-4. Click Settings gear → Save All As HAR
-
-### Sample HAR Structure
-
-```json
-{
-  "log": {
-    "version": "1.2",
-    "entries": [
-      {
-        "startedDateTime": "2026-05-20T10:00:00.000Z",
-        "time": 245,
-        "request": {
-          "method": "POST",
-          "url": "https://api.example.com/auth/login",
-          "headers": [
-            { "name": "Content-Type", "value": "application/json" }
-          ],
-          "postData": {
-            "text": "{\"email\":\"user@example.com\"}"
-          }
-        },
-        "response": {
-          "status": 200,
-          "content": {
-            "text": "{\"token\":\"abc123\"}"
-          }
-        }
-      }
-    ]
-  }
-}
-```
-
----
-
-## Interpreting Results
-
-### Risk Levels
-
-| Level | Score | Meaning |
-|-------|-------|---------|
-| 🔴 Critical | 50-100 | Immediate action required |
-| 🟠 High | 30-49 | Urgent attention needed |
-| 🟡 Medium | 10-29 | Review and remediate |
-| 🟢 Low | 1-9 | Minor improvements |
-| ✅ Safe | 0 | No issues found |
-
-### Finding Categories
-
-1. **Broken Access Control** - Unauthorized access to resources
-2. **IDOR** - Insecure Direct Object Reference
-3. **Authentication Bypass** - Weak auth mechanisms
-4. **Data Exposure** - Sensitive data in responses
-5. **Injection** - SQL, XSS, command injection
-
-### Report Sections
-
-1. **Risk Score** - Overall security posture (0-100)
-2. **Test Summary** - Total tests run, passed, failed
-3. **Findings** - Detailed security issues with:
-   - Severity (critical/high/medium/low)
-   - Description
-   - Evidence
-   - Recommendation
-
----
-
-## Common Scenarios
-
-### Scenario 1: Testing API Authentication
-
-```bash
-# 1. Login to your app in browser
-# 2. Export HAR with login + some API calls
-# 3. Run scan
-
-sentinel run --file session.har --target https://api.yourapp.com
-```
-
-### Scenario 2: Finding Data Exposures
-
-The sample HAR includes responses with:
-- Hardcoded passwords
-- API keys in responses
-- PII (SSN, credit cards)
-
-Run the demo to see how these are detected:
-
-```bash
-sentinel demo
-```
-
-### Scenario 3: Multi-step Workflow Testing
-
-```typescript
-// Generate tests for complex workflows
-const result = await pipeline.run({
-  harFile: './workflow.har',
-  targetUrl: 'https://app.example.com',
-});
-```
-
-### Scenario 4: Custom Test Cases
-
-```typescript
-// Add custom test cases to the generation
-const generator = createTestCaseGenerator({ model });
-
-// Custom test case format
-const customTest = {
-  id: 'custom-1',
-  category: 'injection',
-  name: 'SQL Injection Test',
-  targetEndpoint: '/api/users',
-  method: 'GET',
-  modifiedQuery: "'; DROP TABLE users;--",
-  successCriteria: 'Error or unexpected response',
-};
-```
-
----
-
-## Troubleshooting
-
-### "No API key provided"
-
-```bash
-export OPENAI_API_KEY=sk-your-key
-```
-
-### "HAR file not found"
-
-```bash
-# Check file path
-ls -la sample.har
-```
-
-### "Timeout during test execution"
-
-```typescript
-// Increase timeout
-const runner = createTestRunner({ 
-  timeout: 60000,  // 60 seconds
-});
-```
-
-### "Browser not launching"
-
-```bash
-# Install Playwright browsers
+node >= 20
+npm install
+# Playwright browser (only needed if you enable the spider)
 npx playwright install chromium
 ```
 
 ---
 
-## Next Steps
+## 1. Quick start (3 commands)
 
-- Review the [Architecture Documentation](ARCHITECTURE.md)
-- Check out [API Reference](API.md)
-- See [Contributing Guide](CONTRIBUTING.md)
+```bash
+# 1. Install
+npm install
+
+# 2. (Optional) Set an LLM key — only needed for LLM chain reasoning
+#    The default hunt is fully hand-rolled and works WITHOUT a key.
+export OPENAI_API_KEY=sk-...
+
+# 3. Run
+npx tsx src/cli/index.ts hunt -t https://your-app.com -o ./output
+```
+
+The hunt command will:
+1. Spider the target (Playwright BFS)
+2. Run recon (OAuth / GraphQL / JWT / cloud / framework)
+3. Test every reachable URL with hand-rolled probes
+4. Run the attack chain engine
+5. Generate Playwright regression tests
+6. Write `output/report.html` (chain-first with Mermaid) and `output/report.md`
+
+---
+
+## 2. The `hunt` command
+
+`hunt` is the canonical command. It collapses `assess` + `interact` + `test` into one integrated flow.
+
+### 2.1 Modes
+
+```bash
+# Autonomous mode (no prompts, default for CI):
+npx tsx src/cli/index.ts hunt -t https://target.com --auto
+
+# Guided mode (prompts per workflow node, slash commands inside):
+npx tsx src/cli/index.ts hunt -t https://target.com --guided
+```
+
+### 2.2 Flags
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `-t, --target <url>` | Target URL (**required**) | — |
+| `-o, --output <dir>` | Output directory | `./output` |
+| `--guided` | Prompt per node (default) | on |
+| `--auto` | No prompts | off |
+| `--depth <n>` | Spider BFS depth | `2` |
+| `--max-runtime <seconds>` | Hard time limit | `1800` |
+| `--max-nodes <n>` | Cap orchestrator at N nodes | `50` |
+| `--no-tests` | Skip Playwright test generation | off |
+| `--tests-dir <dir>` | Where to write Playwright tests | `./playwright-tests` |
+| `--no-chains` | Skip attack chain engine | off |
+| `--no-recon` | Skip recon layer | off |
+| `--no-spider` | Skip spider, load existing model | off |
+| `--existing-model <path>` | Resume from a previous `app-model.json` | — |
+| `--seed-urls <a> <b> ...` | Seed the workflow graph with known URLs | — |
+| `HUNT_DEBUG=1` | Log every probe attempt to stderr | off |
+
+### 2.3 Slash commands (guided mode only)
+
+Type any of these at a prompt:
+
+| Command | What it does |
+|---------|--------------|
+| `/auto` | Switch to autonomous mode |
+| `/guided` | Switch to step-by-step mode |
+| `/findings` | List current findings |
+| `/test` | Generate Playwright tests from findings |
+| `/report` | Render the HTML report now |
+| `/add <url>` | Add a URL to the workflow graph |
+| `/help` | List all slash commands |
+| `/quit` | Exit the hunt |
+
+### 2.4 Per-node prompt (guided mode)
+
+When the orchestrator reaches a workflow node, you see:
+
+```
+── Node 7a3f ─────────────────
+  url:      https://target.com/api/users/1
+  method:   GET
+  technique: idor
+  severity: high
+```
+
+Press:
+- **Y** (Enter) to test it
+- **s** to skip this node
+- **i** to investigate (show details)
+- **d** to dismiss
+- **a** to add a different URL
+
+### 2.5 Practical examples
+
+```bash
+# Full scan with a 5-minute time budget
+npx tsx src/cli/index.ts hunt -t https://target.com --auto --max-runtime 300
+
+# Resume from a previous model (skip spider entirely)
+npx tsx src/cli/index.ts hunt -t https://target.com --no-spider \
+    --existing-model ./output/app-model.json
+
+# Known API surface — skip spider, feed URLs directly
+npx tsx src/cli/index.ts hunt -t https://target.com --no-spider \
+    --seed-urls / /api/users /api/users/1 /api/posts /graphql /oauth/authorize
+
+# Skip test generation (faster)
+npx tsx src/cli/index.ts hunt -t https://target.com --auto --no-tests
+
+# Deep recon, no chains
+npx tsx src/cli/index.ts hunt -t https://target.com --auto --no-chains
+
+# Debug: log every probe attempt
+HUNT_DEBUG=1 npx tsx src/cli/index.ts hunt -t https://target.com --auto --no-tests \
+    --no-spider --no-recon --seed-urls / /api/users/1
+```
+
+---
+
+## 3. Verifying against a new deployment
+
+```bash
+npx tsx src/cli/index.ts verify \
+  -a ./output/app-model.json \
+  -t https://new-deployment.com \
+  -o ./verify-output
+```
+
+Each finding is classified as `fixed` / `regressed` / `unchanged` / `unknown`. Exit code is 1 if any regressions are found.
+
+---
+
+## 4. Init — provider config
+
+```bash
+npx tsx src/cli/index.ts init
+```
+
+Interactive wizard for choosing LLM provider, API key, and default model. Writes `ultimatrix.yaml` and `~/.config/ultimatrix/providers.yaml`.
+
+### Environment variables
+
+```bash
+export OPENAI_API_KEY=sk-...        # any OpenAI-compatible key
+export ANTHROPIC_API_KEY=...
+export AZURE_OPENAI_API_KEY=...
+export OPENROUTER_API_KEY=...
+export GROQ_API_KEY=...
+export GEMINI_API_KEY=...
+export AWS_ACCESS_KEY_ID=...        # Bedrock
+```
+
+Auto-detection order: `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `ANTHROPIC_API_KEY` → `AZURE_OPENAI_API_KEY` → `GROQ_API_KEY` → `GEMINI_API_KEY` → `AWS_ACCESS_KEY_ID`.
+
+### Provider config file
+
+`~/.config/ultimatrix/providers.yaml`:
+```yaml
+provider: openai
+apiKey: sk-...
+model: gpt-4o
+```
+
+---
+
+## 5. Output
+
+```
+output/
+├── app-model.json                — 18-section knowledge graph
+├── report.html                   — chain-first HTML with Mermaid
+├── report.md                     — text report
+├── session-trace.har             — browser trace
+└── oast-callbacks.json           — blind-SSRF callbacks
+
+playwright-tests/                 — auto-generated regression tests
+├── playwright.config.ts
+├── fixtures/
+│   ├── findings.ts               — findings as data
+│   └── auth.ts                   — auth helpers
+├── attack-<id>.spec.ts           — one spec per finding
+└── chain-<id>.spec.ts            — one spec per chain
+```
+
+---
+
+## 6. Attack probes — what's actually firing
+
+Every node in the workflow graph is mapped to a real, deterministic probe. The probe crafts payloads, sends HTTP requests, and inspects responses. **No LLM in the critical path.**
+
+| Technique | Probe | What it does |
+|-----------|-------|--------------|
+| `ssrf` | `cloud-probes.probeCloudMetadata` | Tries AWS IMDSv1/v2, GCP, Azure, DigitalOcean, Oracle |
+| `open-redirect` | `oauth-probes.runAllOAuthProbes` (5 sub-probes) | Tests redirect_uri prefix bypass, state missing, scope escalation, response_type confusion, PKCE downgrade |
+| `race` | `race-probes.probeRaceCondition` | Fires 8 parallel requests, `successCount > 1` = exploitable |
+| `sqli` | hand-rolled signature check | Real engine signatures + boolean-based length delta |
+| `xss` | hand-rolled reflection check | `<script>ultimatrixXss{ts}</script>` reflected unescaped |
+| `ssti` | 3 template payloads | `{{7*7}}`, `${7*7}`, `<%= 7*7 %>` |
+| `idor` | sequential ID enumeration | Compares `/api/users/1` vs `/api/users/2` etc. |
+| `xxe` | XML with external entity | `<!ENTITY xxe SYSTEM "file:///etc/passwd">` |
+| `path` | 3 traversal encodings | `../../../etc/passwd` + variants |
+| `cmd` | 4 shell metachars | `; ls`, `| cat`, `$( )`, backticks |
+
+If the orchestrator infers a technique that doesn't have a hand-rolled probe, the worker returns a stub result (`vulnerable: false`). The LLM-driven worker (`runReasoningWorker`) is still available — wire it in by replacing `huntWorkerRunner` in `src/cli/hunt.ts:248`.
+
+---
+
+## 7. Recon layer (pre-attack discovery)
+
+Finds endpoints the HTML spider misses. Pure HTTP, no browser. **Disabled by default for `hunt` — use `--no-recon` to be explicit or rely on the default `true` in the pipeline.**
+
+```ts
+import { runRecon } from 'ultimatrix/recon';
+await runRecon({
+  target: 'https://app.com',
+  appModelPath: './app-model.json',  // mutates this file
+  parallel: true,
+});
+```
+
+Tools:
+- `oauth-discovery` — `/.well-known/openid-configuration` + 10 common authorize paths
+- `graphql-discovery` — 10 paths, introspection, field-level sensitivity
+- `jwt-discovery` — cookie/localStorage decode, flags `alg=none` / `expired` / `kid`/`jku`/`x5u`
+- `framework-fingerprint` — 15 framework signatures
+- `cloud-metadata-probe` — 9 metadata targets with optional OAST callback
+
+---
+
+## 8. Chain engine
+
+`src/core/attack-chain.ts` — 3 modes:
+
+| Mode | What it does |
+|------|--------------|
+| `heuristic` | Pure pattern matching. No LLM. Looks for finding-type combos. |
+| `llm` | Calls OpenAI-compatible API, asks the LLM to identify chains |
+| `hybrid` | Heuristic first, LLM for novel combos |
+
+7 chain templates covered:
+- SSRF → cloud metadata → AWS S3 credential exfil
+- OAuth redirect_uri bypass → admin role
+- JWT signature bypass → admin
+- Race condition → balance / coupon drain
+- GraphQL introspection → mass data dump
+- File upload Content-Type bypass → RCE
+- SSTI → arbitrary code execution
+
+```ts
+import { runChainEngine } from 'ultimatrix';
+const result = await runChainEngine({
+  mode: 'heuristic',
+  appModel: model,
+  appModelPath: './app-model.json',
+});
+// result.chains: AttackChain[]
+```
+
+---
+
+## 9. Adding your own probe
+
+Each probe is a plain async function. Wire it into the dispatch in `src/cli/hunt.ts:248`:
+
+```ts
+case 'your-technique': {
+  const r = await yourProbeFunction(input.url, input.param, method, cookies);
+  if (r.vulnerable) return { ...r, technique: 'your-technique', url, durationMs: ... };
+  break;
+}
+```
+
+The probe should return `{ vulnerable: boolean; confidence: number; evidence: FindingEvidence[]; payloads: string[]; summary: string }`.
+
+---
+
+## 10. Development
+
+```bash
+# Run all tests
+npx vitest run
+
+# Type check
+npx tsc --noEmit
+
+# Build
+npx tsup
+
+# Run against the demo target
+node demo-target/server.js &
+npx tsx src/cli/index.ts hunt -t http://127.0.0.1:4567 --auto --no-spider \
+    --seed-urls / /api/users /api/users/1 /api/posts /api/preview /api/render \
+                /api/transfer /api/coupons/redeem /graphql /api/upload \
+                /oauth/authorize /.well-known/openid-configuration /admin/dashboard
+```
+
+### Live integration tests
+
+`tests/cli/hunt-worker.test.ts` spawns the demo target and asserts the worker detects real vulnerabilities (IDOR, SSTI, SSRF, OAuth redirect).
+
+```bash
+npx vitest run tests/cli/hunt-worker.test.ts
+```
+
+---
+
+## 11. Deprecated commands (still work, emit warnings)
+
+- `assess` — legacy spider + LLM strategist REPL. Use `hunt` instead.
+- `interact` — legacy chat REPL. Use `hunt --guided` instead.
+
+Both emit `⚠️ '<cmd>' is deprecated. Use 'ultimatrix hunt -t <url>' instead.`
+
+---
+
+## 12. Notes
+
+- The default `hunt` flow is fully hand-rolled and runs **without an LLM**. Set `OPENAI_API_KEY` only if you want LLM-mode chain reasoning.
+- Workers are **deterministic and crash-isolated** — a probe throwing an exception does not affect the orchestrator.
+- The chain engine has 3 modes; heuristic is the default and works offline.
+- The Playwright test generator creates one regression spec per finding. Re-run with `npx playwright test playwright-tests/`.
