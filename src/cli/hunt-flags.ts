@@ -15,6 +15,8 @@ export interface HuntOptions {
   skipRecon: boolean;
   skipSpider: boolean;
   existingModelPath?: string;
+  seedUrls?: string[];
+  maxNodes?: number;
 }
 
 export function parseHuntFlags(args: string[]): HuntOptions {
@@ -44,6 +46,10 @@ export function parseHuntFlags(args: string[]): HuntOptions {
     else if (a === '--no-recon') opts.skipRecon = true;
     else if (a === '--no-spider') opts.skipSpider = true;
     else if (a === '--existing-model') opts.existingModelPath = args[++i];
+    else if (a === '--seed-url') {
+      if (!opts.seedUrls) opts.seedUrls = [];
+      opts.seedUrls.push(args[++i]);
+    }
   }
   if (!opts.target) {
     throw new Error('Missing required --target / -t <url>');

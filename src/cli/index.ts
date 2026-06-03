@@ -53,8 +53,13 @@ program
   .option('--no-recon', 'Skip recon layer (OAuth/GraphQL/JWT/cloud/framework)')
   .option('--no-spider', 'Skip spider, load existing model instead')
   .option('--existing-model <path>', 'Path to existing app-model.json')
+  .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph with (space-separated, relative to target origin)')
+  .option('--max-nodes <n>', 'Cap the orchestrator at this many nodes', '50')
   .action(async (opts) => {
     const { parseHuntFlags, runHunt } = await import('./hunt');
+    const seedUrls: string[] = opts.seedUrls ? (Array.isArray(opts.seedUrls) ? opts.seedUrls : [opts.seedUrls]) : [];
+    const extra: string[] = [];
+    for (const u of seedUrls) extra.push('--seed-url', u);
     const huntOpts = parseHuntFlags([
       '-t', opts.target || '',
       '-o', opts.output,
@@ -68,7 +73,9 @@ program
       opts.spider === false ? '--no-spider' : '',
       opts.existingModel ? '--existing-model' : '',
       opts.existingModel || '',
-    ].filter(Boolean));
+      ...extra,
+    ].filter((x) => x !== '' && x !== null && x !== undefined));
+    (huntOpts as any).maxNodes = parseInt(opts.maxNodes, 10) || 50;
     await runHunt(huntOpts);
   });
 

