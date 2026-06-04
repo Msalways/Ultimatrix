@@ -220,15 +220,23 @@ function buildAppModelFromCrawl(crawl: CrawlResult, target: string): AppModel {
   const model: AppModel = JSON.parse(JSON.stringify(DEFAULT_MODEL));
   model.target = target;
   model.visitedUrls = crawl.visitedUrls;
+  // Copy the spider's auto-recording into recordedSessions['spider-auto']
+  // so the user-flow Playwright generator can replay it.
+  if (crawl.recording && crawl.recording.length > 0) {
+    model.recordedSessions = {
+      ...(model.recordedSessions || {}),
+      'spider-auto': crawl.recording,
+    };
+  }
   // Map routes → endpoints
   for (const route of crawl.routes) {
     model.endpoints.push({
       path: route.url,
       method: 'GET',
       responseStatus: 200,
-      contentType: 'text/html',
+      contentType: route.contentType ?? 'text/html',
       requiresAuth: false,
-      bodyPreview: '',
+      bodyPreview: route.bodyPreview ?? '',
       params: [],
     });
   }

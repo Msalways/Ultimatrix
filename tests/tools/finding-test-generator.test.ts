@@ -5,8 +5,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { generateFindingTests, writeFindingTests } from '../../src/tools/finding-test-generator';
 import type { AppModel, AppModelFinding, AttackChain } from '../../src/core/app-model';
+import type { MacroStep } from '../../src/core/browser-session';
 
-function makeModel(): AppModel {
+function makeModel(overrides: Partial<AppModel> = {}): AppModel {
   return {
     target: 'http://x.com',
     techStack: [],
@@ -25,7 +26,7 @@ function makeModel(): AppModel {
     verifications: [],
     parameterClassifications: [],
     authBoundaries: [],
-    recordedSessions: [],
+    recordedSessions: {},
     hypotheses: [],
     nextSteps: [],
     visitedUrls: [],
@@ -39,6 +40,7 @@ function makeModel(): AppModel {
       { id: 'c-1', name: 'OAuth → admin', severity: 'critical', confidence: 0.9, exploitability: 'trivial', steps: [{ step: 1, findingType: 'oauth', endpoint: '/oauth', evidenceRef: 'r', description: '?' }], narrative: 'n' } as any,
     ],
     coverage: [],
+    ...overrides,
   } as AppModel;
 }
 
@@ -92,4 +94,94 @@ describe('generateFindingTests', () => {
     }
     fs.rmSync(tmp, { recursive: true, force: true });
   });
+
+  it('does NOT generate user-flow.spec.ts when no spider recording exists', () => {
+    const result = generateFindingTests(makeModel(), { outDir: 'playwright-tests' });
+    expect(result.userFlowsWritten).toBe(0);
+    expect(result.files.some(f => f.path === 'user-flow.spec.ts')).toBe(false);
+  });
+
+  it('generates user-flow.spec.ts from spider-auto recording', () => {
+    const steps: MacroStep[] = [
+      { type: 'navigate', url: 'http://x.com' },
+      { type: 'navigate', url: 'http://x.com/login' },
+      { type: 'fill', selector: 'input[name="email"]', value: 'admin@x.com' },
+      { type: 'fill', selector: 'input[name="password"]', value: 'super-secret-123' },
+      { type: 'click', selector: 'button[type="submit"]' },
+      { type: 'navigate', url: 'http://x.com/dashboard' },
+    ];
+    const result = generateFindingTests(
+      makeModel({ recordedSessions: { 'spider-auto': steps } }),
+      { outDir: 'playwright-tests' },
+    );
+    expect(result.userFlowsWritten).toBe(1);
+    const flow = result.files.find(f => f.path === 'user-flow.spec.ts');
+    expect(flow).toBeDefined();
+    expect(flow!.type).toBe('user-flow');
+    // Spot-check the content
+    expect(flow!.content).toContain(`import { test, expect } from '@playwright/test'`);
+    expect(flow!.content).toContain('test.describe(\'User Flow');
+    expect(flow!.content).toContain(`await page.goto('http://x.com/login')`);
+    expect(flow!.content).toContain(`await page.locator('input[name=\"password\"]').fill('••••••••')`); // password masked
+    expect(flow!.content).toContain(`await page.locator('input[name=\"email\"]').fill('admin@x.com')`); // non-password NOT masked
+    expect(flow!.content).toContain(`// Submit form`); // fill + click grouped
+    expect(flow!.content).toContain(`await page.locator('button[type=\"submit\"]').click()`);
+    expect(flow!.content).toContain(`await page.goto('http://x.com/dashboard')`);
+  });
+
+  it('deduplicates consecutive navigate-to-same-URL in user-flow', () => {
+    const steps: MacroStep[] = [
+      { type: 'navigate', url: 'http://x.com' },
+      { type: 'navigate', url: 'http://x.com' },
+      { type: 'navigate', url: 'http://x.com/about' },
+      { type: 'navigate', url: 'http://x.com/about' },
+      { type: 'navigate', url: 'http://x.com/contact' },
+    ];
+    const result = generateFindingTests(
+      makeModel({ recordedSessions: { 'spider-auto': steps } }),
+      { outDir: 'playwright-tests' },
+    );
+    const flow = result.files.find(f => f.path === 'user-flow.spec.ts')!;
+    // Should mention 3 unique URLs, not 5
+    expect(flow.content).toContain(`await page.goto('http://x.com');`);
+    expect(flow.content).toContain(`await page.goto('http://x.com/about');`);
+    expect(flow.content).toContain(`await page.goto('http://x.com/contact');`);
+    // The comment header should say "3 step(s)" not "5"
+    expect(flow.content).toMatch(/3 step\(s\) replayed/);
+  });
+
+  it('can opt out of user-flow with includeUserFlow: false', () => {
+    const steps: MacroStep[] = [{ type: 'navigate', url: 'http://x.com' }];
+    const result = generateFindingTests(
+      makeModel({ recordedSessions: { 'spider-auto': steps } }),
+      { outDir: 'playwright-tests', includeUserFlow: false },
+    );
+    expect(result.userFlowsWritten).toBe(0);
+    expect(result.files.some(f => f.path === 'user-flow.spec.ts')).toBe(false);
+  });
+
+  it('uses frameLocator for selectors inside an iframe (cross-frame form)', () => {
+    const steps: MacroStep[] = [
+      { type: 'navigate', url: 'http://x.com' },
+      { type: 'navigate', url: 'http://x.com/level1' },
+      { type: 'fill', selector: 'iframe form:nth-of-type(1) [name="query"]', value: 'replay-test' },
+      { type: 'click', selector: 'iframe input:nth-of-type(2)' },
+      { type: 'navigate', url: 'http://x.com/dashboard' },
+    ];
+    const result = generateFindingTests(
+      makeModel({ recordedSessions: { 'spider-auto': steps } }),
+      { outDir: 'playwright-tests' },
+    );
+    const flow = result.files.find(f => f.path === 'user-flow.spec.ts')!;
+    // Should declare a frameLocator for 'iframe'
+    expect(flow.content).toMatch(/const iframe_1 = page\.frameLocator\('iframe'\);/);
+    // Fill should chain iframe_1.first().locator(...).fill(...)
+    expect(flow.content).toMatch(/await iframe_1\.first\(\)\.locator\('form:nth-of-type\(1\) \[name="query"\]'\)\.fill\('replay-test'\)/);
+    // Click should chain iframe_1.first().locator(...).click()
+    expect(flow.content).toMatch(/await iframe_1\.first\(\)\.locator\('input:nth-of-type\(2\)'\)\.click\(\)/);
+    // Should NOT have the raw 'iframe form...' selector on page
+    expect(flow.content).not.toMatch(/await page\.locator\('iframe /);
+    expect(flow.content).not.toMatch(/await page\.fill\('iframe /);
+  });
 });
+
