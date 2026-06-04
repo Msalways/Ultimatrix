@@ -52,6 +52,7 @@ program
   .option('--no-chains', 'Skip attack chain engine')
   .option('--no-recon', 'Skip recon layer (OAuth/GraphQL/JWT/cloud/framework)')
   .option('--no-spider', 'Skip spider, load existing model instead')
+  .option('--force-spider', 'Re-spider even if app-model.json exists for the same target')
   .option('--existing-model <path>', 'Path to existing app-model.json')
   .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph with (space-separated, relative to target origin)')
   .option('--max-nodes <n>', 'Cap the orchestrator at this many nodes', '50')
@@ -71,6 +72,7 @@ program
       opts.chains === false ? '--no-chains' : '',
       opts.recon === false ? '--no-recon' : '',
       opts.spider === false ? '--no-spider' : '',
+      opts.forceSpider ? '--force-spider' : '',
       opts.existingModel ? '--existing-model' : '',
       opts.existingModel || '',
       ...extra,
@@ -328,6 +330,20 @@ program
   });
 
 program.parse();
+
+if (process.argv.length <= 2) {
+  // No subcommand provided — print help so the user knows what to run
+  console.log('\x1b[1;32m▸ Ultimatrix\x1b[0m — AI security researcher\n');
+  console.log('Quick start:');
+  console.log('  npx ultimatrix hunt -t https://target.com            # canonical full hunt (spider + recon + attack + tests)');
+  console.log('  npx ultimatrix hunt -t https://target.com --auto    # autonomous (no prompts)');
+  console.log('  npx ultimatrix hunt -t https://target.com --guided  # step-by-step (default)');
+  console.log('  npx ultimatrix web                                   # local web UI on :3000');
+  console.log('  npx ultimatrix demo                                  # run vulnerable demo target on :4567');
+  console.log('  npx ultimatrix setup                                 # configure LLM providers\n');
+  console.log('Run \x1b[1multimatrix --help\x1b[0m for all commands.');
+  process.exit(0);
+}
 
 // ── Core helpers ──
 

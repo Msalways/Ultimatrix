@@ -47,4 +47,14 @@ describe('parseHuntFlags', () => {
     const opts = parseHuntFlags(['-t', 'http://x.com', '--existing-model', '/tmp/m.json']);
     expect(opts.existingModelPath).toBe('/tmp/m.json');
   });
+
+  it('defaults forceSpider to false', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com']);
+    expect(opts.forceSpider).toBe(false);
+  });
+
+  it('parses --force-spider', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com', '--force-spider']);
+    expect(opts.forceSpider).toBe(true);
+  });
 });

@@ -1,0 +1,159 @@
+{
+  "target": "https://xss-game.appspot.com/",
+  "techStack": [],
+  "auth": {
+    "type": "unknown",
+    "loginEndpoint": "",
+    "endpoints": [],
+    "cookies": {},
+    "tokens": [],
+    "sessions": {},
+    "storageStatePath": "",
+    "loginMethod": "",
+    "loginFields": [],
+    "capturedAt": 0
+  },
+  "workflow": {
+    "nodes": [],
+    "edges": []
+  },
+  "endpoints": [
+    {
+      "path": "https://xss-game.appspot.com/",
+      "method": "GET",
+      "responseStatus": 200,
+      "contentType": "text/html",
+      "requiresAuth": false,
+      "bodyPreview": "",
+      "params": []
+    },
+    {
+      "path": "https://xss-game.appspot.com/level1",
+      "method": "GET",
+      "responseStatus": 200,
+      "contentType": "text/html",
+      "requiresAuth": false,
+      "bodyPreview": "",
+      "params": []
+    },
+    {
+      "path": "https://xss-game.appspot.com/level1/frame",
+      "method": "GET",
+      "responseStatus": 200,
+      "contentType": "text/html",
+      "requiresAuth": false,
+      "bodyPreview": "",
+      "params": []
+    },
+    {
+      "path": "https://xss-game.appspot.com/level1/source",
+      "method": "GET",
+      "responseStatus": 200,
+      "contentType": "text/html",
+      "requiresAuth": false,
+      "bodyPreview": "",
+      "params": []
+    },
+    {
+      "path": "https://xss-game.appspot.com/level2",
+      "method": "GET",
+      "responseStatus": 200,
+      "contentType": "text/html",
+      "requiresAuth": false,
+      "bodyPreview": "",
+      "params": []
+    }
+  ],
+  "forms": [],
+  "scripts": [],
+  "cookies": {},
+  "localStorage": {},
+  "findings": [],
+  "verifications": [],
+  "parameterClassifications": [],
+  "authBoundaries": [],
+  "recordedSessions": {},
+  "hypotheses": [],
+  "nextSteps": [
+    "Navigate to target",
+    "Build workflow graph",
+    "Discover auth boundaries",
+    "Classify parameters",
+    "Probe for vulnerabilities"
+  ],
+  "visitedUrls": [
+    "https://xss-game.appspot.com",
+    "https://xss-game.appspot.com/level1",
+    "https://xss-game.appspot.com/level1/frame",
+    "https://xss-game.appspot.com/level1/frame?query=Enter+query+here...",
+    "https://xss-game.appspot.com/level1/source",
+    "https://xss-game.appspot.com/level2"
+  ],
+  "oastCallbacks": [],
+  "workerActions": [],
+  "coverage": [],
+  "thinRoutes": [],
+  "currentPage": {
+    "url": "",
+    "title": "",
+    "lastUpdatedAt": 0,
+    "snapshotHash": ""
+  },
+  "warnings": [],
+  "eventLog": [],
+  "artifacts": {
+    "harFiles": [],
+    "screenshots": [],
+    "traceFiles": []
+  },
+  "browserSessions": {},
+  "navigationHistory": [],
+  "errors": [],
+  "oauthProviders": [],
+  "graphqlEndpoints": [],
+  "jwtTokens": [],
+  "frameworks": [],
+  "cloudProbes": [],
+  "reconLog": [
+    {
+      "timestamp": 1780536510757,
+      "tool": "cloud-metadata-probe",
+      "target": "https://xss-game.appspot.com/",
+      "status": "inconclusive",
+      "durationMs": 0,
+      "detail": "no SSRF-prone endpoints in app-model; skipping"
+    },
+    {
+      "timestamp": 1780536511570,
+      "tool": "framework-fingerprint",
+      "target": "https://xss-game.appspot.com/",
+      "status": "not-found",
+      "durationMs": 815,
+      "detail": "no frameworks detected"
+    },
+    {
+      "timestamp": 1780536512831,
+      "tool": "oauth-discovery",
+      "target": "https://xss-game.appspot.com/",
+      "status": "not-found",
+      "durationMs": 2098,
+      "detail": "0 provider(s), 0 authorize paths, 0 client_id(s)"
+    },
+    {
+      "timestamp": 1780536519407,
+      "tool": "graphql-discovery",
+      "target": "https://xss-game.appspot.com/",
+      "status": "not-found",
+      "durationMs": 8658,
+      "detail": "0 endpoint(s); 0 with introspection"
+    }
+  ],
+  "attackChains": [],
+  "_meta": {
+    "startedAt": 0,
+    "duration": 0,
+    "totalToolCalls": 0,
+    "lastUpdatedAt": 0,
+    "agentVersion": ""
+  }
+}

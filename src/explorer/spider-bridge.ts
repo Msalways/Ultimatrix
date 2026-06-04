@@ -341,6 +341,16 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
   // Filter out trace-only endpoints with no params — they're likely resource/favicon fetches
   const formActionPaths = new Set(formEndpoints.map(e => `${e.method}:${e.path}`));
   const routePaths = new Set(crawl.routes.map(r => r.path));
+  const routePreviewByPath = new Map<string, { bodyPreview: string; contentType: string; status: number }>();
+  for (const r of crawl.routes) {
+    if (r.bodyPreview) {
+      routePreviewByPath.set(r.path, {
+        bodyPreview: r.bodyPreview,
+        contentType: r.contentType ?? '',
+        status: r.status ?? 0,
+      });
+    }
+  }
   const endpointSeen = new Set<string>();
   const allEndpoints: AppModelEndpoint[] = [];
   for (const ep of [...minedEndpoints, ...formEndpoints]) {
@@ -352,6 +362,19 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
       continue;
     }
     endpointSeen.add(key);
+    // Inject body preview from the route's actual rendered DOM (much richer than request body)
+    const routeMeta = routePreviewByPath.get(ep.path);
+    if (routeMeta) {
+      if (!ep.bodyPreview || ep.bodyPreview.length < 50) {
+        ep.bodyPreview = routeMeta.bodyPreview;
+      }
+      if (routeMeta.contentType && !ep.contentType) {
+        ep.contentType = routeMeta.contentType;
+      }
+      if (routeMeta.status && !ep.responseStatus) {
+        ep.responseStatus = routeMeta.status;
+      }
+    }
     allEndpoints.push(ep);
   }
 

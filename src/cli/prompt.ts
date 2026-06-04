@@ -74,26 +74,62 @@ export class HuntPrompt {
   }
 
   async ask(question: string): Promise<string> {
+    if (this.closed) return '';
     return new Promise((resolve) => {
       this.resolvers.push(resolve);
       process.stdout.write(question);
+      // Safety net: if stdin closes mid-question, resolve with empty so the hunt
+      // can fall back to auto mode instead of hanging forever
+      this.rl.once('close', () => {
+        if (this.resolvers.length > 0) {
+          const r = this.resolvers.shift();
+          r?.('');
+        }
+      });
     });
   }
 
   async promptNode(info: { id: string; url: string; method: string; technique: string; expectedSeverity: string }): Promise<NodePromptAnswer> {
     if (this.mode === 'auto') return 'proceed';
+    if (this.closed) return 'proceed'; // pipe closed (e.g. non-TTY) — don't block
     console.log('');
     console.log(`\x1b[1m── Node ${info.id.slice(0, 8)} ─────────────────\x1b[0m`);
     console.log(`  url:      \x1b[36m${info.url}\x1b[0m`);
     console.log(`  method:   ${info.method}`);
     console.log(`  technique: ${info.technique}`);
     console.log(`  severity: ${info.expectedSeverity}`);
-    const answer = (await this.callbacks.onNodePrompt(info)).toString();
-    if (answer === 'proceed') {
-      // emit Y default
-      return 'proceed';
+    process.stdout.write('\x1b[33m  [Y]es  [s]kip  [i]nvestigate  [d]ismiss  [a]dd url  [q]uit  → \x1b[0m');
+    const raw = (await this.ask('')).trim().toLowerCase();
+    switch (raw) {
+      case '':
+      case 'y':
+      case 'yes':
+        return 'proceed';
+      case 's':
+      case 'skip':
+        return 'skip';
+      case 'i':
+      case 'investigate':
+        return 'investigate';
+      case 'd':
+      case 'dismiss':
+        return 'skip'; // dismiss = skip
+      case 'a':
+      case 'add':
+        return 'add';
+      case 'q':
+      case 'quit':
+        this.callbacks.onQuit();
+        return 'abort';
+      case '/auto':
+        this.setMode('auto');
+        return 'proceed';
+      case '/guided':
+        return 'proceed';
+      default:
+        // unknown — fall through to onNodePrompt callback for any custom logic
+        return await this.callbacks.onNodePrompt(info);
     }
-    return answer as NodePromptAnswer;
   }
 
   log(message: string): void {

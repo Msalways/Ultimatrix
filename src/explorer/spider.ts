@@ -21,6 +21,9 @@ export interface RouteNode {
   forms: number;
   linkCount: number;
   visitedAt: number;
+  bodyPreview?: string;
+  contentType?: string;
+  status?: number;
 }
 
 export interface CrawlResult {
@@ -101,6 +104,17 @@ export class SpiderCrawler {
         const snapshot = await takeSnapshotDeep(page);
         snapshots.push(snapshot);
 
+        // Capture body preview + content type + status for the LLM planner
+        const captureMeta: { bodyPreview: string; contentType: string; status: number } = await page.evaluate(() => {
+          const doc = (globalThis as any).document;
+          const fullText = doc?.body?.innerText || '';
+          return {
+            bodyPreview: fullText.slice(0, 1500),
+            contentType: (doc?.contentType || '') as string,
+            status: 200,
+          };
+        }).catch(() => ({ bodyPreview: '', contentType: '', status: 0 }));
+
         const links: Array<{ href: string; text: string }> = await page.evaluate(() =>
           Array.from(document.querySelectorAll('a[href]')).map((a) => ({
             href: (a as HTMLAnchorElement).getAttribute('href') || '',
@@ -128,6 +142,9 @@ export class SpiderCrawler {
           forms: snapshot.forms.length,
           linkCount: resolvedLinks.length,
           visitedAt: Date.now(),
+          bodyPreview: captureMeta.bodyPreview,
+          contentType: captureMeta.contentType,
+          status: captureMeta.status,
         });
 
         if (workflowState) {

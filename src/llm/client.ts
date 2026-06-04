@@ -1,13 +1,32 @@
 // src/llm/client.ts
 //
 // Lightweight LLM client wrapper. Picks the first available provider
-// based on env vars, falls back to mock when nothing is configured.
-// The Composer uses this for all reasoning — plan proposals, payload
-// crafting, bypass generation, chain reasoning.
+// based on env vars or ultimatrix.yaml, falls back to mock when
+// nothing is configured. The Composer uses this for all reasoning —
+// plan proposals, payload crafting, bypass generation, chain reasoning.
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { providerRegistry } from '../providers/provider-registry';
 import type { LLMProviderName } from '../core/types';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+
+interface LoadedConfig {
+  provider: string | null;
+  apiKey: string | null;
+  modelId: string | null;
+  baseUrl: string | null;
+}
+
+let _yamlMod: { load: (s: string) => unknown } | null = null;
+function yamlLoad(s: string): unknown {
+  if (!_yamlMod) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _yamlMod = require('js-yaml') as { load: (s: string) => unknown };
+  }
+  return _yamlMod.load(s);
+}
 
 export interface LLMClientConfig {
   /** Explicit provider override */
@@ -66,20 +85,79 @@ export class LLMClient {
   private provider: LLMProviderName = 'mock';
   private modelId: string = 'mock';
   private config: LLMClientConfig;
+  private yamlConfig: LoadedConfig | null = null;
 
   constructor(config: LLMClientConfig = {}) {
     this.config = config;
   }
 
+  private loadYamlConfig(): LoadedConfig | null {
+    if (this.yamlConfig) return this.yamlConfig;
+    let result: LoadedConfig = { provider: null, apiKey: null, modelId: null, baseUrl: null };
+    // 1. Project ultimatrix.yaml
+    for (const p of [path.join(process.cwd(), 'ultimatrix.yaml'), path.join(process.cwd(), 'ultimatrix.yml')]) {
+      if (fs.existsSync(p)) {
+        try {
+          const parsed = yamlLoad(fs.readFileSync(p, 'utf-8')) as any;
+          if (parsed && typeof parsed === 'object') {
+            if (typeof parsed.provider === 'string') {
+              result.provider = parsed.provider;
+              result.modelId = parsed.model ?? null;
+            } else if (parsed.provider && typeof parsed.provider === 'object') {
+              result.provider = parsed.provider.name ?? null;
+              result.modelId = parsed.provider.model ?? null;
+              result.apiKey = parsed.provider.apiKey ?? null;
+              result.baseUrl = parsed.provider.baseUrl ?? null;
+            }
+          }
+        } catch { /* ignore */ }
+        break;
+      }
+    }
+    // 2. Global providers.yaml (secrets)
+    const providersPath = path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml');
+    if (fs.existsSync(providersPath) && result.provider) {
+      try {
+        const parsed = yamlLoad(fs.readFileSync(providersPath, 'utf-8')) as any;
+        if (parsed && parsed[result.provider]) {
+          if (!result.apiKey) result.apiKey = parsed[result.provider].apiKey ?? null;
+          if (!result.modelId) result.modelId = parsed[result.provider].model ?? null;
+          if (!result.baseUrl) result.baseUrl = parsed[result.provider].baseUrl ?? null;
+        }
+      } catch { /* ignore */ }
+    }
+    this.yamlConfig = result;
+    return result.provider ? result : null;
+  }
+
   /** Returns the provider that would be used (without instantiating) */
   detectProvider(): LLMProviderName {
-    if (this.config.provider && this.hasEnvFor(this.config.provider)) {
-      return this.config.provider;
+    if (this.config.provider) {
+      const cfg = this.loadYamlConfig();
+      if (this.config.provider === cfg?.provider && (cfg?.apiKey || this.hasEnvFor(this.config.provider))) {
+        if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] explicit provider matched yaml: ${this.config.provider}`);
+        return this.config.provider;
+      }
+      if (this.hasEnvFor(this.config.provider)) {
+        if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] explicit provider has env: ${this.config.provider}`);
+        return this.config.provider;
+      }
     }
+    // ultimatrix.yaml provider
+    const cfg = this.loadYamlConfig();
+    if (cfg?.provider && (cfg.apiKey || this.hasEnvFor(cfg.provider as LLMProviderName))) {
+      if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] using yaml provider: ${cfg.provider} (apiKey=${cfg.apiKey ? 'yes' : 'from-env'})`);
+      return cfg.provider as LLMProviderName;
+    }
+    // env vars in priority order
     for (const name of PROVIDER_PRIORITY) {
       if (name === 'mock') continue;
-      if (this.hasEnvFor(name)) return name;
+      if (this.hasEnvFor(name)) {
+        if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] using env provider: ${name}`);
+        return name;
+      }
     }
+    if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] falling back to mock (no provider config found)`);
     return 'mock';
   }
 
@@ -94,13 +172,16 @@ export class LLMClient {
     if (this.model) return this.provider !== 'mock';
     const detected = this.detectProvider();
     this.provider = detected;
+    if (process.env.ULTIMATRIX_LLM_DEBUG === '1') {
+      const cfg = this.loadYamlConfig();
+      console.error(`[llm] detected provider: ${detected}`);
+      console.error(`[llm] yaml config:`, cfg);
+    }
     const factory = providerRegistry.get(detected);
     if (!factory) {
       this.provider = 'mock';
-      this.provider = 'mock';
     }
-    const apiKey = factory ? this.resolveApiKey(detected) : 'mock';
-    const modelId = this.config.modelId ?? this.defaultModelFor(detected);
+    const { apiKey, modelId, baseUrl } = this.resolveCredentials(detected);
     this.modelId = modelId;
     if (detected === 'mock' || !factory) {
       this.model = null;
@@ -111,6 +192,7 @@ export class LLMClient {
       this.model = await factory.create({
         apiKey,
         modelId,
+        baseURL: baseUrl,
         temperature: this.config.temperature ?? 0.3,
         maxTokens: this.config.maxTokens ?? 4096,
       });
@@ -122,13 +204,21 @@ export class LLMClient {
     }
   }
 
-  private resolveApiKey(name: LLMProviderName): string {
+  private resolveCredentials(name: LLMProviderName): { apiKey: string; modelId: string; baseUrl: string | undefined } {
+    const cfg = this.loadYamlConfig();
+    let apiKey = 'mock';
     const factory = providerRegistry.get(name);
-    if (!factory) return 'mock';
-    for (const v of factory.envVars) {
-      if (process.env[v]) return process.env[v] as string;
+    if (factory) {
+      for (const v of factory.envVars) {
+        if (process.env[v]) { apiKey = process.env[v] as string; break; }
+      }
     }
-    return 'mock';
+    if (apiKey === 'mock' && cfg?.provider === name && cfg.apiKey) {
+      apiKey = cfg.apiKey;
+    }
+    const modelId = this.config.modelId ?? cfg?.modelId ?? this.defaultModelFor(name);
+    const baseUrl = cfg?.baseUrl ?? undefined;
+    return { apiKey, modelId, baseUrl };
   }
 
   private defaultModelFor(name: LLMProviderName): string {

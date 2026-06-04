@@ -95,6 +95,8 @@ export interface PrimitiveContext {
   depth: number;
   /** Per-run budget tracker (ms) */
   budget: { startedAt: number; maxMs: number };
+  /** Optional sink for tracking sub-composer spawns (read by Composer.run) */
+  subtaskSink?: Array<{ specialist: string; result: 'done' | 'failed'; findings: number }>;
 }
 
 export type PrimitiveResult<T = unknown> = {

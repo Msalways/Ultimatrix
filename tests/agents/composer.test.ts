@@ -90,4 +90,53 @@ describe('Composer', () => {
     expect(r.findings[0].type).toBe('idor');
     expect(r.findings[0].severity).toBe('critical');
   });
+
+  it('records a subtask when a primitive signals a spawn (chain-reasoning)', async () => {
+    // The plan uses spawnSubtask which sets result.spawn — verify the
+    // Composer's subtaskSink captures it via the onSubtask callback.
+    const subtaskCalls: Array<{ specialist: string; reason: string }> = [];
+    const llm = mkLLM([
+      { json: { plans: [{
+        id: 1, technique: 'xss', rationale: 'spawn chain reasoning', confidence: 0.7,
+        primitives: [
+          { name: 'spawnSubtask', args: { specialist: 'chain-reasoning', reason: 'multiple findings present', payload: '<script>alert(1)</script>' } },
+        ],
+      }] } },
+    ]);
+    const c = new Composer({
+      llm,
+      onSubtask: (specialist, reason) => subtaskCalls.push({ specialist, reason }),
+    });
+    const r = await c.run(mkTarget(), mkCtx());
+    expect(subtaskCalls.length).toBeGreaterThan(0);
+    expect(subtaskCalls[0].specialist).toBe('chain-reasoning');
+    expect(r.subtasks.length).toBeGreaterThan(0);
+  });
+
+  it('exposes a planner system prompt that mentions sink + param matching', () => {
+    // Regression: the new prompt must explicitly tell the LLM to match
+    // technique to the param that actually accepts it (avoiding the
+    // XSS-game bug where the LLM picked ?next= instead of ?query=).
+    const systemPrompt = (Composer as any).SYSTEM_PROMPT_PLANNER ?? '';
+    // We can't import the constant from the module — it isn't exported.
+    // So just verify the planner LLM call embeds the right guidance by
+    // capturing the system arg.
+    let capturedSystem = '';
+    const llm = new LLMClient({ provider: 'mock' });
+    llm.call = vi.fn(async (args: any) => {
+      capturedSystem = args.system ?? '';
+      return { text: '{}', json: null, provider: 'mock' as const, model: 'mock', durationMs: 0 };
+    });
+    llm.isReal = () => false;
+    const c = new Composer({ llm });
+    c.proposePlans(mkTarget(), mkCtx(), 1).catch(() => {});
+    // Wait for the promise to settle
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        expect(capturedSystem).toMatch(/param/i);
+        expect(capturedSystem.length).toBeGreaterThan(500); // prompt is non-trivial
+        resolve();
+      }, 50);
+    });
+  });
 });

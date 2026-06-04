@@ -23,6 +23,9 @@ import {
   type InjectionLocation,
   type PayloadType,
 } from '../primitives';
+import { runWafBypass } from './specialists-composers/waf-bypass';
+import { runSecondOrder } from './specialists-composers/second-order';
+import { runChainReasoning } from './specialists-composers/chain-reasoning';
 
 export interface AttackPlan {
   id: number;
@@ -67,11 +70,26 @@ export interface ComposerRunResult {
 
 const SYSTEM_PROMPT_PLANNER = `You are the planning module of Ultimatrix, an AI security researcher. Given a target endpoint, propose 1-3 attack plans as a JSON array.
 
+CRITICAL: Match the ATTACK TECHNIQUE to the parameter that actually accepts it. The system will reject mismatches.
+- "query" / "body" / "header" / "cookie" params containing free text, "q", "name", "comment", "message", "title", "text", "search" → use "xss" with injectInContext in that location
+- Numeric / id params ("id", "userId", "page", "uid", "pid", "limit", "offset") → use "sqli" or "idor"
+- URL-like params ("url", "next", "redirect", "callback", "return", "dest", "image") → use "ssrf" or "redirect"
+- Template params ("name" rendered into a template, "view", "template") → use "ssti"
+- File path params ("file", "path", "name", "page" with extension) → use "path"
+- "headers" is a static check — use it as a fallback when no params exist
+
+CRITICAL: The endpoint path AND the parameter name must be in your plan's primitives. Example:
+If the endpoint is /level1/frame and the param is "query", then your injectInContext call must use location="query" and paramName="query", targeting the full URL "/level1/frame".
+
+CRITICAL: Look at the body preview to identify actual sinks. If the body contains "function() {" near a search input, the param is XSS-sink. If the body contains "mysql_query" or "SELECT", the param is SQLi-sink.
+
+CRITICAL: For "headers" technique, use parseResponse + writeFinding without any network request — the response is already available.
+
 Each plan must include:
 - "id": sequential number
 - "technique": one of "idor", "xss", "sqli", "ssti", "ssrf", "csrf", "redirect", "xxe", "headers", "fileupload", "path", "cmd"
-- "rationale": 1-2 sentence justification
-- "confidence": 0-1 score
+- "rationale": 1-2 sentence justification that names the SPECIFIC param + sink
+- "confidence": 0-1 score based on how strongly the params match the attack
 - "primitives": array of {name, args} — primitive names from the catalog and their arguments
 - "expectedOutcome": "vulnerable", "clean", "inconclusive", or "blocked"
 
@@ -83,7 +101,7 @@ Available primitive catalog (use exact names):
 - craftBypass(payload, wafType)
 - craftXmlEntity(target, path?, host?)
 - craftMultipart(filename, content, contentType, fieldName?)
-- injectInContext(payload, location, base, paramName?)
+- injectInContext(payload, location, base, paramName?) — base.url MUST be the full target URL
 - omitHeader(headers, name)
 - parseResponse — no args, takes the previous response
 - evaluateRendered(url, payload, matchMode?)
@@ -101,17 +119,26 @@ Available primitive catalog (use exact names):
 Injection locations: "query" | "body" | "header" | "cookie" | "path" | "filename" | "xml-entity"
 Payload types: "sqli" | "xss" | "ssti" | "path" | "cmd" | "xxe" | "ssrf" | "csrf" | "redirect"
 
+Example good plan (XSS):
+{"id":1,"technique":"xss","rationale":"Param 'query' on /level1/frame accepts free text; the body preview shows a search input echo — classic reflected XSS sink.","confidence":0.85,"primitives":[{"name":"craftPayload","args":{"type":"xss","context":"html"}},{"name":"injectInContext","args":{"payload":"$prev","location":"query","paramName":"query","base":{"method":"GET","url":"/level1/frame","headers":{}}}},{"name":"evaluateRendered","args":{"url":"/level1/frame","payload":"$prev","matchMode":"reflected"}},{"name":"writeFinding","args":{"type":"xss","endpoint":"/level1/frame","param":"query","payload":"$prev","description":"Reflected XSS in query param","severity":"high","confidence":0.85}}],"expectedOutcome":"vulnerable"}
+
+Example good plan (headers):
+{"id":1,"technique":"headers","rationale":"Static security-header check on a GET endpoint with no params.","confidence":0.5,"primitives":[{"name":"writeFinding","args":{"type":"headers","endpoint":"/api/info","param":"","description":"missing CSP / HSTS / X-Frame-Options","severity":"low","confidence":0.5}}],"expectedOutcome":"inconclusive"}
+
 Respond with ONLY a JSON object: {"plans": [...]}`;
 
 const SYSTEM_PROMPT_TRIAGE = `You are the triage module. Given evidence from a primitive execution, decide:
-1. Is there a confirmed vulnerability? (confidence 0-1)
+1. Is there a CONFIRMED vulnerability? A vulnerability is only confirmed if the EVIDENCE shows the attack succeeded — e.g. for XSS, the payload string appears UNESCAPED in the response body. For SQLi, a different response from baseline OR a SQL error message. For SSRF, the server fetched the attacker URL (OAST callback). For IDOR, the response contains data the original user shouldn't see. For open-redirect, the Location header points to attacker domain.
 2. What severity? (critical|high|medium|low|info)
 3. Should a specialist be spawned? (waf-bypass | second-order | chain-reasoning)
+
+NEVER mark vulnerable=true unless the EVIDENCE actually shows the attack worked. If the response is identical to baseline, if the payload was sanitized, if the response is 404, if no callback fired — mark vulnerable=false. Confidence should be 0 unless the evidence is unambiguous.
 
 Return JSON: {"vulnerable": bool, "confidence": 0-1, "severity": "...", "specialist": "..." | null, "specialistReason": "..."}`;
 
 export class Composer {
   private opts: Required<Omit<ComposerOptions, 'onFinding' | 'onSubtask' | 'onPrimitive'>> & ComposerOptions;
+  private recentFindings: AppModelFinding[] = [];
 
   constructor(opts: ComposerOptions) {
     this.opts = {
@@ -136,6 +163,8 @@ export class Composer {
     const findings: AppModelFinding[] = [];
     const plans: AttackPlan[] = [];
     const subtasks: ComposerRunResult['subtasks'] = [];
+    ctx.subtaskSink = subtasks;
+    this.recentFindings = findings;
 
     const planResult = await this.opts.llm.call({
       system: SYSTEM_PROMPT_PLANNER,
@@ -254,10 +283,31 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
       const stepDuration = Date.now() - stepStart;
       this.opts.onPrimitive?.(step.name, resolvedArgs, result);
 
-      // If the primitive signaled a spawn, handle it
+      // If the primitive signaled a spawn, handle it by calling the specialist composer
       if (result.spawn) {
         this.opts.onSubtask?.(result.spawn.specialist, result.spawn.reason);
-        // TODO: dispatch to specialist composer
+        // Track subtask in caller-visible state via closure (run() reads it)
+        if (ctx.subtaskSink) {
+          try {
+            const subtaskFindings = await this.dispatchSpecialist(
+              result.spawn.specialist,
+              result.spawn.reason,
+              result.spawn.payload,
+              target,
+              ctx,
+            );
+            for (const f of subtaskFindings) {
+              planFindings.push(f);
+              this.opts.onFinding?.(f);
+              ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'done', findings: 1 });
+            }
+            if (subtaskFindings.length === 0) {
+              ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'done', findings: 0 });
+            }
+          } catch (err) {
+            ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'failed', findings: 0 });
+          }
+        }
       }
 
       // Triage the result
@@ -276,6 +326,80 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
     }
 
     return planFindings;
+  }
+
+  /**
+   * Dispatch a spawned specialist composer. Returns any findings it emits.
+   * Each specialist has a narrower primitive subset and a focused system prompt.
+   */
+  private async dispatchSpecialist(
+    specialist: 'waf-bypass' | 'second-order' | 'chain-reasoning',
+    reason: string,
+    payload: unknown,
+    target: AppModelEndpoint,
+    ctx: PrimitiveContext,
+  ): Promise<AppModelFinding[]> {
+    if (ctx.depth >= (this.opts.maxDepth ?? 2)) {
+      return []; // hard stop on recursion
+    }
+    if (specialist === 'waf-bypass') {
+      const r = await runWafBypass({
+        payload: typeof payload === 'string' ? payload : String(payload ?? ''),
+        wafVendor: this.inferWafVendor(target),
+        originalRequest: { method: target.method, url: target.path, headers: {} },
+        blockedResponse: { status: 403, body: 'blocked', headers: {} },
+        target,
+        depth: ctx.depth + 1,
+        llm: this.opts.llm,
+        onFinding: (f) => this.opts.onFinding?.(f),
+      });
+      return r.findings;
+    }
+    if (specialist === 'second-order') {
+      const r = await runSecondOrder({
+        storageEndpoint: target,
+        reflectionEndpoint: target,
+        originalPayload: typeof payload === 'string' ? payload : String(payload ?? ''),
+        technique: 'xss',
+        llm: this.opts.llm,
+        depth: ctx.depth + 1,
+        cookies: ctx.cookies,
+        onFinding: (f) => this.opts.onFinding?.(f),
+      });
+      return r.findings;
+    }
+    if (specialist === 'chain-reasoning') {
+      const r = await runChainReasoning({
+        findings: this.recentFindings ?? [],
+        target: target.path,
+        llm: this.opts.llm,
+      });
+      // Chain-reasoning returns chains, not findings — convert to findings
+      return (r.chains ?? []).map((c: any) => ({
+        id: `chain-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: `chain-${c.name ?? 'unknown'}`,
+        endpoint: target.path,
+        param: '',
+        method: target.method,
+        payload: '',
+        description: c.narrative ?? 'multi-step chain identified',
+        severity: c.severity ?? 'medium',
+        confidence: 0.7,
+        confirmed: false,
+        evidence: [],
+      }));
+    }
+    return [];
+  }
+
+  private inferWafVendor(target: AppModelEndpoint): string {
+    const ct = (target.contentType ?? '').toLowerCase();
+    if (ct.includes('cloudflare')) return 'cloudflare';
+    if (ct.includes('akamai')) return 'akamai';
+    if (ct.includes('aws')) return 'aws-waf';
+    if (ct.includes('azure')) return 'azure-waf';
+    if (ct.includes('imperva')) return 'imperva';
+    return 'unknown';
   }
 
   private resolveArgs(
@@ -336,6 +460,24 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
     if (step.name === 'parseResponse' && result.value) {
       const v = result.value as { status: number; body: string };
       if (v.status >= 500) {
+        return { vulnerable: false, confidence: 0, severity: 'info', specialist: null, specialistReason: null };
+      }
+    }
+    // writeFinding is the LLM's "I'm done — record a finding" primitive.
+    // Heuristic guard: only mark vulnerable if the prior step in the plan
+    // was a signal-bearing primitive (evaluateRendered/compareResponses/
+    // measureTiming/checkWaf/injectInContext+httpRequest that returned 200).
+    if (step.name === 'writeFinding') {
+      // If the LLM is calling writeFinding without a strong prior signal,
+      // require at least one signal primitive in the same plan's history
+      // to have produced a vulnerable=true result.
+      const planSteps = plan.primitives;
+      const writeIdx = planSteps.findIndex((p) => p.name === step.name);
+      const priorSteps = planSteps.slice(0, writeIdx);
+      const hasSignalPrior = priorSteps.some((p) =>
+        p.name === 'evaluateRendered' || p.name === 'compareResponses' || p.name === 'measureTiming'
+      );
+      if (!hasSignalPrior) {
         return { vulnerable: false, confidence: 0, severity: 'info', specialist: null, specialistReason: null };
       }
     }

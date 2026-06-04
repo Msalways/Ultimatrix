@@ -72,9 +72,22 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   if (opts.skipSpider && opts.existingModelPath && fs.existsSync(opts.existingModelPath)) {
     console.log(`[1/5] Loading existing model from ${opts.existingModelPath}…`);
     model = readAppModel(opts.existingModelPath);
-  } else if (fs.existsSync(modelPath)) {
-    console.log(`[1/5] Loading existing model from ${modelPath}…`);
-    model = readAppModel(modelPath);
+  } else if (fs.existsSync(modelPath) && !opts.forceSpider) {
+    const existing = readAppModel(modelPath);
+    const existingTarget = (existing as any).target ?? '';
+    // Detect stale model: target differs from -t argument
+    if (existingTarget && existingTarget !== opts.target) {
+      console.log(`[1/5] Stale model detected (was for ${existingTarget}, now scanning ${opts.target}) — re-spidering…`);
+      const mgr = getSharedBrowserManager(true);
+      const spider = new SpiderCrawler(mgr, 'default');
+      const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
+      model = buildAppModelFromCrawl(crawlResult, opts.target);
+      await writeAppModelAsync(modelPath, model);
+      console.log(`  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
+    } else {
+      console.log(`[1/5] Loading existing model from ${modelPath}…`);
+      model = existing;
+    }
   } else {
     console.log(`[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
     const mgr = getSharedBrowserManager(true);
@@ -301,13 +314,17 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
   const llm = getDefaultLLMClient();
 
   const target: AppModelEndpoint = {
-    path: input.url,
+    path: input.concreteUrl ?? input.url,
     method: (input.method || 'GET').toUpperCase(),
-    params: input.param ? [{ name: input.param, type: 'string', required: true }] : [],
+    params: input.allParams && input.allParams.length > 0
+      ? input.allParams
+      : input.param
+        ? [{ name: input.param, type: 'string', required: true }]
+        : [],
     requiresAuth: false,
     responseStatus: 0,
     contentType: 'application/octet-stream',
-    bodyPreview: '',
+    bodyPreview: input.bodyPreview ?? '',
   };
 
   const ctx: PrimitiveContext = {

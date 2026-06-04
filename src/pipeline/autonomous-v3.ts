@@ -30,6 +30,9 @@ export interface NodeSpec {
   method: string;
   technique: Technique;
   param?: string;
+  allParams?: Array<{ name: string; type: string; required: boolean }>;
+  bodyPreview?: string;
+  concreteUrl?: string;
   requiresAuth: boolean;
   timeoutMs: number;
   expectedSeverity: AppModelFinding['severity'];
@@ -42,6 +45,12 @@ export interface WorkerSpawnInput {
   url: string;
   method: string;
   param?: string;
+  /** All discovered params (so worker can pick the right sink) */
+  allParams?: Array<{ name: string; type: string; required: boolean }>;
+  /** Body preview captured by spider (so LLM can see sinks) */
+  bodyPreview?: string;
+  /** Concrete URL with query string (e.g. /level1/frame?query=) for direct attack */
+  concreteUrl?: string;
   activeSessionId: string | null;
   retryAttempt: number;
   timeoutMs: number;
@@ -201,12 +210,12 @@ export class AutonomousV3Orchestrator {
   private async resolveSpec(node: WorkflowStateNode): Promise<NodeSpec | null> {
     const sig = { llmDriven: false };
     const cached = this.resolvedStrategies.get(node.id);
-    if (cached) return specFromResolution(node, cached);
+    if (cached) return specFromResolution(node, cached, this.appModel ?? undefined);
     const resolution = await this.strategy.resolve(node, this.appModel ?? ({} as AppModel), sig);
     if (!resolution) return null;
     this.resolvedStrategies.set(node.id, resolution);
     this.log(`[orch] resolved ${node.id} → ${resolution.technique} (timeout=${resolution.timeoutMs}ms, severity=${resolution.expectedSeverity}, llmDriven=${sig.llmDriven})`);
-    return specFromResolution(node, resolution);
+    return specFromResolution(node, resolution, this.appModel ?? undefined);
   }
 
   private async runSequential(): Promise<OrchestrationResult> {
@@ -405,6 +414,9 @@ export class AutonomousV3Orchestrator {
         url: spec.url,
         method: spec.method,
         param: spec.param,
+        allParams: spec.allParams,
+        bodyPreview: spec.bodyPreview,
+        concreteUrl: spec.concreteUrl,
         activeSessionId,
         retryAttempt: retries,
         timeoutMs: spec.timeoutMs,
@@ -452,13 +464,26 @@ function techKey(technique: Technique, url: string): string {
   return `${technique}|${url}`;
 }
 
-function specFromResolution(node: WorkflowStateNode, r: NodeStrategyResolution): NodeSpec {
+function specFromResolution(
+  node: WorkflowStateNode,
+  r: NodeStrategyResolution,
+  appModel?: AppModel,
+): NodeSpec {
+  // Find the matched endpoint to extract ALL params + body preview + concrete URL
+  const endpoints = (appModel?.endpoints || []) as any[];
+  const matchingEp = endpoints.find((e) => {
+    if (!e?.path) return false;
+    return node.url.endsWith(e.path) || e.path.endsWith(node.url.split('?')[0]);
+  });
   return {
     workflowNodeId: node.id,
     url: node.url,
     method: r.method,
     technique: r.technique,
     param: r.param,
+    allParams: matchingEp?.params,
+    bodyPreview: matchingEp?.bodyPreview,
+    concreteUrl: node.url,
     requiresAuth: node.authRequired,
     timeoutMs: r.timeoutMs,
     expectedSeverity: r.expectedSeverity,

@@ -14,6 +14,7 @@ export interface HuntOptions {
   skipChains: boolean;
   skipRecon: boolean;
   skipSpider: boolean;
+  forceSpider: boolean;
   existingModelPath?: string;
   seedUrls?: string[];
   maxNodes?: number;
@@ -31,6 +32,7 @@ export function parseHuntFlags(args: string[]): HuntOptions {
     skipChains: false,
     skipRecon: false,
     skipSpider: false,
+    forceSpider: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -45,6 +47,7 @@ export function parseHuntFlags(args: string[]): HuntOptions {
     else if (a === '--no-chains') opts.skipChains = true;
     else if (a === '--no-recon') opts.skipRecon = true;
     else if (a === '--no-spider') opts.skipSpider = true;
+    else if (a === '--force-spider') opts.forceSpider = true;
     else if (a === '--existing-model') opts.existingModelPath = args[++i];
     else if (a === '--seed-url') {
       if (!opts.seedUrls) opts.seedUrls = [];
