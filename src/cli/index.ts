@@ -43,19 +43,12 @@ program
   .description('Canonical hunt — spider + recon + multi-session RBAC testing + chains + Playwright tests (replaces assess/interact/test)')
   .option('-t, --target <url>', 'Target URL (required)')
   .option('-o, --output <dir>', 'Output directory', './output')
-  .option('--guided', 'Step-by-step mode with prompts (default)', true)
-  .option('--auto', 'Autonomous mode (no prompts)')
+  .option('--mode <auto|guided>', 'Run mode (default guided)', 'guided')
+  .option('--skip <list>', 'Comma-separated phases to skip: spider,recon,chains,tests')
   .option('--depth <n>', 'Spider depth', '2')
   .option('--max-runtime <seconds>', 'Hard time limit', '1800')
-  .option('--no-tests', 'Skip Playwright test generation')
-  .option('--tests-dir <dir>', 'Where to write Playwright tests', './playwright-tests')
-  .option('--no-chains', 'Skip attack chain engine')
-  .option('--no-recon', 'Skip recon layer (OAuth/GraphQL/JWT/cloud/framework)')
-  .option('--no-spider', 'Skip spider, load existing model instead')
-  .option('--force-spider', 'Re-spider even if app-model.json exists for the same target')
-  .option('--existing-model <path>', 'Path to existing app-model.json')
-  .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph with (space-separated, relative to target origin)')
-  .option('--max-nodes <n>', 'Cap the orchestrator at this many nodes', '50')
+  .option('--existing-model <path>', 'Skip spider, load this app-model.json')
+  .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph (relative to target origin)')
   .action(async (opts) => {
     const { parseHuntFlags, runHunt } = await import('./hunt');
     const seedUrls: string[] = opts.seedUrls ? (Array.isArray(opts.seedUrls) ? opts.seedUrls : [opts.seedUrls]) : [];
@@ -64,20 +57,15 @@ program
     const huntOpts = parseHuntFlags([
       '-t', opts.target || '',
       '-o', opts.output,
-      opts.auto ? '--auto' : '--guided',
-      opts.tests === false ? '--no-tests' : '',
-      '--tests-dir', opts.testsDir,
+      '--mode', opts.mode,
+      opts.skip ? '--skip' : '',
+      opts.skip || '',
       '--depth', opts.depth,
       '--max-runtime', opts.maxRuntime,
-      opts.chains === false ? '--no-chains' : '',
-      opts.recon === false ? '--no-recon' : '',
-      opts.spider === false ? '--no-spider' : '',
-      opts.forceSpider ? '--force-spider' : '',
       opts.existingModel ? '--existing-model' : '',
       opts.existingModel || '',
       ...extra,
     ].filter((x) => x !== '' && x !== null && x !== undefined));
-    (huntOpts as any).maxNodes = parseInt(opts.maxNodes, 10) || 50;
     await runHunt(huntOpts);
   });
 

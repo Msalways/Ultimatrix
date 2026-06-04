@@ -69,10 +69,10 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   // 1. Spider
   let model: AppModel;
-  if (opts.skipSpider && opts.existingModelPath && fs.existsSync(opts.existingModelPath)) {
+  if (opts.skip.has('spider') && opts.existingModelPath && fs.existsSync(opts.existingModelPath)) {
     console.log(`[1/5] Loading existing model from ${opts.existingModelPath}…`);
     model = readAppModel(opts.existingModelPath);
-  } else if (fs.existsSync(modelPath) && !opts.forceSpider) {
+  } else if (fs.existsSync(modelPath) && !opts.skip.has('spider')) {
     const existing = readAppModel(modelPath);
     const existingTarget = (existing as any).target ?? '';
     // Detect stale model: target differs from -t argument
@@ -99,7 +99,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   }
 
   // 2. Recon
-  if (!opts.skipRecon) {
+  if (!opts.skip.has('recon')) {
     console.log(`[2/5] Running recon (OAuth / GraphQL / JWT / cloud / framework)…`);
     const reconResult = await runRecon({
       target: opts.target,
@@ -158,7 +158,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
         return 'proceed';
       },
       maxRuntimeMs: opts.maxRuntimeMs,
-      maxNodes: opts.maxNodes ?? 50,
+      maxNodes: 50,
       enableConcurrency: true,
       maxConcurrency: 4,
       sleepBetweenNodesMs: 0,
@@ -173,7 +173,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   console.log(`  ↳ ${findingsAfter} new findings (${model.findings.length} total)`);
 
   // 4. Chain engine (if not skipped)
-  if (!opts.skipChains && model.findings.length > 0) {
+  if (!opts.skip.has('chains') && model.findings.length > 0) {
     console.log(`[4/5] Running attack chain engine (heuristic)…`);
     const newChains: AttackChain[] = runHeuristicChains(model.findings, 'low');
     const existing = model.attackChains || [];
@@ -186,7 +186,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   }
 
   // 5. Playwright test generation
-  if (!opts.skipTests && model.findings.length > 0) {
+  if (!opts.skip.has('tests') && model.findings.length > 0) {
     if (opts.mode === 'guided') {
       const ans = (await prompt.ask('  Generate Playwright regression tests? [Y/n]: ')).trim().toLowerCase();
       if (ans === '' || ans === 'y' || ans === 'yes') {
@@ -389,12 +389,13 @@ function mergeChains(existing: AttackChain[], fresh: AttackChain[]): AttackChain
 }
 
 async function generateAndWriteTests(model: AppModel, opts: HuntOptions, _modelPath: string): Promise<void> {
+  const testsDir = path.join(opts.outputDir, 'playwright-tests');
   const result = generateFindingTests(model, {
-    outDir: opts.testsDir,
+    outDir: testsDir,
     includeChainTests: true,
   });
-  const written = writeFindingTests(result, opts.testsDir);
-  console.log(`  ↳ wrote ${written.length} files to ${opts.testsDir} (${result.findingsWritten} finding tests, ${result.chainsWritten} chain tests)`);
+  const written = writeFindingTests(result, testsDir);
+  console.log(`  ↳ wrote ${written.length} files to ${testsDir} (${result.findingsWritten} finding tests, ${result.chainsWritten} chain tests)`);
 }
 
 async function handleSlash(

@@ -20,10 +20,14 @@ flow-output/
 output/
 
 output-test*/
+output-flag-test/
 test-output/
 test-validate/
 test-server/
 *.tsbuildinfo
+stderr.txt
+stdout.txt
+test-results/
 
 .test-screenshots/
 output-xss-game/
