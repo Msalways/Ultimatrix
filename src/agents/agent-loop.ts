@@ -171,7 +171,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       builder.addMetaTurn(turn);
       if (finding) {
         allFindings.push(finding);
-        builder.addFinding(finding as unknown as Record<string, unknown>);
+        builder.addFinding(finding);
         opts.onFinding?.(finding);
       }
       continue;
@@ -194,9 +194,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         target: targetStr,
         ctx: opts.ctx,
         llm: opts.llm,
+        depth: 0,
+        allowSpawn: true,
         onFinding: (f) => {
           allFindings.push(f);
-          builder.addFinding(f as unknown as Record<string, unknown>);
+          builder.addFinding(f);
           opts.onFinding?.(f);
         },
       });
@@ -208,7 +210,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         args: action.args,
         result: {
           ok: true,
-          value: `sub-agent done: ${subRun.outcome}, ${subRun.findings.length} findings`,
+          value: {
+            outcome: subRun.outcome,
+            findingsCount: subRun.findings.length,
+            turnsCount: subRun.turns.length,
+            observationsCount: subRun.observations.length,
+            durationMs: subRun.durationMs,
+            subSubAgents: subRun.subSubAgents.length,
+            note: 'Full trace available in subAgents[]; see historySummary on next turn.',
+          },
           durationMs: Date.now() - turnStart,
         },
         durationMs: Date.now() - turnStart,
