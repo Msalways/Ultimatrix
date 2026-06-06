@@ -315,6 +315,66 @@ program
     console.log(`  open the URL in a browser, then click \x1b[1mStart hunt\x1b[0m\n`);
   });
 
+// codegen — finalise a live spec as a runnable Playwright test
+program
+  .command('codegen')
+  .description('Finalise the live spec on disk as a runnable Playwright test')
+  .option('--live <path>', 'Path to live.spec.ts (default: <outDir>/live.spec.ts)')
+  .option('--out-dir <path>', 'Output directory (default: same as live spec)')
+  .action(async (opts) => {
+    const { finalizeLiveSpec } = await import('../codegen/finalize');
+    const outDir = opts.outDir ?? path.join(process.cwd(), 'output');
+    const livePath = opts.live ?? path.join(outDir, 'live.spec.ts');
+    try {
+      const finalised = finalizeLiveSpec({ liveSpecPath: livePath, outDir });
+      console.log(`\x1b[1;32m✓\x1b[0m Finalised: ${finalised}`);
+      console.log(`  Run: npx playwright install && npx playwright test ${path.basename(finalised)}\n`);
+    } catch (err) {
+      console.error(`\x1b[1;31m✗\x1b[0m ${(err as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+// doctor — environment check
+program
+  .command('doctor')
+  .description('Check the local environment (Node, Playwright, LLM provider, network)')
+  .action(async () => {
+    const { runDoctor } = await import('./doctor');
+    const report = await runDoctor();
+    for (const c of report.checks) {
+      const icon = c.ok ? '\x1b[1;32m✓\x1b[0m' : '\x1b[1;31m✗\x1b[0m';
+      process.stdout.write(`${icon} ${c.name.padEnd(34)} ${c.detail}\n`);
+      if (!c.ok && c.fix) process.stdout.write(`    \x1b[33mfix:\x1b[0m ${c.fix}\n`);
+    }
+    if (report.warnings.length > 0) {
+      process.stdout.write('\n\x1b[1;33mWarnings:\x1b[0m\n');
+      for (const w of report.warnings) process.stdout.write(`  - ${w}\n`);
+    }
+    process.stdout.write(`\n${report.ok ? '\x1b[1;32mReady.\x1b[0m' : '\x1b[1;31mIssues found.\x1b[0m'}\n`);
+    if (!report.ok) process.exit(1);
+  });
+
+// demo — canned xss-game run
+program
+  .command('demo')
+  .description('Run a canned xss-game hunt for a fixed budget (useful as a 90s screencast)')
+  .option('--out-dir <path>', 'Where to write the report')
+  .option('--format <fmt>', 'Output format: plain, sarif, json', 'plain')
+  .option('--fail-on <level>', 'Fail-on level: none|low|medium|high|critical', 'high')
+  .option('--max-runtime <sec>', 'Hunt budget in seconds', '90')
+  .action(async (opts) => {
+    const { runDemo } = await import('./demo');
+    const result = await runDemo({
+      outDir: opts.outDir,
+      format: opts.format,
+      failOn: opts.failOn,
+      maxRuntimeSeconds: parseInt(opts.maxRuntime, 10),
+    });
+    console.log(`\nReport: ${result.reportPath}`);
+    process.exit(result.exitCode);
+  });
+
 program.parse();
 
 if (process.argv.length <= 2) {
@@ -324,8 +384,10 @@ if (process.argv.length <= 2) {
   console.log('  npx ultimatrix hunt -t https://target.com            # canonical full hunt (spider + recon + attack + tests)');
   console.log('  npx ultimatrix hunt -t https://target.com --auto    # autonomous (no prompts)');
   console.log('  npx ultimatrix hunt -t https://target.com --guided  # step-by-step (default)');
+  console.log('  npx ultimatrix demo                                  # canned xss-game run (90s screencast)');
+  console.log('  npx ultimatrix doctor                                # environment check');
+  console.log('  npx ultimatrix codegen --live output/live.spec.ts   # finalise live test');
   console.log('  npx ultimatrix web                                   # local web UI on :3000');
-  console.log('  npx ultimatrix demo                                  # run vulnerable demo target on :4567');
   console.log('  npx ultimatrix setup                                 # configure LLM providers\n');
   console.log('Run \x1b[1multimatrix --help\x1b[0m for all commands.');
   process.exit(0);

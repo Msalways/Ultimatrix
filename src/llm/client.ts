@@ -296,6 +296,16 @@ export class LLMClient {
     return this.detectProvider() !== 'mock';
   }
 
+  /** Public read-only access to the resolved provider name. */
+  getProviderName(): string {
+    return this.detectProvider();
+  }
+
+  /** Public read-only access to the configured model id. */
+  getModelName(): string {
+    return this.config?.modelId ?? (typeof this.model === 'string' ? this.model : 'default');
+  }
+
   /**
    * Streaming variant of call(). Iterates LangChain's model.stream() and
    * invokes onToken for each chunk, while accumulating the final text.
