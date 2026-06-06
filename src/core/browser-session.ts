@@ -104,20 +104,31 @@ export class BrowserSessionManager {
       hasTouch: false,
       isMobile: false,
     });
-    const page = await context.newPage();
-    // Hide automation fingerprints from Cloudflare/detection scripts
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      // @ts-expect-error - chrome runtime override
-      window.chrome = { runtime: {} };
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    // Context-level init script: runs for EVERY page in this context,
+    // INCLUDING the initial about:blank document that newPage() creates.
+    // This is critical for the __name shim — page.addInitScript only
+    // runs on navigations AFTER it's added, so the very first page.evaluate
+    // on a fresh session (e.g. scanInteractive before any goto) would
+    // otherwise throw "ReferenceError: __name is not defined".
+    await context.addInitScript(() => {
       // esbuild keepNames helper — tsx transpiles typed arrows into __name(fn, "name").
       // Browser has no such helper; this is a documented no-op polyfill (esbuild's
       // real helper is `(fn) => fn` — it just lets the bundler preserve the name
       // string for stack traces and debugging).
       // @ts-expect-error - globalThis extension
       globalThis.__name = (fn: unknown) => fn;
+    });
+    const page = await context.newPage();
+    // Page-level init scripts: anti-fingerprinting overrides for
+    // Cloudflare / bot detection. These need window/navigator to be
+    // already initialized (which about:blank provides), so they can
+    // safely run at the page level.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // @ts-expect-error - chrome runtime override
+      window.chrome = { runtime: {} };
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     });
 
     this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false, label: options?.label, userAgent: options?.userAgent });

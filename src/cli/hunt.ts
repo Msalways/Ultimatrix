@@ -61,7 +61,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   const modelPath = path.join(opts.outputDir, 'app-model.json');
   const startedAt = Date.now();
   console.log(`\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
-  console.log(`  output: ${opts.outputDir}, max runtime: ${Math.round(opts.maxRuntimeMs / 1000)}s\n`);
+  console.log(`  output: ${opts.outputDir}, max runtime: ${opts.maxRuntimeMs === 0 ? 'unlimited' : `${Math.round(opts.maxRuntimeMs / 1000)}s`}\n`);
 
   // No top-level HuntPrompt here — the InteractiveHuntSession runs its
   // own HuntPrompt-driven REPL inside. The slash commands below

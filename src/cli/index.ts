@@ -45,7 +45,7 @@ program
   .option('-o, --output <dir>', 'Output directory', './output')
   .option('--skip <list>', 'Comma-separated phases to skip: spider,recon,chains,tests')
   .option('--depth <n>', 'Spider depth', '2')
-  .option('--max-runtime <seconds>', 'Hard time limit', '1800')
+  .option('--max-runtime <seconds>', 'Hard time limit, 0=unlimited (default 0)', '0')
   .option('--existing-model <path>', 'Skip spider, load this app-model.json')
   .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph (relative to target origin)')
   .action(async (opts) => {
@@ -87,7 +87,7 @@ program
   .addOption(new Option('--keep-browser', 'Keep browser open').hideHelp())
   .addOption(new Option('--fresh', 'Delete previous output and re-crawl from scratch').hideHelp())
   .addOption(new Option('--v3', 'Use the workflow-DAG-driven orchestrator (AutonomousV3) with multi-session RBAC').hideHelp())
-  .addOption(new Option('--max-runtime <seconds>', 'Max runtime in seconds for v3 orchestrator').default('1800').hideHelp())
+  .addOption(new Option('--max-runtime <seconds>', 'Max runtime in seconds for v3 orchestrator, 0=unlimited (default 0)').default('0').hideHelp())
   .addOption(new Option('--max-concurrency <n>', 'v3: max parallel workers (default 4)').default('4').hideHelp())
   .addOption(new Option('--sleep-between-nodes <ms>', 'v3: delay between dispatching nodes (default 0)').default('0').hideHelp())
   .addOption(new Option('--cookies-from <file>', 'v3: Playwright storage state JSON to pre-inject into default session').hideHelp())
@@ -362,7 +362,7 @@ program
   .option('--out-dir <path>', 'Where to write the report')
   .option('--format <fmt>', 'Output format: plain, sarif, json', 'plain')
   .option('--fail-on <level>', 'Fail-on level: none|low|medium|high|critical', 'high')
-  .option('--max-runtime <sec>', 'Hunt budget in seconds', '90')
+  .option('--max-runtime <sec>', 'Hunt budget in seconds, 0=unlimited (default 90 for demo)', '90')
   .action(async (opts) => {
     const { runDemo } = await import('./demo');
     const result = await runDemo({

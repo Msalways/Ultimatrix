@@ -151,6 +151,26 @@ describe('AutonomousV3Orchestrator', () => {
     expect(result.completedNodes).toBe(2);
   });
 
+  it('does NOT terminate by time when maxRuntimeMs is 0 (unlimited)', async () => {
+    // Block 9c.2: 0 means "unlimited" — the orchestrator must NOT
+    // terminate with 'time' just because Date.now() - start >= 0.
+    // Set maxNodes low so the test terminates quickly via 'max-nodes'
+    // instead of exhausting the schedule.
+    for (let i = 0; i < 2; i++) {
+      graph.addNode(makeNode(`n${i}`, `https://x.com/api${i}`));
+      graph.markReachable(`n${i}`);
+    }
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(false, 0)),
+      maxRuntimeMs: 0, // explicit unlimited
+      maxNodes: 5,
+    });
+    const result = await orch.run();
+    expect(result.terminatedBy).not.toBe('time');
+    expect(result.terminatedBy).toBe('exhausted');
+  });
+
   it('emits onNodeUpdate for in_progress and completed', async () => {
     graph.addNode(makeNode('n1', 'https://x.com/api'));
     graph.markReachable('n1');

@@ -174,7 +174,6 @@ export interface AutonomousV3Options {
 }
 
 const DEFAULT_PER_TECHNIQUE_BUDGET = 3;
-const DEFAULT_MAX_RUNTIME_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_NODES = 200;
 const DEFAULT_SLEEP_MS = 0;
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -228,7 +227,7 @@ export class AutonomousV3Orchestrator {
     this.onNodeUpdate = opts.onNodeUpdate;
     this.onBeforeNode = opts.onBeforeNode;
     this.perTechniqueBudget = opts.perTechniqueBudget ?? DEFAULT_PER_TECHNIQUE_BUDGET;
-    this.maxRuntimeMs = opts.maxRuntimeMs ?? DEFAULT_MAX_RUNTIME_MS;
+    this.maxRuntimeMs = opts.maxRuntimeMs ?? 0; // 0 = unlimited (no time-budget termination)
     this.maxNodes = opts.maxNodes ?? DEFAULT_MAX_NODES;
     this.enableConcurrency = opts.enableConcurrency ?? false;
     this.sleepBetweenNodesMs = opts.sleepBetweenNodesMs ?? DEFAULT_SLEEP_MS;
@@ -283,7 +282,7 @@ export class AutonomousV3Orchestrator {
 
     while (true) {
       if (this.shouldAbort?.()) { terminatedBy = 'abort'; break; }
-      if (Date.now() - start >= this.maxRuntimeMs) { terminatedBy = 'time'; break; }
+      if (this.maxRuntimeMs > 0 && Date.now() - start >= this.maxRuntimeMs) { terminatedBy = 'time'; break; }
       if (processed >= this.maxNodes) { terminatedBy = 'max-nodes'; break; }
 
       const next = this.graph.nextActionable()[0];
@@ -360,7 +359,7 @@ export class AutonomousV3Orchestrator {
 
     const scheduleOne = (): boolean => {
       if (this.shouldAbort?.()) return false;
-      if (Date.now() - start >= this.maxRuntimeMs) return false;
+      if (this.maxRuntimeMs > 0 && Date.now() - start >= this.maxRuntimeMs) return false;
       if (processed >= this.maxNodes) return false;
       if (inFlight.size >= this.maxConcurrency) return false;
       const next = this.graph.nextActionable()[0];
@@ -424,7 +423,7 @@ export class AutonomousV3Orchestrator {
 
     while (true) {
       if (this.shouldAbort?.() || abortedByUser) { terminatedBy = abortedByUser ? 'abort' : 'abort'; break; }
-      if (Date.now() - start >= this.maxRuntimeMs) { terminatedBy = 'time'; break; }
+      if (this.maxRuntimeMs > 0 && Date.now() - start >= this.maxRuntimeMs) { terminatedBy = 'time'; break; }
       if (processed >= this.maxNodes) { terminatedBy = 'max-nodes'; break; }
       let scheduled = false;
       while (scheduleOne()) scheduled = true;

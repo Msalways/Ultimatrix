@@ -9,7 +9,7 @@
 //   --skip <list>               Comma-separated phases to skip:
 //                                 spider,recon,chains,tests (default none)
 //   --depth <n>                 Spider depth (default 2)
-//   --max-runtime <seconds>     Hard time limit (default 1800)
+//   --max-runtime <seconds>     Hard time limit (default 0 = unlimited)
 //   --seed-url <url>            Extra URL to seed the workflow graph (repeatable)
 //   --existing-model <path>     Skip spider, load this app-model.json
 //
@@ -56,7 +56,7 @@ export function parseHuntFlags(args: string[]): HuntOptions {
     outputDir: './output',
     skip: new Set(),
     depth: 2,
-    maxRuntimeMs: 1_800_000,
+    maxRuntimeMs: 0, // 0 = unlimited (orchestrator treats 0 as 'skip time-budget check')
     seedUrls: [],
   };
   for (let i = 0; i < args.length; i++) {

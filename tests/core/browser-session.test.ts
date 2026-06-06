@@ -27,10 +27,15 @@ describe('BrowserSessionManager', () => {
   });
 });
 
-// Block 9a: __name shim for tsx/esbuild keepNames. These tests run a real
-// Playwright browser via BrowserSessionManager. They will be skipped
+// Block 9a/9c.1: __name shim for tsx/esbuild keepNames. These tests run a
+// real Playwright browser via BrowserSessionManager. They will be skipped
 // automatically if Playwright is unavailable in the test environment.
-describe('Block 9a: __name shim (Playwright integration)', () => {
+//
+// Block 9c.1 changed the shim from page.addInitScript to
+// context.addInitScript so the shim is available on the initial
+// about:blank page WITHOUT any prior navigation. The tests below now
+// exercise that property directly (no goto needed).
+describe('Block 9a/9c.1: __name shim (Playwright integration)', () => {
   const hasPlaywright = (() => {
     try {
       require.resolve('playwright');
@@ -40,13 +45,12 @@ describe('Block 9a: __name shim (Playwright integration)', () => {
     }
   })();
 
-  it.skipIf(!hasPlaywright)('installs __name global in every page', async () => {
+  it.skipIf(!hasPlaywright)('installs __name global on the initial page (no navigation needed)', async () => {
     const manager = new BrowserSessionManager(true); // headless=true for tests
     try {
       const page = await manager.getOrCreate('shim-test-1');
-      // addInitScript runs on every navigation, including the initial about:blank.
-      // Trigger an explicit navigation to make sure the script fires.
-      await page.goto('about:blank');
+      // Block 9c.1: context.addInitScript fires for the initial about:blank
+      // document, so __name is available immediately. No page.goto required.
       const t = await page.evaluate(() => typeof (globalThis as any).__name);
       expect(t).toBe('function');
     } finally {
@@ -58,7 +62,6 @@ describe('Block 9a: __name shim (Playwright integration)', () => {
     const manager = new BrowserSessionManager(true);
     try {
       const page = await manager.getOrCreate('shim-test-2');
-      await page.goto('about:blank');
       const result = await page.evaluate(() => {
         const f = () => 42;
         // Real esbuild helper does: __name(f, "f") -> f. Our shim does the same.
@@ -66,6 +69,31 @@ describe('Block 9a: __name shim (Playwright integration)', () => {
         return (globalThis as any).__name(f, 'f')();
       });
       expect(result).toBe(42);
+    } finally {
+      manager.closeAll();
+    }
+  }, 30_000);
+
+  it.skipIf(!hasPlaywright)('shim is available before any navigation (initial about:blank)', async () => {
+    // Regression test for the scanInteractive crash: page.evaluate with
+    // a typed-arrow containing a named function used to throw
+    // "ReferenceError: __name is not defined" because page.addInitScript
+    // only runs on navigations AFTER it's added. With context.addInitScript
+    // the shim is present on the very first document.
+    const manager = new BrowserSessionManager(true);
+    try {
+      const page = await manager.getOrCreate('shim-test-3');
+      // Simulate the tsx-transpiled shape: a typed arrow with a named
+      // function inside. Without the shim this throws on the __name call.
+      const result = await page.evaluate(() => {
+        // The transpiled code is the literal `__name(fn, "name")` call.
+        // We assert it executes without ReferenceError and returns 7.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const __name = (globalThis as any).__name;
+        const fn = () => 7;
+        return __name(fn, 'fn')();
+      });
+      expect(result).toBe(7);
     } finally {
       manager.closeAll();
     }

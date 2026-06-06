@@ -12,9 +12,15 @@ describe('parseHuntFlags', () => {
     expect(opts.target).toBe('http://x.com');
     expect(opts.outputDir).toBe('./output');
     expect(opts.depth).toBe(2);
-    expect(opts.maxRuntimeMs).toBe(1_800_000);
+    // Block 9c.2: default maxRuntimeMs is 0 (unlimited).
+    expect(opts.maxRuntimeMs).toBe(0);
     expect(opts.skip.size).toBe(0);
     expect(opts.seedUrls).toEqual([]);
+  });
+
+  it('treats --max-runtime 0 as unlimited', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com', '--max-runtime', '0']);
+    expect(opts.maxRuntimeMs).toBe(0);
   });
 
   it('rejects --mode flag (removed: hunt is now always terminal-driven)', () => {

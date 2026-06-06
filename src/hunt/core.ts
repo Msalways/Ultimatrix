@@ -23,7 +23,7 @@ export interface HuntCoreOptions {
   target: string;
   outDir: string;
   llm: LLMClient;
-  /** Wall-clock budget in seconds. Default 300 (5 min). */
+  /** Wall-clock budget in seconds. Default 0 (unlimited). */
   maxRuntimeSeconds?: number;
   /** Dollar budget. Default 5.0. */
   maxDollars?: number;
@@ -52,7 +52,7 @@ export class HuntCore {
     this.opts = {
       target: opts.target,
       outDir: opts.outDir,
-      maxRuntimeSeconds: opts.maxRuntimeSeconds ?? 300,
+      maxRuntimeSeconds: opts.maxRuntimeSeconds ?? 0, // 0 = unlimited (Block 9c.2)
       maxDollars: opts.maxDollars ?? 5.0,
       writeJsonl: opts.writeJsonl ?? true,
       writeLiveSpec: opts.writeLiveSpec ?? true,
@@ -228,7 +228,10 @@ export class HuntCore {
   private tick(): void {
     if (this.stopped) return;
     const elapsedSeconds = (Date.now() - this.startTime) / 1000;
-    if (elapsedSeconds >= this.state.maxRuntimeSeconds) {
+    // Block 9c.2: maxRuntimeSeconds === 0 means "unlimited", skip the
+    // time-budget check entirely. Same for the remaining/eta computation
+    // — when unlimited, we report Infinity so the UI shows no countdown.
+    if (this.state.maxRuntimeSeconds > 0 && elapsedSeconds >= this.state.maxRuntimeSeconds) {
       this.stop('time-budget');
       return;
     }
@@ -236,11 +239,12 @@ export class HuntCore {
       this.stop('budget-spent');
       return;
     }
+    const isUnlimited = this.state.maxRuntimeSeconds === 0;
     const budget: BudgetUpdate = {
       spent: this.state.dollarsSpent,
       limit: this.state.maxDollars,
-      remainingSeconds: Math.max(0, this.state.maxRuntimeSeconds - elapsedSeconds),
-      etaSeconds: Math.max(0, this.state.maxRuntimeSeconds - elapsedSeconds),
+      remainingSeconds: isUnlimited ? Infinity : Math.max(0, this.state.maxRuntimeSeconds - elapsedSeconds),
+      etaSeconds: isUnlimited ? Infinity : Math.max(0, this.state.maxRuntimeSeconds - elapsedSeconds),
     };
     this.emit({ type: 'budget-update', budget });
   }

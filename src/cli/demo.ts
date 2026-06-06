@@ -77,7 +77,7 @@ Options:
   --out-dir <path>       Where to write the report (default: a fresh temp dir)
   --format <plain|sarif|json>  Output format (default: plain)
   --fail-on <level>      Exit code policy (default: high)
-  --max-runtime <sec>    Hunt budget (default: 90)
+  --max-runtime <sec>    Hunt budget in seconds, 0=unlimited (default: 90)
 
 Examples:
   npx ultimatrix demo
