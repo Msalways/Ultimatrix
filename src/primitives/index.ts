@@ -24,7 +24,7 @@ import {
   extractCsrfToken,
 } from './observation';
 import { useSession } from './session';
-import { spawnSubtask, recordEvidence, writeFinding } from './control';
+import { spawnSubtask, recordEvidence, writeFinding, recordTestStep } from './control';
 
 export const PRIMITIVE_CATALOG: Record<PrimitiveName, PrimitiveDefinition<any, any>> = {
   httpRequest,
@@ -48,6 +48,7 @@ export const PRIMITIVE_CATALOG: Record<PrimitiveName, PrimitiveDefinition<any, a
   spawnSubtask,
   recordEvidence,
   writeFinding,
+  recordTestStep,
 };
 
 export const PRIMITIVE_LIST: PrimitiveName[] = Object.keys(PRIMITIVE_CATALOG) as PrimitiveName[];
@@ -90,8 +91,9 @@ export {
   spawnSubtask,
   recordEvidence,
   writeFinding,
+  recordTestStep,
 };
 
 export * from './types';
 export type { SessionSpec } from './session';
-export type { SubtaskRequest, SubtaskHandle } from './control';
+export type { SubtaskRequest, SubtaskHandle, TestStepArgs, TestStepHandle } from './control';

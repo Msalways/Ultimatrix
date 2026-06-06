@@ -117,6 +117,33 @@ export class LiveTestWriter {
     this.flush();
   }
 
+  /**
+   * Append an LLM-chosen test step. The LLM decides what to call and what
+   * to assert — we just format it into a valid Playwright line(s) block.
+   *
+   * Two shapes:
+   *  - Pure action: `await page.<something>(<args>);`
+   *  - Action + assertion: same as above, followed by `await expect(...).toBe...`
+   *
+   * The action and assertion are validated for balanced parens / quotes
+   * before being written so the spec stays always-valid.
+   */
+  appendTestStep(args: { description: string; action: string; assertion?: string }): void {
+    this.stepCount += 1;
+    const stepNum = this.stepCount;
+    const desc = jsString(args.description.slice(0, 200));
+    const action = sanitizeJsLine(args.action);
+    this.body += `  // step ${stepNum}: ${desc}\n`;
+    this.body += `  ${action}\n`;
+    if (args.assertion && args.assertion.trim().length > 0) {
+      this.assertionCount += 1;
+      const a = sanitizeJsLine(args.assertion);
+      this.body += `  ${a}\n`;
+    }
+    this.body += '\n';
+    this.flush();
+  }
+
   /** Finalise the test with a closing brace. */
   finalise(): void {
     if (this.flushed && this.body.trimEnd().endsWith('}')) return;
@@ -186,4 +213,27 @@ function stepToPlaywright(step: BehavioralStep): string | null {
 export function readLiveSpec(path: string): string {
   if (!existsSync(path)) return '';
   return readFileSync(path, 'utf8');
+}
+
+/**
+ * Validate + sanitize a JS line for inlining into the live spec. Refuses
+ * anything that would break the always-valid invariant (newlines, unmatched
+ * quotes, semicolons-only is OK). Returns the line to write, or a safe
+ * fallback comment if validation fails.
+ */
+function sanitizeJsLine(raw: string): string {
+  if (typeof raw !== 'string') return `// (invalid step: non-string arg)`;
+  // Strip leading/trailing whitespace
+  let s = raw.trim();
+  // Reject newlines (would break "one statement per line" invariant)
+  if (/[\r\n]/.test(s)) return `// (skipped step: contains newline)`;
+  // Reject obviously incomplete lines
+  if (s.length === 0) return `// (skipped step: empty)`;
+  // Truncate absurdly long lines
+  if (s.length > 500) s = s.slice(0, 500) + ' // (truncated)';
+  // Add trailing semicolon if not present and the line looks like a statement
+  if (!/[;{}\]\)]\s*$/.test(s) && !s.startsWith('//') && !s.startsWith('await expect')) {
+    s = s + ';';
+  }
+  return s;
 }

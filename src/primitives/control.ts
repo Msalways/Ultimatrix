@@ -109,3 +109,68 @@ export const writeFinding: PrimitiveDefinition<
     };
   },
 };
+
+export interface TestStepArgs {
+  /** What this step is verifying (free-form). Goes into a // comment. */
+  description: string;
+  /**
+   * The Playwright code to run. Usually `await page.goto(...)`,
+   * `await page.locator(...).fill(...)`, `await page.request.get(...)`,
+   * etc. Must be a single line — multi-line blocks aren't supported.
+   */
+  action: string;
+  /**
+   * Optional assertion to run after the action. Single line, typically
+   * `await expect(...).toBe...` or `await expect(...).toContain(...)`.
+   * When the action is expected to fail (e.g. status 500), use
+   * `await expect(...).rejects.toThrow()` style.
+   */
+  assertion?: string;
+}
+
+export interface TestStepHandle {
+  stepId: string;
+  stepIndex: number;
+  recorded: boolean;
+}
+
+/**
+ * Record a Playwright test step into the live spec. The LLM decides what
+ * to capture — the primitive just validates + appends.
+ *
+ * Returns ok: false (NOT an exception) if the context has no live spec
+ * attached, so the LLM can learn to skip the tool in flows where it
+ * isn't plumbed (e.g. legacy v2 hunt path).
+ */
+export const recordTestStep: PrimitiveDefinition<TestStepArgs, TestStepHandle> = {
+  name: 'recordTestStep',
+  description:
+    'Append a step to the live Playwright spec on disk. Use this whenever you complete an action you want to be re-runnable as a regression test. Call after meaningful probes (a request, a fill, a navigation, an XSS check, etc.) — the spec stays always-valid Playwright code. No effect if no live spec is attached to this context (returns ok: false).',
+  requiresBrowser: false,
+  deterministic: true,
+  execute(args, ctx): PrimitiveResult<TestStepHandle> {
+    const start = Date.now();
+    if (!ctx.liveSpec) {
+      return {
+        ok: false,
+        error: 'no live spec attached to this context — recordTestStep has no effect in this flow',
+        durationMs: Date.now() - start,
+      };
+    }
+    const stepIndex = ctx.liveSpec.getStepCount() + 1;
+    ctx.liveSpec.appendTestStep({
+      description: args.description,
+      action: args.action,
+      assertion: args.assertion,
+    });
+    return {
+      ok: true,
+      value: {
+        stepId: `step-${Date.now()}-${Math.floor(Math.random() * 1000).toString(36)}`,
+        stepIndex,
+        recorded: true,
+      },
+      durationMs: Date.now() - start,
+    };
+  },
+};

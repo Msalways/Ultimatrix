@@ -1,7 +1,7 @@
 // src/agents/agent-loop.ts
 //
 // The meta-orchestrator: a ReAct loop where the LLM is the loop body.
-// Has all 23 tools (21 primitives + spawnAgent + writeFinding) and decides
+// Has all 24 tools (22 primitives + spawnAgent + writeFinding) and decides
 // the entire attack strategy. Can spawn sub-agents in parallel, recursively,
 // and with LLM-chosen tool subsets. No hardcoded techniques, strategies, or
 // finding types.
@@ -255,7 +255,7 @@ async function executeMetaPrimitive(
     'craftXmlEntity', 'craftMultipart', 'injectInContext', 'omitHeader', 'parseResponse',
     'evaluateRendered', 'measureTiming', 'compareResponses', 'checkWaf',
     'findEndpointsInResponse', 'extractSessionCookie', 'extractCsrfToken', 'useSession',
-    'spawnSubtask', 'recordEvidence', 'writeFinding',
+    'spawnSubtask', 'recordEvidence', 'writeFinding', 'recordTestStep',
   ];
 
   if (!validPrimitives.includes(action.tool as PrimitiveName)) {

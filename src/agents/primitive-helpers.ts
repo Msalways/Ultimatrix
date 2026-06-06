@@ -35,7 +35,9 @@ import {
   spawnSubtask,
   recordEvidence,
   writeFinding,
+  recordTestStep,
 } from '../primitives';
+import type { TestStepArgs, TestStepHandle } from '../primitives/control';
 
 /**
  * Execute a primitive by name with the given args. Returns the PrimitiveResult.
@@ -115,6 +117,8 @@ export async function executePrimitive(
         },
         ctx,
       );
+    case 'recordTestStep':
+      return recordTestStep.execute(args as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown primitive: ${exhaustive as string}`);
@@ -177,6 +181,7 @@ export function describePrimitive(name: PrimitiveName): string {
     spawnSubtask,
     recordEvidence,
     writeFinding,
+    recordTestStep,
   };
   return defs[name].description;
 }

@@ -5,6 +5,7 @@
 // chain primitive invocations together.
 
 import type { FindingEvidence } from '../core/app-model';
+import type { LiveTestWriter } from '../codegen/live-writer';
 
 export type PrimitiveName =
   | 'httpRequest'
@@ -27,7 +28,8 @@ export type PrimitiveName =
   | 'useSession'
   | 'spawnSubtask'
   | 'recordEvidence'
-  | 'writeFinding';
+  | 'writeFinding'
+  | 'recordTestStep';
 
 export type InjectionLocation =
   | 'query'
@@ -97,6 +99,13 @@ export interface PrimitiveContext {
   budget: { startedAt: number; maxMs: number };
   /** Optional sink for tracking sub-composer spawns (read by Composer.run) */
   subtaskSink?: Array<{ specialist: string; result: 'done' | 'failed'; findings: number }>;
+  /**
+   * Optional live Playwright-spec writer. When set, the `recordTestStep`
+   * primitive appends LLM-chosen steps to it. When unset (e.g. v2 hunt
+   * path), recordTestStep returns ok: false with a "no live spec" error
+   * and the LLM learns to skip it.
+   */
+  liveSpec?: LiveTestWriter | null;
 }
 
 export type PrimitiveResult<T = unknown> = {

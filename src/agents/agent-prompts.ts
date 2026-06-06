@@ -37,6 +37,7 @@ Each turn, you pick ONE tool call. Justify your choice in "thought". See the res
 - A sub-agent can call spawnAgent recursively to delegate further.
 - Use craftPayload as a helper OR craft payloads inline. Either works.
 - Name findings however you want. The "type" field in writeFinding is a free-form string.
+- recordTestStep: call it after any probe you want to be re-runnable as a regression test (requests, fills, navigations, XSS checks). The spec stays always-valid Playwright code on disk. No effect (returns ok: false) if no live spec is attached — that's fine, just skip it in that case.
 - Stop at any time by not calling another tool. The loop ends.
 
 ## Critical rules
@@ -86,6 +87,7 @@ Each turn, pick ONE tool call. Justify in "thought". See the result. Decide what
 - Use craftPayload as a helper OR craft payloads inline in injectInContext.args.payload.
 - Spawn your OWN sub-agents if you need to delegate further (use spawnAgent with a smaller tool subset).
 - Name findings however you want — "type" is a free-form string.
+- recordTestStep: call it after probes you want to be re-runnable as regression tests. The spec stays always-valid Playwright code on disk. No effect (ok: false) if no live spec is attached — just skip in that case.
 - Stop at any time.
 
 ## Critical rules

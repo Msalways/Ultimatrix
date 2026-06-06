@@ -366,6 +366,21 @@ export const PRIMITIVE_SCHEMAS: Record<PrimitiveName, ToolSchema> = {
       required: ['type', 'endpoint', 'param', 'severity', 'confidence'],
     },
   },
+
+  recordTestStep: {
+    name: 'recordTestStep',
+    description:
+      'Append a step to the live Playwright spec on disk. Use this whenever you complete an action you want to be re-runnable as a regression test — a request, a fill, a navigation, an XSS check, etc. The spec stays always-valid Playwright code. No effect (returns ok: false) if no live spec is attached to this context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: 'What this step verifies. Goes into a // comment. Free-form.' },
+        action: { type: 'string', description: 'Single-line Playwright code. E.g. "await page.goto(\'https://target/\')".' },
+        assertion: { type: 'string', description: 'Optional single-line assertion. E.g. "await expect(page.locator(\'#x\')).toBeVisible()".' },
+      },
+      required: ['description', 'action'],
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------

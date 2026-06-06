@@ -4,8 +4,12 @@
 // system — it returns {thought, tool, args} JSON per turn. The Composer
 // surfaces trace events through onLog. These tests verify the wiring.
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Composer } from '../../src/agents/composer';
 import { LLMClient } from '../../src/llm/client';
+import { LiveTestWriter } from '../../src/codegen/live-writer';
 import type { AppModelEndpoint } from '../../src/core/app-model';
 import type { PrimitiveContext } from '../../src/primitives/types';
 
@@ -38,13 +42,14 @@ function mkTarget(over: Partial<AppModelEndpoint> = {}): AppModelEndpoint {
   };
 }
 
-function mkCtx(): PrimitiveContext {
+function mkCtx(over: Partial<PrimitiveContext> = {}): PrimitiveContext {
   return {
     baseUrl: 'http://test.local',
     cookies: {},
     evidenceLog: [],
     depth: 0,
     budget: { startedAt: Date.now(), maxMs: 60_000 },
+    ...over,
   };
 }
 
@@ -192,5 +197,50 @@ describe('Composer (agent loop)', () => {
     // Free-form strings preserved
     expect(r.findings[0].type).toBe('gpu-buffer-overflow');
     expect(r.findings[0].severity).toBe('cosmic');
+  });
+
+  it('dispatches recordTestStep to ctx.liveSpec and writes Playwright code', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'composer-rts-'));
+    try {
+      const livePath = join(dir, 'live.spec.ts');
+      const liveSpec = new LiveTestWriter({ outPath: livePath, baseUrl: 'http://test.local' });
+      const ctx = mkCtx({ liveSpec });
+
+      const llm = new LLMClient({ provider: 'mock' });
+      let callCount = 0;
+      llm.call = vi.fn(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return { text: JSON.stringify({ thought: 'navigate', tool: 'recordTestStep', args: { description: 'home', action: "await page.goto('http://test.local/')" } }), json: null, provider: 'mock' as const, model: 'mock', durationMs: 0 };
+        }
+        return { text: JSON.stringify({ thought: 'done', tool: 'giveUp', args: {} }), json: null, provider: 'mock' as const, model: 'mock', durationMs: 0 };
+      });
+      llm.isReal = () => false;
+      const c = new Composer({ llm });
+      await c.run(mkTarget(), ctx);
+
+      const content = readFileSync(livePath, 'utf8');
+      expect(content).toMatch(/step 1: home/);
+      expect(content).toMatch(/await page\.goto\('http:\/\/test\.local\/'\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns ok: false for recordTestStep when no live spec is attached (LLM learns to skip)', async () => {
+    const llm = new LLMClient({ provider: 'mock' });
+    let callCount = 0;
+    llm.call = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { text: JSON.stringify({ thought: 'try record', tool: 'recordTestStep', args: { description: 'x', action: "await page.goto('/')" } }), json: null, provider: 'mock' as const, model: 'mock', durationMs: 0 };
+      }
+      return { text: JSON.stringify({ thought: 'd', tool: 'giveUp', args: {} }), json: null, provider: 'mock' as const, model: 'mock', durationMs: 0 };
+    });
+    llm.isReal = () => false;
+    const c = new Composer({ llm });
+    const r = await c.run(mkTarget(), mkCtx()); // no liveSpec
+    // No exception, no findings, no crash
+    expect(r.findings).toEqual([]);
   });
 });

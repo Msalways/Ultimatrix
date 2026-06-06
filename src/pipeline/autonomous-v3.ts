@@ -72,6 +72,13 @@ export interface WorkerSpawnInput {
    * and instrumentation; the UI consumes onLog (richer).
    */
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
+  /**
+   * Optional output dir. Used by the worker to write a per-node live
+   * Playwright spec via the recordTestStep primitive. The spec is
+   * named `live-${nodeId}.spec.ts` to avoid concurrent-write races
+   * between parallel workers.
+   */
+  outDir?: string;
 }
 
 export interface WorkerSpawnResult {
@@ -157,6 +164,13 @@ export interface AutonomousV3Options {
    * workers. Useful for tests and for the "primitive" UI panel.
    */
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
+  /**
+   * Optional output dir. Forwarded to every worker so they can write a
+   * per-node live Playwright spec via the recordTestStep primitive.
+   * Each worker gets its own file (`live-${nodeId}.spec.ts`) to avoid
+   * concurrent-write races between parallel workers.
+   */
+  outDir?: string;
 }
 
 const DEFAULT_PER_TECHNIQUE_BUDGET = 3;
@@ -199,6 +213,7 @@ export class AutonomousV3Orchestrator {
   private onLLMToken?: (label: string, chunk: string) => void;
   private onComposerEvent?: (event: ComposerLogEvent) => void;
   private onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
+  private outDir?: string;
   private rateLimitEvents: number = 0;
   private resolvedStrategies: Map<string, NodeStrategyResolution> = new Map();
   private strategyFailures: Map<string, number> = new Map();
@@ -223,6 +238,7 @@ export class AutonomousV3Orchestrator {
     this.onLLMToken = opts.onLLMToken;
     this.onComposerEvent = opts.onComposerEvent;
     this.onPrimitive = opts.onPrimitive;
+    this.outDir = opts.outDir;
   }
 
   getEffectiveMaxConcurrency(): number {
@@ -465,6 +481,7 @@ export class AutonomousV3Orchestrator {
         retryAttempt: retries,
         timeoutMs: spec.timeoutMs,
         expectedSeverity: spec.expectedSeverity,
+        outDir: this.outDir,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
