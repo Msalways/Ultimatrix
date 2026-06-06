@@ -324,6 +324,33 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     console.log(`[5/5] Test generation skipped (--no-tests)`);
   }
 
+  // 5b. Block 9b.2: post-hoc LLM synthesis backstop. If the LLM
+  // didn't call recordTestStep enough during the hunt (or didn't have
+  // the tool plumbed), ask the LLM now to write a Playwright spec
+  // from the findings + behavioral trace. Gated on minLiveSteps so
+  // we don't double-write when the live spec is already useful.
+  if (!opts.skip.has('tests')) {
+    try {
+      const { synthesizeSpecFromTrace } = await import('../codegen/synthesize');
+      const { getDefaultLLMClient } = await import('../llm/client');
+      const synthResult = await synthesizeSpecFromTrace({
+        outDir: opts.outputDir,
+        findings: model.findings,
+        behavioralSummary: readBehavioralSummary(opts.outputDir),
+        target: opts.target,
+        llm: getDefaultLLMClient(),
+        minLiveSteps: 3,
+      });
+      if (synthResult.skippedReason) {
+        console.log(`  · live-spec synthesis: ${synthResult.skippedReason}`);
+      } else {
+        console.log(`  · live-spec synthesis: wrote ${synthResult.outPath} (validated=${synthResult.validated})`);
+      }
+    } catch (e) {
+      console.log(`  · live-spec synthesis failed: ${(e as Error).message}`);
+    }
+  }
+
   // 6. Report
   console.log(`[6/6] Compiling report…`);
   const sections = renderChainFirstReport(model);
@@ -541,6 +568,32 @@ async function generateAndWriteTests(model: AppModel, opts: HuntOptions, _modelP
   });
   const written = writeFindingTests(result, testsDir);
   console.log(`  ↳ wrote ${written.length} files to ${testsDir} (${result.findingsWritten} finding tests, ${result.chainsWritten} chain tests)`);
+}
+
+/**
+ * Read the behavioral.jsonl trace and produce a one-line-per-step
+ * summary for the synthesis prompt. Capped at 30 steps × 200 chars.
+ */
+function readBehavioralSummary(outDir: string): string {
+  const p = path.join(outDir, 'behavioral.jsonl');
+  if (!fs.existsSync(p)) return '';
+  try {
+    const lines = fs.readFileSync(p, 'utf-8').split('\n').filter(Boolean);
+    const summary = lines.slice(0, 30).map((l) => {
+      try {
+        const obj = JSON.parse(l);
+        if (obj && obj.type && obj.data) {
+          return `${obj.type}: ${JSON.stringify(obj.data).slice(0, 200)}`;
+        }
+        return l.slice(0, 200);
+      } catch {
+        return l.slice(0, 200);
+      }
+    });
+    return summary.join('\n');
+  } catch {
+    return '';
+  }
 }
 
 async function handleSlash(
