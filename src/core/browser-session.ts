@@ -112,6 +112,12 @@ export class BrowserSessionManager {
       window.chrome = { runtime: {} };
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      // esbuild keepNames helper — tsx transpiles typed arrows into __name(fn, "name").
+      // Browser has no such helper; this is a documented no-op polyfill (esbuild's
+      // real helper is `(fn) => fn` — it just lets the bundler preserve the name
+      // string for stack traces and debugging).
+      // @ts-expect-error - globalThis extension
+      globalThis.__name = (fn: unknown) => fn;
     });
 
     this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false, label: options?.label, userAgent: options?.userAgent });
