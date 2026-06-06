@@ -26,6 +26,7 @@ const TOOL_EXECUTION_TIMEOUT = 30000; // 30s default timeout for tool invocation
 export class ToolRegistry {
   private tools: Map<string, DynamicStructuredTool> = new Map();
   private meta: Map<string, { name: string; category: string; description: string; tags?: string[] }> = new Map();
+  private factories: Map<string, () => DynamicStructuredTool> = new Map();
   private workerTracker: ((id: string, promise: Promise<unknown>) => void) | null = null;
 
   register(toolConfig: {
@@ -35,9 +36,13 @@ export class ToolRegistry {
     tags?: string[];
     factory: () => DynamicStructuredTool;
   }): void {
-    const tool = toolConfig.factory();
-    this.tools.set(tool.name, tool);
-    this.meta.set(tool.name, { name: toolConfig.name, category: toolConfig.category, description: toolConfig.description, tags: toolConfig.tags });
+    // Defer factory invocation until the tool is actually requested.
+    // This avoids module-load-time TDZ errors when a factory references
+    // a `const` from its own module that hasn't been initialized yet
+    // (e.g. browser-tools.ts registers via tool-registry.ts which is
+    // imported by browser-tools.ts — a circular import).
+    this.factories.set(toolConfig.name, toolConfig.factory);
+    this.meta.set(toolConfig.name, { name: toolConfig.name, category: toolConfig.category, description: toolConfig.description, tags: toolConfig.tags });
   }
 
   setWorkerTracker(tracker: (id: string, promise: Promise<unknown>) => void): void {
@@ -49,10 +54,19 @@ export class ToolRegistry {
   }
 
   getAll(): DynamicStructuredTool[] {
+    // Materialize any pending factories on demand.
+    for (const [name, factory] of this.factories) {
+      if (!this.tools.has(name)) {
+        try { this.tools.set(name, factory()); } catch { /* skip broken factories */ }
+      }
+    }
     return Array.from(this.tools.values());
   }
 
   get(name: string): DynamicStructuredTool | undefined {
+    if (!this.tools.has(name) && this.factories.has(name)) {
+      try { this.tools.set(name, this.factories.get(name)!()); } catch { return undefined; }
+    }
     return this.tools.get(name);
   }
 
@@ -60,6 +74,7 @@ export class ToolRegistry {
     const names = new Set(
       Array.from(this.meta.values()).filter(m => m.category === category).map(m => m.name)
     );
+    this.getAll();
     return Array.from(this.tools.values()).filter(t => names.has(t.name));
   }
 

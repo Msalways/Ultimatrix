@@ -22,6 +22,7 @@ import type { WorkflowStateGraph, WorkflowStateNode } from '../core/workflow-sta
 import type { SessionPool } from '../core/session-pool';
 import type { Hypothesis, Technique } from '../core/attack-plan';
 import type { AppModelFinding, FindingEvidence, AppModel } from '../core/app-model';
+import type { ComposerLogEvent } from '../agents/composer';
 import { randomUUID } from 'crypto';
 
 export interface NodeSpec {
@@ -55,6 +56,22 @@ export interface WorkerSpawnInput {
   retryAttempt: number;
   timeoutMs: number;
   expectedSeverity: AppModelFinding['severity'];
+  /**
+   * Optional sink for LLM token streaming. Forwarded to the worker's
+   * Composer so the web UI / CLI can show LLM output in real-time.
+   */
+  onLLMToken?: (label: string, chunk: string) => void;
+  /**
+   * Optional sink for structured Composer lifecycle events (plan-proposed,
+   * primitive, triage, specialist-spawn, finding). The web UI consumes
+   * these to render the live plan/primitive/finding panels.
+   */
+  onLog?: (event: ComposerLogEvent) => void;
+  /**
+   * Optional sink for low-level primitive invocations. Used by tests
+   * and instrumentation; the UI consumes onLog (richer).
+   */
+  onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
 }
 
 export interface WorkerSpawnResult {
@@ -124,6 +141,22 @@ export interface AutonomousV3Options {
   sleepBetweenNodesMs?: number;
   onLog?: (msg: string) => void;
   shouldAbort?: () => boolean;
+  /**
+   * Optional sink for LLM token streaming. Forwarded to every worker
+   * so the web UI / CLI can show LLM output in real-time.
+   */
+  onLLMToken?: (label: string, chunk: string) => void;
+  /**
+   * Optional sink for structured Composer lifecycle events. Forwarded
+   * to every worker (and prefixed with the workflow node id) so the
+   * web UI can render the live plan/primitive/finding timeline.
+   */
+  onComposerEvent?: (event: ComposerLogEvent) => void;
+  /**
+   * Optional sink for low-level primitive invocations across all
+   * workers. Useful for tests and for the "primitive" UI panel.
+   */
+  onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
 }
 
 const DEFAULT_PER_TECHNIQUE_BUDGET = 3;
@@ -163,6 +196,9 @@ export class AutonomousV3Orchestrator {
   private techniqueRetries: Map<string, number> = new Map();
   private maxConcurrency: number;
   private onLog?: (msg: string) => void;
+  private onLLMToken?: (label: string, chunk: string) => void;
+  private onComposerEvent?: (event: ComposerLogEvent) => void;
+  private onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
   private rateLimitEvents: number = 0;
   private resolvedStrategies: Map<string, NodeStrategyResolution> = new Map();
   private strategyFailures: Map<string, number> = new Map();
@@ -184,6 +220,9 @@ export class AutonomousV3Orchestrator {
     this.shouldAbort = opts.shouldAbort;
     this.maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     this.onLog = opts.onLog;
+    this.onLLMToken = opts.onLLMToken;
+    this.onComposerEvent = opts.onComposerEvent;
+    this.onPrimitive = opts.onPrimitive;
   }
 
   getEffectiveMaxConcurrency(): number {
@@ -417,6 +456,11 @@ export class AutonomousV3Orchestrator {
         allParams: spec.allParams,
         bodyPreview: spec.bodyPreview,
         concreteUrl: spec.concreteUrl,
+        onLLMToken: this.onLLMToken,
+        onLog: this.onComposerEvent
+          ? (event) => this.onComposerEvent?.(event)
+          : undefined,
+        onPrimitive: this.onPrimitive,
         activeSessionId,
         retryAttempt: retries,
         timeoutMs: spec.timeoutMs,

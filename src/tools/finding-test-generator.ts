@@ -193,6 +193,20 @@ export async function loginAs(page: Page, creds: AuthCreds = auth!): Promise<voi
 function generateUserFlowSpec(model: AppModel, baseUrl: string): GeneratedTestFile | null {
   // Pull steps from the spider's auto-recording. If absent, no user-flow file.
   const steps: MacroStep[] = model.recordedSessions?.['spider-auto'] ?? [];
+  return generateUserFlowSpecFromSteps(steps, baseUrl, 'spider-auto');
+}
+
+/**
+ * Public helper: build a user-flow.spec.ts from an explicit list of
+ * MacroStep entries (used by the interactive session where the
+ * recording is captured at the terminal, not in the spider's
+ * auto-recording buffer). Returns null when the list is empty.
+ */
+export function generateUserFlowSpecFromSteps(
+  steps: MacroStep[],
+  baseUrl: string,
+  source: 'spider-auto' | 'manual' = 'manual',
+): GeneratedTestFile | null {
   if (steps.length === 0) return null;
 
   // Deduplicate consecutive navigate-to-same-URL entries (spider may revisit)
@@ -272,7 +286,7 @@ function generateUserFlowSpec(model: AppModel, baseUrl: string): GeneratedTestFi
   lines.push(``);
 
   return {
-    path: 'user-flow.spec.ts',
+    path: source === 'manual' ? 'user-flow-manual.spec.ts' : 'user-flow.spec.ts',
     type: 'user-flow',
     content: lines.join('\n'),
   };

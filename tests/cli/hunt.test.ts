@@ -10,20 +10,20 @@ describe('parseHuntFlags', () => {
   it('parses minimal target', () => {
     const opts = parseHuntFlags(['-t', 'http://x.com']);
     expect(opts.target).toBe('http://x.com');
-    expect(opts.mode).toBe('guided');
     expect(opts.outputDir).toBe('./output');
     expect(opts.depth).toBe(2);
+    expect(opts.maxRuntimeMs).toBe(1_800_000);
     expect(opts.skip.size).toBe(0);
+    expect(opts.seedUrls).toEqual([]);
   });
 
-  it('parses --mode auto', () => {
-    const opts = parseHuntFlags(['-t', 'http://x.com', '--mode', 'auto']);
-    expect(opts.mode).toBe('auto');
-  });
-
-  it('rejects invalid --mode', () => {
+  it('rejects --mode flag (removed: hunt is now always terminal-driven)', () => {
+    expect(() => parseHuntFlags(['-t', 'http://x.com', '--mode', 'auto']))
+      .toThrow(/--mode.*removed/i);
+    expect(() => parseHuntFlags(['-t', 'http://x.com', '--mode', 'guided']))
+      .toThrow(/--mode.*removed/i);
     expect(() => parseHuntFlags(['-t', 'http://x.com', '--mode', 'fast']))
-      .toThrow(/--mode/);
+      .toThrow(/--mode.*removed/i);
   });
 
   it('parses --skip with multiple phases', () => {
@@ -48,14 +48,12 @@ describe('parseHuntFlags', () => {
     const opts = parseHuntFlags([
       '--target', 'http://x.com',
       '--output', '/tmp/out',
-      '--mode', 'auto',
       '--depth', '3',
       '--max-runtime', '600',
       '--skip', 'tests',
     ]);
     expect(opts.target).toBe('http://x.com');
     expect(opts.outputDir).toBe('/tmp/out');
-    expect(opts.mode).toBe('auto');
     expect(opts.depth).toBe(3);
     expect(opts.maxRuntimeMs).toBe(600_000);
     expect(opts.skip.has('tests')).toBe(true);

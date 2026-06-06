@@ -38,7 +38,7 @@
   header .subtitle { color: var(--muted); font-size: 12px; }
   main {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1.4fr 1fr;
     grid-template-rows: auto 1fr;
     gap: 1px;
     background: var(--border);
@@ -52,7 +52,18 @@
     color: var(--muted);
     margin: 0 0 12px 0;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
+  .panel h2 .toggle {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    cursor: pointer;
+    user-select: none;
+  }
+  .panel h2 .toggle input { margin-right: 4px; vertical-align: middle; }
   .controls {
     grid-column: 1 / -1;
     display: flex;
@@ -92,6 +103,27 @@
   .log .ev-plan { color: var(--info); }
   .log .ev-finding { color: var(--accent); }
   .log .ev-chain { color: var(--warn); }
+  .llm-stream { font-size: 12px; }
+  .llm-stream .call {
+    border-left: 2px solid var(--border);
+    padding: 4px 8px;
+    margin-bottom: 8px;
+    background: var(--bg);
+  }
+  .llm-stream .call .label {
+    color: var(--accent2);
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+  .llm-stream .call.active { border-left-color: var(--accent); }
+  .llm-stream .call .text {
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+  }
+  .llm-stream .call.done .text { color: var(--fg); }
+  .llm-stream .empty { color: var(--muted); font-style: italic; }
   .agent-tree { font-size: 12px; }
   .agent-tree ul { list-style: none; padding-left: 16px; margin: 0; }
   .agent-tree > ul { padding-left: 0; }
@@ -144,6 +176,15 @@
     </div>
   </section>
   <section class="panel">
+    <h2>
+      <span>LLM stream</span>
+      <label class="toggle"><input type="checkbox" id="llm-autoscroll" checked /> auto-scroll</label>
+    </h2>
+    <div class="llm-stream" id="llm-stream">
+      <p class="empty">No LLM calls yet. Set ULTIMATRIX_LLM_STREAM=1 on the server to see tokens here.</p>
+    </div>
+  </section>
+  <section class="panel">
     <h2>Live log</h2>
     <div class="log" id="log"></div>
   </section>
@@ -156,9 +197,15 @@
   const $tree = document.getElementById('tree');
   const $status = document.getElementById('status');
   const $statusText = document.getElementById('status-text');
+  const $llmStream = document.getElementById('llm-stream');
+  const $llmAutoscroll = document.getElementById('llm-autoscroll');
 
   let ws = null;
   let running = false;
+  // Map of active LLM call labels → DOM element receiving tokens.
+  // Reused across runs so the same label appends to the same block
+  // (e.g. a "triage/xss" call appears once even if invoked 5x).
+  const llmCalls = new Map();
 
   function setStatus(text, live) {
     $statusText.textContent = text;
@@ -171,6 +218,39 @@
     div.innerHTML = `<span class="ts">${ts}</span> <span class="ev-${cls}">${escape(text)}</span>`;
     $log.appendChild(div);
     $log.scrollTop = $log.scrollHeight;
+  }
+
+  function appendLLMToken(label, chunk) {
+    let entry = llmCalls.get(label);
+    if (!entry) {
+      // Clear the "no calls" placeholder on first token
+      if (llmCalls.size === 0 && $llmStream.querySelector('.empty')) {
+        $llmStream.innerHTML = '';
+      }
+      const wrap = document.createElement('div');
+      wrap.className = 'call active';
+      const lbl = document.createElement('div');
+      lbl.className = 'label';
+      lbl.textContent = label;
+      const txt = document.createElement('div');
+      txt.className = 'text';
+      wrap.appendChild(lbl);
+      wrap.appendChild(txt);
+      $llmStream.appendChild(wrap);
+      entry = { wrap, txt };
+      llmCalls.set(label, entry);
+    }
+    entry.txt.textContent += chunk;
+    if ($llmAutoscroll.checked) {
+      $llmStream.scrollTop = $llmStream.scrollHeight;
+    }
+  }
+
+  function markLLMCallDone() {
+    for (const { wrap } of llmCalls.values()) {
+      wrap.classList.remove('active');
+      wrap.classList.add('done');
+    }
   }
 
   function escape(s) {
@@ -200,6 +280,8 @@
     running = true;
     $start.disabled = true;
     $log.innerHTML = '';
+    $llmStream.innerHTML = '<p class="empty">No LLM calls yet. Set ULTIMATRIX_LLM_STREAM=1 on the server to see tokens here.</p>';
+    llmCalls.clear();
     setStatus('running', true);
     logLine('connecting to /ws …', 'started');
 
@@ -217,6 +299,7 @@
       else if (ev.type === 'done') {
         logLine('hunt complete', 'done');
         if (ev.outputDir) logLine(`report at ${ev.outputDir}/report.html`, 'done');
+        markLLMCallDone();
         setStatus('done', false);
         running = false; $start.disabled = false;
       }
@@ -224,6 +307,9 @@
         logLine(`error: ${ev.message}`, 'error');
         setStatus('error', false);
         running = false; $start.disabled = false;
+      }
+      else if (ev.type === 'llm-token') {
+        appendLLMToken(ev.label || 'llm', ev.chunk || '');
       }
       else if (ev.type === 'plan') {
         logLine(`plan: ${ev.technique} on ${ev.url} (primitives: ${(ev.primitives || []).join(' → ')})`, 'plan');

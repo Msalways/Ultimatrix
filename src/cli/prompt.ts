@@ -1,163 +1,223 @@
 // src/cli/prompt.ts
 //
-// Readline-based prompt loop for the `hunt` command.
-// Slash commands control the in-flight hunt:
-//   /auto            — switch to autonomous mode (no more prompts)
-//   /guided          — switch back to step-by-step
-//   /findings        — print current findings table
-//   /test            — generate Playwright tests from findings
-//   /report          — render & open the report now
-//   /add <url> [t]   — manually add a URL to the workflow graph
-//   /help            — list commands
-//   /quit            — exit
+// Terminal REPL for the `hunt` command.
 //
-// The REPL calls back into the orchestrator's `onBeforeNode` hook for
-// every discovered node and asks the user to confirm (Y), skip (s),
-// investigate (i) — show details —, dismiss (d), or add a URL (a).
+// The hunt is a single, unified experience: a headed Playwright browser
+// opens, the LLM starts attacking the target autonomously, and the user
+// can type commands at the prompt to drive the browser or trigger
+// additional attacks. User's manual clicks/inputs in the browser are
+// captured for the user-flow Playwright spec.
 //
-// In --auto mode, it always proceeds.
+// Design
+// ------
+// The previous version suffered from character doubling on Windows because
+// readline echoes typed input while the question prompt was also being
+// written — they stacked. This rewrite uses readline in `terminal: false`
+// mode so it does NOT echo; we print our own prompt and render async
+// output via ANSI cursor movement so the prompt is preserved.
+//
+// Public API
+// ----------
+//   const prompt = new HuntPrompt({ onCommand, onSlash, onQuit });
+//   prompt.print('welcome')            // initial banner
+//   while (!prompt.isClosed()) {
+//     const line = await prompt.nextLine();
+//     if (line === null) break;        // stdin closed
+//     // dispatch...
+//   }
+//   prompt.close();
+//
+// Async output during REPL
+// ------------------------
+// Call `prompt.notify(text)` from anywhere (orchestrator, LLM streamer,
+// finding handler). It clears the current prompt line, prints the text,
+// and re-prints the prompt with the current line buffer. The user's
+// typing is preserved.
 
 import * as readline from 'readline';
 
-export type HuntMode = 'guided' | 'auto';
-
-export type NodePromptAnswer = 'proceed' | 'skip' | 'abort' | 'investigate' | 'add';
-
 export interface HuntPromptCallbacks {
-  onNodePrompt: (nodeInfo: { id: string; url: string; method: string; technique: string; expectedSeverity: string }) => Promise<NodePromptAnswer>;
+  /**
+   * Called for every non-slash line. Implementations route the command
+   * to the browser driver, attack coordinator, etc.
+   */
+  onCommand: (line: string) => Promise<string | null>;
+  /**
+   * Called for every slash command. Returns the response to print, or
+   * empty string to suppress output.
+   */
   onSlash: (cmd: string, args: string[]) => Promise<string>;
   onQuit: () => Promise<void>;
 }
 
+export type ParsedPromptLine =
+  | { kind: 'slash'; cmd: string; args: string[] }
+  | { kind: 'command'; line: string }
+  | { kind: 'empty' }
+  | { kind: 'closed' };
+
+const PROMPT_STR = '\x1b[1;36mhunt>\x1b[0m ';
+const PROMPT_LEN = 6; // visible chars in "hunt> " (no ANSI codes counted)
+
 export class HuntPrompt {
   private rl: readline.Interface;
-  private mode: HuntMode = 'guided';
   private closed = false;
-  private buffer: string[] = [];
-  private resolvers: Array<(line: string) => void> = [];
+  private buffer = '';
+  private resolvers: Array<(line: string | null) => void> = [];
+  private isTTY: boolean;
+  private stdout: NodeJS.WriteStream;
+  private stdin: NodeJS.ReadableStream;
 
-  constructor(private callbacks: HuntPromptCallbacks) {
-    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  constructor(private callbacks: HuntPromptCallbacks, opts: { stdin?: NodeJS.ReadableStream; stdout?: NodeJS.WriteStream } = {}) {
+    this.stdin = opts.stdin ?? process.stdin;
+    this.stdout = (opts.stdout ?? process.stdout) as NodeJS.WriteStream;
+    this.isTTY = !!(this.stdout as { isTTY?: boolean }).isTTY;
+    // terminal:false disables readline's echo — fixes the char doubling bug
+    this.rl = readline.createInterface({
+      input: this.stdin,
+      output: this.stdout,
+      terminal: false,
+    });
     this.rl.on('line', (line) => this.handleLine(line));
-    this.rl.on('close', () => { this.closed = true; });
+    this.rl.on('close', () => this.handleClose());
   }
 
-  setMode(mode: HuntMode): void {
-    this.mode = mode;
-  }
-
-  getMode(): HuntMode {
-    return this.mode;
+  isClosed(): boolean {
+    return this.closed;
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
     this.rl.close();
   }
 
-  private async handleLine(line: string): Promise<void> {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    if (trimmed.startsWith('/')) {
-      const [cmd, ...args] = trimmed.slice(1).split(/\s+/);
-      try {
-        const result = await this.callbacks.onSlash(cmd, args);
-        if (result) console.log(result);
-      } catch (e) {
-        console.error(`Slash error: ${(e as Error).message}`);
-      }
-      return;
-    }
-    // Push to the first waiting resolver
-    const r = this.resolvers.shift();
-    if (r) r(trimmed);
-  }
-
-  async ask(question: string): Promise<string> {
-    if (this.closed) return '';
+  /**
+   * Print the prompt and await the next line of input. Returns null if
+   * stdin closed before the next line arrived.
+   *
+   * Multiple `nextLine()` consumers are queued: each call returns the
+   * next successive line. There is no per-node prompt — the LLM decides
+   * what to attack.
+   */
+  nextLine(): Promise<string | null> {
+    if (this.closed) return Promise.resolve(null);
+    this.printPrompt();
     return new Promise((resolve) => {
       this.resolvers.push(resolve);
-      process.stdout.write(question);
-      // Safety net: if stdin closes mid-question, resolve with empty so the hunt
-      // can fall back to auto mode instead of hanging forever
-      this.rl.once('close', () => {
-        if (this.resolvers.length > 0) {
-          const r = this.resolvers.shift();
-          r?.('');
-        }
-      });
     });
   }
 
-  async promptNode(info: { id: string; url: string; method: string; technique: string; expectedSeverity: string }): Promise<NodePromptAnswer> {
-    if (this.mode === 'auto') return 'proceed';
-    if (this.closed) return 'proceed'; // pipe closed (e.g. non-TTY) — don't block
-    console.log('');
-    console.log(`\x1b[1m── Node ${info.id.slice(0, 8)} ─────────────────\x1b[0m`);
-    console.log(`  url:      \x1b[36m${info.url}\x1b[0m`);
-    console.log(`  method:   ${info.method}`);
-    console.log(`  technique: ${info.technique}`);
-    console.log(`  severity: ${info.expectedSeverity}`);
-    process.stdout.write('\x1b[33m  [Y]es  [s]kip  [i]nvestigate  [d]ismiss  [a]dd url  [q]uit  → \x1b[0m');
-    const raw = (await this.ask('')).trim().toLowerCase();
-    switch (raw) {
-      case '':
-      case 'y':
-      case 'yes':
-        return 'proceed';
-      case 's':
-      case 'skip':
-        return 'skip';
-      case 'i':
-      case 'investigate':
-        return 'investigate';
-      case 'd':
-      case 'dismiss':
-        return 'skip'; // dismiss = skip
-      case 'a':
-      case 'add':
-        return 'add';
-      case 'q':
-      case 'quit':
-        this.callbacks.onQuit();
-        return 'abort';
-      case '/auto':
-        this.setMode('auto');
-        return 'proceed';
-      case '/guided':
-        return 'proceed';
-      default:
-        // unknown — fall through to onNodePrompt callback for any custom logic
-        return await this.callbacks.onNodePrompt(info);
+
+  /**
+   * Print a message in the middle of REPL operation. Does NOT redraw
+   * the prompt — the next `nextLine()` call will draw it. This avoids
+   * the prompt-doubling bug where both notify and nextLine would
+   * print the prompt back-to-back.
+   *
+   * Safe to call from async callbacks (orchestrator, LLM streamer,
+   * finding handler). Always appends a newline so the next prompt
+   * (drawn by the caller's next `nextLine()`) appears on its own line.
+   */
+  notify(text: string): void {
+    if (this.closed) return;
+    this.stdout.write(text + '\n');
+  }
+
+  /** Print text without disrupting any prompt state. Use for banners. */
+  print(text: string): void {
+    this.stdout.write(text + '\n');
+  }
+
+  warn(text: string): void {
+    this.notify(`\x1b[33m${text}\x1b[0m`);
+  }
+
+  error(text: string): void {
+    this.notify(`\x1b[31m${text}\x1b[0m`);
+  }
+
+  /** Returns the current line buffer the user is typing. */
+  currentBuffer(): string {
+    return this.buffer;
+  }
+
+  /** Parse a raw line into a structured command. */
+  parseLine(line: string): ParsedPromptLine {
+    const trimmed = line.trim();
+    if (!trimmed) return { kind: 'empty' };
+    if (trimmed.startsWith('/')) {
+      const [cmd, ...args] = trimmed.slice(1).split(/\s+/);
+      return { kind: 'slash', cmd, args };
+    }
+    return { kind: 'command', line: trimmed };
+  }
+
+  /** Public dispatch helper: parses the line and routes to callbacks. */
+  async dispatch(line: string): Promise<void> {
+    const parsed = this.parseLine(line);
+    if (parsed.kind === 'empty') return;
+    if (parsed.kind === 'closed') return;
+    if (parsed.kind === 'slash') {
+      try {
+        const result = await this.callbacks.onSlash(parsed.cmd, parsed.args);
+        if (result) this.notify(result);
+      } catch (e) {
+        this.notify(`\x1b[31mslash error:\x1b[0m ${(e as Error).message}`);
+      }
+      return;
+    }
+    try {
+      const result = await this.callbacks.onCommand(parsed.line);
+      if (result) this.notify(result);
+    } catch (e) {
+      this.notify(`\x1b[31mcommand error:\x1b[0m ${(e as Error).message}`);
     }
   }
 
-  log(message: string): void {
-    console.log(message);
+  private printPrompt(): void {
+    if (!this.isTTY) return;
+    this.stdout.write(PROMPT_STR);
   }
 
-  warn(message: string): void {
-    console.warn(`\x1b[33m${message}\x1b[0m`);
+  private handleLine(rawLine: string): void {
+    if (this.closed) {
+      // Stale line after close — drop
+      return;
+    }
+    // Clear the prompt we printed + the buffer the user just finished.
+    // In non-TTY mode, rawLine is whatever the user typed (no echo). In
+    // TTY mode, readline's `terminal:false` means it never echoed, so
+    // the line we see is exactly what was typed. The prompt we wrote
+    // stays on the terminal until the next notify/print overwrites it.
+    this.buffer = '';
+    const resolver = this.resolvers.shift();
+    resolver?.(rawLine);
   }
 
-  error(message: string): void {
-    console.error(`\x1b[31m${message}\x1b[0m`);
+  private handleClose(): void {
+    this.closed = true;
+    // Resolve all pending consumers with null so they can exit cleanly
+    while (this.resolvers.length > 0) {
+      const r = this.resolvers.shift();
+      r?.(null);
+    }
   }
 }
 
 export const SLASH_HELP = `
 Slash commands:
-  /auto            switch to autonomous mode (LLM picks next plan)
-  /guided          switch to step-by-step mode (you approve each plan)
-  /plan            show the LLM's currently proposed plans
-  /attack <n>      execute plan #n
-  /findings        list current findings
-  /agents          show the spawned agent tree
-  /chain           run LLM-reasoned chain analysis on accumulated findings
-  /test            generate Playwright tests from findings
-  /report          render the HTML report now
-  /add <url>       add a URL to the workflow graph
-  /budget <time>   adjust the time budget (e.g. "15m", "60s")
-  /help            this message
-  /quit            exit the hunt
+  /help    this message
+  /quit    exit the hunt (Ctrl+C also works)
+  /test    generate Playwright tests from findings
+  /report  render the HTML report now
+  /add <url>  add a URL to the workflow graph
+
+Free-form commands (driven by interactive session):
+  go <url>             navigate the browser to <url>
+  click <selector>     click an element
+  type <sel> <value>   fill an input
+  attack <url> [t]     run LLM attack against <url>
+  findings             list current findings
+  status               show hunt status
 `.trim();

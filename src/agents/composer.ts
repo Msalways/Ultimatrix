@@ -41,6 +41,27 @@ export interface AttackPlan {
   expectedOutcome?: 'vulnerable' | 'clean' | 'inconclusive' | 'blocked';
 }
 
+/**
+ * Structured event emitted by the Composer at every meaningful lifecycle
+ * boundary. The web UI consumes these via `onLog` to render the live agent
+ * tree, plan stream, primitive timeline, and finding list.
+ */
+export type ComposerLogEvent =
+  | { type: 'plan-proposed'; technique: string; rationale: string; confidence: number; planId: number }
+  | { type: 'plan-start'; planId: number; technique: string; url: string; method: string; primitives: string[] }
+  | { type: 'plan-end'; planId: number; technique: string; findings: number; durationMs: number }
+  | { type: 'primitive'; planId: number; name: PrimitiveName; outcome: string; durationMs: number; args?: unknown }
+  | { type: 'triage'; planId: number; name: PrimitiveName; vulnerable: boolean; confidence: number; severity: string; reasoning?: string }
+  | { type: 'specialist-spawn'; specialist: string; reason: string; payload?: unknown }
+  | { type: 'specialist-done'; specialist: string; findings: number }
+  | { type: 'finding'; id: string; findingType: string; endpoint: string; severity: string; confidence: number; param?: string }
+  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
+  // New agent-loop events (free-form strings — LLM is the system)
+  | { type: 'agent-turn'; turn: number; thought: string; tool: string; ok: boolean; durationMs: number; observations?: string[] }
+  | { type: 'sub-agent-spawn'; task: string; tools: string[]; maxAttempts: number; strategy?: string }
+  | { type: 'sub-agent-result'; task: string; outcome: string; findings: number; durationMs: number }
+  | { type: 'agent-trace'; turns: number; subAgents: number; findings: number; outcome: string; durationMs: number };
+
 export interface ComposerOptions {
   llm: LLMClient;
   /** Recursion depth limit (default 2 — top-level + 1 specialist) */
@@ -55,6 +76,19 @@ export interface ComposerOptions {
   onSubtask?: (specialist: string, reason: string) => void;
   /** Callback fired on each primitive invocation (for UI / logs) */
   onPrimitive?: (name: PrimitiveName, args: unknown, result: PrimitiveResult) => void;
+  /**
+   * Optional sink for structured lifecycle events. The web UI consumes
+   * these to render plan/primitive/finding/chain panels in real time.
+   * Safe to set together with onPrimitive — the two callbacks serve
+   * different consumers (UI vs. low-level instrumentation).
+   */
+  onLog?: (event: ComposerLogEvent) => void;
+  /**
+   * Optional sink for LLM token streaming. When set AND ULTIMATRIX_LLM_STREAM=1,
+   * the Composer will call this for every token (label, chunk). The web UI
+   * uses this to forward tokens to the browser over WebSocket.
+   */
+  onLLMToken?: (label: string, chunk: string) => void;
 }
 
 export interface ComposerRunResult {
@@ -136,8 +170,43 @@ NEVER mark vulnerable=true unless the EVIDENCE actually shows the attack worked.
 
 Return JSON: {"vulnerable": bool, "confidence": 0-1, "severity": "...", "specialist": "..." | null, "specialistReason": "..."}`;
 
+/**
+ * Call the LLM. Streams tokens when ULTIMATRIX_LLM_STREAM=1 OR when a
+ * token sink is passed in. Label is shown at the start of a streaming
+ * session so the user can tell calls apart. With both env and sink set,
+ * the sink also receives tokens (env keeps the terminal in sync).
+ */
+async function llmInvoke(
+  llm: LLMClient,
+  params: Parameters<LLMClient['call']>[0] & { label?: string },
+  tokenSink?: (label: string, chunk: string) => void,
+): Promise<LLMCallResult> {
+  const { label, ...rest } = params;
+  const callWithLabel = { ...rest, label: label ?? '' };
+  const envStream = process.env.ULTIMATRIX_LLM_STREAM === '1';
+  if (envStream || tokenSink) {
+    return llm.stream(callWithLabel, (chunk) => {
+      if (envStream) {
+        // dimmed gray text so it doesn't drown out the main progress bar
+        process.stderr.write(`\x1b[2m${chunk.replace(/\n/g, ' ')}\x1b[0m`);
+      }
+      tokenSink?.(label ?? '', chunk);
+    });
+  }
+  return llm.call(callWithLabel);
+}
+
+function shortUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    return url.pathname.length > 1 ? url.pathname : url.hostname;
+  } catch {
+    return u.length > 40 ? u.slice(0, 37) + '…' : u;
+  }
+}
+
 export class Composer {
-  private opts: Required<Omit<ComposerOptions, 'onFinding' | 'onSubtask' | 'onPrimitive'>> & ComposerOptions;
+  private opts: Required<Omit<ComposerOptions, 'onFinding' | 'onSubtask' | 'onPrimitive' | 'onLog' | 'onLLMToken'>> & ComposerOptions;
   private recentFindings: AppModelFinding[] = [];
 
   constructor(opts: ComposerOptions) {
@@ -149,49 +218,111 @@ export class Composer {
     };
   }
 
+  private emit(event: ComposerLogEvent): void {
+    try {
+      this.opts.onLog?.(event);
+    } catch { /* never let a UI sink break the hunt */ }
+  }
+
   /**
    * Run the composer against a target endpoint. Returns all findings.
-   * The composer:
-   *  1. Asks the LLM to propose 1-3 attack plans
-   *  2. For each plan: executes the primitives in order
-   *  3. For each primitive result: asks the LLM to triage
-   *  4. If the LLM signals a specialist is needed, spawns a sub-composer (depth-capped)
-   *  5. Emits findings via onFinding callback
+   *
+   * New behavior: dispatches to the agent loop. The LLM is the loop body,
+   * picking one tool call per turn from the 23 available tools (21
+   * primitives + spawnAgent + writeFinding). The LLM names findings freely
+   * (type, severity, param are all free-form strings). The LLM can spawn
+   * sub-agents in parallel with LLM-chosen tool subsets.
+   *
+   * The legacy plan-based API (`proposePlans`, `executePlan`) is preserved
+   * for callers that still use it.
    */
   async run(target: AppModelEndpoint, ctx: PrimitiveContext): Promise<ComposerRunResult> {
     const startedAt = Date.now();
     const findings: AppModelFinding[] = [];
-    const plans: AttackPlan[] = [];
     const subtasks: ComposerRunResult['subtasks'] = [];
     ctx.subtaskSink = subtasks;
     this.recentFindings = findings;
 
-    const planResult = await this.opts.llm.call({
-      system: SYSTEM_PROMPT_PLANNER,
-      user: this.formatTargetForPlanner(target),
-      temperature: 0.2,
-    });
-    const llmWasReal = planResult.provider !== 'mock';
-
-    const proposedPlans = this.parsePlans(planResult);
-    plans.push(...proposedPlans);
-
-    for (const plan of proposedPlans) {
-      if (Date.now() - startedAt > this.opts.budgetMs) break;
-      if (ctx.depth >= (this.opts.maxDepth ?? 2)) break;
-
-      const planFindings = await this.executePlan(plan, target, ctx);
-      findings.push(...planFindings);
-      for (const f of planFindings) {
+    // Dispatch to the agent loop
+    const { runAgentLoop } = await import('./agent-loop');
+    const agentResult = await runAgentLoop({
+      target: {
+        url: target.path,
+        method: target.method,
+        params: (target.params ?? []).map((p: any) =>
+          typeof p === 'string'
+            ? { name: p, type: 'string', required: false }
+            : { name: p.name ?? String(p), type: p.type ?? 'string', required: !!p.required }
+        ),
+        bodyPreview: target.bodyPreview ?? '',
+        headers: target.authHeaders ?? {},
+      },
+      ctx,
+      llm: this.opts.llm,
+      onFinding: (f) => {
+        findings.push(f);
         this.opts.onFinding?.(f);
-      }
-    }
+        this.emit({
+          type: 'finding',
+          id: f.id ?? '',
+          findingType: f.type,
+          endpoint: f.endpoint,
+          severity: f.severity,
+          confidence: typeof f.confidence === 'number' ? f.confidence : parseFloat(String(f.confidence)) || 0,
+          param: f.param,
+        });
+      },
+      onTrace: (trace) => {
+        // Emit per-turn and per-sub-agent events for the UI / trace formatter
+        for (const t of trace.metaTurns) {
+          this.emit({
+            type: 'agent-turn',
+            turn: t.turnIndex,
+            thought: t.thought,
+            tool: t.tool,
+            ok: !!t.result?.ok,
+            durationMs: t.durationMs,
+            observations: t.observations,
+          });
+        }
+        for (const s of trace.subAgents) {
+          this.emit({
+            type: 'sub-agent-spawn',
+            task: s.task,
+            tools: s.tools,
+            maxAttempts: s.maxAttempts,
+            strategy: s.strategy,
+          });
+          this.emit({
+            type: 'sub-agent-result',
+            task: s.task,
+            outcome: s.outcome,
+            findings: s.findings.length,
+            durationMs: s.durationMs,
+          });
+          subtasks.push({ specialist: s.task.slice(0, 40), result: s.outcome === 'vulnerable' ? 'done' : 'failed', findings: s.findings.length });
+        }
+        this.emit({
+          type: 'agent-trace',
+          turns: trace.metaTurns.length,
+          subAgents: trace.subAgents.length,
+          findings: trace.findings.length,
+          outcome: trace.outcome,
+          durationMs: trace.durationMs,
+        });
+      },
+    });
+
+    // Synthesize an empty `plans` array for backward compat. The agent loop
+    // doesn't pre-compose plans; the LLM is the system. Tests/code that
+    // read plans should migrate to reading the trace.
+    const plans: AttackPlan[] = [];
 
     return {
-      findings,
+      findings: agentResult.findings.length > 0 ? agentResult.findings : findings,
       plans,
       durationMs: Date.now() - startedAt,
-      llmWasReal,
+      llmWasReal: this.opts.llm.isReal(),
       subtasks,
     };
   }
@@ -205,11 +336,12 @@ export class Composer {
     _ctx: PrimitiveContext,
     count = 3,
   ): Promise<AttackPlan[]> {
-    const planResult = await this.opts.llm.call({
+    const planResult = await llmInvoke(this.opts.llm, {
       system: SYSTEM_PROMPT_PLANNER,
       user: this.formatTargetForPlanner(target) + `\n\nPropose exactly ${count} plans.`,
       temperature: 0.2,
-    });
+      label: `propose-plans/${shortUrl(target.path)}`,
+    }, this.opts.onLLMToken);
     return this.parsePlans(planResult).slice(0, count);
   }
 
@@ -269,6 +401,16 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
   ): Promise<AppModelFinding[]> {
     const planFindings: AppModelFinding[] = [];
     let prev: PrimitiveResult | undefined;
+    const planStart = Date.now();
+
+    this.emit({
+      type: 'plan-start',
+      planId: plan.id,
+      technique: plan.technique,
+      url: target.path,
+      method: target.method,
+      primitives: plan.primitives.map((p) => p.name),
+    });
 
     for (const step of plan.primitives) {
       if (Date.now() - ctx.budget.startedAt > ctx.budget.maxMs) break;
@@ -279,13 +421,35 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
       if (!prim) continue;
 
       const stepStart = Date.now();
-      const result = await Promise.resolve(prim.execute(resolvedArgs, ctx));
+      let result: PrimitiveResult;
+      let stepError: string | undefined;
+      try {
+        result = await Promise.resolve(prim.execute(resolvedArgs, ctx));
+      } catch (e) {
+        // A single primitive throwing must not abort the whole plan
+        result = { ok: false, value: { error: (e as Error).message }, evidence: [], durationMs: 0 };
+        stepError = (e as Error).message;
+      }
       const stepDuration = Date.now() - stepStart;
       this.opts.onPrimitive?.(step.name, resolvedArgs, result);
+      this.emit({
+        type: 'primitive',
+        planId: plan.id,
+        name: step.name,
+        outcome: stepError ? `error: ${stepError}` : (result.ok ? 'ok' : 'failed'),
+        durationMs: stepDuration,
+        args: resolvedArgs,
+      });
 
       // If the primitive signaled a spawn, handle it by calling the specialist composer
       if (result.spawn) {
         this.opts.onSubtask?.(result.spawn.specialist, result.spawn.reason);
+        this.emit({
+          type: 'specialist-spawn',
+          specialist: result.spawn.specialist,
+          reason: result.spawn.reason,
+          payload: result.spawn.payload,
+        });
         // Track subtask in caller-visible state via closure (run() reads it)
         if (ctx.subtaskSink) {
           try {
@@ -299,12 +463,31 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
             for (const f of subtaskFindings) {
               planFindings.push(f);
               this.opts.onFinding?.(f);
+              this.emit({
+                type: 'finding',
+                id: f.id ?? '',
+                findingType: f.type,
+                endpoint: f.endpoint,
+                severity: f.severity,
+                confidence: typeof f.confidence === 'number' ? f.confidence : parseFloat(String(f.confidence)) || 0,
+                param: f.param,
+              });
               ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'done', findings: 1 });
             }
             if (subtaskFindings.length === 0) {
               ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'done', findings: 0 });
             }
+            this.emit({
+              type: 'specialist-done',
+              specialist: result.spawn.specialist,
+              findings: subtaskFindings.length,
+            });
           } catch (err) {
+            this.emit({
+              type: 'specialist-done',
+              specialist: result.spawn.specialist,
+              findings: -1,
+            });
             ctx.subtaskSink.push({ specialist: result.spawn.specialist, result: 'failed', findings: 0 });
           }
         }
@@ -312,11 +495,28 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
 
       // Triage the result
       const triage = await this.triage(plan, step, result, target);
+      this.emit({
+        type: 'triage',
+        planId: plan.id,
+        name: step.name,
+        vulnerable: triage.vulnerable,
+        confidence: triage.confidence,
+        severity: triage.severity,
+      });
       if (triage.vulnerable && triage.confidence > 0.5) {
         // Build a finding from the accumulated evidence
         const finding = this.buildFinding(plan, step, result, triage, target, ctx);
         if (finding) {
           planFindings.push(finding);
+          this.emit({
+            type: 'finding',
+            id: finding.id ?? '',
+            findingType: finding.type,
+            endpoint: finding.endpoint,
+            severity: finding.severity,
+            confidence: typeof finding.confidence === 'number' ? finding.confidence : parseFloat(String(finding.confidence)) || 0,
+            param: finding.param,
+          });
           // Clear evidence log so the next finding starts fresh
           ctx.evidenceLog.length = 0;
         }
@@ -324,6 +524,14 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
 
       prev = result;
     }
+
+    this.emit({
+      type: 'plan-end',
+      planId: plan.id,
+      technique: plan.technique,
+      findings: planFindings.length,
+      durationMs: Date.now() - planStart,
+    });
 
     return planFindings;
   }
@@ -484,11 +692,12 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
 
     // Otherwise ask the LLM (if real)
     if (this.opts.llm.isReal()) {
-      const t = await this.opts.llm.call({
+      const t = await llmInvoke(this.opts.llm, {
         system: SYSTEM_PROMPT_TRIAGE,
         user: `Plan: ${plan.technique} (${plan.rationale})\nStep: ${step.name}\nResult: ${JSON.stringify(result.value ?? null).slice(0, 1000)}\n\nTriage this.`,
         temperature: 0.1,
-      });
+        label: `triage/${plan.technique}`,
+      }, this.opts.onLLMToken);
       const j = t.json as any;
       if (j && typeof j === 'object') {
         return {

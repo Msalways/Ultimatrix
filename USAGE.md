@@ -1,4 +1,4 @@
-# Ultimatrix — Usage Guide
+﻿# Ultimatrix â€” Usage Guide
 
 How to install, run, configure, and extend the AI security researcher.
 
@@ -29,10 +29,10 @@ npx tsx src/cli/index.ts hunt -t https://your-app.com -o ./output
 ```
 
 Outputs land in `./output/`:
-- `app-model.json` — full 18-section knowledge base
-- `report.html` — chain-first report with Mermaid diagrams
-- `report.md` — text version
-- `playwright-tests/` — one regression test per finding + per chain
+- `app-model.json` â€” full 18-section knowledge base
+- `report.html` â€” chain-first report with Mermaid diagrams
+- `report.md` â€” text version
+- `playwright-tests/` â€” one regression test per finding + per chain
 
 ---
 
@@ -42,7 +42,7 @@ A vulnerable Node/Express app is shipped in `demo-target/`. It has 13 seeded vul
 
 ```bash
 npx tsx src/cli/index.ts demo
-# → http://127.0.0.1:4567
+# â†’ http://127.0.0.1:4567
 ```
 
 Then in another shell:
@@ -59,14 +59,14 @@ You should see ~10 findings in 5-15 seconds with a real LLM key.
 
 ```bash
 npx tsx src/cli/index.ts web
-# → http://localhost:3000
+# â†’ http://localhost:3000
 ```
 
 The UI:
 - Form to enter target URL
-- Live agent tree (Composer → specialists)
+- Live agent tree (Composer â†’ specialists)
 - Streaming event log (plans, primitives, findings, chains)
-- No build step — the HTML is served directly from `dist/web/static/`
+- No build step â€” the HTML is served directly from `dist/web/static/`
 
 For a quick smoke test:
 
@@ -105,16 +105,16 @@ npx tsx src/cli/index.ts hunt -t https://your-app.com --guided
 
 ```
 $ npx tsx src/cli/index.ts hunt -t http://127.0.0.1:4567 --guided
-▸ Ultimatrix hunt → http://127.0.0.1:4567
+â–¸ Ultimatrix hunt â†’ http://127.0.0.1:4567
   mode: guided, output: ./output, max runtime: 1800s
 
-[1/5] Spidering http://127.0.0.1:4567 (depth 2)…
-  ↳ discovered 10 URLs, 10 routes
-[2/5] Running recon (OAuth / GraphQL / JWT / cloud / framework)…
-  ↳ 0 discoveries in 24ms (errors: 0)
-[3/5] Launching v3 orchestrator…
+[1/5] Spidering http://127.0.0.1:4567 (depth 2)â€¦
+  â†³ discovered 10 URLs, 10 routes
+[2/5] Running recon (OAuth / GraphQL / JWT / cloud / framework)â€¦
+  â†³ 0 discoveries in 24ms (errors: 0)
+[3/5] Launching v3 orchestratorâ€¦
 
-── Node 7c8d9e ─────────────────
+â”€â”€ Node 7c8d9e â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   url:      http://127.0.0.1:4567/api/users/1
   method:   GET
   technique: idor
@@ -124,7 +124,7 @@ $ npx tsx src/cli/index.ts hunt -t http://127.0.0.1:4567 --guided
 > /plan
   [1] idor on GET http://127.0.0.1:4567/api/users/1
       reason: parameter "id" suggests object reference
-      primitives: useSession → compareResponses
+      primitives: useSession â†’ compareResponses
 
 > /attack 1
 Executed plan #1: idor
@@ -174,7 +174,7 @@ const composer = new Composer({
   llm: getDefaultLLMClient(),
   maxDepth: 2,
   onFinding: (f) => console.log('Found:', f.type, f.endpoint),
-  onPrimitive: (name, args, result) => console.log(`  ${name} →`, result.outcome),
+  onPrimitive: (name, args, result) => console.log(`  ${name} â†’`, result.outcome),
 });
 
 const result = await composer.run(
@@ -204,7 +204,7 @@ const req = injectInContext({ request: { method: 'GET', url: 'http://target/api/
 2. Add it to `PRIMITIVE_CATALOG` in `src/primitives/index.ts`
 3. Write tests in `tests/primitives/`
 
-The Composer will pick it up automatically — the planner prompt includes the full catalog.
+The Composer will pick it up automatically â€” the planner prompt includes the full catalog.
 
 ### Add a new specialist composer
 
@@ -222,12 +222,46 @@ The Composer will pick it up automatically — the planner prompt includes the f
 
 ## 8. Troubleshooting
 
-**"Cannot find module 'playwright'"** — run `npm install` to install deps. If you don't need the spider, use `--no-spider --existing-model ./output/app-model.json`.
+**"Cannot find module 'playwright'"** â€” run `npm install` to install deps. If you don't need the spider, use `--no-spider --existing-model ./output/app-model.json`.
 
-**"LLM mock fallback"** — set one of the env vars above. Without a key, the Composer returns canned (non-useful) responses.
+**"LLM mock fallback"** â€” set one of the env vars above. Without a key, the Composer returns canned (non-useful) responses.
 
-**"request timeout"** — increase the budget: `--max-runtime 3600000` for 1 hour.
+**"request timeout"** â€” increase the budget: `--max-runtime 3600000` for 1 hour.
 
-**Web UI shows blank page** — make sure `npx tsup` was run (or you're using `tsx` which serves the dev HTML directly).
+**Web UI shows blank page** â€” make sure `npx tsup` was run (or you're using `tsx` which serves the dev HTML directly).
 
-**Spider finds nothing** — try `--depth 4`. Default is 2 (conservative for time).
+**Spider finds nothing** â€” try `--depth 4`. Default is 2 (conservative for time).
+
+---
+
+## 9. Debug & observability env vars
+
+These are optional and safe to leave unset. Set them to inspect what's happening under the hood.
+
+| Env var | What it does |
+| --- | --- |
+| `ULTIMATRIX_LLM_DEBUG=1` | Logs the detected LLM provider, yaml config, and env-var fallback chain to stderr. Useful for verifying `ultimatrix.yaml` is being picked up. |
+| `ULTIMATRIX_LLM_STREAM=1` | Streams every LLM token to **stderr** in dim gray while the hunt runs. Each LLM call is labeled (e.g. `plan/GET /level1/frame`, `triage/xss`, `propose-plans/...`) so you can tell calls apart. The web UI also picks up these tokens via WebSocket (`llm-token` events) and shows them in a dedicated **LLM stream** panel. |
+| `HUNT_DEBUG=1` | Logs every worker dispatch (`[worker] composer run technique=X url=Y method=Z`) as workers spin up. |
+
+Example streaming session:
+
+```bash
+# Terminal: see tokens stream live as the LLM thinks
+ULTIMATRIX_LLM_STREAM=1 npx ultimatrix hunt -t https://xss-game.appspot.com/ -o ./output --mode auto --skip tests
+
+# Output:
+#   â–¸ Ultimatrix hunt â†’ https://xss-game.appspot.com/
+#   ...
+#   â–¸ LLM [plan/GET /level1/frame] streamingâ€¦ { "plans": [ { "id": 1, ...
+#   â–¸ LLM [triage/xss] streamingâ€¦ { "vulnerable": false, "confidence": 0, ...
+```
+
+For the web UI:
+
+```bash
+ULTIMATRIX_LLM_STREAM=1 npx ultimatrix web
+# â†’ open http://localhost:3000
+# â†’ click "Start hunt" â€” the middle panel shows tokens streaming live
+```
+

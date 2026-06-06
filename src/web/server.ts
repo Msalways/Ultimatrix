@@ -80,10 +80,108 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
           fs.mkdirSync(outDir, { recursive: true });
         } catch { /* ignore */ }
         const { parseHuntFlags, runHunt } = await import('../cli/hunt');
-        const huntArgs = parseHuntFlags(['-t', msg.target, '-o', outDir, '--auto', '--no-tests']);
+        const huntArgs = parseHuntFlags([
+          '-t', msg.target,
+          '-o', outDir,
+          // Skip the test-generation phase — the web UI doesn't need
+          // the Playwright specs and skipping speeds up the demo.
+          '--skip', 'tests',
+        ]);
         if (typeof msg.maxRuntimeMs === 'number') {
           huntArgs.maxRuntimeMs = msg.maxRuntimeMs;
         }
+        // Forward LLM tokens to the browser as they arrive.
+        huntArgs.onLLMToken = (label, chunk) => {
+          emit(ws, { type: 'llm-token', label, chunk });
+        };
+        // Forward structured Composer lifecycle events. The UI's existing
+        // handlers at lines 228-240 of index.html already know how to
+        // render `plan` / `primitive` / `finding` / `chain` events.
+        huntArgs.onComposerEvent = (event) => {
+          switch (event.type) {
+            case 'plan-proposed':
+              emit(ws, {
+                type: 'plan',
+                technique: event.technique,
+                rationale: event.rationale,
+                confidence: event.confidence,
+                planId: event.planId,
+              });
+              break;
+            case 'plan-start':
+              emit(ws, {
+                type: 'plan',
+                technique: event.technique,
+                url: event.url,
+                method: event.method,
+                primitives: event.primitives,
+                planId: event.planId,
+              });
+              break;
+            case 'plan-end':
+              emit(ws, {
+                type: 'plan-end',
+                planId: event.planId,
+                technique: event.technique,
+                findings: event.findings,
+                durationMs: event.durationMs,
+              });
+              break;
+            case 'primitive':
+              emit(ws, {
+                type: 'primitive',
+                name: event.name,
+                outcome: event.outcome,
+                durationMs: event.durationMs,
+                planId: event.planId,
+              });
+              break;
+            case 'triage':
+              emit(ws, {
+                type: 'triage',
+                planId: event.planId,
+                primitive: event.name,
+                vulnerable: event.vulnerable,
+                confidence: event.confidence,
+                severity: event.severity,
+              });
+              break;
+            case 'specialist-spawn':
+              emit(ws, {
+                type: 'specialist',
+                specialist: event.specialist,
+                reason: event.reason,
+              });
+              break;
+            case 'finding':
+              emit(ws, {
+                type: 'finding',
+                findingType: event.findingType,
+                endpoint: event.endpoint,
+                severity: event.severity,
+                confidence: event.confidence,
+                param: event.param,
+                id: event.id,
+              });
+              break;
+            case 'log':
+              emit(ws, {
+                type: 'orch-log',
+                level: event.level,
+                message: event.message,
+              });
+              break;
+          }
+        };
+        huntArgs.onPrimitive = (name, args, result) => {
+          emit(ws, {
+            type: 'primitive-raw',
+            name,
+            ok: result.ok,
+            error: result.error,
+            durationMs: result.durationMs,
+          });
+        };
         emit(ws, { type: 'started', target: msg.target, outputDir: outDir });
         try {
           await runHunt(huntArgs);
@@ -102,12 +200,16 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
 
   return new Promise((resolve) => {
     server.listen(port, host, () => {
+      const addr = server.address();
+      // `addr` is a string (named pipe) or AddressInfo. For TCP we read .port
+      // so that tests using port=0 get back the real bound port.
+      const actualPort = typeof addr === 'object' && addr ? addr.port : port;
       const close = (): Promise<void> =>
         new Promise((res) => {
           wss.close();
           server.close(() => res());
         });
-      resolve({ port, close });
+      resolve({ port: actualPort, close });
     });
   });
 }

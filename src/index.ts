@@ -1,6 +1,6 @@
 export { startRepl } from './cli/repl';
 export { runHunt, parseHuntFlags, type HuntOptions } from './cli/hunt';
-export { HuntPrompt, SLASH_HELP, type NodePromptAnswer, type HuntMode } from './cli/prompt';
+export { HuntPrompt, SLASH_HELP } from './cli/prompt';
 export { ReportGenerator } from './pipeline/report-generator';
 export { AutonomousOrchestrator } from './pipeline/autonomous';
 export { providerRegistry, type ProviderConfig, type ProviderFactory, ProviderRegistry } from './providers/provider-registry';

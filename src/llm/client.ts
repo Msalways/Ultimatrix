@@ -50,6 +50,12 @@ export interface LLMCall {
   temperature?: number;
   /** Optional maxTokens override */
   maxTokens?: number;
+  /**
+   * Optional label printed at the start of a streaming session so the
+   * user knows which LLM call is being streamed (e.g. "plan:1/xss",
+   * "triage", "waf-bypass"). Used only when ULTIMATRIX_LLM_STREAM=1.
+   */
+  label?: string;
 }
 
 export interface LLMCallResult {
@@ -288,6 +294,76 @@ export class LLMClient {
   /** Returns whether a real (non-mock) provider is configured */
   isReal(): boolean {
     return this.detectProvider() !== 'mock';
+  }
+
+  /**
+   * Streaming variant of call(). Iterates LangChain's model.stream() and
+   * invokes onToken for each chunk, while accumulating the final text.
+   * Returns the same LLMCallResult shape as call(). If the model is mock
+   * or streaming fails, falls back to a non-streaming call() so callers
+   * never have to branch on streaming-vs-not.
+   */
+  async stream(c: LLMCall, onToken: (chunk: string) => void): Promise<LLMCallResult> {
+    const start = Date.now();
+    const labelPrefix = c.label ? `[${c.label}] ` : '';
+    await this.ensureModel();
+    if (!this.model) {
+      // Mock fallback — emit one chunk so the user sees *something*
+      const text = this.mockResponse(c);
+      onToken(text);
+      return {
+        text,
+        json: null,
+        provider: 'mock',
+        model: 'mock',
+        durationMs: Date.now() - start,
+      };
+    }
+    try {
+      const { SystemMessage, HumanMessage } = await import('@langchain/core/messages');
+      const messages = [new SystemMessage(c.system), new HumanMessage(c.user)];
+      const opts: Record<string, unknown> = {};
+      if (c.temperature !== undefined) opts.temperature = c.temperature;
+      else if (this.config.temperature !== undefined) opts.temperature = this.config.temperature;
+      if (c.maxTokens !== undefined) opts.maxTokens = c.maxTokens;
+      else if (this.config.maxTokens !== undefined) opts.maxTokens = this.config.maxTokens;
+      // Announce the stream so the terminal makes the label clear.
+      process.stderr.write(`\n\x1b[36m▸ LLM ${labelPrefix}streaming…\x1b[0m `);
+      let text = '';
+      for await (const chunk of await this.model.stream(messages, opts)) {
+        const piece = typeof chunk.content === 'string'
+          ? chunk.content
+          : Array.isArray(chunk.content)
+            ? chunk.content
+                .map((p: unknown) => (typeof p === 'string' ? p : (p as { text?: string })?.text ?? ''))
+                .join('')
+            : '';
+        if (!piece) continue;
+        text += piece;
+        onToken(piece);
+      }
+      process.stderr.write('\n');
+      let json: unknown = null;
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try { json = JSON.parse(jsonMatch[0]); } catch { json = null; }
+      }
+      return {
+        text,
+        json,
+        provider: this.provider,
+        model: this.modelId,
+        durationMs: Date.now() - start,
+      };
+    } catch (e) {
+      process.stderr.write('\n');
+      // Streaming failed — fall back to non-streaming call so the agent
+      // can still complete the plan (the user just won't see tokens).
+      if (process.env.ULTIMATRIX_LLM_DEBUG === '1') {
+        process.stderr.write(`[llm] stream failed, falling back to call(): ${(e as Error).message}\n`);
+      }
+      return this.call(c);
+    }
   }
 
   private mockResponse(c: LLMCall): string {

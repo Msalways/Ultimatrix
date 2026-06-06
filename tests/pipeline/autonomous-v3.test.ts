@@ -301,6 +301,46 @@ describe('AutonomousV3Orchestrator', () => {
     expect(result.terminatedBy).toBe('abort');
     expect(factory).not.toHaveBeenCalled();
   });
+
+  it('forwards onLog + onPrimitive + onLLMToken to worker factory calls', async () => {
+    graph.addNode(makeNode('n1', 'https://x.com/api'));
+    graph.markReachable('n1');
+    const captured: Array<{ hasOnLog: boolean; hasOnPrimitive: boolean; hasOnLLMToken: boolean }> = [];
+    const factory = vi.fn(async (input) => {
+      captured.push({
+        hasOnLog: typeof input.onLog === 'function',
+        hasOnPrimitive: typeof input.onPrimitive === 'function',
+        hasOnLLMToken: typeof input.onLLMToken === 'function',
+      });
+      return makeResult(false, 0);
+    });
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory,
+      onComposerEvent: () => {},
+      onPrimitive: () => {},
+      onLLMToken: () => {},
+    });
+    await orch.run();
+    expect(captured.length).toBe(1);
+    expect(captured[0].hasOnLog).toBe(true);
+    expect(captured[0].hasOnPrimitive).toBe(true);
+    expect(captured[0].hasOnLLMToken).toBe(true);
+  });
+
+  it('onLog is undefined when orchestrator has no onComposerEvent', async () => {
+    graph.addNode(makeNode('n1', 'https://x.com/api'));
+    graph.markReachable('n1');
+    let capturedOnLog: unknown = 'sentinel';
+    const factory = vi.fn(async (input) => {
+      capturedOnLog = input.onLog;
+      return makeResult(false, 0);
+    });
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool, workerFactory: factory,
+    });
+    await orch.run();
+    expect(capturedOnLog).toBeUndefined();
+  });
 });
 
 function makeResult(vulnerable: boolean, confidence: number, evidence: any[] = []): WorkerSpawnResult {

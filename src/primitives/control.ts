@@ -76,7 +76,7 @@ export const writeFinding: PrimitiveDefinition<
     method?: string;
     payload?: string;
     description?: string;
-    severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+    severity: string;
     confidence: number;
   },
   AppModelFinding

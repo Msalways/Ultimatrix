@@ -205,6 +205,42 @@ The project is a local CLI + local web UI. No cloud deployment is required. The 
 
 ---
 
+## Next steps to go further
+
+The current build is the v3 primitives + Composer core. The following were
+deliberately deferred from this iteration and are the next things on the
+roadmap — listed in the order we'd tackle them.
+
+### Interactive web UI
+- **Chat panel** — type free-form questions like *"test the login page for sqli"* and the LLM parses them into tool calls (`start_hunt`, `attack`, `browser_click`, `get_findings`, `generate_user_flow_test`). Hard-capped at 5 tool calls per turn.
+- **Slash commands** — `/attack <tech> <url>`, `/findings`, `/state`, `/flow`, `/help` for direct dispatch without going through the LLM.
+- **Active browser session** — a separate `manual` Playwright session distinct from the spider's `default` session. Snapshot polling at 1 fps streamed over WebSocket as base64 PNGs. Click / fill / navigate commands issued from the UI.
+- **Manual interaction → test generation** — wrap the existing `startManualRecording` shim, capture click / fill / navigate steps, and feed them into `generateUserFlowSpec` to produce a runnable Playwright `user-flow.spec.ts` that re-attacks the same endpoint in a regression suite.
+
+### Real-time / observability
+- **Wire `onLog` + `onPrimitive` callbacks** through `Composer → AutonomousV3Orchestrator → web server` so the UI gets live `plan`, `primitive`, `finding`, and `chain` events (the `index.html` mockup already has dead handlers for these).
+- **LLM token streaming** — already opt-in via `ULTIMATRIX_LLM_STREAM=1`; will become default once the web UI's auto-scroll polish lands.
+
+### Accuracy / coverage
+- **Spider SPA-route discovery** — better link-following for client-side routes (XSS-game levels 2-6 are unreachable today because they're not inter-linked).
+- **Plan-target disambiguation** — the LLM sometimes picks the static source-viewer endpoint instead of the live attack target; the planner prompt already names the rule, but a post-parse validator that rejects "static" / "source" paths is the next defense layer.
+- **Sink inference from body preview** — currently text-grep based; a small classifier (regex + LLM tiebreak) would lift recall.
+- **True positive verification** — `writeFinding` requires a prior signal primitive, but we still log the attack; a heuristic replay that re-fires the primitive and asserts the same result before calling `writeFinding` would give a "confirmed" badge.
+
+### Infrastructure
+- **CDP screencast (real video)** — replaces the 1 fps snapshot polling with `Page.startScreencast` for smooth 30 fps H.264 video in the web UI. Larger binary frame handling, more polish required.
+- **Multi-user collaboration** — one WebSocket per operator, shared state, presence indicators.
+- **Chat history persistence** — survives server restarts (SQLite or JSONL on disk).
+- **Tool-call UI affordances** — suggestion chips, action cards, "accept/reject" for LLM-proposed attacks.
+- **"Feedback loop"** — the chat agent proposes attacks as natural-language suggestions; the operator accepts or rewrites them before execution.
+
+### Packaging
+- `npm publish` — the package is `ultimatrix`, ready for `npx`. Just need to cut a release.
+- **GitHub Action** — `uses: anomalyco/ultimatrix-action@v1` to run a hunt on PRs and post findings as a comment.
+- **Per-target profiles** — small YAML files that pre-set `--skip`, `--depth`, `--seed-urls` for known target classes (e.g. `crapi.yaml`, `juiceshop.yaml`).
+
+---
+
 ## License
 
 MIT

@@ -24,6 +24,10 @@ output-flag-test/
 test-output/
 test-validate/
 test-server/
+output-events-*/
+output-verify*/
+output-xss-userflow/
+playwright-tests-verify/
 *.tsbuildinfo
 stderr.txt
 stdout.txt

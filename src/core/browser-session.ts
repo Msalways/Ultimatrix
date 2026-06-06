@@ -489,6 +489,69 @@ export class BrowserSessionManager {
     return JSON.stringify(forms, null, 2);
   }
 
+  /**
+   * Extract every interactive element on the current page: buttons, links
+   * (text + href), input fields (name + type), and clickable elements.
+   * Returned as JSON with category, selector, label, and metadata.
+   */
+  async extractInteractiveElements(sessionId: string): Promise<string> {
+    const page = await this.getOrCreate(sessionId);
+    const result = await page.evaluate(() => {
+      function genSelector(el: Element): string {
+        if (el.id) return '#' + (window.CSS?.escape?.(el.id) ?? el.id);
+        const t = el.tagName.toLowerCase();
+        const cls = Array.from(el.classList).slice(0, 2).map((c) => '.' + (window.CSS?.escape?.(c) ?? c)).join('');
+        if (cls) return t + cls;
+        const p = el.parentElement;
+        if (p) {
+          const i = Array.from(p.children).indexOf(el) + 1;
+          return `${t}:nth-child(${i})`;
+        }
+        return t;
+      }
+      const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]')).map((el) => {
+        const e = el as HTMLButtonElement | HTMLInputElement;
+        return {
+          kind: 'button' as const,
+          selector: genSelector(e),
+          text: ((e.textContent || (e as HTMLInputElement).value) ?? '').trim().slice(0, 80),
+          type: (e as HTMLInputElement).type || 'button',
+          disabled: e.disabled || false,
+        };
+      });
+      const links = Array.from(document.querySelectorAll('a[href]')).map((el) => {
+        const a = el as HTMLAnchorElement;
+        return {
+          kind: 'link' as const,
+          selector: genSelector(a),
+          href: a.href,
+          text: (a.textContent ?? '').trim().slice(0, 80),
+        };
+      });
+      const inputs = Array.from(document.querySelectorAll('input, textarea, select')).map((el) => {
+        const i = el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+        return {
+          kind: 'input' as const,
+          selector: genSelector(i),
+          name: i.name || '',
+          type: (i as HTMLInputElement).type || i.tagName.toLowerCase(),
+          placeholder: (i as HTMLInputElement).placeholder || '',
+          required: (i as HTMLInputElement).required || false,
+        };
+      });
+      const clickable = Array.from(document.querySelectorAll('[onclick], [role="link"], [tabindex="0"]')).filter((el) => {
+        return !buttons.some((b) => b.selector === genSelector(el)) && !links.some((l) => l.selector === genSelector(el));
+      }).map((el) => ({
+        kind: 'clickable' as const,
+        selector: genSelector(el),
+        text: (el.textContent ?? '').trim().slice(0, 80),
+        role: el.getAttribute('role') ?? '',
+      }));
+      return { buttons, links, inputs, clickable };
+    });
+    return JSON.stringify(result, null, 2);
+  }
+
   async getCookies(sessionId: string): Promise<string> {
     const page = await this.getOrCreate(sessionId);
     const cookies = await page.context().cookies();

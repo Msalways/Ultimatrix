@@ -43,7 +43,6 @@ program
   .description('Canonical hunt — spider + recon + multi-session RBAC testing + chains + Playwright tests (replaces assess/interact/test)')
   .option('-t, --target <url>', 'Target URL (required)')
   .option('-o, --output <dir>', 'Output directory', './output')
-  .option('--mode <auto|guided>', 'Run mode (default guided)', 'guided')
   .option('--skip <list>', 'Comma-separated phases to skip: spider,recon,chains,tests')
   .option('--depth <n>', 'Spider depth', '2')
   .option('--max-runtime <seconds>', 'Hard time limit', '1800')
@@ -57,7 +56,6 @@ program
     const huntOpts = parseHuntFlags([
       '-t', opts.target || '',
       '-o', opts.output,
-      '--mode', opts.mode,
       opts.skip ? '--skip' : '',
       opts.skip || '',
       '--depth', opts.depth,

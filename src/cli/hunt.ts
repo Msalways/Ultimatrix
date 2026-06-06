@@ -38,7 +38,11 @@ import { runRecon } from '../recon';
 import { runChainEngine, runHeuristicChains } from '../core/attack-chain';
 import { renderChainFirstReport, renderChainReportHtml } from '../core/chain-report';
 import { generateFindingTests, writeFindingTests } from '../tools/finding-test-generator';
-import { HuntPrompt, SLASH_HELP, type NodePromptAnswer, type HuntMode } from './prompt';
+import { HuntPrompt, SLASH_HELP } from './prompt';
+// HuntPrompt is exported from src/index.ts; the hunt CLI uses the
+// InteractiveHuntSession's own HuntPrompt-driven REPL instead of a
+// top-level REPL. The SLASH_HELP is used by handleSlash.
+import { InteractiveHuntSession } from './interactive-session';
 import { SpiderCrawler, type CrawlResult } from '../explorer/spider';
 import { AutonomousV3Orchestrator, defaultNodeStrategy, type NodeStrategy, type NodeStrategyResolution, type WorkerSpawnInput, type WorkerSpawnResult } from '../pipeline/autonomous-v3';
 import { WorkflowStateGraph, type WorkflowStateNode } from '../core/workflow-state';
@@ -56,19 +60,16 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   const modelPath = path.join(opts.outputDir, 'app-model.json');
   const startedAt = Date.now();
   console.log(`\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
-  console.log(`  mode: ${opts.mode}, output: ${opts.outputDir}, max runtime: ${Math.round(opts.maxRuntimeMs / 1000)}s\n`);
+  console.log(`  output: ${opts.outputDir}, max runtime: ${Math.round(opts.maxRuntimeMs / 1000)}s\n`);
 
-  // Build the prompt (constructed with no-callback stubs to break the
-  // self-reference; real callbacks are wired in after the prompt exists)
-  const prompt: HuntPrompt = new HuntPrompt({
-    onNodePrompt: async () => 'proceed' as NodePromptAnswer,
-    onSlash: async (cmd, args) => handleSlash(cmd, args, opts, modelPath, prompt),
-    onQuit: async () => { prompt.close(); process.exit(0); },
-  });
-  prompt.setMode(opts.mode);
+  // No top-level HuntPrompt here — the InteractiveHuntSession runs its
+  // own HuntPrompt-driven REPL inside. The slash commands below
+  // (/plan, /attack, /test, /report) are dispatched from that REPL
+  // via handleSlash.
+  const prompt: HuntPrompt | null = null;
 
   // 1. Spider
-  let model: AppModel;
+  let model: AppModel = JSON.parse(JSON.stringify(DEFAULT_MODEL));
   if (opts.skip.has('spider') && opts.existingModelPath && fs.existsSync(opts.existingModelPath)) {
     console.log(`[1/5] Loading existing model from ${opts.existingModelPath}…`);
     model = readAppModel(opts.existingModelPath);
@@ -76,17 +77,30 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     const existing = readAppModel(modelPath);
     const existingTarget = (existing as any).target ?? '';
     // Detect stale model: target differs from -t argument
-    if (existingTarget && existingTarget !== opts.target) {
+    const targetChanged = existingTarget && existingTarget !== opts.target;
+    // OR the model is "empty" — endpoints exist but bodyPreview is missing.
+    // The LLM planner needs bodyPreview to identify sinks (e.g. the ?query=
+    // search input on xss-game/level1/frame). Without it, the planner
+    // defaults to a 'headers' check and finds nothing. A stale-but-empty
+    // model is the most common cause of "0 findings on a known-vuln site".
+    const endpointsWithBody = (existing.endpoints || []).filter((e: any) => (e.bodyPreview ?? '').length > 50).length;
+    const totalEndpoints = (existing.endpoints || []).length;
+    const modelIsEmpty = totalEndpoints > 0 && endpointsWithBody === 0;
+    if (targetChanged) {
       console.log(`[1/5] Stale model detected (was for ${existingTarget}, now scanning ${opts.target}) — re-spidering…`);
+    } else if (modelIsEmpty) {
+      console.log(`[1/5] Existing model has ${totalEndpoints} endpoints but 0 with body preview — re-spidering so the LLM can see sinks…`);
+    } else {
+      console.log(`[1/5] Loading existing model from ${modelPath}…`);
+      model = existing;
+    }
+    if (targetChanged || modelIsEmpty) {
       const mgr = getSharedBrowserManager(true);
       const spider = new SpiderCrawler(mgr, 'default');
       const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
       model = buildAppModelFromCrawl(crawlResult, opts.target);
       await writeAppModelAsync(modelPath, model);
       console.log(`  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
-    } else {
-      console.log(`[1/5] Loading existing model from ${modelPath}…`);
-      model = existing;
     }
   } else {
     console.log(`[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
@@ -113,60 +127,174 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     console.log(`[2/5] Recon skipped (--no-recon)`);
   }
 
-  // 3. v3 Orchestrator
-  console.log(`[3/5] Launching v3 orchestrator…`);
+  // 3. v3 Orchestrator + Interactive Session
+  //
+  // Two parallel attack surfaces:
+  //   - Orchestrator: attacks the seed URLs from the spider (no user
+  //     interaction needed)
+  //   - Interactive session: opens a headed browser, runs a terminal
+  //     REPL, attacks each URL the user visits, and records manual
+  //     actions for a user-flow Playwright spec.
+  //
+  // Both share the same `app-model.json` findings section.
+  console.log(`[3/5] Launching orchestrator + interactive session…`);
   const { graph, pool } = await buildWorkflowFromAppModel(model, opts);
   const findingsBefore = model.findings.length;
   let v3Findings: AppModelFinding[] = [];
 
-  try {
-    const orch = new AutonomousV3Orchestrator({
-      graph,
-      pool,
-      appModel: model,
-      strategy: defaultNodeStrategy,
-      workerFactory: huntWorkerRunner,
-      onFinding: (finding) => {
-        v3Findings.push(finding);
-        updateAppModelSection(modelPath, 'findings', [finding], true);
+  // Build the orchestrator's worker factory wrapped to also report
+  // findings to the model file.
+  const orchestratorWorkerFactory = async (input: any) => {
+    const r = await huntWorkerRunner(input);
+    return r;
+  };
+
+  // Shared finding callback — writes to app-model.json AND prints to
+  // the terminal so the user sees findings as they appear, even from
+  // the orchestrator running in the background.
+  const onOrchFinding = (finding: AppModelFinding) => {
+    v3Findings.push(finding);
+    updateAppModelSection(modelPath, 'findings', [finding], true);
+    const sev = String(finding.severity ?? 'info').toUpperCase();
+    console.log(`\x1b[1;33m  + [${sev}]\x1b[0m \x1b[36m${finding.type}\x1b[0m @ \x1b[4m${finding.endpoint}\x1b[0m (conf=${finding.confidence})`);
+  };
+
+  const orch = new AutonomousV3Orchestrator({
+    graph,
+    pool,
+    appModel: model,
+    strategy: defaultNodeStrategy,
+    workerFactory: orchestratorWorkerFactory,
+    onLLMToken: opts.onLLMToken,
+    onComposerEvent: opts.onComposerEvent,
+    onPrimitive: opts.onPrimitive,
+    onFinding: onOrchFinding,
+    onBeforeNode: async (): Promise<'proceed'> => 'proceed',
+    maxRuntimeMs: opts.maxRuntimeMs,
+    maxNodes: 50,
+    enableConcurrency: true,
+    maxConcurrency: 4,
+    sleepBetweenNodesMs: 0,
+  });
+
+  // The interactive session's attack coordinator runs a single
+  // Composer against a URL the user visits, then appends any findings
+  // to app-model.json. It reuses the existing huntWorkerRunner.
+  const attackCoordinator = async (url: string, technique?: string) => {
+    if (url === '__list_findings__') {
+      const m = readAppModel(modelPath);
+      return { findings: 0, summary: m.findings.length === 0 ? 'no findings yet' : m.findings.map((f: any) => `  [${f.severity.toUpperCase()}] ${f.type} @ ${f.endpoint} (conf=${f.confidence})`).join('\n') };
+    }
+    const r = await huntWorkerRunner({
+      hypothesis: {
+        type: 'param',
+        id: `interactive-${Date.now().toString(36)}`,
+        endpoint: url,
+        method: 'GET',
+        param: '',
+        technique: (technique ?? 'xss') as any,
+        priority: 5,
+        status: 'pending',
+        source: 'interactive',
+        createdAt: Date.now(),
       },
-      onBeforeNode: async (node, spec) => {
-        if (!spec) return 'skip';
-        const remaining = Math.max(0, opts.maxRuntimeMs - (Date.now() - startedAt));
-        if (remaining < 5_000) {
-          console.log(`\x1b[33m  ! Time budget exhausted, aborting\x1b[0m`);
-          return 'abort';
-        }
-        const answer = await prompt.promptNode({
-          id: node.id,
-          url: node.url,
-          method: spec.method,
-          technique: spec.technique,
-          expectedSeverity: spec.expectedSeverity,
-        });
-        if (answer === 'skip') return 'skip';
-        if (answer === 'abort') return 'abort';
-        if (answer === 'add') {
-          const url = (await prompt.ask('  URL to add: ')).trim();
-          if (url) {
-            const m = readAppModel(modelPath);
-            m.visitedUrls = [...(m.visitedUrls || []), url];
-            await writeAppModelAsync(modelPath, m);
-          }
-          return 'skip';
-        }
-        return 'proceed';
+      workflowNodeId: `interactive-${Date.now().toString(36)}`,
+      technique: (technique ?? 'xss') as any,
+      url,
+      method: 'GET',
+      concreteUrl: url,
+      activeSessionId: null,
+      retryAttempt: 0,
+      timeoutMs: 30_000,
+      expectedSeverity: 'medium',
+      onLLMToken: opts.onLLMToken,
+      onLog: opts.onComposerEvent,
+      onPrimitive: opts.onPrimitive,
+    } as any);
+    if (r.vulnerable) {
+      const finding: AppModelFinding = {
+        id: `f-${Date.now()}-${Math.floor(Math.random() * 10_000).toString(36)}`,
+        type: r.technique,
+        endpoint: r.url,
+        param: '',
+        method: 'GET',
+        payload: r.payloads?.[0] ?? '',
+        description: r.summary,
+        evidence: r.evidence ?? [],
+        confidence: r.confidence,
+        confirmed: r.confidence >= 0.7,
+        severity: r.confidence >= 0.85 ? 'high' : r.confidence >= 0.6 ? 'medium' : 'low',
+      };
+      updateAppModelSection(modelPath, 'findings', [finding], true);
+      onOrchFinding(finding);
+      return { findings: 1, summary: r.summary };
+    }
+    return { findings: 0, summary: r.summary };
+  };
+
+  // Launch the orchestrator in the background. It will process the
+  // seed URLs from the spider without user interaction.
+  const orchPromise = orch.run().catch((e) => {
+    console.error(`  ! orchestrator failed: ${(e as Error).message}`);
+  });
+
+  // Launch the interactive session in parallel. The user drives the
+  // browser and types commands; the LLM attacks each URL they visit.
+  const sessionPromise = (async () => {
+    if (!process.stdin.isTTY) {
+      // Non-interactive (CI, piped input) — skip the browser session.
+      // The orchestrator handles the attacks on its own.
+      console.log(`  · Non-TTY stdin — interactive browser session skipped (orchestrator only).`);
+      console.log(`  · To use the browser session, run in a terminal: hunt -t <url>`);
+      return;
+    }
+    const session = new InteractiveHuntSession({
+      target: opts.target,
+      outputDir: opts.outputDir,
+      modelPath,
+      attackCoordinator,
+      onFinding: (f) => console.log(`  + [${f.severity.toUpperCase()}] ${f.type} @ ${f.endpoint}`),
+      initialEndpoints: model.endpoints as AppModelEndpoint[],
+      // Wire the chat coordinator: free-form text typed by the user
+      // becomes a chat message to the LLM with full hunt context.
+      // The LLM replies with text + an optional multi-step plan that
+      // the session executes (navigate, attack, fill form, etc.).
+      // Form auto-test is on by default — the session scans the
+      // current page every 1.5s and dispatches a chat turn for any
+      // new form it finds.
+      chatCoordinator: async (message, context) => {
+        const { callChat } = await import('../cli/chat-coordinator');
+        const { getDefaultLLMClient } = await import('../llm/client');
+        const llm = getDefaultLLMClient();
+        return await callChat(llm, message, context);
       },
-      maxRuntimeMs: opts.maxRuntimeMs,
-      maxNodes: 50,
-      enableConcurrency: true,
-      maxConcurrency: 4,
-      sleepBetweenNodesMs: 0,
     });
-    await orch.run();
-  } finally {
-    await pool.closeAll();
+    try {
+      await session.start();
+    } catch (e) {
+      console.error(`  ! interactive session failed: ${(e as Error).message}`);
+    }
+  })();
+
+  // Wait for whichever finishes first. The orchestrator terminates
+  // when the workflow graph is exhausted. The session terminates when
+  // the user quits. In practice, the session is the one that finishes
+  // first; the orchestrator may still be running against seeds.
+  await Promise.race([orchPromise, sessionPromise]);
+
+  // If the orchestrator is still running (the user quit while seeds
+  // were still being processed), give it a few seconds to wind down.
+  const orchStillRunning = !(await Promise.race([
+    orchPromise.then(() => 'done' as const),
+    new Promise<'alive'>((r) => setTimeout(() => r('alive'), 5000)),
+  ]));
+  if (orchStillRunning) {
+    console.log(`  · Orchestrator still processing seeds; letting it finish in the background…`);
   }
+
+  try {
+    await pool.closeAll();
+  } catch { /* best effort */ }
 
   model = readAppModel(modelPath);
   const findingsAfter = model.findings.length - findingsBefore;
@@ -187,16 +315,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   // 5. Playwright test generation
   if (!opts.skip.has('tests') && model.findings.length > 0) {
-    if (opts.mode === 'guided') {
-      const ans = (await prompt.ask('  Generate Playwright regression tests? [Y/n]: ')).trim().toLowerCase();
-      if (ans === '' || ans === 'y' || ans === 'yes') {
-        await generateAndWriteTests(model, opts, modelPath);
-      } else {
-        console.log(`[5/5] Skipped test generation`);
-      }
-    } else {
-      await generateAndWriteTests(model, opts, modelPath);
-    }
+    await generateAndWriteTests(model, opts, modelPath);
   } else if (model.findings.length === 0) {
     console.log(`[5/5] No findings — skipping test generation`);
   } else {
@@ -347,6 +466,9 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
     llm,
     maxDepth: 2,
     planTimeoutMs: input.timeoutMs ?? 30_000,
+    onLLMToken: input.onLLMToken,
+    onLog: input.onLog,
+    onPrimitive: input.onPrimitive,
   });
 
   try {
@@ -411,18 +533,20 @@ async function handleSlash(
   args: string[],
   opts: HuntOptions,
   modelPath: string,
-  prompt: HuntPrompt,
+  prompt: HuntPrompt | null,
 ): Promise<string> {
   switch (cmd) {
-    case 'auto': prompt.setMode('auto'); return 'Mode → auto';
-    case 'guided': prompt.setMode('guided'); return 'Mode → guided';
+    case 'auto':
+    case 'guided':
+    case 'interactive':
+      return 'no modes in this build — the LLM runs the attack. Use /quit to exit.';
     case 'plan': {
       const m = readAppModel(modelPath);
       const ep = pickNextEndpoint(m, opts.target);
       if (!ep) return 'No endpoint available to plan against.';
       const { Composer } = await import('../agents/composer');
       const { getDefaultLLMClient } = await import('../llm/client');
-      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 15_000 });
+      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 15_000, onLLMToken: opts.onLLMToken });
       const ctx: PrimitiveContext = {
         baseUrl: ep.path,
         cookies: {},
@@ -450,7 +574,7 @@ async function handleSlash(
       if (!ep) return 'No endpoint available.';
       const { Composer } = await import('../agents/composer');
       const { getDefaultLLMClient } = await import('../llm/client');
-      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 30_000 });
+      const composer = new Composer({ llm: getDefaultLLMClient(), maxDepth: 2, planTimeoutMs: 30_000, onLLMToken: opts.onLLMToken });
       const ctx: PrimitiveContext = {
         baseUrl: ep.path,
         cookies: {},
@@ -537,7 +661,7 @@ async function handleSlash(
     }
     case 'help': return SLASH_HELP;
     case 'quit': case 'exit': case 'q':
-      prompt.close();
+      prompt?.close();
       process.exit(0);
       return ''; // unreachable
     default:
