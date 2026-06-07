@@ -8,7 +8,7 @@ Real attacks, not theoretical. Real chains across 10 vulnerability classes. No m
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![1043 Tests](https://img.shields.io/badge/Tests-1043%20passing-success.svg)](#testing)
+[![1132 Tests](https://img.shields.io/badge/Tests-1132%20passing-success.svg)](#testing)
 [![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
 
 ---
@@ -108,7 +108,7 @@ ultimatrix doctor                       environment check
 ultimatrix codegen     --live <path>   finalise live.spec.ts as a Playwright test
 ultimatrix web         -p 3000         local web UI
 ultimatrix setup                       configure LLM providers (interactive)
-ultimatrix tools                        list 22 primitives + 9 specialists + 5 OOB categories
+ultimatrix tools                        list 23 primitives + 9 specialists + 5 OOB categories
 ultimatrix mcp serve                    expose the hunt pipeline over MCP (stdio) for other AI tools
 ```
 
@@ -139,7 +139,7 @@ All flags: `ultimatrix <subcommand> --help`.
 
 The HuntCore is the system of record. Each front-end is a pure projection of the same event stream. The agent loop, the recorder, the OOB server, the multi-session pool, the specialists — all talk to HuntCore, not to each other.
 
-### 22 primitives (the floor)
+### 23 primitives (the floor)
 
 These are the only hardcoded things. The LLM picks which ones to call and in what order; the LLM names findings, severities, strategies, and tool subsets.
 
@@ -218,7 +218,7 @@ hunt:
 ## Testing
 
 ```bash
-npx vitest run          # 1043 tests, 8 skipped (4 CrAPI opt-in + 4 v4 pipeline opt-in)
+npx vitest run          # 1132 tests, 8 skipped (4 CrAPI opt-in + 4 v4 pipeline opt-in)
 npx tsc --noEmit        # 0 type errors
 npx tsup                # clean build (ESM + CJS + .d.ts)
 ```
@@ -233,7 +233,7 @@ npx tsup                # clean build (ESM + CJS + .d.ts)
 - **Report** — diff fingerprint, HTML self-containment, ZIP store-mode
 - **CLI** — `runDoctor`, `runDemo`, `finalizeLiveSpec`
 
-Test count progression: 505 → 540 → 543 → 553 → 573 → 587 → 601 → 637 → 657 → 703 → 728 → 766 → 782 → 807 → 838 → 855 → 881 → 900 → 915 → 924 → 972 → 1023 → **1043**.
+Test count progression: 505 → 540 → 543 → 553 → 573 → 587 → 601 → 637 → 657 → 703 → 728 → 766 → 782 → 807 → 838 → 855 → 881 → 900 → 915 → 924 → 972 → 1023 → 1043 → 1091 → **1132**.
 
 ---
 
