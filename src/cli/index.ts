@@ -482,6 +482,31 @@ program
     process.exit(result.exitCode);
   });
 
+// mcp — expose the hunt pipeline over the Model Context Protocol
+// (stdio transport) so other AI tools can drive Ultimatrix
+program
+  .command('mcp')
+  .description('Model Context Protocol subcommands')
+  .command('serve')
+  .description('Start the MCP server on stdio. Exposes ultimatrix_run_hunt, ultimatrix_get_status, ultimatrix_get_findings, ultimatrix_get_app_model, ultimatrix_list_jobs.')
+  .action(async () => {
+    const { serveOverStdio } = await import('../mcp/server');
+    const { server, transport } = await serveOverStdio();
+    // Keep the process alive until stdin closes (the MCP client
+    // disconnects) or we receive SIGINT.
+    const shutdown = async (sig: string) => {
+      process.stderr.write(`\n[mcp] received ${sig}, shutting down\n`);
+      try { await server.close(); } catch { /* ignore */ }
+      try { await transport.close(); } catch { /* ignore */ }
+      process.exit(0);
+    };
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.stderr.write('[mcp] ultimatrix MCP server listening on stdio\n');
+    // The MCP server's transport keeps the event loop alive; no need
+    // for a busy wait.
+  });
+
 program.parse();
 
 if (process.argv.length <= 2) {

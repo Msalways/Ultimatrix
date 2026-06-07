@@ -102,3 +102,22 @@ describe('ultimatrix hunt --help', () => {
     expect(r.stdout).toMatch(/0=unlimited/);
   });
 });
+
+describe('ultimatrix mcp --help (Block 13)', () => {
+  it('lists mcp as a top-level command', () => {
+    const r = run(['--help']);
+    expect(r.stdout).toMatch(/\bmcp\b/);
+  });
+  it('lists serve as a mcp subcommand', () => {
+    const r = run(['mcp', '--help']);
+    expect(r.stdout).toMatch(/\bserve\b/);
+  });
+  it('mcp serve --help exits 0', () => {
+    const r = run(['mcp', 'serve', '--help']);
+    expect(r.status).toBe(0);
+  });
+  it('mcp serve --help documents stdio transport', () => {
+    const r = run(['mcp', 'serve', '--help']);
+    expect(r.stdout).toMatch(/stdio/i);
+  });
+});
