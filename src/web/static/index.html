@@ -38,8 +38,8 @@
   header .subtitle { color: var(--muted); font-size: 12px; }
   main {
     display: grid;
-    grid-template-columns: 1fr 1.4fr 1fr 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-columns: 1fr 1.2fr 1fr 1fr 1fr;
+    grid-template-rows: auto 1fr auto;
     gap: 1px;
     background: var(--border);
     height: calc(100vh - 57px);
@@ -155,6 +155,71 @@
   .findings .sev-info { border-left-color: var(--muted); }
   .findings .finding .type { font-weight: 600; color: var(--accent); }
   .findings .finding .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  /* Block 19: live spec + app-model panels */
+  .live-spec { font-size: 12px; }
+  .live-spec .spec-list {
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    max-height: 110px;
+    overflow: auto;
+  }
+  .live-spec .spec-list .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .live-spec .spec-list .row:hover { background: var(--bg); }
+  .live-spec .spec-list .row.active { background: var(--bg); border-left: 2px solid var(--accent); }
+  .live-spec .spec-list .row .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .live-spec .spec-list .row .size { color: var(--muted); font-size: 10px; }
+  .live-spec pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 10px;
+    border-radius: 4px;
+    overflow: auto;
+    max-height: calc(100% - 130px);
+    margin: 0;
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre;
+  }
+  .live-spec .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    user-select: none;
+  }
+  .app-model { font-size: 12px; }
+  .app-model .stat {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .app-model .stat .k { color: var(--muted); }
+  .app-model .stat .v { color: var(--accent); font-weight: 600; }
+  .app-model .new-endpoint {
+    display: block;
+    padding: 2px 0;
+    color: var(--accent);
+    font-size: 11px;
+  }
+  .app-model .new-endpoint::before { content: "+ "; color: var(--accent2); }
   a { color: var(--info); }
 </style>
 </head>
@@ -167,6 +232,8 @@
 <main>
   <section class="panel controls">
     <input type="url" id="target" placeholder="https://example.com" />
+    <label><input type="checkbox" id="re-spider" /> Re-spider</label>
+    <label><input type="number" id="max-runtime" min="0" step="30" placeholder="∞" style="width:70px" /> max runtime (s)</label>
     <button id="start">Start hunt</button>
   </section>
   <section class="panel">
@@ -194,6 +261,24 @@
     </div>
   </section>
   <section class="panel">
+    <h2>
+      <span>App model</span>
+      <span class="count" id="appmodel-target"></span>
+    </h2>
+    <div class="app-model" id="app-model">
+      <p class="empty">No model yet. Run a hunt to discover endpoints.</p>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>
+      <span>Live spec</span>
+      <span class="count" id="spec-count">0</span>
+    </h2>
+    <div class="live-spec" id="live-spec">
+      <p class="empty">No Playwright spec yet. recordTestStep writes here as the LLM attacks.</p>
+    </div>
+  </section>
+  <section class="panel" style="grid-column: 1 / -1;">
     <h2>Live log</h2>
     <div class="log" id="log"></div>
   </section>
@@ -202,6 +287,8 @@
 (function () {
   const $target = document.getElementById('target');
   const $start = document.getElementById('start');
+  const $reSpider = document.getElementById('re-spider');
+  const $maxRuntime = document.getElementById('max-runtime');
   const $log = document.getElementById('log');
   const $tree = document.getElementById('tree');
   const $status = document.getElementById('status');
@@ -210,9 +297,18 @@
   const $llmAutoscroll = document.getElementById('llm-autoscroll');
   const $findings = document.getElementById('findings');
   const $findingsCount = document.getElementById('findings-count');
+  const $appModel = document.getElementById('app-model');
+  const $appModelTarget = document.getElementById('appmodel-target');
+  const $liveSpec = document.getElementById('live-spec');
+  const $specCount = document.getElementById('spec-count');
 
   let ws = null;
   let running = false;
+  let outDir = './output';
+  // The currently-displayed spec: 'main' for live.spec.ts, or a filename
+  // from the per-worker set. Tracks which row is highlighted in the list.
+  let activeSpec = 'main';
+  const specCache = new Map(); // name → {content, mtimeMs}
   // Map of active LLM call labels → DOM element receiving tokens.
   // Reused across runs so the same label appends to the same block
   // (e.g. a "triage/xss" call appears once even if invoked 5x).
@@ -350,6 +446,140 @@
     }).join('');
   }
 
+  // Block 19: poll /api/live-specs and /api/live-spec while a hunt is
+  // running so the user sees the spec being written. Falls back to a
+  // 4-second cadence when idle (and stops entirely if no file ever
+  // appears). The spec list is small (<10 files typically) so this
+  // is cheap.
+  function fmtSize(n) {
+    if (n < 1024) return `${n}B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+    return `${(n / 1024 / 1024).toFixed(2)}MB`;
+  }
+
+  function fmtTime(ms) {
+    if (!ms) return '';
+    const d = new Date(ms);
+    return d.toLocaleTimeString();
+  }
+
+  async function pollSpecs() {
+    try {
+      const res = await fetch(`/api/live-specs?outDir=${encodeURIComponent(outDir)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ok) return;
+      const specs = data.specs || [];
+      $specCount.textContent = String(specs.length);
+      // First call — show the main live.spec.ts content if present.
+      if (activeSpec === 'main' && !specCache.has('main')) {
+        const main = await fetch(`/api/live-spec?outDir=${encodeURIComponent(outDir)}`);
+        if (main.ok) {
+          const md = await main.json();
+          if (md.ok) specCache.set('main', { content: md.content, mtimeMs: md.mtimeMs });
+        }
+      }
+      // Update per-node spec cache — only refetch if mtimeMs changed.
+      for (const s of specs) {
+        const prev = specCache.get(s.name);
+        if (!prev || prev.mtimeMs !== s.mtimeMs) {
+          try {
+            const r = await fetch(`/api/live-specs/content?outDir=${encodeURIComponent(outDir)}&name=${encodeURIComponent(s.name)}`);
+            if (!r.ok) continue;
+            const d = await r.json();
+            if (d.ok) specCache.set(s.name, { content: d.content, mtimeMs: s.mtimeMs });
+          } catch { /* ignore */ }
+        }
+      }
+      renderLiveSpec();
+    } catch { /* ignore */ }
+  }
+
+  function renderLiveSpec() {
+    const rows = [];
+    const main = specCache.get('main');
+    if (main) {
+      rows.push({ name: 'live.spec.ts', isMain: true });
+    }
+    for (const name of specCache.keys()) {
+      if (name === 'live.spec.ts') continue;
+      rows.push({ name });
+    }
+    if (rows.length === 0) {
+      $liveSpec.innerHTML = '<p class="empty">No Playwright spec yet. recordTestStep writes here as the LLM attacks.</p>';
+      return;
+    }
+    const listHtml = '<div class="spec-list">' + rows.map((r) => {
+      const isActive = (r.isMain && activeSpec === 'main') || activeSpec === r.name;
+      const cached = specCache.get(r.isMain ? 'live.spec.ts' : r.name);
+      const size = cached ? fmtSize(cached.content.length) : '';
+      const name = r.isMain ? 'live.spec.ts (core)' : r.name;
+      return `<div class="row ${isActive ? 'active' : ''}" data-name="${escape(r.isMain ? 'main' : r.name)}">
+        <span class="name">${escape(name)}</span>
+        <span class="size">${escape(size)}</span>
+      </div>`;
+    }).join('') + '</div>';
+    const activeName = activeSpec === 'main' ? 'live.spec.ts' : activeSpec;
+    const content = specCache.get(activeName);
+    const code = content
+      ? `<pre>${escape(content.content)}</pre>`
+      : '<p class="empty">Loading…</p>';
+    $liveSpec.innerHTML = listHtml + code;
+    // Click to switch active spec
+    for (const row of $liveSpec.querySelectorAll('.row')) {
+      row.addEventListener('click', () => {
+        activeSpec = row.getAttribute('data-name');
+        renderLiveSpec();
+      });
+    }
+  }
+
+  async function pollAppModel() {
+    try {
+      const res = await fetch(`/api/app-model?outDir=${encodeURIComponent(outDir)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ok) {
+        $appModel.innerHTML = '<p class="empty">No model yet. Run a hunt to discover endpoints.</p>';
+        $appModelTarget.textContent = '';
+        return;
+      }
+      const s = data.summary || {};
+      $appModelTarget.textContent = s.target || '';
+      const stats = [
+        ['target', s.target || '—'],
+        ['endpoints', s.endpoints || 0],
+        ['routes', s.routes || 0],
+        ['forms', s.forms || 0],
+        ['findings', s.findings || 0],
+      ];
+      const statsHtml = stats.map(([k, v]) =>
+        `<div class="stat"><span class="k">${escape(k)}</span><span class="v">${escape(String(v))}</span></div>`
+      ).join('');
+      // Show up to 10 endpoints so the user can see what was discovered.
+      const endpoints = (data.model && Array.isArray(data.model.endpoints)) ? data.model.endpoints : [];
+      const epHtml = endpoints.slice(0, 10).map((e) => {
+        const path = e.path || e.url || '';
+        const method = e.method ? `<span style="color:var(--muted)">[${escape(e.method)}]</span> ` : '';
+        return `<div class="new-endpoint">${method}${escape(path)}</div>`;
+      }).join('');
+      const more = endpoints.length > 10 ? `<div class="new-endpoint" style="color:var(--muted)">… +${endpoints.length - 10} more</div>` : '';
+      $appModel.innerHTML = statsHtml + (epHtml ? '<div style="margin-top:10px">' + epHtml + more + '</div>' : '');
+    } catch { /* ignore */ }
+  }
+
+  function startPolling() {
+    pollSpecs();
+    pollAppModel();
+    setInterval(pollSpecs, 2000);
+    setInterval(pollAppModel, 3000);
+  }
+
+  function stopPolling() {
+    // Cheap reset: leave the previous content in place; user can see
+    // the final state of the spec/app-model after the hunt ends.
+  }
+
   function renderTree(events) {
     const composer = events.find((e) => e.technique && !e.specialist);
     if (!composer) {
@@ -371,20 +601,36 @@
     }
     if (running) return;
     running = true;
+    outDir = './output';
+    specCache.clear();
+    activeSpec = 'main';
     $start.disabled = true;
+    $reSpider.disabled = true;
+    $maxRuntime.disabled = true;
     $log.innerHTML = '';
     $llmStream.innerHTML = '<p class="empty">No LLM calls yet. Set ULTIMATRIX_LLM_STREAM=1 on the server to see tokens here.</p>';
     findings.clear();
     renderFindings();
     llmCalls.clear();
+    renderLiveSpec();
     setStatus('running', true);
     logLine('connecting to /ws …', 'started');
+    if ($reSpider.checked) logLine('Re-spider enabled — discarding cached app-model', 'started');
+    const maxRuntime = parseInt($maxRuntime.value || '0', 10);
+    if (maxRuntime > 0) logLine(`max runtime: ${maxRuntime}s`, 'started');
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
     ws.onopen = () => {
       logLine('connected — sending start', 'started');
-      ws.send(JSON.stringify({ type: 'start', target, outputDir: './output' }));
+      ws.send(JSON.stringify({
+        type: 'start',
+        target,
+        outputDir: outDir,
+        reSpider: $reSpider.checked,
+        maxRuntimeMs: maxRuntime > 0 ? maxRuntime * 1000 : undefined,
+      }));
+      startPolling();
     };
     ws.onmessage = (m) => {
       const ev = JSON.parse(m.data);
@@ -396,12 +642,14 @@
         if (ev.outputDir) logLine(`report at ${ev.outputDir}/report.html`, 'done');
         markLLMCallDone();
         setStatus('done', false);
-        running = false; $start.disabled = false;
+        running = false; $start.disabled = false; $reSpider.disabled = false; $maxRuntime.disabled = false;
+        // Final poll to capture any last spec writes.
+        pollSpecs(); pollAppModel();
       }
       else if (ev.type === 'error') {
         logLine(`error: ${ev.message}`, 'error');
         setStatus('error', false);
-        running = false; $start.disabled = false;
+        running = false; $start.disabled = false; $reSpider.disabled = false; $maxRuntime.disabled = false;
       }
       else if (ev.type === 'llm-token') {
         appendLLMToken(ev.label || 'llm', ev.chunk || '');
@@ -424,12 +672,12 @@
       }
     };
     ws.onclose = () => {
-      if (running) { setStatus('disconnected', false); running = false; $start.disabled = false; }
+      if (running) { setStatus('disconnected', false); running = false; $start.disabled = false; $reSpider.disabled = false; $maxRuntime.disabled = false; }
     };
     ws.onerror = () => {
       logLine('websocket error', 'error');
       setStatus('error', false);
-      running = false; $start.disabled = false;
+      running = false; $start.disabled = false; $reSpider.disabled = false; $maxRuntime.disabled = false;
     };
   }
 

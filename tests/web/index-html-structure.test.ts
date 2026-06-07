@@ -26,9 +26,9 @@ function readHtml(): string {
 }
 
 describe('web UI: index.html structure (Block 16)', () => {
-  it('declares a 4-column main grid', () => {
+  it('declares a 5-column main grid (Block 19 added app-model + live-spec)', () => {
     const html = readHtml();
-    expect(html).toMatch(/grid-template-columns:\s*1fr\s+1\.4fr\s+1fr\s+1fr/);
+    expect(html).toMatch(/grid-template-columns:\s*1fr\s+1\.2fr\s+1fr\s+1fr\s+1fr/);
   });
 
   it('has a Findings panel with id=findings and a count badge id=findings-count', () => {
@@ -100,5 +100,77 @@ describe('web UI: index.html structure (Block 16)', () => {
     for (const t of ["'started'", "'done'", "'error'", "'llm-token'", "'plan'", "'finding'", "'chain'", "'primitive'"]) {
       expect(html, `v3 event ${t} should still be handled`).toContain(`ev.type === ${t}`);
     }
+  });
+});
+
+describe('web UI: index.html structure (Block 19) — live spec + app-model + re-spider', () => {
+  it('has a Re-spider checkbox in the controls bar', () => {
+    const html = readHtml();
+    expect(html).toMatch(/<label><input type="checkbox" id="re-spider"\s*\/> Re-spider<\/label>/);
+  });
+
+  it('has a max-runtime number input in the controls bar', () => {
+    const html = readHtml();
+    expect(html).toMatch(/<input type="number" id="max-runtime"/);
+  });
+
+  it('has an App model panel with id=app-model', () => {
+    const html = readHtml();
+    expect(html).toMatch(/<section class="panel">\s*<h2>\s*<span>App model<\/span>/);
+    expect(html).toMatch(/<div class="app-model" id="app-model">/);
+  });
+
+  it('has a Live spec panel with id=live-spec and id=spec-count', () => {
+    const html = readHtml();
+    expect(html).toMatch(/<section class="panel">\s*<h2>\s*<span>Live spec<\/span>\s*<span class="count" id="spec-count">/);
+    expect(html).toMatch(/<div class="live-spec" id="live-spec">/);
+  });
+
+  it('declares a 5-column main grid (added app-model + live-spec)', () => {
+    const html = readHtml();
+    expect(html).toMatch(/grid-template-columns:\s*1fr\s+1\.2fr\s+1fr\s+1fr\s+1fr/);
+  });
+
+  it('has a renderLiveSpec() function with a per-spec list', () => {
+    const html = readHtml();
+    expect(html).toMatch(/function renderLiveSpec\(\)/);
+    expect(html).toMatch(/class="spec-list"/);
+    expect(html).toMatch(/<pre>/);
+  });
+
+  it('has a pollSpecs() function that hits /api/live-specs', () => {
+    const html = readHtml();
+    expect(html).toMatch(/function pollSpecs\(\)/);
+    expect(html).toMatch(/`\/api\/live-specs\?outDir=\$\{encodeURIComponent\(outDir\)\}`/);
+    expect(html).toMatch(/`\/api\/live-spec\?outDir=\$\{encodeURIComponent\(outDir\)\}`/);
+  });
+
+  it('has a pollAppModel() function that hits /api/app-model', () => {
+    const html = readHtml();
+    expect(html).toMatch(/function pollAppModel\(\)/);
+    expect(html).toMatch(/`\/api\/app-model\?outDir=\$\{encodeURIComponent\(outDir\)\}`/);
+  });
+
+  it('start() sends reSpider + maxRuntimeMs in the start message', () => {
+    const html = readHtml();
+    const startMatch = html.match(/function start\(\)[\s\S]*?\n  \}/);
+    expect(startMatch).toBeTruthy();
+    const body = startMatch![0];
+    expect(body).toMatch(/reSpider:\s*\$reSpider\.checked/);
+    expect(body).toMatch(/maxRuntimeMs:/);
+  });
+
+  it('start() calls startPolling() on ws.onopen', () => {
+    const html = readHtml();
+    expect(html).toMatch(/ws\.onopen[\s\S]*?startPolling\(\)/);
+  });
+
+  it('done event triggers a final poll to capture last spec writes', () => {
+    const html = readHtml();
+    const doneMatch = html.match(/if \(ev\.type === 'done'\)[\s\S]*?\n      \}/);
+    expect(doneMatch).toBeTruthy();
+    const body = doneMatch![0];
+    expect(body).toMatch(/pollSpecs\(\)/);
+    expect(body).toMatch(/pollAppModel\(\)/);
   });
 });

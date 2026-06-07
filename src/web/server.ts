@@ -57,13 +57,95 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
       res.end('{"ok":true}');
       return;
     }
+    // Block 19: surface the on-disk live spec + app-model so the UI can
+    // show "what Playwright code is being generated" and "what the spider
+    // discovered" without re-running anything. outDir defaults to ./output.
+    if (req.url && (req.url.startsWith('/api/live-spec') || req.url.startsWith('/api/app-model'))) {
+      const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+      const outDir = url.searchParams.get('outDir') || './output';
+      const safe = path.resolve(outDir);
+      try {
+        if (req.url === '/api/live-spec' || req.url.startsWith('/api/live-spec?')) {
+          const fp = path.join(safe, 'live.spec.ts');
+          if (!fs.existsSync(fp)) {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, exists: false, path: fp }));
+            return;
+          }
+          const content = fs.readFileSync(fp, 'utf-8');
+          const stat = fs.statSync(fp);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, exists: true, path: fp, content, mtimeMs: stat.mtimeMs, size: stat.size }));
+          return;
+        }
+        if (req.url === '/api/live-specs' || req.url.startsWith('/api/live-specs?')) {
+          if (!fs.existsSync(safe)) {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, exists: true, specs: [] }));
+            return;
+          }
+          const files = fs.readdirSync(safe).filter((f) => /^live-.*\.spec\.ts$/.test(f));
+          const specs = files.map((f) => {
+            const fp = path.join(safe, f);
+            const stat = fs.statSync(fp);
+            return { path: fp, name: f, size: stat.size, mtimeMs: stat.mtimeMs };
+          });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, exists: true, specs }));
+          return;
+        }
+        if (req.url.startsWith('/api/live-specs/content')) {
+          // /api/live-specs/content?outDir=...&name=live-foo.spec.ts
+          const name = url.searchParams.get('name');
+          if (!name || !/^live-.*\.spec\.ts$/.test(name)) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'missing or invalid name' }));
+            return;
+          }
+          const fp = path.join(safe, name);
+          if (!fp.startsWith(safe) || !fs.existsSync(fp)) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'not found' }));
+            return;
+          }
+          const content = fs.readFileSync(fp, 'utf-8');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, path: fp, content }));
+          return;
+        }
+        // /api/app-model
+        const fp = path.join(safe, 'app-model.json');
+        if (!fs.existsSync(fp)) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, exists: false, path: fp }));
+          return;
+        }
+        const raw = fs.readFileSync(fp, 'utf-8');
+        let model: any = null;
+        try { model = JSON.parse(raw); } catch { /* leave null */ }
+        const summary = model ? {
+          target: model.target,
+          endpoints: Array.isArray(model.endpoints) ? model.endpoints.length : 0,
+          findings: Array.isArray(model.findings) ? model.findings.length : 0,
+          routes: Array.isArray(model.routes) ? model.routes.length : 0,
+          forms: Array.isArray(model.forms) ? model.forms.length : 0,
+        } : null;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, exists: true, path: fp, summary, model }));
+        return;
+      } catch (e) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+        return;
+      }
+    }
     res.writeHead(404).end();
   });
 
   const wss = new WebSocketServer({ server, path: '/ws' });
   wss.on('connection', (ws) => {
     ws.on('message', async (raw) => {
-      let msg: { type: string; target?: string; outputDir?: string; maxRuntimeMs?: number };
+      let msg: { type: string; target?: string; outputDir?: string; maxRuntimeMs?: number; reSpider?: boolean; skipSpider?: boolean };
       try {
         msg = JSON.parse(raw.toString());
       } catch {
@@ -79,8 +161,18 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
         try {
           fs.mkdirSync(outDir, { recursive: true });
         } catch { /* ignore */ }
+        // Block 19: reSpider=true forces a fresh crawl by deleting the
+        // cached app-model.json. The CLI hunt would otherwise load it
+        // and skip spidering. We keep live.spec.ts so the user can see
+        // what the previous run captured.
+        if (msg.reSpider) {
+          const modelPath = path.join(outDir, 'app-model.json');
+          if (fs.existsSync(modelPath)) {
+            try { fs.unlinkSync(modelPath); } catch { /* ignore */ }
+          }
+        }
         const { parseHuntFlags, runHunt } = await import('../cli/hunt');
-        const huntArgs = parseHuntFlags([
+        const huntFlagArgs: string[] = [
           '-t', msg.target,
           '-o', outDir,
           // Skip the test-generation phase — the web UI doesn't need
@@ -89,7 +181,9 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
           // for the user to type into, and the REPL would block
           // runHunt from returning. The orchestrator runs alone.
           '--skip', 'tests,interactive',
-        ]);
+        ];
+        if (msg.skipSpider) huntFlagArgs.push('--skip', 'spider');
+        const huntArgs = parseHuntFlags(huntFlagArgs);
         if (typeof msg.maxRuntimeMs === 'number') {
           huntArgs.maxRuntimeMs = msg.maxRuntimeMs;
         }
