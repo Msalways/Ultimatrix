@@ -12,8 +12,15 @@
  * `[orch] ←` end logs never fired, and 0 findings were reported
  * even on known-vuln targets.
  *
- * The fix: when `opts.skip.has('interactive')`, await `orchPromise`
- * directly instead of racing.
+ * Block 21.1: the same bug fires for `!process.stdin.isTTY`. When
+ * runHunt is called from a piped caller (CI, a TUI process, a web
+ * server handler, the cli/index subcommand pipe path), stdin is not
+ * a TTY and the sessionPromise still returns early. The race then
+ * resolved to the sessionPromise. The fix: treat `!isTTY` exactly
+ * like `--skip interactive` and await orchPromise directly.
+ *
+ * The fix: when `opts.skip.has('interactive') || !process.stdin.isTTY`,
+ * await `orchPromise` directly instead of racing.
  *
  * This test runs a real runHunt against a tiny in-process HTTP target
  * and verifies that workers' end-of-life logs fire and findings flow.
@@ -97,6 +104,72 @@ describe('hunt: --skip interactive awaits the orchestrator (regression)', () => 
     expect(dur).toBeGreaterThan(1000);
     // (2) The target was actually attacked. With the bug, workers
     // were killed before they could send any HTTP requests.
+    expect(target.hits.length).toBeGreaterThan(0);
+  }, 90_000);
+});
+
+describe('hunt: non-TTY stdin awaits the orchestrator (Block 21.1 regression)', () => {
+  // The Block 19 fix only handled `opts.skip.has('interactive')`. But
+  // when stdin is not a TTY (CI, web server handler, piped CLI), the
+  // sessionPromise still returns early at the `!isTTY` branch inside
+  // the IIFE. The race then resolved to the sessionPromise and
+  // runHunt tore down the pool before workers finished.
+  //
+  // We can't easily simulate non-TTY inside the same process (stdin is
+  // whatever it is), but we can test the SHAPE of the fix: when
+  // `--skip` does NOT include `interactive`, runHunt must still wait
+  // for the orchestrator if stdin is non-TTY. We force this by
+  // running the test under `process.stdin` (which is non-TTY in
+  // vitest's worker pool). So we just need to NOT pass `--skip
+  // interactive` and verify the same property holds.
+  //
+  // In vitest's worker pool, process.stdin.isTTY is typically false.
+  // If this test ever runs under a TTY, the inner code path is
+  // different (real interactive session) and the test's
+  // assertions about duration may be wrong — but the test will
+  // still pass structurally (real interactive session takes >1s).
+
+  let target: Awaited<ReturnType<typeof startTarget>>;
+  let outDir: string;
+
+  beforeAll(async () => {
+    target = await startTarget();
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ultimatrix-await-non-tty-'));
+  });
+
+  afterAll(async () => {
+    await target.close();
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it('when stdin is not a TTY and --skip omits interactive, runHunt still waits for the orchestrator', async () => {
+    // Skip this test if we're somehow under a TTY (CI happens to
+    // run with one). In that case the real interactive path is
+    // exercised, and the wait happens because the sessionPromise
+    // is the racing promise, not the orchestrator. Either way the
+    // orchestrator runs to completion.
+    const isTTY = !!(process.stdin && (process.stdin as { isTTY?: boolean }).isTTY);
+    if (isTTY) {
+      // TTY path: the interactive session is the one we race on.
+      // The session doesn't open unless the user types something,
+      // so this is not testable in this suite. Just assert the
+      // orchestrator is awaited via the OTHER test (above).
+      return;
+    }
+    target.hits.length = 0;
+    const args = parseHuntFlags([
+      '-t', `http://127.0.0.1:${target.port}/`,
+      '-o', outDir,
+      '--skip', 'tests',
+      '--max-runtime', '30',
+    ]);
+    const start = Date.now();
+    await runHunt(args);
+    const dur = Date.now() - start;
+    // With the Block 21.1 fix, non-TTY callers go through the
+    // `await orchPromise` path. With the bug, the race resolved
+    // immediately and dur would be <500ms.
+    expect(dur).toBeGreaterThan(1000);
     expect(target.hits.length).toBeGreaterThan(0);
   }, 90_000);
 });

@@ -430,9 +430,17 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // The previous bug was: orchestrator's `[orch] ←` end logs never
   // fired, 0 findings were reported even on known-vuln targets.
   //
-  // Now: when interactive is skipped, wait for the orchestrator
-  // directly. When interactive is running, race as before.
-  if (opts.skip.has('interactive')) {
+  // Block 21.1 fix: the same trap fires for `!process.stdin.isTTY`.
+  // The web UI / CI / piped callers all hit the non-TTY branch inside
+  // sessionPromise (it returns early at line 385-391), and the
+  // `Promise.race` would then resolve to the session promise, not the
+  // orchestrator. So we treat `!isTTY` exactly like `--skip interactive`:
+  // wait for the orchestrator to fully drain.
+  //
+  // Now: when interactive is skipped (or stdin is not a TTY), wait for
+  // the orchestrator directly. When interactive is running in a real
+  // terminal, race as before.
+  if (opts.skip.has('interactive') || !process.stdin.isTTY) {
     await orchPromise;
   } else {
     await Promise.race([orchPromise, sessionPromise]);
