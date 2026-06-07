@@ -6,6 +6,7 @@
 
 import type { FindingEvidence } from '../core/app-model';
 import type { LiveTestWriter } from '../codegen/live-writer';
+import type { CrawlerFn } from './spider';
 
 export type PrimitiveName =
   | 'httpRequest'
@@ -29,7 +30,8 @@ export type PrimitiveName =
   | 'spawnSubtask'
   | 'recordEvidence'
   | 'writeFinding'
-  | 'recordTestStep';
+  | 'recordTestStep'
+  | 'spiderCrawl';
 
 export type InjectionLocation =
   | 'query'
@@ -106,6 +108,14 @@ export interface PrimitiveContext {
    * and the LLM learns to skip it.
    */
   liveSpec?: LiveTestWriter | null;
+  /**
+   * Optional crawler injection point for the `spiderCrawl` primitive.
+   * When set, the primitive uses this function instead of building a
+   * real Playwright SpiderCrawler — useful for tests, mocks, and
+   * production flows that want to control the crawl step-by-step
+   * (e.g. hand the LLM a per-endpoint mini-crawl).
+   */
+  crawler?: CrawlerFn;
 }
 
 export type PrimitiveResult<T = unknown> = {

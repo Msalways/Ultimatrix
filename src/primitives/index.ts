@@ -25,6 +25,7 @@ import {
 } from './observation';
 import { useSession } from './session';
 import { spawnSubtask, recordEvidence, writeFinding, recordTestStep } from './control';
+import { spiderCrawl } from './spider';
 
 export const PRIMITIVE_CATALOG: Record<PrimitiveName, PrimitiveDefinition<any, any>> = {
   httpRequest,
@@ -49,6 +50,7 @@ export const PRIMITIVE_CATALOG: Record<PrimitiveName, PrimitiveDefinition<any, a
   recordEvidence,
   writeFinding,
   recordTestStep,
+  spiderCrawl,
 };
 
 export const PRIMITIVE_LIST: PrimitiveName[] = Object.keys(PRIMITIVE_CATALOG) as PrimitiveName[];
@@ -92,8 +94,10 @@ export {
   recordEvidence,
   writeFinding,
   recordTestStep,
+  spiderCrawl,
 };
 
 export * from './types';
 export type { SessionSpec } from './session';
 export type { SubtaskRequest, SubtaskHandle, TestStepArgs, TestStepHandle } from './control';
+export type { SpiderCrawlArgs, SpiderCrawlPrimitiveResult, SpiderCrawlRoute, CrawlerFn } from './spider';

@@ -8,7 +8,7 @@ Real attacks, not theoretical. Real chains across 10 vulnerability classes. No m
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![972 Tests](https://img.shields.io/badge/Tests-972%20passing-success.svg)](#testing)
+[![1023 Tests](https://img.shields.io/badge/Tests-1023%20passing-success.svg)](#testing)
 [![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
 
 ---
@@ -217,7 +217,7 @@ hunt:
 ## Testing
 
 ```bash
-npx vitest run          # 972 tests, 8 skipped (4 CrAPI opt-in + 4 v4 pipeline opt-in)
+npx vitest run          # 1023 tests, 8 skipped (4 CrAPI opt-in + 4 v4 pipeline opt-in)
 npx tsc --noEmit        # 0 type errors
 npx tsup                # clean build (ESM + CJS + .d.ts)
 ```
@@ -232,7 +232,7 @@ npx tsup                # clean build (ESM + CJS + .d.ts)
 - **Report** — diff fingerprint, HTML self-containment, ZIP store-mode
 - **CLI** — `runDoctor`, `runDemo`, `finalizeLiveSpec`
 
-Test count progression: 505 → 540 → 543 → 553 → 573 → 587 → 601 → 637 → 657 → 703 → 728 → 766 → 782 → 807 → 838 → 855 → 881 → 900 → 915 → 924 → **972**.
+Test count progression: 505 → 540 → 543 → 553 → 573 → 587 → 601 → 637 → 657 → 703 → 728 → 766 → 782 → 807 → 838 → 855 → 881 → 900 → 915 → 924 → 972 → **1023**.
 
 ---
 

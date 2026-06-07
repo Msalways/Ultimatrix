@@ -36,8 +36,10 @@ import {
   recordEvidence,
   writeFinding,
   recordTestStep,
+  spiderCrawl,
 } from '../primitives';
 import type { TestStepArgs, TestStepHandle } from '../primitives/control';
+import type { SpiderCrawlArgs, SpiderCrawlPrimitiveResult } from '../primitives/spider';
 
 /**
  * Execute a primitive by name with the given args. Returns the PrimitiveResult.
@@ -119,6 +121,8 @@ export async function executePrimitive(
       );
     case 'recordTestStep':
       return recordTestStep.execute(args as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
+    case 'spiderCrawl':
+      return spiderCrawl.execute(args as SpiderCrawlArgs, ctx) as PrimitiveResult<SpiderCrawlPrimitiveResult>;
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown primitive: ${exhaustive as string}`);
@@ -182,6 +186,7 @@ export function describePrimitive(name: PrimitiveName): string {
     recordEvidence,
     writeFinding,
     recordTestStep,
+    spiderCrawl,
   };
   return defs[name].description;
 }

@@ -15,11 +15,14 @@ import { ALL_SPECIALISTS_V2 } from '../../src/agents/specialists-v2';
 import { OOB_CATEGORIES } from '../../src/oast/categories';
 
 describe('`ultimatrix tools` data sources', () => {
-  it('exposes exactly 22 primitives (matches README + RECENT CHANGES)', () => {
-    expect(PRIMITIVE_LIST).toHaveLength(22);
+  it('exposes exactly 23 primitives (matches README + RECENT CHANGES)', () => {
+    expect(PRIMITIVE_LIST).toHaveLength(23);
   });
   it('includes the new recordTestStep primitive from Block 9b.1', () => {
     expect(PRIMITIVE_LIST).toContain('recordTestStep');
+  });
+  it('includes the new spiderCrawl primitive from Block 12', () => {
+    expect(PRIMITIVE_LIST).toContain('spiderCrawl');
   });
   it('includes the original 21 primitives', () => {
     for (const name of [

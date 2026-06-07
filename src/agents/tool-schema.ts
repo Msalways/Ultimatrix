@@ -381,6 +381,19 @@ export const PRIMITIVE_SCHEMAS: Record<PrimitiveName, ToolSchema> = {
       required: ['description', 'action'],
     },
   },
+
+  spiderCrawl: {
+    name: 'spiderCrawl',
+    description:
+      'Run the Playwright-driven spider starting from a URL. Returns a compact list of discovered routes (path, title, depth, form count, link count), the detected tech stack, the first 30 visited URLs, and any crawl errors. Use this when you don\'t know what URLs exist on the target — the result is condensed to fit in one LLM turn. Heavier than httpRequest (opens a headless browser and crawls up to N levels); call sparingly.',
+    parameters: {
+      type: 'object',
+      properties: {
+        targetUrl: { type: 'string', description: 'Starting URL. Defaults to the context base URL.' },
+        maxDepth: { type: 'number', description: 'How many link levels to follow. 1 = start page only, 2 = links from start (default 2), max 5.' },
+      },
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
