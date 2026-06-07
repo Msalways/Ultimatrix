@@ -129,4 +129,35 @@ describe('LiveTestWriter', () => {
     expect(w.getStepCount()).toBe(2);
     expect(w.getAssertionCount()).toBe(1);
   });
+
+  it('sanitises a raw-URL test name (no literal "..." in output)', () => {
+    const longUrl = 'Hunt https://xss-game.appspot.com/level1/frame?query=Enter+query+here...';
+    const w = new LiveTestWriter({ outPath: path, baseUrl: 'https://x.com', testName: longUrl });
+    w.finalise();
+    const content = readFileSync(path, 'utf8');
+    // The literal "..." the user reported is gone — URL was detected and
+    // replaced with its short label (host + path, no query string).
+    expect(content).not.toContain('Enter+query+here...');
+    expect(content).not.toContain('...');
+    // The test name should be the derived short label, not the raw URL
+    expect(content).toContain("test('Hunt xss-game-appspot-com-level1-frame'");
+    // and the cap is respected
+    const testLine = content.split('\n').find((l) => l.startsWith('test('))!;
+    expect(testLine.length).toBeLessThanOrEqual(80 + 'test(\'\', async ({ page }) => {'.length);
+  });
+
+  it('strips control chars from test name', () => {
+    const w = new LiveTestWriter({ outPath: path, baseUrl: 'https://x.com', testName: 'foo\nbar\tbaz' });
+    w.finalise();
+    const content = readFileSync(path, 'utf8');
+    expect(content).not.toContain('foo\nbar');
+    expect(content).toContain('foo bar baz');
+  });
+
+  it('falls back to a default name for empty/whitespace test name', () => {
+    const w = new LiveTestWriter({ outPath: path, baseUrl: 'https://x.com', testName: '   \t\n  ' });
+    w.finalise();
+    const content = readFileSync(path, 'utf8');
+    expect(content).toContain("test('Generated hunt test'");
+  });
 });
