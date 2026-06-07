@@ -158,6 +158,9 @@ ${isPrivateApp ? `⚠️  ${privateAppReason} — focus on navigating through au
       log.dim('  /quit               — exit');
       log.dim('  /save               — save conversation to disk');
       log.dim('  /status             — show session status');
+      log.dim('  /open [url]         — navigate the browser to <url>, or reopen last URL if no <url>');
+      log.dim('  /goto [url]         — alias for /open');
+      log.dim('  /nav [url]          — alias for /open');
       log.dim('  /record start       — start manual browser recording');
       log.dim('  /record stop [name] — stop recording and save to app model');
       log.dim('  /record status      — check recording progress');
@@ -178,6 +181,28 @@ ${isPrivateApp ? `⚠️  ${privateAppReason} — focus on navigating through au
         }
       } catch {
         log.warn('No active session.');
+      }
+      rl.prompt();
+      continue;
+    }
+    if (input === '/open' || input === '/goto' || input === '/nav' || input.startsWith('/open ') || input.startsWith('/goto ') || input.startsWith('/nav ')) {
+      try {
+        const parts = input.split(/\s+/);
+        let target = parts[1];
+        if (!target) {
+          const last = mgr.getLastUrl('default');
+          if (!last) {
+            log.warn('No URL given and no previous navigation to reopen to. Usage: /open <url>');
+            rl.prompt();
+            continue;
+          }
+          target = last;
+          log.info(`Reopening browser at last URL: ${last}`);
+        }
+        const finalUrl = await mgr.navigate('default', target);
+        log.info(`→ ${finalUrl}`);
+      } catch (e) {
+        log.warn(`open failed: ${(e as Error).message}`);
       }
       rl.prompt();
       continue;

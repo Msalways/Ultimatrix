@@ -48,6 +48,17 @@ export class BrowserSessionManager {
   private sessions = new Map<string, SessionState>();
   private recordings = new Map<string, MacroStep[]>();
   private stepStreams = new Map<string, fs.WriteStream>();
+  /**
+   * Per-session "last navigated URL" — tracked separately from SessionState
+   * so that close() can forget the live browser/context/page while the URL
+   * survives. This is what powers auto-recovery: if a user manually closes
+   * the browser, the next getOrCreate() recreates a fresh about:blank page
+   * and then navigates to the last known URL for that session, so the
+   * subsequent primitive calls don't operate on a blank page. See
+   * getOrCreate() for the recovery logic and the slash command
+   * /open <url> in interactive-session for explicit re-open.
+   */
+  private lastUrls = new Map<string, string>();
   private headless: boolean;
   framework = '';
 
@@ -64,6 +75,11 @@ export class BrowserSessionManager {
         await existing.page.evaluate('1');
         return existing.page;
       } catch {
+        // The user (or a process crash) closed the page. Tear the session
+        // down so we can recreate it cleanly below. Note: lastUrl is NOT
+        // deleted here — that is the whole point of the separate lastUrls
+        // map. After recreate, the new about:blank page will be navigated
+        // back to the last URL automatically (see below).
         await this.close(sessionId);
       }
     }
@@ -131,9 +147,49 @@ export class BrowserSessionManager {
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     });
 
+    // Auto-recover: if this session has a remembered last URL (set by a
+    // previous navigate() call), navigate the fresh about:blank page back
+    // to it. This makes manual browser closes transparent — primitive
+    // calls don't see a blank page, they see the same URL the user was
+    // on. If the URL is unreachable (bot detection, network, etc.) the
+    // auto-navigate is best-effort; the page stays on about:blank and
+    // the caller can still invoke navigate() or /open <url> explicitly.
+    const lastUrl = this.lastUrls.get(sessionId);
+    if (lastUrl && lastUrl !== 'about:blank') {
+      try {
+        await page.goto(lastUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        const finalUrl = page.url();
+        if (finalUrl && finalUrl !== 'about:blank') {
+          // Update lastUrl in case the recovered navigation redirected.
+          this.lastUrls.set(sessionId, finalUrl);
+        }
+      } catch {
+        // Swallow — the caller is in control and can navigate explicitly.
+      }
+    }
+
     this.sessions.set(sessionId, { browser, context, page, createdAt: Date.now(), trace: [], tracing: false, label: options?.label, userAgent: options?.userAgent });
     if (!this.headless) page.bringToFront().catch(() => {});
     return page;
+  }
+
+  /**
+   * Return the last navigated URL for a session, or undefined if the
+   * session has never been navigated (or was reset via clearLastUrl).
+   * This is what powers the no-arg /open slash command — the user types
+   * `/open` and the session reopens to wherever they last were.
+   */
+  getLastUrl(sessionId: string): string | undefined {
+    return this.lastUrls.get(sessionId);
+  }
+
+  /**
+   * Forget the last navigated URL for a session. Useful for tests that
+   * want to assert the "fresh session → about:blank" behaviour, and for
+   * a hypothetical /reset slash command.
+   */
+  clearLastUrl(sessionId: string): void {
+    this.lastUrls.delete(sessionId);
   }
 
   async startTrace(sessionId: string): Promise<string> {
@@ -369,10 +425,19 @@ export class BrowserSessionManager {
         await page.goto(url, { waitUntil, timeout: 30000 });
         const finalUrl = page.url();
         if (finalUrl && finalUrl !== 'about:blank') {
+          // Track the final URL (after any redirects) so that if the user
+          // later manually closes the browser, getOrCreate() can reopen
+          // to the same place instead of leaving the page on about:blank.
+          this.lastUrls.set(sessionId, finalUrl);
           this.record(sessionId, { type: 'navigate', url });
           return finalUrl;
         }
-        if (opts?.relaxed) return finalUrl;
+        if (opts?.relaxed) {
+          // Even on relaxed mode, remember the URL we tried — better than
+          // a blank page when the user closes and reopens the session.
+          this.lastUrls.set(sessionId, finalUrl || url);
+          return finalUrl;
+        }
       } catch (e) {
         if (!firstError) firstError = e instanceof Error ? e : new Error(String(e));
       }
@@ -614,10 +679,17 @@ export class BrowserSessionManager {
     try { await state.context.close(); } catch { /* ok */ }
     try { await state.browser.close(); } catch { /* ok */ }
     this.sessions.delete(sessionId);
+    // Note: lastUrls entry is intentionally NOT deleted here. That is the
+    // whole point of the separate lastUrls map — it survives close() so
+    // the next getOrCreate() can recover the user to the URL they were on.
+    // Use clearLastUrl() if you want a session to forget its last URL.
   }
 
   async closeAll(): Promise<void> {
     for (const id of this.sessions.keys()) await this.close(id);
+    // closeAll() is a full reset — drop the lastUrl memory too, since
+    // the user is signalling "I'm done with everything".
+    this.lastUrls.clear();
   }
 
   listSessions(): string[] {

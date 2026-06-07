@@ -130,6 +130,29 @@ describe('HuntPrompt', () => {
     }
   });
 
+  // Block 9e: /open <url> (and aliases /goto, /nav) is the slash-command
+  // form of "navigate the browser". parseLine just splits the tokens; the
+  // actual command handling lives in InteractiveHuntSession.handleSlashCommand.
+  it('parseLine routes /open <url> to the slash dispatcher with the right cmd + args', () => {
+    const p = new HuntPrompt(defaultCallbacks(), { stdin: new PassThrough(), stdout: new PassThrough() });
+    const openWithArg = p.parseLine('/open https://example.com/');
+    expect(openWithArg.kind).toBe('slash');
+    if (openWithArg.kind === 'slash') {
+      expect(openWithArg.cmd).toBe('open');
+      expect(openWithArg.args).toEqual(['https://example.com/']);
+    }
+    const gotoAlias = p.parseLine('/goto /level1/frame');
+    if (gotoAlias.kind === 'slash') {
+      expect(gotoAlias.cmd).toBe('goto');
+      expect(gotoAlias.args).toEqual(['/level1/frame']);
+    }
+    const navAlias = p.parseLine('/nav');
+    if (navAlias.kind === 'slash') {
+      expect(navAlias.cmd).toBe('nav');
+      expect(navAlias.args).toEqual([]);
+    }
+  });
+
   it('dispatch routes commands to onCommand and slash to onSlash', async () => {
     const seen: Array<{ kind: string; line?: string; cmd?: string; args?: string[] }> = [];
     const callbacks = {
@@ -219,5 +242,14 @@ describe('HuntPrompt', () => {
     expect(SLASH_HELP).toContain('/help');
     expect(SLASH_HELP).toContain('/quit');
     expect(SLASH_HELP).toContain('/test');
+  });
+
+  // Block 9e: SLASH_HELP must list the new /open command so users
+  // discover it when they type /help.
+  it('SLASH_HELP lists /open, /goto, /nav (Block 9e: manual browser recovery)', () => {
+    expect(SLASH_HELP).toContain('/open');
+    expect(SLASH_HELP).toContain('/goto');
+    expect(SLASH_HELP).toContain('/nav');
+    expect(SLASH_HELP).toMatch(/\/open <url>.*reopen last URL/i);
   });
 });

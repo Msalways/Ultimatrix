@@ -328,6 +328,29 @@ export class InteractiveHuntSession {
         this.knownUrls.add(this.normalizeUrl(url));
         return `added ${url} to known URLs (will not auto-attack)`;
       }
+      case 'open':
+      case 'goto':
+      case 'nav': {
+        // /open <url>    — navigate the browser to <url>
+        // /open          — reopen the browser to the last URL it was on
+        //                  (this is the "wake the dead session back up"
+        //                  command — if you closed the browser window
+        //                  by hand, the next primitive call would have
+        //                  created a fresh about:blank page; use /open
+        //                  to get back to where you were).
+        let target = args[0];
+        if (!target) {
+          const last = this.browser.getLastUrl('manual');
+          if (!last) return 'No URL given and no previous navigation to reopen to. Usage: /open <url>';
+          target = last;
+          this.prompt?.notify(`  ↻ reopening browser at last URL: ${last}`);
+        }
+        if (!looksLikeUrl(target)) return `Doesn't look like a URL: ${target}. Usage: /open <url>`;
+        await this.navigateAndTrack(target, `/${cmd}`);
+        // navigateAndTrack already called this.prompt?.notify(...), so
+        // there is nothing additional to return here.
+        return '';
+      }
       case 'autotest': {
         const arg = (args[0] ?? '').toLowerCase();
         if (arg === 'on') {
@@ -362,6 +385,9 @@ export class InteractiveHuntSession {
           '  status              show session counters',
           '',
           'Slash commands:',
+          '  /open <url>         navigate the browser to <url> (or reopen last URL if no <url>)',
+          '  /goto <url>         alias for /open',
+          '  /nav <url>          alias for /open',
           '  /test               generate Playwright tests from findings',
           '  /report             render the HTML report',
           '  /add <url>          add a URL to the workflow graph',
@@ -397,15 +423,29 @@ export class InteractiveHuntSession {
     console.log('');
   }
 
+  /**
+   * Single source of truth for "navigate the manual browser to a URL".
+   * Both the free-form `go <url>` verb (in dispatch) and the slash forms
+   * `/open <url>`, `/goto <url>`, `/nav <url>` (in handleSlashCommand)
+   * route through this method so they share the same tracking + form
+   * auto-test trigger. The no-arg `/open` form reopens the browser to
+   * whatever URL it was last on (the URL remembered by
+   * BrowserSessionManager, which survives a manual close).
+   */
+  private async navigateAndTrack(url: string, source: string): Promise<void> {
+    const sessionId = 'manual';
+    const finalUrl = await this.browser.navigate(sessionId, url);
+    this.prompt?.notify(`  → ${finalUrl}  (via ${source})`);
+    this.lastUrl = finalUrl;
+    this.checkForNewUrl(finalUrl);
+  }
+
   private async dispatch(cmd: ParsedCommand): Promise<void> {
     const sessionId = 'manual';
     try {
       switch (cmd.kind) {
         case 'go': {
-          const finalUrl = await this.browser.navigate(sessionId, cmd.url);
-          this.prompt?.notify(`  → ${finalUrl}`);
-          this.lastUrl = finalUrl;
-          this.checkForNewUrl(finalUrl);
+          await this.navigateAndTrack(cmd.url, 'go');
           break;
         }
         case 'click': {

@@ -207,11 +207,14 @@ export class HuntPrompt {
 
 export const SLASH_HELP = `
 Slash commands:
-  /help    this message
-  /quit    exit the hunt (Ctrl+C also works)
-  /test    generate Playwright tests from findings
-  /report  render the HTML report now
-  /add <url>  add a URL to the workflow graph
+  /help            this message
+  /quit            exit the hunt (Ctrl+C also works)
+  /open <url>      navigate the browser to <url> (or reopen last URL if no <url>)
+  /goto <url>      alias for /open
+  /nav <url>       alias for /open
+  /test            generate Playwright tests from findings
+  /report          render the HTML report now
+  /add <url>       add a URL to the workflow graph
 
 Free-form commands (driven by interactive session):
   go <url>             navigate the browser to <url>
