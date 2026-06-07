@@ -259,6 +259,18 @@ export class Composer {
       },
       ctx,
       llm: this.opts.llm,
+      // Block 21: forward the LLM token stream so the web UI / CLI can
+      // see the agent's reasoning live. Without this, the LLM stream
+      // panel stays empty in the web UI even during real attacks.
+      onLLMToken: this.opts.onLLMToken,
+      // Forward primitive calls into the v4 event stream. The agent
+      // loop never knew about per-primitive visibility before Block 21.
+      // The Composer takes a `PrimitiveName` for onPrimitive; the agent
+      // loop takes a `string`. Cast so the call site accepts the wider
+      // string and the inner callback is still strongly typed.
+      onPrimitive: this.opts.onPrimitive as
+        | ((name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void)
+        | undefined,
       onFinding: (f) => {
         findings.push(f);
         this.opts.onFinding?.(f);

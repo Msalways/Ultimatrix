@@ -70,6 +70,8 @@ export interface HuntCoreWiring {
   onChat: (role: 'user' | 'assistant' | 'system', text: string) => void;
   /** Forward a free-form log line into the core. */
   onLog: (level: 'info' | 'warn' | 'error' | 'debug', text: string) => void;
+  /** Forward an LLM token chunk into the core (Block 21). */
+  onLLMToken: (source: import('../hunt/events').LLMCallSite, text: string, model?: string) => void;
   /** Forward an OOB callback. */
   onOOB: (callback: OOBCallbackEvent) => void;
   /** Forward a screenshot. */
@@ -116,6 +118,13 @@ export function wireHuntCore(opts: WireHuntCoreOptions): HuntCoreWiring {
     onLog(level, text) {
       const log: LogEvent = { level, text };
       core.recordLog(log);
+    },
+    onLLMToken(source, text, model) {
+      // Block 21: forward LLM tokens into the v4 event stream so the
+      // web UI's LLM stream panel and the TUI both light up. The
+      // raw `text` may be a full chunk or empty on start/done; we
+      // still emit it so consumers can detect boundaries.
+      core.recordLLMToken({ source, text, done: false, model });
     },
     onOOB(callback) {
       core.recordOOB(callback);

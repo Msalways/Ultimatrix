@@ -35,6 +35,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BrowserSessionManager } from '../core/browser-session';
 import type { MacroStep } from '../core/browser-session';
+import { getSharedBrowserManager } from '../tools/browser-tools';
 import { generateUserFlowSpecFromSteps } from '../tools/finding-test-generator';
 import { diffEndpoints, applyEndpointDiff, type EndpointDiff } from './endpoint-diff';
 import type { AppModel, AppModelEndpoint, AppModelFinding } from '../core/app-model';
@@ -226,7 +227,15 @@ export class InteractiveHuntSession {
   private currentForms: ChatForm[] = [];
 
   constructor(private opts: InteractiveSessionOptions) {
-    this.browser = new BrowserSessionManager(false); // headed
+    // Block 21: use the SHARED browser manager so the interactive
+    // session and the orchestrator / spider share the same browser
+    // process. Previously this was `new BrowserSessionManager(false)`
+    // which created a second instance: the spider + orchestrator
+    // launched their own headless browser, and the REPL opened a
+    // second headed browser on top. Two browsers fighting for the
+    // same proxy / network state = random auth-cookie losses, and
+    // every `getOrCreate('default')` round-trip re-allocated memory.
+    this.browser = getSharedBrowserManager(false); // headed
     this.autotestForms = opts.autotestForms ?? true;
     this.formWatchIntervalMs = opts.formWatchIntervalMs ?? 1500;
   }
@@ -525,6 +534,16 @@ export class InteractiveHuntSession {
     }
     this.chatHistory.push({ role: 'assistant', text: reply.text });
     this.chatHistory = trimHistory(this.chatHistory);
+
+    // Block 21: detect the silent-failure case where the LLM answered
+    // in text without putting an action in the plan. The user sees the
+    // text but the page never moves. We log a dim hint so it's obvious
+    // in the terminal (and, in the web UI, easy to find in the log).
+    if (reply.plan.length === 0 && reply.text) {
+      this.prompt?.notify(
+        `\x1b[2;33m  ! agent returned text without a plan — nothing will happen on the page\x1b[0m`,
+      );
+    }
 
     if (reply.plan.length > 0) {
       this.prompt?.notify(`  \x1b[2m· plan: ${reply.plan.map((a) => a.kind).join(' → ')}\x1b[0m`);

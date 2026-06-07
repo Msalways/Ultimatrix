@@ -241,8 +241,14 @@ describe('system prompt', () => {
     });
     llm.isReal = () => false;
     await callChat(llm, 'test', mkContext());
-    expect(captured).toMatch(/act, don'?t narrate/i);
-    expect(captured).toMatch(/NEVER reply with text like "I'?ll scan the page"/i);
+    // Block 21: the prompt was rewritten to be more directive.
+    // It now states the contract upfront and ends with an explicit
+    // reminder that the action MUST be in plan or the user sees
+    // text without the page moving.
+    expect(captured).toMatch(/Output contract/i);
+    expect(captured).toMatch(/Both fields are required/i);
+    expect(captured).toMatch(/#1 thing to avoid/i);
+    expect(captured).toMatch(/empty "plan" is allowed ONLY for question-style prompts/i);
   });
 
   it('lists all 13 ChatAction kinds by name in the system prompt', async () => {

@@ -36,6 +36,10 @@ export interface AgentLoopOptions {
   /** Optional sink for events (UI / trace) */
   onTrace?: (trace: AgentTrace) => void;
   onFinding?: (finding: AppModelFinding) => void;
+  /** Optional sink for LLM token streaming (label, chunk). */
+  onLLMToken?: (label: string, chunk: string) => void;
+  /** Optional sink for per-primitive calls (Block 21). */
+  onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
   /** Free-form label for the trace */
   label?: string;
 }
@@ -91,12 +95,30 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     let action: MetaAction | null = null;
     try {
-      const res: LLMCallResult = await opts.llm.call({
-        system: systemPrompt,
-        user: userMsg,
-        label: opts.label ? `${opts.label}/turn-${i + 1}` : `meta/turn-${i + 1}`,
-        temperature: 0.3,
-      });
+      // Block 21: stream the LLM call so the web UI / CLI see the agent
+      // think in real time. If no onLLMToken is set, fall back to a
+      // non-streaming `call()` so existing behavior (tests, mock LLM)
+      // is unchanged. We always end up with a single LLMCallResult.
+      const label = opts.label ? `${opts.label}/turn-${i + 1}` : `meta/turn-${i + 1}`;
+      let res: LLMCallResult;
+      if (opts.onLLMToken) {
+        res = await opts.llm.stream(
+          {
+            system: systemPrompt,
+            user: userMsg,
+            label,
+            temperature: 0.3,
+          },
+          (chunk) => opts.onLLMToken?.(label, chunk),
+        );
+      } else {
+        res = await opts.llm.call({
+          system: systemPrompt,
+          user: userMsg,
+          label,
+          temperature: 0.3,
+        });
+      }
       action = parseAction(res.text);
     } catch (e) {
       const turn: AgentTurn = {
@@ -275,7 +297,15 @@ async function executeMetaPrimitive(
 
   let result: PrimitiveResult;
   try {
-    result = await executePrimitive(action.tool as PrimitiveName, action.args, opts.ctx);
+    // Block 21: forward onPrimitive from the agent loop's options so the
+    // v4 event stream / HuntCore / web UI see every primitive call.
+    // The helper itself owns the timing + error path now.
+    result = await executePrimitive(
+      action.tool as PrimitiveName,
+      action.args,
+      opts.ctx,
+      opts.onPrimitive,
+    );
   } catch (e) {
     result = { ok: false, error: (e as Error).message, durationMs: 0 };
   }

@@ -202,6 +202,13 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
         // Forward structured Composer lifecycle events. The UI's existing
         // handlers at lines 228-240 of index.html already know how to
         // render `plan` / `primitive` / `finding` / `chain` events.
+        // Block 21: the agent-loop emits `agent-turn`, `sub-agent-spawn`,
+        // `sub-agent-result`, and `agent-trace` — these previously had
+        // no `case` here and were silently dropped, leaving the web UI's
+        // Agent tree / LLM stream / Findings panels empty even when
+        // autonomous mode found real bugs. We forward them and also add
+        // a `default:` clause so unknown event types are visible in dev
+        // (never silently swallowed again).
         huntArgs.onComposerEvent = (event) => {
           switch (event.type) {
             case 'plan-proposed':
@@ -276,6 +283,56 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
                 message: event.message,
               });
               break;
+            case 'agent-turn':
+              emit(ws, {
+                type: 'agent-turn',
+                turn: event.turn,
+                thought: event.thought,
+                tool: event.tool,
+                ok: event.ok,
+                durationMs: event.durationMs,
+              });
+              break;
+            case 'sub-agent-spawn':
+              emit(ws, {
+                type: 'sub-agent-spawn',
+                task: event.task,
+                tools: event.tools,
+                maxAttempts: event.maxAttempts,
+                strategy: event.strategy,
+              });
+              break;
+            case 'sub-agent-result':
+              emit(ws, {
+                type: 'sub-agent-result',
+                task: event.task,
+                outcome: event.outcome,
+                findings: event.findings,
+                durationMs: event.durationMs,
+              });
+              break;
+            case 'agent-trace':
+              emit(ws, {
+                type: 'agent-trace',
+                turns: event.turns,
+                subAgents: event.subAgents,
+                findings: event.findings,
+                outcome: event.outcome,
+                durationMs: event.durationMs,
+              });
+              break;
+            case 'specialist-done':
+              emit(ws, {
+                type: 'specialist-done',
+                specialist: event.specialist,
+                findings: event.findings,
+              });
+              break;
+            default: {
+              // Unknown event type — surface it so we notice in dev.
+              const t = (event as { type?: string }).type ?? 'unknown';
+              emit(ws, { type: 'orch-log', level: 'debug', message: `unknown composer event: ${t}` });
+            }
           }
         };
         huntArgs.onPrimitive = (name, args, result) => {

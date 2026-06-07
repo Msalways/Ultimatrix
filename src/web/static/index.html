@@ -667,6 +667,44 @@
       else if (ev.type === 'primitive') {
         logLine(`  ${ev.name} → ${ev.outcome || 'ok'}`, 'plan');
       }
+      // Block 21: agent-loop events. These were dropped by the WS server
+      // before Block 21, leaving the Agent tree + LLM stream + Findings
+      // panels empty. Now surfaced as a log line per turn, plus the
+      // tree re-renders when a sub-agent is spawned.
+      else if (ev.type === 'agent-turn') {
+        const status = ev.ok ? 'ok' : 'fail';
+        const dur = typeof ev.durationMs === 'number' ? ` (${ev.durationMs}ms)` : '';
+        logLine(`  turn ${ev.turn}: ${ev.tool} [${status}]${dur}`, 'plan');
+        if (ev.thought) logLine(`    ↳ ${String(ev.thought).slice(0, 120)}`, 'plan');
+      }
+      else if (ev.type === 'sub-agent-spawn') {
+        logLine(`  sub-agent: ${ev.task.slice(0, 60)} (tools: ${(ev.tools || []).join(',')})`, 'plan');
+        renderTree(events);
+      }
+      else if (ev.type === 'sub-agent-result') {
+        logLine(`  sub-agent: ${ev.task.slice(0, 60)} → ${ev.outcome} (${ev.findings} findings)`, 'plan');
+      }
+      else if (ev.type === 'agent-trace') {
+        logLine(`  trace: ${ev.turns} turns, ${ev.subAgents} sub-agents, ${ev.findings} findings, ${ev.outcome}`, 'plan');
+      }
+      else if (ev.type === 'specialist-done') {
+        logLine(`  specialist: ${ev.specialist} → ${ev.findings} findings`, 'plan');
+      }
+      else if (ev.type === 'specialist') {
+        logLine(`  specialist: ${ev.specialist} — ${ev.reason}`, 'plan');
+      }
+      else if (ev.type === 'orch-log') {
+        logLine(`  [${ev.level}] ${ev.message}`, 'plan');
+      }
+      else if (ev.type === 'triage') {
+        const v = ev.vulnerable ? 'VULN' : 'clean';
+        logLine(`  triage: ${ev.primitive} → ${v} (conf=${ev.confidence}, sev=${ev.severity})`, 'plan');
+      }
+      else if (ev.type === 'primitive-raw') {
+        const status = ev.ok ? 'ok' : 'fail';
+        const err = ev.error ? `: ${ev.error}` : '';
+        logLine(`  primitive: ${ev.name} [${status}] (${ev.durationMs}ms)${err}`, 'plan');
+      }
       else if (ev.type === 'v4-event') {
         handleV4Event(ev.event);
       }

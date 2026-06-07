@@ -91,6 +91,41 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   hlog('info', `\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
   hlog('info', `  output: ${opts.outputDir}, max runtime: ${opts.maxRuntimeMs === 0 ? 'unlimited' : `${Math.round(opts.maxRuntimeMs / 1000)}s`}\n`);
 
+  // Block 21: default LLM token sink. If the caller didn't supply one
+  // (e.g. the user just ran `ultimatrix hunt -t https://xss-game...`),
+  // we write dim chunks to stderr so the operator sees the agent think
+  // in real time. The web UI overrides this with a WebSocket forwarder.
+  // Gated on a TTY: in non-TTY contexts (CI, piped output) we don't
+  // want to spam a half-colored stream into a log file. Streaming
+  // still happens — it just goes nowhere the user can see.
+  if (!opts.onLLMToken) {
+    if (process.stderr.isTTY) {
+      let currentLabel: string | null = null;
+      opts.onLLMToken = (label, chunk) => {
+        if (label !== currentLabel) {
+          if (currentLabel !== null) process.stderr.write('\n');
+          process.stderr.write(`\x1b[2;36m▸ ${label}\x1b[0m `);
+          currentLabel = label;
+        }
+        process.stderr.write(`\x1b[2m${chunk}\x1b[0m`);
+      };
+    } else {
+      // Non-TTY: collect to a counter so a final line says "streamed N
+      // tokens from K calls" — useful evidence in CI logs.
+      let tokenCount = 0;
+      let callCount = 0;
+      const seen = new Set<string>();
+      opts.onLLMToken = (label) => {
+        tokenCount += 1;
+        if (!seen.has(label)) { callCount += 1; seen.add(label); }
+      };
+      // Defer the summary line to the very end of the hunt.
+      process.once('beforeExit', () => {
+        if (tokenCount > 0) hlog('info', `  · LLM stream: ${callCount} calls, ${tokenCount} tokens`);
+      });
+    }
+  }
+
   // No top-level HuntPrompt here — the InteractiveHuntSession runs its
   // own HuntPrompt-driven REPL inside. The slash commands below
   // (/plan, /attack, /test, /report) are dispatched from that REPL
@@ -198,13 +233,16 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     llm: await (async () => (await import('../llm/client')).getDefaultLLMClient())(),
     maxRuntimeSeconds: opts.maxRuntimeMs === 0 ? 0 : Math.round(opts.maxRuntimeMs / 1000),
   });
-  huntCore.start();
-  // Block 16: give the caller (e.g. the web server) a chance to
-  // subscribe to v4 events on this core before the orchestrator
-  // starts pushing findings/primitives through it.
+  // Block 21: subscribe to v4 events BEFORE start() so the initial
+  // `phase: starting` + `phase: observing` events are not lost. start()
+  // emits them synchronously; if we called start() first and then the
+  // caller's onHuntCore, the web UI would miss the opening phase
+  // events and the "no agents spawned yet" placeholder would never be
+  // cleared.
   if (opts.onHuntCore) {
     try { opts.onHuntCore(huntCore); } catch { /* best effort */ }
   }
+  huntCore.start();
   const wiring = wireHuntCore({
     core: huntCore,
     onFindingDeduped: (f) => {
@@ -246,7 +284,15 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     appModel: model,
     strategy: defaultNodeStrategy,
     workerFactory: orchestratorWorkerFactory,
-    onLLMToken: opts.onLLMToken,
+    // Block 21: forward LLM tokens to BOTH the caller's onLLMToken (e.g.
+    // web UI WebSocket or CLI dim stream) AND the HuntCore wiring (so
+    // the TUI / late-attach dashboards / dedup log also see them).
+    onLLMToken: opts.onLLMToken
+      ? (label, chunk) => {
+          try { opts.onLLMToken?.(label, chunk); } catch { /* best effort */ }
+          try { wiring.onLLMToken('composer', chunk); } catch { /* best effort */ }
+        }
+      : (label, chunk) => { try { wiring.onLLMToken('composer', chunk); } catch { /* best effort */ } },
     onComposerEvent: opts.onComposerEvent,
     onPrimitive: opts.onPrimitive,
     onFinding: onOrchFinding,
@@ -290,7 +336,12 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       retryAttempt: 0,
       timeoutMs: 30_000,
       expectedSeverity: 'medium',
-      onLLMToken: opts.onLLMToken,
+      onLLMToken: opts.onLLMToken
+        ? (label: string, chunk: string) => {
+            try { opts.onLLMToken?.(label, chunk); } catch { /* best effort */ }
+            try { wiring.onLLMToken('composer', chunk); } catch { /* best effort */ }
+          }
+        : (label: string, chunk: string) => { try { wiring.onLLMToken('composer', chunk); } catch { /* best effort */ } },
       onLog: opts.onComposerEvent,
       onPrimitive: opts.onPrimitive,
     } as any);
@@ -318,7 +369,8 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // Launch the orchestrator in the background. It will process the
   // seed URLs from the spider without user interaction.
   const orchPromise = orch.run().catch((e) => {
-    hlog('error', `  ! orchestrator failed: ${(e as Error).message}`);
+    const { message } = captureError(e, 'orchestrator failed');
+    hlog('error', `  ! orchestrator failed: ${message}`);
   });
 
   // Launch the interactive session in parallel. The user drives the
@@ -565,6 +617,26 @@ async function buildWorkflowFromAppModel(
 }
 
 
+// Block 21: stack-trace-capturing error reporter. `e.message` is often
+// too short ("connect ECONNREFUSED", "ENOTFOUND", "LLM call failed")
+// to debug. The stack shows WHERE the failure happened. We log the
+// full stack to stderr and a one-line summary to the user via hlog.
+// Use this anywhere a `(e as Error).message` would have been logged
+// without context.
+function captureError(e: unknown, where: string): { message: string; stack?: string } {
+  const err = e instanceof Error ? e : new Error(String(e));
+  const stack = err.stack ?? '';
+  // Strip noisy node_modules frames to keep the trace readable.
+  const lines = stack.split('\n').filter(
+    (l) => l.trim() && !/node_modules\/.+\.js/.test(l) && !/internal\/.+\.js/.test(l)
+  );
+  const trimmed = lines.slice(0, 8).join('\n');
+  if (process.stderr.isTTY) {
+    process.stderr.write(`\n\x1b[31m✗ ${where}\x1b[0m\n${trimmed}\n\n`);
+  }
+  return { message: err.message, stack: trimmed };
+}
+
 // ── Composer-based worker ──
 //
 // The hand-rolled 10-probe switch is replaced by a single Composer.run() call.
@@ -626,6 +698,11 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
     llm,
     maxDepth: 2,
     planTimeoutMs: input.timeoutMs ?? 30_000,
+    // Block 21: wrap the LLM token sink so tokens also flow into the
+    // v4 HuntCore (for the web UI / TUI / diff) while the caller's
+    // original onLLMToken still runs (e.g. for terminal streaming).
+    // The wiring is injected by the orchestrator via WorkerSpawnInput's
+    // `onLLMToken` if present; otherwise we use the caller's sink.
     onLLMToken: input.onLLMToken,
     onLog: input.onLog,
     onPrimitive: input.onPrimitive,

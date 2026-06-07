@@ -100,71 +100,102 @@ function unwrapArgs(name: PrimitiveName, raw: unknown): any {
 
 /**
  * Execute a primitive by name with the given args. Returns the PrimitiveResult.
+ *
+ * Block 21: `onPrimitive` is an optional callback fired AFTER each
+ * primitive call completes. It's used by the agent loop to surface
+ * per-primitive timing/result to the v4 event stream / web UI / TUI.
+ * Passing it here means the agent loop doesn't have to wrap the call
+ * in its own timer — the helper owns the timing and the callback fires
+ * even on error paths.
  */
 export async function executePrimitive(
   name: PrimitiveName,
   args: unknown,
   ctx: PrimitiveContext,
+  onPrimitive?: (name: PrimitiveName, args: unknown, result: PrimitiveResult) => void,
 ): Promise<PrimitiveResult> {
   const a = unwrapArgs(name, args);
-  switch (name) {
+  const t0 = Date.now();
+  let result: PrimitiveResult;
+  try {
+    switch (name) {
     case 'httpRequest':
-      return httpRequest.execute(a as PrimitiveRequest, ctx);
+      result = await httpRequest.execute(a as PrimitiveRequest, ctx);
+      break;
     case 'multipartUpload':
-      return multipartUpload.execute(
+      result = await multipartUpload.execute(
         a as { url: string; filename: string; contentType: string; content: Buffer | string; headers?: Record<string, string> },
         ctx,
       );
+      break;
     case 'followRedirects':
-      return followRedirects.execute(
+      result = await followRedirects.execute(
         a as { initial: PrimitiveResponse; maxHops?: number },
         ctx,
       );
+      break;
     case 'craftPayload':
-      return craftPayload.execute(a as never, ctx);
+      result = await craftPayload.execute(a as never, ctx);
+      break;
     case 'craftBypass':
-      return craftBypass.execute(a as never, ctx);
+      result = await craftBypass.execute(a as never, ctx);
+      break;
     case 'craftXmlEntity':
-      return craftXmlEntity.execute(a as never, ctx);
+      result = await craftXmlEntity.execute(a as never, ctx);
+      break;
     case 'craftMultipart':
-      return craftMultipart.execute(a as never, ctx);
+      result = await craftMultipart.execute(a as never, ctx);
+      break;
     case 'injectInContext':
-      return injectInContext.execute(a as never, ctx);
+      result = await injectInContext.execute(a as never, ctx);
+      break;
     case 'omitHeader':
-      return omitHeader.execute(a as { headers: Record<string, string>; name: string }, ctx);
+      result = await omitHeader.execute(a as { headers: Record<string, string>; name: string }, ctx);
+      break;
     case 'parseResponse':
-      return parseResponse.execute(a as never, ctx);
+      result = await parseResponse.execute(a as never, ctx);
+      break;
     case 'evaluateRendered':
-      return evaluateRendered.execute(a as never, ctx);
+      result = await evaluateRendered.execute(a as never, ctx);
+      break;
     case 'measureTiming':
-      return measureTiming.execute(a as never, ctx);
+      result = await measureTiming.execute(a as never, ctx);
+      break;
     case 'compareResponses':
-      return compareResponses.execute(
+      result = await compareResponses.execute(
         a as { baseline: PrimitiveResponse; target: PrimitiveResponse; ignoreKeys?: string[] },
         ctx,
       );
+      break;
     case 'checkWaf':
-      return checkWaf.execute(a as { response: PrimitiveResponse }, ctx);
+      result = await checkWaf.execute(a as { response: PrimitiveResponse }, ctx);
+      break;
     case 'findEndpointsInResponse':
-      return findEndpointsInResponse.execute(
+      result = await findEndpointsInResponse.execute(
         a as { html: string; baseUrl: string },
         ctx,
       );
+      break;
     case 'extractSessionCookie':
-      return extractSessionCookie.execute(a as { response: PrimitiveResponse }, ctx);
+      result = await extractSessionCookie.execute(a as { response: PrimitiveResponse }, ctx);
+      break;
     case 'extractCsrfToken':
-      return extractCsrfToken.execute(a as { html: string }, ctx);
+      result = await extractCsrfToken.execute(a as { html: string }, ctx);
+      break;
     case 'useSession':
-      return useSession.execute(
+      result = await useSession.execute(
         a as { role: string; cookies?: Record<string, string>; bearerToken?: string },
         ctx,
       );
+      break;
     case 'spawnSubtask':
-      return spawnSubtask.execute(a as never, ctx);
+      result = await spawnSubtask.execute(a as never, ctx);
+      break;
     case 'recordEvidence':
-      return recordEvidence.execute(a as FindingEvidence, ctx);
+      result = await recordEvidence.execute(a as FindingEvidence, ctx);
+      break;
     case 'writeFinding':
-      return writeFinding.execute(
+      result = await writeFinding.execute(
         a as {
           type: string;
           endpoint: string;
@@ -177,15 +208,33 @@ export async function executePrimitive(
         },
         ctx,
       );
+      break;
     case 'recordTestStep':
-      return recordTestStep.execute(a as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
+      result = await recordTestStep.execute(a as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
+      break;
     case 'spiderCrawl':
-      return spiderCrawl.execute(a as SpiderCrawlArgs, ctx) as PrimitiveResult<SpiderCrawlPrimitiveResult>;
+      result = await spiderCrawl.execute(a as SpiderCrawlArgs, ctx) as PrimitiveResult<SpiderCrawlPrimitiveResult>;
+      break;
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown primitive: ${exhaustive as string}`);
     }
+    }
+  } catch (e) {
+    result = { ok: false, error: (e as Error).message, durationMs: Date.now() - t0 };
+    if (onPrimitive) {
+      try { onPrimitive(name, args, result); } catch { /* best effort */ }
+    }
+    return result;
   }
+  // Stamp duration if the primitive didn't set one.
+  if (typeof result.durationMs !== 'number') {
+    result.durationMs = Date.now() - t0;
+  }
+  if (onPrimitive) {
+    try { onPrimitive(name, args, result); } catch { /* best effort */ }
+  }
+  return result;
 }
 
 /**
