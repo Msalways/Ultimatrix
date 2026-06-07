@@ -4,37 +4,31 @@ dist/
 .env.local
 *.har
 *.log
-sentinel-report-*
-sentinel-demo-report-*
+*.tsbuildinfo
 .DS_Store
 coverage/
 .cache/
-
-graphify-out/
-test-output-*/
-JUDGE_TESTING.md
-
-
-demo-output/
-flow-output/
-output/
-
-output-test*/
-output-flag-test/
-test-output/
-test-validate/
+.test-screenshots/
+test-output*/
 test-server/
-output-events-*/
-output-verify*/
-output-xss-userflow/
-playwright-tests-verify/
-*.tsbuildinfo
+test-validate/
+test-results/
+# Stray test artifacts (the web server test writes to cwd)
 stderr.txt
 stdout.txt
-test-results/
 
-.test-screenshots/
-output-xss-game/
-output-crapi-*/
-runs/
+# Generated reports
+sentinel-report-*
+sentinel-demo-report-*
+demo-output/
+flow-output/
 crapi-validation-results.md
+runs/
+playwright-tests-verify/
+
+# Hunt outputs
+output/
+output-*/
+
+# Graphify output (rebuilt by graphify skill)
+graphify-out/

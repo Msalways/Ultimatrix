@@ -4,7 +4,6 @@ import path from 'path';
 import os from 'os';
 import { select, input, confirm, password } from '@inquirer/prompts';
 import { providerRegistry, type ProviderConfig } from '../providers/provider-registry';
-import { toolRegistry } from '../tools/tool-registry';
 import { readAppModel, writeAppModel, type AppModel } from '../core/app-model';
 import type { LLMProviderName, ScanTarget } from '../core/types';
 import yaml from 'js-yaml';
@@ -69,7 +68,7 @@ program
 
 // ── assess: deprecated alias for hunt ──
 program
-  .command('assess')
+  .command('assess', { hidden: true })
   .description('[DEPRECATED] Use `hunt` instead. Security assessment — agent explores, records, and tests the target.')
   .option('-t, --target <url>', 'Target URL')
   .option('-o, --output <dir>', 'Output directory')
@@ -184,28 +183,54 @@ program
     process.exit(0);
   });
 
-// ── tools: List security tools ──
+// ── tools: List v4 primitives, specialists, and OOB categories ──
 program
   .command('tools')
-  .description('List security testing tools')
-  .option('-c, --category <category>', 'Filter by category')
-  .action((opts) => {
-    if (opts.category) {
-      const tools = toolRegistry.getByCategory(opts.category);
-      for (const tool of tools) log.dim(`  ${tool.name}: ${tool.description}`);
-    } else {
-      const byCategory = toolRegistry.listByCategory();
-      for (const [category, names] of Object.entries(byCategory)) {
-        log.info(category);
-        for (const name of names) log.dim(`  ${name}`);
+  .description('List v4 primitives, specialists, and OOB categories (the catalog the LLM can pick from)')
+  .option('-c, --category <category>', 'Filter: primitives | specialists | oob')
+  .action(async (opts) => {
+    const cats = opts.category ? [opts.category] : ['primitives', 'specialists', 'oob'];
+    if (cats.includes('primitives')) {
+      const { PRIMITIVE_LIST, getPrimitive } = await import('../primitives');
+      log.info(`\n\x1b[1;36mPrimitives (${PRIMITIVE_LIST.length})\x1b[0m — the 22-tool floor the LLM composes plans from`);
+      for (const name of PRIMITIVE_LIST) {
+        const def = getPrimitive(name);
+        if (!def) continue;
+        const tags = [
+          def.requiresBrowser ? '\x1b[33mbrowser\x1b[0m' : 'http',
+          def.deterministic ? 'det' : '\x1b[35mllm\x1b[0m',
+        ].join(' · ');
+        log.dim(`  ${name.padEnd(22)} ${tags.padEnd(20)}  ${def.description}`);
       }
     }
+    if (cats.includes('specialists')) {
+      const { ALL_SPECIALISTS_V2 } = await import('../agents/specialists-v2');
+      log.info(`\n\x1b[1;36mSpecialists (${ALL_SPECIALISTS_V2.length})\x1b[0m — spawned when a primitive hits a signal`);
+      for (const factory of ALL_SPECIALISTS_V2) {
+        log.dim(`  ${factory.name.padEnd(14)}  ${factory.description}`);
+      }
+    }
+    if (cats.includes('oob')) {
+      const { OOB_CATEGORIES } = await import('../oast/categories');
+      log.info(`\n\x1b[1;36mOOB categories (${OOB_CATEGORIES.length})\x1b[0m — out-of-band callback probes for blind vulns`);
+      for (const cat of OOB_CATEGORIES) {
+        const desc: Record<string, string> = {
+          'ssrf': 'Server-side request forgery — fetch from inside the target',
+          'blind-xss': 'Stored XSS that fires in a victim browser — call home',
+          'blind-sqli': 'Time-based SQLi exfil via DNS/HTTP',
+          'xxe': 'XML external entity — read local files, SSRF via parser',
+          'deserialization': 'Insecure deserialization — RCE chains that call home',
+        };
+        log.dim(`  ${cat.padEnd(16)}  ${desc[cat] ?? ''}`);
+      }
+    }
+    log.info('');
   });
 
-// ── interact: Live REPL chat loop ──
+// ── interact: Live REPL chat loop (DEPRECATED → hunt --guided) ──
 program
-  .command('interact')
-  .description('Live REPL chat loop with the autonomous agent. Type /record start for manual browser recording.')
+  .command('interact', { hidden: true })
+  .description('[DEPRECATED] Use `ultimatrix hunt -t <url> --guided` instead. Kept for backward compatibility.')
   .option('-t, --target <url>', 'Target URL')
   .action(async (opts) => {
     log.warn('`interact` is deprecated. Use `ultimatrix hunt -t <url> --guided` instead.');
@@ -219,10 +244,10 @@ program
     });
   });
 
-// ── test: Generate Playwright tests from recorded browser sessions ──
+// ── test: v1 Playwright test generator (DEPRECATED → codegen) ──
 program
-  .command('test')
-  .description('Generate Playwright tests from recorded browser sessions')
+  .command('test', { hidden: true })
+  .description('[DEPRECATED] Use `ultimatrix codegen --live <path>` instead. Kept for backward compatibility.')
   .option('-s, --session <id>', 'Session ID', 'default')
   .option('-o, --output <dir>', 'Output directory', './playwright-tests')
   .option('--name <name>', 'Workflow name', 'Recorded Workflow')
@@ -267,10 +292,10 @@ program
     for (const f of generated) log.dim(`  ${f}`);
   });
 
-// ── verify: Re-run findings against a new deployment ──
+// ── verify: Re-run findings against a new deployment (DEPRECATED, not wired in v4) ──
 program
-  .command('verify')
-  .description('Re-run previous findings against a new target deployment to check which vulnerabilities are fixed')
+  .command('verify', { hidden: true })
+  .description('[DEPRECATED] v1 verification. Not wired up in v4 — use the Report HTML diff view instead. Kept for backward compatibility.')
   .option('-a, --app-model <path>', 'Path to existing app-model.json from a previous assessment')
   .option('-t, --target <url>', 'New target URL to verify against')
   .option('-o, --output <dir>', 'Output directory', './verify-output')
@@ -313,6 +338,88 @@ program
     console.log(`\n\x1b[1;32m▸ Ultimatrix web UI\x1b[0m`);
     console.log(`  listening on http://localhost:${actual}`);
     console.log(`  open the URL in a browser, then click \x1b[1mStart hunt\x1b[0m\n`);
+  });
+
+// setup — walk the user through LLM provider configuration interactively
+// and write ~/.config/ultimatrix/providers.yaml. This is the documented
+// way to set up API keys when env vars aren't desired. Always idempotent
+// (re-running the command overwrites the entry for the chosen provider;
+// other providers' entries in the same file are preserved). If --provider
+// + --api-key are passed non-interactively, the prompts are skipped.
+program
+  .command('setup')
+  .description('Configure LLM providers interactively (writes ~/.config/ultimatrix/providers.yaml)')
+  .option('-p, --provider <name>', 'Provider name (skip interactive picker)')
+  .option('-k, --api-key <key>', 'API key for the selected provider (skip secret prompt)')
+  .option('-m, --model <id>', 'Default model id (e.g. openai/gpt-oss-120b)')
+  .option('--base-url <url>', 'Override base URL (OpenAI-compatible providers)')
+  .option('--local', 'Write to project ./ultimatrix.yaml instead of global')
+  .action(async (opts) => {
+    const { writeProviderEntry, writeProjectProvider, cleanEntry, globalProvidersPath } = await import('./setup');
+    const providers = providerRegistry.listAll().filter((p) => p.name !== 'mock');
+
+    // Interactive picker if --provider not given
+    let providerName: string = opts.provider;
+    if (!providerName) {
+      providerName = await select({
+        message: 'Select LLM provider',
+        choices: providers.map((p) => ({
+          name: `${p.label} (env: ${p.envVars.join(' or ')})`,
+          value: p.name,
+        })),
+      });
+    }
+
+    if (!providerRegistry.has(providerName as LLMProviderName)) {
+      log.error(`Unknown provider: ${providerName}`);
+      log.info(`Available: ${providers.map((p) => p.name).join(', ')}`);
+      process.exit(1);
+    }
+
+    // Collect API key
+    let apiKey: string = opts.apiKey ?? '';
+    if (!apiKey) {
+      apiKey = await password({
+        message: `API key for ${providerName} (leave blank to use env var ${providerEnvVar(providerName)})`,
+        mask: '*',
+      });
+    }
+
+    // Collect optional model
+    let modelId: string = opts.model ?? '';
+    if (!modelId && !opts.apiKey) {
+      // Only prompt for model in interactive mode; --api-key implies "minimal" mode
+      modelId = await input({
+        message: 'Default model id (blank = provider default)',
+        default: '',
+      });
+    }
+
+    // Build the entry — only include fields the user actually provided
+    const entry = cleanEntry({
+      apiKey,
+      model: modelId,
+      baseUrl: opts.baseUrl,
+    });
+
+    if (Object.keys(entry).length === 0) {
+      log.warn('No values provided — nothing written. Re-run with --api-key or answer the prompts.');
+      process.exit(1);
+    }
+
+    // Write
+    if (opts.local) {
+      const yamlPath = path.join(process.cwd(), 'ultimatrix.yaml');
+      writeProjectProvider(yamlPath, providerName, entry);
+      log.success(`Wrote ${yamlPath}`);
+    } else {
+      const providersPath = globalProvidersPath();
+      const { written } = writeProviderEntry(providersPath, providerName, entry);
+      log.success(`Wrote ${providersPath} (${written} provider${written === 1 ? '' : 's'})`);
+    }
+    log.info('');
+    log.info('Try it:');
+    log.info(`  \x1b[1multimatrix hunt -t https://example.com --auto\x1b[0m`);
   });
 
 // codegen — finalise a live spec as a runnable Playwright test
@@ -542,14 +649,14 @@ async function loadModel(config: any) {
 
   if (!providerName && !apiKey) {
     throw new Error(
-      'No LLM provider configured. Run "ultimatrix init" to set up your API keys, ' +
+      'No LLM provider configured. Run "ultimatrix setup" to set up your API keys, ' +
       'or set an environment variable like OPENAI_API_KEY or NVIDIA_API_KEY.'
     );
   }
   if (!providerName) {
     throw new Error(
       'Provider name not found in ultimatrix.yaml or env vars. ' +
-      'Run "ultimatrix init" or set a provider env var like OPENAI_API_KEY.'
+      'Run "ultimatrix setup" or set a provider env var like OPENAI_API_KEY.'
     );
   }
   if (!apiKey) {
@@ -557,12 +664,12 @@ async function loadModel(config: any) {
     if (fs.existsSync(providersPath)) {
       throw new Error(
         `providers.yaml found at ${providersPath} but no apiKey entry for provider '${providerName}'. ` +
-        `Run "ultimatrix init" to reconfigure, or set ${providerEnvVar(providerName)} env var.`
+        `Run "ultimatrix setup" to reconfigure, or set ${providerEnvVar(providerName)} env var.`
       );
     }
     throw new Error(
       `No apiKey for provider '${providerName}'. ` +
-      `Set ${providerEnvVar(providerName)} env var or run "ultimatrix init".`
+      `Set ${providerEnvVar(providerName)} env var or run "ultimatrix setup".`
     );
   }
 
