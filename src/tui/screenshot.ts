@@ -10,15 +10,9 @@
 // if the PNG is too large or the renderer fails.
 
 import { writeFileSync, existsSync } from 'node:fs';
+import type { RenderedScreenshot } from './state';
 
-export interface RenderedScreenshot {
-  /** ANSI escape-coded string. */
-  ansi: string;
-  width: number;
-  height: number;
-  /** True if rendering fell back to a placeholder. */
-  placeholder: boolean;
-}
+export type { RenderedScreenshot };
 
 export async function renderScreenshotToAnsi(
   pngPath: string,

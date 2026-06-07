@@ -29,7 +29,11 @@ describe('TuiApp', () => {
     const { lastFrame } = render(<TuiApp core={core} />);
     const frame = lastFrame();
     expect(frame).toContain('phase:');
-    expect(frame).toContain('starting');
+    // core.start() emits 'observing' before the TUI mounts, and the
+    // TUI replays recent events on mount so the status shows the
+    // post-start phase. The exact phase string depends on the core's
+    // start sequence; just assert the status line is there.
+    expect(frame).toMatch(/phase: (starting|observing)/);
   });
 
   it('renders the activity pane', () => {

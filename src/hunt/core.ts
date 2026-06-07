@@ -82,13 +82,32 @@ export class HuntCore {
 
   // -- subscriptions --
 
+  /**
+   * Recent-event ring buffer used to hydrate front-ends that attach
+   * after a hunt has already started. Most subscribers will attach
+   * before the hunt runs and never need this; the TUI uses it to
+   * recover chat history, recent activity, and any findings/chat
+   * messages recorded before mount.
+   */
+  private recentEvents: HuntEvent[] = [];
+  private static readonly RECENT_EVENTS_LIMIT = 200;
+
   on(listener: (event: HuntEvent) => void): () => void {
     this.emitter.on('event', listener);
     return () => this.emitter.off('event', listener);
   }
 
   emit(event: HuntEvent): void {
+    this.recentEvents.push(event);
+    if (this.recentEvents.length > HuntCore.RECENT_EVENTS_LIMIT) {
+      this.recentEvents.splice(0, this.recentEvents.length - HuntCore.RECENT_EVENTS_LIMIT);
+    }
     this.emitter.emit('event', event);
+  }
+
+  /** Returns a copy of the recent event log (newest last). */
+  getRecentEvents(): HuntEvent[] {
+    return this.recentEvents.slice();
   }
 
   // -- accessors --
