@@ -52,6 +52,8 @@ import type { Hypothesis, Technique } from '../core/attack-plan';
 import type { AppModelEndpoint } from '../core/app-model';
 import type { PrimitiveContext } from '../primitives/types';
 import { LiveTestWriter } from '../codegen/live-writer';
+import { HuntCore } from '../hunt/core';
+import { wireHuntCore } from './hunt-core-wiring';
 
 import { parseHuntFlags as _parseHuntFlags, type HuntOptions } from './hunt-flags';
 import { deriveShortUrlLabel } from './url-label';
@@ -139,24 +141,64 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   //     actions for a user-flow Playwright spec.
   //
   // Both share the same `app-model.json` findings section.
+  //
+  // Block 14: a single HuntCore is the source of truth for v4 events.
+  // Every v3 finding/primitive/chat/log flows into the core via
+  // `wireHuntCore` so the v4 event stream, dedup, and summary are
+  // all driven by the same instance.
   console.log(`[3/5] Launching orchestrator + interactive session…`);
   const { graph, pool } = await buildWorkflowFromAppModel(model, opts);
   const findingsBefore = model.findings.length;
   let v3Findings: AppModelFinding[] = [];
 
+  // Spin up the HuntCore. It owns dedup (by type+endpoint+param), the
+  // v4 event stream, behavioral recording, and the live spec at
+  // `output/live.spec.ts`. The v3 workers still write per-node specs
+  // at `output/live-{nodeId}.spec.ts`; those are merged by the
+  // post-hoc synthesizer (Block 9b.2) after the hunt ends.
+  const huntCore = new HuntCore({
+    target: opts.target,
+    outDir: opts.outputDir,
+    llm: await (async () => (await import('../llm/client')).getDefaultLLMClient())(),
+    maxRuntimeSeconds: opts.maxRuntimeMs === 0 ? 0 : Math.round(opts.maxRuntimeMs / 1000),
+  });
+  huntCore.start();
+  // Block 16: give the caller (e.g. the web server) a chance to
+  // subscribe to v4 events on this core before the orchestrator
+  // starts pushing findings/primitives through it.
+  if (opts.onHuntCore) {
+    try { opts.onHuntCore(huntCore); } catch { /* best effort */ }
+  }
+  const wiring = wireHuntCore({
+    core: huntCore,
+    onFindingDeduped: (f) => {
+      const sev = String(f.severity ?? 'info').toUpperCase();
+      console.log(`\x1b[2m  ↳ deduped [${sev}] ${f.type} @ ${f.endpoint}\x1b[0m`);
+    },
+  });
+  const detachWiring = (): void => wiring.unsubscribe();
+
   // Build the orchestrator's worker factory wrapped to also report
-  // findings to the model file.
+  // findings to the model file. Block 14: forward primitive calls into
+  // the HuntCore so the v4 event stream captures every probe.
   const orchestratorWorkerFactory = async (input: any) => {
-    const r = await huntWorkerRunner(input);
+    const r = await huntWorkerRunner({
+      ...input,
+      onPrimitive: (name, args, result) => {
+        opts.onPrimitive?.(name, args, result);
+        wiring.onPrimitive(name, args, result);
+      },
+    });
     return r;
   };
 
-  // Shared finding callback — writes to app-model.json AND prints to
-  // the terminal so the user sees findings as they appear, even from
-  // the orchestrator running in the background.
+  // Shared finding callback — writes to app-model.json, prints to
+  // the terminal so the user sees findings as they appear, and routes
+  // through the HuntCore so dedup + v4 events fire from one place.
   const onOrchFinding = (finding: AppModelFinding) => {
     v3Findings.push(finding);
     updateAppModelSection(modelPath, 'findings', [finding], true);
+    wiring.onFinding(finding);
     const sev = String(finding.severity ?? 'info').toUpperCase();
     console.log(`\x1b[1;33m  + [${sev}]\x1b[0m \x1b[36m${finding.type}\x1b[0m @ \x1b[4m${finding.endpoint}\x1b[0m (conf=${finding.confidence})`);
   };
@@ -297,6 +339,15 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   try {
     await pool.closeAll();
+  } catch { /* best effort */ }
+
+  // Block 14: stop the HuntCore. This flushes the live spec at
+  // output/live.spec.ts, detaches the behavioral recorder, and emits
+  // the v4 `done` event with a final summary. We tear the wiring down
+  // first so the dedup log line doesn't fire on the way out.
+  try {
+    detachWiring();
+    huntCore.stop(orchStillRunning ? 'time-budget' : 'user-quit');
   } catch { /* best effort */ }
 
   model = readAppModel(modelPath);

@@ -46,6 +46,14 @@ export interface HuntOptions {
    * workers. Useful for tests and for the "primitive" UI panel.
    */
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
+  /**
+   * Block 16: hook called by `runHunt` right after the HuntCore is
+   * constructed and started, but before the orchestrator launches.
+   * The web server uses this to subscribe to v4 events and forward
+   * them over WebSocket. Optional — the CLI hunt runs fine without
+   * it.
+   */
+  onHuntCore?: (core: import('../hunt/core').HuntCore) => void;
 }
 
 const VALID_SKIP = new Set(['spider', 'recon', 'chains', 'tests'] as const);
