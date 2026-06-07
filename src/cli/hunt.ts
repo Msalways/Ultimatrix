@@ -59,12 +59,37 @@ import { parseHuntFlags as _parseHuntFlags, type HuntOptions } from './hunt-flag
 import { deriveShortUrlLabel } from './url-label';
 export { type HuntOptions } from './hunt-flags';
 export function parseHuntFlags(args: string[]): HuntOptions { return _parseHuntFlags(args); }
+// `hlog` writes a status line to BOTH the terminal (with ANSI
+// colors) and the v4 HuntCore log stream. The v4 log stream is
+// what the web UI subscribes to via the `onHuntCore` hook, so
+// every status message the user would see in their terminal
+// also appears in the web UI's Live log panel. We strip ANSI
+// escapes before forwarding to the core so the log payload is
+// plain text.
+//
+// `hlogWiring` is set by `runHunt` after the HuntCore is wired.
+// Until then `hlog` is a no-op for the v4 stream (terminal still
+// works). Module-scope so helpers like `buildWorkflowFromAppModel`
+// can use the same sink.
+type Wiring = ReturnType<typeof wireHuntCore>;
+let hlogWiring: Wiring | null = null;
+const ANSI = /\x1b\[[0-9;]*m/g;
+export function hlog(level: 'info' | 'warn' | 'error' | 'debug', line: string): void {
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+  if (hlogWiring) {
+    const plain = line.replace(ANSI, '');
+    hlogWiring.onLog(level, plain);
+  }
+}
+
 export async function runHunt(opts: HuntOptions): Promise<void> {
   fs.mkdirSync(opts.outputDir, { recursive: true });
   const modelPath = path.join(opts.outputDir, 'app-model.json');
   const startedAt = Date.now();
-  console.log(`\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
-  console.log(`  output: ${opts.outputDir}, max runtime: ${opts.maxRuntimeMs === 0 ? 'unlimited' : `${Math.round(opts.maxRuntimeMs / 1000)}s`}\n`);
+  hlog('info', `\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
+  hlog('info', `  output: ${opts.outputDir}, max runtime: ${opts.maxRuntimeMs === 0 ? 'unlimited' : `${Math.round(opts.maxRuntimeMs / 1000)}s`}\n`);
 
   // No top-level HuntPrompt here — the InteractiveHuntSession runs its
   // own HuntPrompt-driven REPL inside. The slash commands below
@@ -75,7 +100,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // 1. Spider
   let model: AppModel = JSON.parse(JSON.stringify(DEFAULT_MODEL));
   if (opts.skip.has('spider') && opts.existingModelPath && fs.existsSync(opts.existingModelPath)) {
-    console.log(`[1/5] Loading existing model from ${opts.existingModelPath}…`);
+    hlog('info', `[1/5] Loading existing model from ${opts.existingModelPath}…`);
     model = readAppModel(opts.existingModelPath);
   } else if (fs.existsSync(modelPath) && !opts.skip.has('spider')) {
     const existing = readAppModel(modelPath);
@@ -91,11 +116,11 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     const totalEndpoints = (existing.endpoints || []).length;
     const modelIsEmpty = totalEndpoints > 0 && endpointsWithBody === 0;
     if (targetChanged) {
-      console.log(`[1/5] Stale model detected (was for ${existingTarget}, now scanning ${opts.target}) — re-spidering…`);
+      hlog('info', `[1/5] Stale model detected (was for ${existingTarget}, now scanning ${opts.target}) — re-spidering…`);
     } else if (modelIsEmpty) {
-      console.log(`[1/5] Existing model has ${totalEndpoints} endpoints but 0 with body preview — re-spidering so the LLM can see sinks…`);
+      hlog('info', `[1/5] Existing model has ${totalEndpoints} endpoints but 0 with body preview — re-spidering so the LLM can see sinks…`);
     } else {
-      console.log(`[1/5] Loading existing model from ${modelPath}…`);
+      hlog('info', `[1/5] Loading existing model from ${modelPath}…`);
       model = existing;
     }
     if (targetChanged || modelIsEmpty) {
@@ -104,31 +129,31 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
       model = buildAppModelFromCrawl(crawlResult, opts.target);
       await writeAppModelAsync(modelPath, model);
-      console.log(`  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
+      hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
     }
   } else {
-    console.log(`[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
+    hlog('info', `[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
     const mgr = getSharedBrowserManager(true);
     const spider = new SpiderCrawler(mgr, 'default');
     const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
     model = buildAppModelFromCrawl(crawlResult, opts.target);
     await writeAppModelAsync(modelPath, model);
-    console.log(`  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
+    hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
   }
 
   // 2. Recon
   if (!opts.skip.has('recon')) {
-    console.log(`[2/5] Running recon (OAuth / GraphQL / JWT / cloud / framework)…`);
+    hlog('info', `[2/5] Running recon (OAuth / GraphQL / JWT / cloud / framework)…`);
     const reconResult = await runRecon({
       target: opts.target,
       appModelPath: modelPath,
       parallel: true,
     });
     const totalDiscovered = reconResult.oauthProviders + reconResult.graphqlEndpoints + reconResult.jwtTokens + reconResult.frameworks + reconResult.cloudProbes;
-    console.log(`  ↳ ${totalDiscovered} discoveries in ${reconResult.durationMs}ms (errors: ${reconResult.errors.length})`);
+    hlog('info', `  ↳ ${totalDiscovered} discoveries in ${reconResult.durationMs}ms (errors: ${reconResult.errors.length})`);
     model = readAppModel(modelPath);
   } else {
-    console.log(`[2/5] Recon skipped (--no-recon)`);
+    hlog('info', `[2/5] Recon skipped (--no-recon)`);
   }
 
   // 3. v3 Orchestrator + Interactive Session
@@ -146,7 +171,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // Every v3 finding/primitive/chat/log flows into the core via
   // `wireHuntCore` so the v4 event stream, dedup, and summary are
   // all driven by the same instance.
-  console.log(`[3/5] Launching orchestrator + interactive session…`);
+  hlog('info', `[3/5] Launching orchestrator + interactive session…`);
   const { graph, pool } = await buildWorkflowFromAppModel(model, opts);
   const findingsBefore = model.findings.length;
   let v3Findings: AppModelFinding[] = [];
@@ -173,9 +198,10 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     core: huntCore,
     onFindingDeduped: (f) => {
       const sev = String(f.severity ?? 'info').toUpperCase();
-      console.log(`\x1b[2m  ↳ deduped [${sev}] ${f.type} @ ${f.endpoint}\x1b[0m`);
+      hlog('info', `\x1b[2m  ↳ deduped [${sev}] ${f.type} @ ${f.endpoint}\x1b[0m`);
     },
   });
+  hlogWiring = wiring;
   const detachWiring = (): void => wiring.unsubscribe();
 
   // Build the orchestrator's worker factory wrapped to also report
@@ -200,7 +226,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     updateAppModelSection(modelPath, 'findings', [finding], true);
     wiring.onFinding(finding);
     const sev = String(finding.severity ?? 'info').toUpperCase();
-    console.log(`\x1b[1;33m  + [${sev}]\x1b[0m \x1b[36m${finding.type}\x1b[0m @ \x1b[4m${finding.endpoint}\x1b[0m (conf=${finding.confidence})`);
+    hlog('info', `\x1b[1;33m  + [${sev}]\x1b[0m \x1b[36m${finding.type}\x1b[0m @ \x1b[4m${finding.endpoint}\x1b[0m (conf=${finding.confidence})`);
   };
 
   const orch = new AutonomousV3Orchestrator({
@@ -280,7 +306,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // Launch the orchestrator in the background. It will process the
   // seed URLs from the spider without user interaction.
   const orchPromise = orch.run().catch((e) => {
-    console.error(`  ! orchestrator failed: ${(e as Error).message}`);
+    hlog('error', `  ! orchestrator failed: ${(e as Error).message}`);
   });
 
   // Launch the interactive session in parallel. The user drives the
@@ -289,14 +315,14 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // web UI / CI / non-TTY callers run the orchestrator only.
   const sessionPromise = (async () => {
     if (opts.skip.has('interactive')) {
-      console.log(`  · Interactive session skipped (--skip interactive). Orchestrator only.`);
+      hlog('info', `  · Running in autonomous mode (orchestrator only; no browser REPL).`);
       return;
     }
     if (!process.stdin.isTTY) {
       // Non-interactive (CI, piped input) — skip the browser session.
       // The orchestrator handles the attacks on its own.
-      console.log(`  · Non-TTY stdin — interactive browser session skipped (orchestrator only).`);
-      console.log(`  · To use the browser session, run in a terminal: hunt -t <url>`);
+      hlog('info', `  · Non-TTY stdin — running in autonomous mode (no browser REPL).`);
+      hlog('info', `  · To use the browser session, run in a terminal: hunt -t <url>`);
       return;
     }
     const session = new InteractiveHuntSession({
@@ -304,7 +330,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       outputDir: opts.outputDir,
       modelPath,
       attackCoordinator,
-      onFinding: (f) => console.log(`  + [${f.severity.toUpperCase()}] ${f.type} @ ${f.endpoint}`),
+      onFinding: (f) => hlog('info', `  + [${f.severity.toUpperCase()}] ${f.type} @ ${f.endpoint}`),
       initialEndpoints: model.endpoints as AppModelEndpoint[],
       // Wire the chat coordinator: free-form text typed by the user
       // becomes a chat message to the LLM with full hunt context.
@@ -323,7 +349,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     try {
       await session.start();
     } catch (e) {
-      console.error(`  ! interactive session failed: ${(e as Error).message}`);
+      hlog('error', `  ! interactive session failed: ${(e as Error).message}`);
     }
   })();
 
@@ -340,7 +366,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     new Promise<'alive'>((r) => setTimeout(() => r('alive'), 5000)),
   ]));
   if (orchStillRunning) {
-    console.log(`  · Orchestrator still processing seeds; letting it finish in the background…`);
+    hlog('info', `  · Orchestrator still processing seeds; letting it finish in the background…`);
   }
 
   try {
@@ -358,28 +384,28 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   model = readAppModel(modelPath);
   const findingsAfter = model.findings.length - findingsBefore;
-  console.log(`  ↳ ${findingsAfter} new findings (${model.findings.length} total)`);
+  hlog('info', `  ↳ ${findingsAfter} new findings (${model.findings.length} total)`);
 
   // 4. Chain engine (if not skipped)
   if (!opts.skip.has('chains') && model.findings.length > 0) {
-    console.log(`[4/5] Running attack chain engine (heuristic)…`);
+    hlog('info', `[4/5] Running attack chain engine (heuristic)…`);
     const newChains: AttackChain[] = runHeuristicChains(model.findings, 'low');
     const existing = model.attackChains || [];
     model.attackChains = mergeChains(existing, newChains);
     await writeAppModelAsync(modelPath, model);
     const critical = model.attackChains.filter(c => c.severity === 'critical' || c.severity === 'high').length;
-    console.log(`  ↳ ${newChains.length} new chains (${critical} critical/high, ${model.attackChains.length} total)`);
+    hlog('info', `  ↳ ${newChains.length} new chains (${critical} critical/high, ${model.attackChains.length} total)`);
   } else {
-    console.log(`[4/5] Chain engine skipped`);
+    hlog('info', `[4/5] Chain engine skipped`);
   }
 
   // 5. Playwright test generation
   if (!opts.skip.has('tests') && model.findings.length > 0) {
     await generateAndWriteTests(model, opts, modelPath);
   } else if (model.findings.length === 0) {
-    console.log(`[5/5] No findings — skipping test generation`);
+    hlog('info', `[5/5] No findings — skipping test generation`);
   } else {
-    console.log(`[5/5] Test generation skipped (--no-tests)`);
+    hlog('info', `[5/5] Test generation skipped (--no-tests)`);
   }
 
   // 5b. Block 9b.2: post-hoc LLM synthesis backstop. If the LLM
@@ -400,26 +426,29 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
         minLiveSteps: 3,
       });
       if (synthResult.skippedReason) {
-        console.log(`  · live-spec synthesis: ${synthResult.skippedReason}`);
+        hlog('info', `  · live-spec synthesis: ${synthResult.skippedReason}`);
       } else {
-        console.log(`  · live-spec synthesis: wrote ${synthResult.outPath} (validated=${synthResult.validated})`);
+        hlog('info', `  · live-spec synthesis: wrote ${synthResult.outPath} (validated=${synthResult.validated})`);
       }
     } catch (e) {
-      console.log(`  · live-spec synthesis failed: ${(e as Error).message}`);
+      hlog('info', `  · live-spec synthesis failed: ${(e as Error).message}`);
     }
   }
 
   // 6. Report
-  console.log(`[6/6] Compiling report…`);
+  hlog('info', `[6/6] Compiling report…`);
   const sections = renderChainFirstReport(model);
   const htmlPath = path.join(opts.outputDir, 'report.html');
   fs.writeFileSync(htmlPath, renderChainReportHtml(sections), 'utf-8');
   const mdPath = path.join(opts.outputDir, 'report.md');
   fs.writeFileSync(mdPath, compileReport(model, 'markdown'), 'utf-8');
-  console.log(`  ↳ report.html, report.md written to ${opts.outputDir}`);
-  console.log(`\n\x1b[1;32m✓ Hunt complete in ${Math.round((Date.now() - startedAt) / 1000)}s\x1b[0m`);
-  console.log(`  findings: ${model.findings.length}  chains: ${(model.attackChains || []).length}`);
-  console.log(`  report:   ${htmlPath}\n`);
+  hlog('info', `  ↳ report.html, report.md written to ${opts.outputDir}`);
+  hlog('info', `\n\x1b[1;32m✓ Hunt complete in ${Math.round((Date.now() - startedAt) / 1000)}s\x1b[0m`);
+  hlog('info', `  findings: ${model.findings.length}  chains: ${(model.attackChains || []).length}`);
+  hlog('info', `  report:   ${htmlPath}\n`);
+  // Detach the module-scope wiring so a second `runHunt` call doesn't
+  // emit into a stale core.
+  hlogWiring = null;
 }
 
 function buildAppModelFromCrawl(crawl: CrawlResult, target: string): AppModel {
@@ -495,13 +524,13 @@ async function buildWorkflowFromAppModel(
 
   // FALLBACK: if the graph is empty, seed with the target root
   if (seen.size === 0) {
-    console.log(`  ↳ workflow graph empty — seeding with target root`);
+    hlog('info', `  ↳ workflow graph empty — seeding with target root`);
     add(opts.target, false);
   }
 
   // Mark all seeded nodes as reachable so the orchestrator processes them
   for (const id of addedIds) graph.markReachable(id);
-  console.log(`  ↳ workflow graph: ${addedIds.length} reachable nodes`);
+  hlog('info', `  ↳ workflow graph: ${addedIds.length} reachable nodes`);
 
   const pool = getDefaultSessionPool();
   try { pool.switchTo('default'); } catch { /* ignore */ }
@@ -629,7 +658,7 @@ async function generateAndWriteTests(model: AppModel, opts: HuntOptions, _modelP
     includeChainTests: true,
   });
   const written = writeFindingTests(result, testsDir);
-  console.log(`  ↳ wrote ${written.length} files to ${testsDir} (${result.findingsWritten} finding tests, ${result.chainsWritten} chain tests)`);
+  hlog('info', `  ↳ wrote ${written.length} files to ${testsDir} (${result.findingsWritten} finding tests, ${result.chainsWritten} chain tests)`);
 }
 
 /**
