@@ -5,13 +5,12 @@
 // (Claude Code, Cursor, custom agents) can drive Ultimatrix without
 // shelling out to the CLI.
 //
-// Tools exposed:
+// Tools exposed (5):
 //   - ultimatrix_run_hunt       start a hunt; returns a jobId
 //   - ultimatrix_get_status     poll a running job
 //   - ultimatrix_get_findings   get the findings list for a job
 //   - ultimatrix_get_app_model  read the full app-model.json
 //   - ultimatrix_list_jobs      list all jobs in this server
-//   - ultimatrix_run_primitive  run a single primitive (for low-level callers)
 //
 // All tools return JSON text the MCP client can render. The hunt
 // itself runs in the background; the client polls get_status until
@@ -220,11 +219,14 @@ export function buildMcpServer(deps: McpServerDeps = {}): McpServer {
 }
 
 /** Connect a built McpServer to a transport. */
-export async function serveOverStdio(deps: McpServerDeps = {}): Promise<{ server: McpServer; transport: StdioServerTransport }> {
+export async function serveOverStdio(
+  deps: McpServerDeps = {},
+  transport?: StdioServerTransport,
+): Promise<{ server: McpServer; transport: StdioServerTransport }> {
   const server = buildMcpServer(deps);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  return { server, transport };
+  const t = transport ?? new StdioServerTransport();
+  await server.connect(t);
+  return { server, transport: t };
 }
 
 // ---- internal helpers ----
