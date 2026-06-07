@@ -257,6 +257,9 @@ export class AutonomousV3Orchestrator {
   }
 
   async run(): Promise<OrchestrationResult> {
+    const size = this.graph.size();
+    const reachable = this.graph.getNodes().filter((n) => n.status === 'reachable').length;
+    this.log(`[orch] starting · graph: ${size.nodes} nodes, ${reachable} reachable, concurrency=${this.enableConcurrency ? this.maxConcurrency : 1}`);
     if (this.enableConcurrency) return this.runConcurrent();
     return this.runSequential();
   }
@@ -316,10 +319,17 @@ export class AutonomousV3Orchestrator {
 
       this.graph.markInProgress(next.id);
       this.onNodeUpdate?.(next, 'in_progress');
+      this.log(`[orch] → ${next.id} · ${spec.technique} on ${spec.url}${spec.param ? ` (param=${spec.param})` : ''} [${processed + 1}/${this.maxNodes}]`);
       const activeSessionId = this.pool.getActive()?.id ?? null;
       const result = await this.spawnOne(next, spec, activeSessionId, retries, start);
       this.techniqueRetries.set(techKey(spec.technique, spec.url), retries + 1);
       this.recordResult(next, spec, result, findings);
+      const outcome = result.vulnerable
+        ? `VULN conf=${result.confidence.toFixed(2)} (${result.evidence.length} evidence)`
+        : result.error
+          ? `FAIL: ${result.error}`
+          : 'clean';
+      this.log(`[orch] ← ${next.id} · ${outcome} in ${result.durationMs}ms`);
       if (result.rateLimited) {
         this.rateLimitEvents++;
         this.log(`[orch] rate-limited (sequential, no concurrency to reduce)`);
@@ -394,10 +404,17 @@ export class AutonomousV3Orchestrator {
           }
           this.graph.markInProgress(next.id);
           this.onNodeUpdate?.(next, 'in_progress');
+          this.log(`[orch] → ${next.id} · ${spec.technique} on ${spec.url}${spec.param ? ` (param=${spec.param})` : ''} [in-flight=${inFlight.size + 1}]`);
           const activeSessionId = this.pool.getActive()?.id ?? null;
           const result = await this.spawnOne(next, spec, activeSessionId, retries, start);
           this.techniqueRetries.set(techKey(spec.technique, spec.url), retries + 1);
           this.recordResult(next, spec, result, findings);
+          const outcome = result.vulnerable
+            ? `VULN conf=${result.confidence.toFixed(2)} (${result.evidence.length} evidence)`
+            : result.error
+              ? `FAIL: ${result.error}`
+              : 'clean';
+          this.log(`[orch] ← ${next.id} · ${outcome} in ${result.durationMs}ms`);
           if (result.rateLimited) {
             this.rateLimitEvents++;
             const prev = this.maxConcurrency;

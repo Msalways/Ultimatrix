@@ -363,6 +363,123 @@ describe('AutonomousV3Orchestrator', () => {
   });
 });
 
+describe('Block 19: orchestrator onLog (string-based) + per-node lifecycle', () => {
+  let graph: WorkflowStateGraph;
+  let pool: SessionPool;
+
+  beforeEach(() => {
+    graph = new WorkflowStateGraph();
+    pool = makeMockPool();
+  });
+
+  it('emits a "starting" log with node + concurrency counts', async () => {
+    const logs: string[] = [];
+    graph.addNode(makeNode('n1', 'https://x.com/'));
+    graph.markReachable('n1');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(false, 0)),
+      onLog: (m) => logs.push(m),
+      enableConcurrency: false,
+    });
+    await orch.run();
+    const startLog = logs.find((l) => l.includes('starting'));
+    expect(startLog).toBeDefined();
+    expect(startLog).toMatch(/1 nodes/);
+    expect(startLog).toMatch(/1 reachable/);
+    expect(startLog).toMatch(/concurrency=1/);
+  });
+
+  it('emits per-node start + end logs (sequential)', async () => {
+    const logs: string[] = [];
+    graph.addNode(makeNode('n1', 'https://x.com/a'));
+    graph.markReachable('n1');
+    graph.addNode(makeNode('n2', 'https://x.com/b'));
+    graph.markReachable('n2');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(false, 0)),
+      onLog: (m) => logs.push(m),
+      enableConcurrency: false,
+    });
+    await orch.run();
+    const arrows = logs.filter((l) => l.includes('→') || l.includes('←'));
+    // We expect at least 2 start (→) + 2 end (←) logs across the two
+    // nodes. The default strategy may bail on the first node if the
+    // spec is unresolvable, so we just check ≥ 2 arrows total.
+    expect(arrows.length).toBeGreaterThanOrEqual(2);
+    // At least one log must mention each node id (start OR end).
+    expect(logs.some((l) => l.includes('n1'))).toBe(true);
+    expect(logs.some((l) => l.includes('n2'))).toBe(true);
+    // At least one log must mention the URL of at least one node.
+    expect(logs.some((l) => l.includes('https://x.com/a') || l.includes('https://x.com/b'))).toBe(true);
+  });
+
+  it('emits per-node VULN log when worker reports vulnerable', async () => {
+    const logs: string[] = [];
+    graph.addNode(makeNode('n1', 'https://x.com/v'));
+    graph.markReachable('n1');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(true, 0.9, [{ type: 'text', data: 'X', label: 'l', timestamp: 0 }])),
+      onLog: (m) => logs.push(m),
+      enableConcurrency: false,
+    });
+    await orch.run();
+    const endLog = logs.find((l) => l.includes('←') && l.includes('n1'));
+    expect(endLog).toBeDefined();
+    expect(endLog).toMatch(/VULN conf=0\.90/);
+    expect(endLog).toMatch(/1 evidence/);
+  });
+
+  it('emits per-node FAIL log when worker errors', async () => {
+    const logs: string[] = [];
+    graph.addNode(makeNode('n1', 'https://x.com/f'));
+    graph.markReachable('n1');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => ({ ...makeResult(false, 0), error: 'boom' })),
+      onLog: (m) => logs.push(m),
+      enableConcurrency: false,
+    });
+    await orch.run();
+    const endLog = logs.find((l) => l.includes('←') && l.includes('n1'));
+    expect(endLog).toBeDefined();
+    expect(endLog).toMatch(/FAIL: boom/);
+  });
+
+  it('emits concurrent start logs with in-flight counter', async () => {
+    const logs: string[] = [];
+    graph.addNode(makeNode('n1', 'https://x.com/c'));
+    graph.markReachable('n1');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(false, 0)),
+      onLog: (m) => logs.push(m),
+      enableConcurrency: true,
+      maxConcurrency: 2,
+    });
+    await orch.run();
+    expect(logs.some((l) => l.includes('starting') && l.includes('concurrency=2'))).toBe(true);
+    expect(logs.some((l) => l.includes('→') && l.includes('in-flight'))).toBe(true);
+  });
+
+  it('onLog receives a string (not a ComposerLogEvent)', async () => {
+    let received: unknown = null;
+    graph.addNode(makeNode('n1', 'https://x.com/'));
+    graph.markReachable('n1');
+    const orch = new AutonomousV3Orchestrator({
+      graph, pool,
+      workerFactory: vi.fn(async () => makeResult(false, 0)),
+      onLog: (m) => { received = m; },
+      enableConcurrency: false,
+    });
+    await orch.run();
+    expect(typeof received).toBe('string');
+    expect(received).toMatch(/^\[orch\] /);
+  });
+});
+
 function makeResult(vulnerable: boolean, confidence: number, evidence: any[] = []): WorkerSpawnResult {
   return {
     vulnerable,

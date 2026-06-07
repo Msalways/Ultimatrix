@@ -303,7 +303,11 @@ export class LLMClient {
 
   /** Public read-only access to the configured model id. */
   getModelName(): string {
-    return this.config?.modelId ?? (typeof this.model === 'string' ? this.model : 'default');
+    // `this.modelId` is set by resolveCredentials() during ensureModel()
+    // and is the actual model used for API calls. `this.config.modelId`
+    // is only set if `configure()` was called explicitly. Prefer the
+    // resolved value.
+    return this.modelId && this.modelId !== 'mock' ? this.modelId : (this.config?.modelId ?? 'default');
   }
 
   /**

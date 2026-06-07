@@ -127,9 +127,20 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       const mgr = getSharedBrowserManager(true);
       const spider = new SpiderCrawler(mgr, 'default');
       const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
+      const before = new Set((existing.endpoints || []).map((e: any) => e.path || e.url));
       model = buildAppModelFromCrawl(crawlResult, opts.target);
       await writeAppModelAsync(modelPath, model);
       hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
+      // Block 19: emit a diff so the user can see what changed.
+      const after = new Set((model.endpoints || []).map((e: any) => e.path || e.url));
+      const added = [...after].filter((p) => !before.has(p));
+      const removed = [...before].filter((p) => !after.has(p));
+      if (added.length || removed.length) {
+        hlog('info', `  ↳ diff: +${added.length} new endpoint${added.length === 1 ? '' : 's'}, -${removed.length} removed`);
+        for (const a of added.slice(0, 10)) hlog('info', `      + ${a}`);
+        for (const r of removed.slice(0, 5)) hlog('info', `      - ${r}`);
+        if (added.length > 10) hlog('info', `      … and ${added.length - 10} more`);
+      }
     }
   } else {
     hlog('info', `[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
@@ -239,6 +250,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     onComposerEvent: opts.onComposerEvent,
     onPrimitive: opts.onPrimitive,
     onFinding: onOrchFinding,
+    onLog: (msg: string) => hlog('info', `  ${msg}`),
     onBeforeNode: async (): Promise<'proceed'> => 'proceed',
     maxRuntimeMs: opts.maxRuntimeMs,
     maxNodes: 50,
@@ -357,7 +369,22 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // when the workflow graph is exhausted. The session terminates when
   // the user quits. In practice, the session is the one that finishes
   // first; the orchestrator may still be running against seeds.
-  await Promise.race([orchPromise, sessionPromise]);
+  //
+  // Block 19 fix: when `--skip interactive` (or `--no-interactive`) is
+  // set — i.e. the web UI / CI / non-TTY callers — the sessionPromise
+  // resolves immediately (no REPL/headed browser to open). If we still
+  // raced, runHunt would tear down the pool + HuntCore while the
+  // orchestrator's workers were still running, killing them mid-attack.
+  // The previous bug was: orchestrator's `[orch] ←` end logs never
+  // fired, 0 findings were reported even on known-vuln targets.
+  //
+  // Now: when interactive is skipped, wait for the orchestrator
+  // directly. When interactive is running, race as before.
+  if (opts.skip.has('interactive')) {
+    await orchPromise;
+  } else {
+    await Promise.race([orchPromise, sessionPromise]);
+  }
 
   // If the orchestrator is still running (the user quit while seeds
   // were still being processed), give it a few seconds to wind down.

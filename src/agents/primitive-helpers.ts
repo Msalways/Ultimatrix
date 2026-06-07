@@ -4,6 +4,12 @@
 // loop calls these to execute tool calls from the LLM. We can't use the
 // primitives directly because they are wrapped in `PrimitiveDefinition`
 // objects; this module exposes the inner logic as functions for easy use.
+//
+// IMPORTANT: The LLM tool schema (src/agents/tool-schema.ts) wraps a
+// request/response inside the args as `{request: {...}}` or
+// `{response: {...}}`. The primitives themselves expect the flat object.
+// `unwrapArgs` bridges that gap so the LLM follows the schema and the
+// primitive gets the shape it needs.
 
 import type {
   PrimitiveContext,
@@ -42,6 +48,57 @@ import type { TestStepArgs, TestStepHandle } from '../primitives/control';
 import type { SpiderCrawlArgs, SpiderCrawlPrimitiveResult } from '../primitives/spider';
 
 /**
+ * Unwrap the LLM's tool-call args to match what the primitive expects.
+ *
+ * The tool schema in src/agents/tool-schema.ts nests complex objects
+ * (request, response, baseline/target) under a named key. The primitive
+ * definitions in src/primitives/* expect the flat object. This helper
+ * does the unwrap for the primitives that have wrappers. If the LLM
+ * already passed a flat object (older format), the helper returns it
+ * unchanged — so both shapes work.
+ */
+function unwrapArgs(name: PrimitiveName, raw: unknown): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  const o = raw as Record<string, unknown>;
+  switch (name) {
+    case 'httpRequest':
+      // Schema: { request: {...} }. Primitive: PrimitiveRequest.
+      // Accept both wrapped and flat.
+      if (o.request && typeof o.request === 'object') return o.request;
+      return o;
+    case 'followRedirects':
+      // Schema: { initial: {...}, maxHops? }
+      if (o.initial && typeof o.initial === 'object') {
+        return { initial: o.initial, maxHops: o.maxHops };
+      }
+      return o;
+    case 'injectInContext':
+      // Schema: { payload, location, base, paramName? }
+      // Primitive: same shape. No unwrap needed.
+      return o;
+    case 'parseResponse':
+      // Schema: { response: {...} }. Primitive: takes PrimitiveResponse directly.
+      // (parseResponse is the one primitive that doesn't wrap its arg.)
+      if (o.response && typeof o.response === 'object') return o.response;
+      return o;
+    case 'checkWaf':
+      // Schema: { response: {...} }. Primitive: { response }.
+      if (o.response && typeof o.response === 'object') return { response: o.response };
+      return o;
+    case 'compareResponses':
+      // Schema: { baseline, target, ignoreKeys? }
+      if (o.baseline && o.target) return o;
+      return o;
+    case 'extractSessionCookie':
+      // Schema: { response: {...} }. Primitive: { response }.
+      if (o.response && typeof o.response === 'object') return { response: o.response };
+      return o;
+    default:
+      return o;
+  }
+}
+
+/**
  * Execute a primitive by name with the given args. Returns the PrimitiveResult.
  */
 export async function executePrimitive(
@@ -49,65 +106,66 @@ export async function executePrimitive(
   args: unknown,
   ctx: PrimitiveContext,
 ): Promise<PrimitiveResult> {
+  const a = unwrapArgs(name, args);
   switch (name) {
     case 'httpRequest':
-      return httpRequest.execute(args as PrimitiveRequest, ctx);
+      return httpRequest.execute(a as PrimitiveRequest, ctx);
     case 'multipartUpload':
       return multipartUpload.execute(
-        args as { url: string; filename: string; contentType: string; content: Buffer | string; headers?: Record<string, string> },
+        a as { url: string; filename: string; contentType: string; content: Buffer | string; headers?: Record<string, string> },
         ctx,
       );
     case 'followRedirects':
       return followRedirects.execute(
-        args as { initial: PrimitiveResponse; maxHops?: number },
+        a as { initial: PrimitiveResponse; maxHops?: number },
         ctx,
       );
     case 'craftPayload':
-      return craftPayload.execute(args as never, ctx);
+      return craftPayload.execute(a as never, ctx);
     case 'craftBypass':
-      return craftBypass.execute(args as never, ctx);
+      return craftBypass.execute(a as never, ctx);
     case 'craftXmlEntity':
-      return craftXmlEntity.execute(args as never, ctx);
+      return craftXmlEntity.execute(a as never, ctx);
     case 'craftMultipart':
-      return craftMultipart.execute(args as never, ctx);
+      return craftMultipart.execute(a as never, ctx);
     case 'injectInContext':
-      return injectInContext.execute(args as never, ctx);
+      return injectInContext.execute(a as never, ctx);
     case 'omitHeader':
-      return omitHeader.execute(args as { headers: Record<string, string>; name: string }, ctx);
+      return omitHeader.execute(a as { headers: Record<string, string>; name: string }, ctx);
     case 'parseResponse':
-      return parseResponse.execute(args as PrimitiveResponse, ctx);
+      return parseResponse.execute(a as never, ctx);
     case 'evaluateRendered':
-      return evaluateRendered.execute(args as never, ctx);
+      return evaluateRendered.execute(a as never, ctx);
     case 'measureTiming':
-      return measureTiming.execute(args as never, ctx);
+      return measureTiming.execute(a as never, ctx);
     case 'compareResponses':
       return compareResponses.execute(
-        args as { baseline: PrimitiveResponse; target: PrimitiveResponse; ignoreKeys?: string[] },
+        a as { baseline: PrimitiveResponse; target: PrimitiveResponse; ignoreKeys?: string[] },
         ctx,
       );
     case 'checkWaf':
-      return checkWaf.execute(args as { response: PrimitiveResponse }, ctx);
+      return checkWaf.execute(a as { response: PrimitiveResponse }, ctx);
     case 'findEndpointsInResponse':
       return findEndpointsInResponse.execute(
-        args as { html: string; baseUrl: string },
+        a as { html: string; baseUrl: string },
         ctx,
       );
     case 'extractSessionCookie':
-      return extractSessionCookie.execute(args as { response: PrimitiveResponse }, ctx);
+      return extractSessionCookie.execute(a as { response: PrimitiveResponse }, ctx);
     case 'extractCsrfToken':
-      return extractCsrfToken.execute(args as { html: string }, ctx);
+      return extractCsrfToken.execute(a as { html: string }, ctx);
     case 'useSession':
       return useSession.execute(
-        args as { role: string; cookies?: Record<string, string>; bearerToken?: string },
+        a as { role: string; cookies?: Record<string, string>; bearerToken?: string },
         ctx,
       );
     case 'spawnSubtask':
-      return spawnSubtask.execute(args as never, ctx);
+      return spawnSubtask.execute(a as never, ctx);
     case 'recordEvidence':
-      return recordEvidence.execute(args as FindingEvidence, ctx);
+      return recordEvidence.execute(a as FindingEvidence, ctx);
     case 'writeFinding':
       return writeFinding.execute(
-        args as {
+        a as {
           type: string;
           endpoint: string;
           param: string;
@@ -120,9 +178,9 @@ export async function executePrimitive(
         ctx,
       );
     case 'recordTestStep':
-      return recordTestStep.execute(args as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
+      return recordTestStep.execute(a as TestStepArgs, ctx) as PrimitiveResult<TestStepHandle>;
     case 'spiderCrawl':
-      return spiderCrawl.execute(args as SpiderCrawlArgs, ctx) as PrimitiveResult<SpiderCrawlPrimitiveResult>;
+      return spiderCrawl.execute(a as SpiderCrawlArgs, ctx) as PrimitiveResult<SpiderCrawlPrimitiveResult>;
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown primitive: ${exhaustive as string}`);
