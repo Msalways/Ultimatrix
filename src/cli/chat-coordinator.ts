@@ -23,7 +23,7 @@
 // doing it. The user always sees the actual results, not a promise.
 
 import type { LLMClient } from '../llm/client';
-import type { AppModelFinding } from '../core/app-model';
+import type { AppModel, AppModelEndpoint, AppModelFinding } from '../core/app-model';
 import type { MacroStep } from '../core/browser-session';
 
 /** A form field extracted from the current page. */
@@ -66,6 +66,98 @@ export interface ChatObservation {
   data?: unknown;
 }
 
+/**
+ * Condensed spider/recon snapshot the chat LLM can see. Built from
+ * `app-model.json` by `summarizeSpider()` so the chat agent knows what
+ * the spider has already discovered (endpoints, forms, auth, tech stack)
+ * and can pick targets intelligently. The summary is intentionally
+ * small (~30 lines of text) to avoid blowing the context window.
+ */
+export interface ChatSpiderSummary {
+  /** Total endpoints discovered (full count, not capped). */
+  endpointCount: number;
+  /** Total forms discovered. */
+  formCount: number;
+  /** Total <script> tags observed. */
+  scriptCount: number;
+  /** Number of OOB callbacks captured during the hunt. */
+  oastCallbackCount: number;
+  /** Auth type detected by the recon phase. */
+  authType: string;
+  /** Login endpoint path (if any). */
+  loginEndpoint: string;
+  /** Detected tech stack (e.g. ["react", "express", "jwt"]). */
+  techStack: string[];
+  /** Capped list of endpoints the LLM can pick from, sorted by param count desc. */
+  endpoints: Array<{ method: string; path: string; paramCount: number; requiresAuth: boolean; bodyFormat?: string }>;
+  /** Total count of endpoints (might exceed endpoints.length if capped). */
+  totalEndpointCount: number;
+  /** Capped list of recently visited URLs. */
+  visitedUrls: string[];
+  /** Up to 5 next-step hints from the recon phase. */
+  nextSteps: string[];
+}
+
+/** Build a ChatSpiderSummary from an AppModel. Pure / testable. */
+export function summarizeSpider(appModel: AppModel, opts: { endpointCap?: number; visitedCap?: number; nextStepsCap?: number } = {}): ChatSpiderSummary {
+  const endpointCap = opts.endpointCap ?? 20;
+  const visitedCap = opts.visitedCap ?? 10;
+  const nextStepsCap = opts.nextStepsCap ?? 5;
+
+  // Sort endpoints by param count desc so the LLM sees the most
+  // interesting attack surfaces first.
+  const sortedEndpoints = appModel.endpoints.slice().sort((a, b) => b.params.length - a.params.length);
+  const endpoints = sortedEndpoints.slice(0, endpointCap).map((e: AppModelEndpoint) => ({
+    method: e.method,
+    path: e.path,
+    paramCount: e.params.length,
+    requiresAuth: e.requiresAuth,
+    bodyFormat: e.bodyFormat,
+  }));
+
+  return {
+    endpointCount: appModel.endpoints.length,
+    formCount: appModel.forms.length,
+    scriptCount: appModel.scripts.length,
+    oastCallbackCount: appModel.oastCallbacks.length,
+    authType: appModel.auth?.type ?? 'unknown',
+    loginEndpoint: appModel.auth?.loginEndpoint ?? '',
+    techStack: appModel.techStack.slice(0, 10),
+    endpoints,
+    totalEndpointCount: appModel.endpoints.length,
+    visitedUrls: appModel.visitedUrls.slice(-visitedCap),
+    nextSteps: (appModel.nextSteps ?? []).slice(0, nextStepsCap),
+  };
+}
+
+/** Format a spider summary as a string section for the chat LLM prompt. */
+export function formatSpiderSection(s: ChatSpiderSummary): string {
+  const lines: string[] = [];
+  lines.push(`\nSpider summary:`);
+  const authBit = s.authType && s.authType !== 'unknown' ? s.authType : 'no auth detected';
+  const loginBit = s.loginEndpoint ? ` (login: ${s.loginEndpoint})` : '';
+  lines.push(`  target tech: ${s.techStack.length > 0 ? s.techStack.join(', ') : 'unknown'}; auth: ${authBit}${loginBit}`);
+  lines.push(`  discovered: ${s.endpointCount} endpoint${s.endpointCount === 1 ? '' : 's'}, ${s.formCount} form${s.formCount === 1 ? '' : 's'}, ${s.scriptCount} script${s.scriptCount === 1 ? '' : 's'}, ${s.oastCallbackCount} OOB callback${s.oastCallbackCount === 1 ? '' : 's'}`);
+  if (s.endpoints.length > 0) {
+    lines.push(`  top endpoints (${s.endpoints.length} of ${s.totalEndpointCount}, sorted by param count):`);
+    for (const e of s.endpoints) {
+      const auth = e.requiresAuth ? ' [auth]' : '';
+      const body = e.bodyFormat ? ` <${e.bodyFormat}>` : '';
+      const params = e.paramCount > 0 ? ` (${e.paramCount} param${e.paramCount === 1 ? '' : 's'})` : '';
+      lines.push(`    - ${e.method.padEnd(6)} ${e.path}${auth}${body}${params}`);
+    }
+  }
+  if (s.visitedUrls.length > 0) {
+    lines.push(`  recently visited (${s.visitedUrls.length}):`);
+    for (const u of s.visitedUrls) lines.push(`    - ${u}`);
+  }
+  if (s.nextSteps.length > 0) {
+    lines.push(`  recon's next-step suggestions:`);
+    for (const step of s.nextSteps) lines.push(`    - ${step}`);
+  }
+  return lines.join('\n');
+}
+
 /** Context the chat LLM has access to. */
 export interface ChatContext {
   target: string;
@@ -83,6 +175,10 @@ export interface ChatContext {
   /** Observations from actions just executed (only present on the
    *  follow-up summary turn). */
   observations?: ChatObservation[];
+  /** Optional spider/recon summary. When present, the chat prompt
+   *  includes a "Spider summary:" section so the LLM knows what the
+   *  spider has discovered. Populated by summarizeSpider(). */
+  spider?: ChatSpiderSummary;
 }
 
 export interface ChatMessage {
@@ -118,6 +214,7 @@ const MAX_FINDINGS_IN_CONTEXT = 10;
 const MAX_RECORDING_STEPS_IN_CONTEXT = 5;
 const MAX_OBSERVATION_CHARS = 4000;
 const MAX_LLM_TURNS_PER_CHAT = 2;
+const SPIDER_ENDPOINT_CAP_DEFAULT = 20;
 
 const CHAT_SYSTEM_PROMPT = `You are the chat interface of Ultimatrix, an AI security researcher. The user is running an interactive pentest in a headed Playwright browser. Your job is to ACT on what they ask, not to narrate.
 
@@ -135,6 +232,7 @@ const CHAT_SYSTEM_PROMPT = `You are the chat interface of Ultimatrix, an AI secu
 - Recent recording: the last 5 user actions in the browser
 - Chat history: the last 10 user+assistant message pairs
 - A trigger form (if this turn is a form auto-test): the form that just appeared
+- Spider summary: the discovered endpoints, forms, tech stack, auth type, and OOB callback count from the recon phase. When you need to pick a target URL for an attack action, prefer an endpoint from this list (it has been classified and tested for reachability) over a free-form URL.
 
 ## What you can do
 Reply with a JSON object:
@@ -243,6 +341,10 @@ export function buildChatUserMessage(message: string, context: ChatContext): str
       const who = msg.role === 'user' ? 'user' : 'agent';
       lines.push(`  ${who}: ${msg.text}`);
     }
+  }
+
+  if (context.spider) {
+    lines.push(formatSpiderSection(context.spider));
   }
 
   lines.push(`\nUser: ${message}`);

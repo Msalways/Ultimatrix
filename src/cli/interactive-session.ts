@@ -43,6 +43,7 @@ import { HuntPrompt, type HuntPromptCallbacks } from './prompt';
 import {
   callChat,
   trimHistory,
+  summarizeSpider,
   type ChatContext,
   type ChatForm,
   type ChatResponse,
@@ -742,13 +743,18 @@ export class InteractiveHuntSession {
   /** Build a ChatContext from current session state. */
   private async buildChatContext(triggerForm?: ChatForm): Promise<ChatContext> {
     let findings: AppModelFinding[] = [];
+    let spider: import('./chat-coordinator').ChatSpiderSummary | undefined;
     if (this.opts.loadFindings) {
       findings = await this.opts.loadFindings();
     } else {
       try {
         const m = readAppModel(this.opts.modelPath);
         findings = m.findings ?? [];
-      } catch { /* ignore */ }
+        // Build a condensed spider/recon snapshot from the on-disk
+        // app-model so the chat LLM can pick targets intelligently.
+        // Block 10: chat spider context.
+        spider = summarizeSpider(m);
+      } catch { /* ignore — model not built yet */ }
     }
     return {
       target: this.opts.target,
@@ -759,6 +765,7 @@ export class InteractiveHuntSession {
       history: this.chatHistory.slice(),
       autotest: this.autotestForms,
       triggerForm,
+      spider,
     };
   }
 
