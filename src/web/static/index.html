@@ -38,7 +38,7 @@
   header .subtitle { color: var(--muted); font-size: 12px; }
   main {
     display: grid;
-    grid-template-columns: 1fr 1.4fr 1fr;
+    grid-template-columns: 1fr 1.4fr 1fr 1fr;
     grid-template-rows: auto 1fr;
     gap: 1px;
     background: var(--border);
@@ -161,7 +161,7 @@
 <body>
 <header>
   <h1>Ultimatrix</h1>
-  <span class="subtitle">AI security operator · composer + 21 primitives · Groq / OpenAI</span>
+  <span class="subtitle">AI security operator · composer + 23 primitives · Groq / OpenAI</span>
   <div class="status" id="status"><span class="dot"></span><span id="status-text">idle</span></div>
 </header>
 <main>
@@ -185,6 +185,15 @@
     </div>
   </section>
   <section class="panel">
+    <h2>
+      <span>Findings</span>
+      <span class="count" id="findings-count">0</span>
+    </h2>
+    <div class="findings" id="findings">
+      <p class="empty">No findings yet.</p>
+    </div>
+  </section>
+  <section class="panel">
     <h2>Live log</h2>
     <div class="log" id="log"></div>
   </section>
@@ -199,6 +208,8 @@
   const $statusText = document.getElementById('status-text');
   const $llmStream = document.getElementById('llm-stream');
   const $llmAutoscroll = document.getElementById('llm-autoscroll');
+  const $findings = document.getElementById('findings');
+  const $findingsCount = document.getElementById('findings-count');
 
   let ws = null;
   let running = false;
@@ -206,6 +217,9 @@
   // Reused across runs so the same label appends to the same block
   // (e.g. a "triage/xss" call appears once even if invoked 5x).
   const llmCalls = new Map();
+  // Live findings, keyed by `${type}|${endpoint}|${param}` for dedup.
+  // Matches the HuntCore's dedup key (see src/hunt/core.ts).
+  const findings = new Map();
 
   function setStatus(text, live) {
     $statusText.textContent = text;
@@ -257,6 +271,85 @@
     return String(s).replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
+  // Block 16: render a v4 HuntEvent from the HuntCore. We map the
+  // 15 event types to the existing UI affordances: findings go to the
+  // Findings panel, primitive calls go to the log, OOB callbacks get a
+  // dim `↳ oob` line, etc. Unknown event types render a generic line
+  // so the UI never silently drops an event.
+  function handleV4Event(ev) {
+    const t = ev.type;
+    if (t === 'finding') {
+      const f = ev.finding;
+      const key = `${f.type}|${f.endpoint}|${f.param || ''}`;
+      const sev = String(f.severity || 'info').toLowerCase();
+      findings.set(key, { finding: f, ts: Date.now() });
+      renderFindings();
+      logLine(`[${f.severity}] ${f.type} @ ${f.endpoint} (conf=${f.confidence})`, 'finding');
+    } else if (t === 'finding-deduped') {
+      const f = ev.finding;
+      const sev = String(f.severity || 'info').toUpperCase();
+      logLine(`↳ deduped [${sev}] ${f.type} @ ${f.endpoint} (kept ${ev.existingId})`, 'plan');
+    } else if (t === 'primitive-call') {
+      const c = ev.call;
+      const elapsed = c.endedAt && c.startedAt ? ` (${c.endedAt - c.startedAt}ms)` : '';
+      logLine(`  primitive: ${c.primitive}${elapsed}`, 'plan');
+    } else if (t === 'llm-token') {
+      appendLLMToken(ev.token.source || 'llm', ev.token.text || '');
+    } else if (t === 'oob-callback') {
+      logLine(`  oob: ${ev.callback.kind} @ ${ev.callback.url}`, 'plan');
+    } else if (t === 'screenshot') {
+      logLine(`  📸 ${ev.screenshot.label || 'screenshot'} (${ev.screenshot.width}×${ev.screenshot.height})`, 'plan');
+    } else if (t === 'agent-spawn') {
+      logLine(`  agent: ${ev.role} (${ev.agentId})${ev.parentAgentId ? ' ← ' + ev.parentAgentId : ''}`, 'plan');
+    } else if (t === 'chat-message') {
+      logLine(`  chat[${ev.message.role}]: ${ev.message.text.slice(0, 80)}`, 'plan');
+    } else if (t === 'phase') {
+      logLine(`  phase: ${ev.phase}`, 'plan');
+    } else if (t === 'budget-update') {
+      // Quiet by default; could be toggled later.
+    } else if (t === 'behavioral-step') {
+      // 15 types of behavioral step; collapse to a single line per.
+      // 200 to keep the log readable.
+    } else if (t === 'log') {
+      logLine(`[${ev.log.level}] ${ev.log.text}`, 'plan');
+    } else if (t === 'diff') {
+      logLine(`diff: +${ev.added.length} findings, -${ev.removed.length}, ~${ev.regressed.length} regressed`, 'chain');
+    } else if (t === 'done') {
+      // The v3 `done` is still emitted by the server (with outputDir).
+      // Don't double-log here.
+    } else if (t === 'agent-action') {
+      // Tool calls inside an agent; surfaces as a log line.
+      logLine(`  ${ev.agentId} → ${ev.tool}`, 'plan');
+    } else {
+      // Unknown event type — surface it so we notice in dev.
+      logLine(`  ? unknown v4 event: ${t}`, 'plan');
+    }
+  }
+
+  function renderFindings() {
+    $findingsCount.textContent = String(findings.size);
+    if (findings.size === 0) {
+      $findings.innerHTML = '<p class="empty">No findings yet.</p>';
+      return;
+    }
+    const sorted = Array.from(findings.values()).sort((a, b) => {
+      const rank = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const sa = String(a.finding.severity || 'info').toLowerCase();
+      const sb = String(b.finding.severity || 'info').toLowerCase();
+      return (rank[sa] ?? 5) - (rank[sb] ?? 5);
+    });
+    $findings.innerHTML = sorted.map(({ finding: f, ts }) => {
+      const sev = String(f.severity || 'info').toLowerCase();
+      const conf = f.confidence !== undefined ? `conf=${typeof f.confidence === 'number' ? f.confidence.toFixed(2) : f.confidence}` : '';
+      const meta = [sev.toUpperCase(), conf, new Date(ts).toISOString().slice(11, 19)].filter(Boolean).join(' · ');
+      return `<div class="finding sev-${sev}">
+        <div class="type">${escape(f.type)}</div>
+        <div>${escape(f.endpoint || '')}${f.param ? ' <span style="color:var(--muted)">(' + escape(f.param) + ')</span>' : ''}</div>
+        <div class="meta">${escape(meta)}</div>
+      </div>`;
+    }).join('');
+  }
+
   function renderTree(events) {
     const composer = events.find((e) => e.technique && !e.specialist);
     if (!composer) {
@@ -281,6 +374,8 @@
     $start.disabled = true;
     $log.innerHTML = '';
     $llmStream.innerHTML = '<p class="empty">No LLM calls yet. Set ULTIMATRIX_LLM_STREAM=1 on the server to see tokens here.</p>';
+    findings.clear();
+    renderFindings();
     llmCalls.clear();
     setStatus('running', true);
     logLine('connecting to /ws …', 'started');
@@ -323,6 +418,9 @@
       }
       else if (ev.type === 'primitive') {
         logLine(`  ${ev.name} → ${ev.outcome || 'ok'}`, 'plan');
+      }
+      else if (ev.type === 'v4-event') {
+        handleV4Event(ev.event);
       }
     };
     ws.onclose = () => {

@@ -94,6 +94,14 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
         huntArgs.onLLMToken = (label, chunk) => {
           emit(ws, { type: 'llm-token', label, chunk });
         };
+        // Block 16: subscribe to the v4 HuntCore and forward every
+        // event as a structured `v4-event` message. The frontend
+        // turns this into a Findings panel + live activity feed.
+        huntArgs.onHuntCore = (core) => {
+          core.on((event) => {
+            emit(ws, { type: 'v4-event', event });
+          });
+        };
         // Forward structured Composer lifecycle events. The UI's existing
         // handlers at lines 228-240 of index.html already know how to
         // render `plan` / `primitive` / `finding` / `chain` events.
