@@ -7,11 +7,16 @@
 //   -t, --target <url>          Target URL (required)
 //   -o, --output <dir>          Output directory (default ./output)
 //   --skip <list>               Comma-separated phases to skip:
-//                                 spider,recon,chains,tests (default none)
+//                                 spider,recon,chains,tests,interactive
+//                                 (default none)
 //   --depth <n>                 Spider depth (default 2)
 //   --max-runtime <seconds>     Hard time limit (default 0 = unlimited)
 //   --seed-url <url>            Extra URL to seed the workflow graph (repeatable)
 //   --existing-model <path>     Skip spider, load this app-model.json
+//   --no-interactive            Skip the terminal REPL/headed-browser
+//                                 session. Hunt runs the orchestrator only.
+//                                 Required by the web UI, CI, and any
+//                                 non-TTY caller.
 //
 // The hunt always runs the LLM attack pipeline. There is no `--mode` flag:
 // the LLM decides what to do. A headed browser is opened automatically so
@@ -21,7 +26,7 @@
 export interface HuntOptions {
   target: string;
   outputDir: string;
-  skip: Set<'spider' | 'recon' | 'chains' | 'tests'>;
+  skip: Set<'spider' | 'recon' | 'chains' | 'tests' | 'interactive'>;
   depth: number;
   maxRuntimeMs: number;
   existingModelPath?: string;
@@ -56,7 +61,7 @@ export interface HuntOptions {
   onHuntCore?: (core: import('../hunt/core').HuntCore) => void;
 }
 
-const VALID_SKIP = new Set(['spider', 'recon', 'chains', 'tests'] as const);
+const VALID_SKIP = new Set(['spider', 'recon', 'chains', 'tests', 'interactive'] as const);
 
 export function parseHuntFlags(args: string[]): HuntOptions {
   const opts: HuntOptions = {
@@ -85,6 +90,7 @@ export function parseHuntFlags(args: string[]): HuntOptions {
     else if (a === '--depth') opts.depth = parseInt(args[++i], 10);
     else if (a === '--max-runtime') opts.maxRuntimeMs = parseInt(args[++i], 10) * 1000;
     else if (a === '--existing-model') opts.existingModelPath = args[++i];
+    else if (a === '--no-interactive') opts.skip.add('interactive');
     else if (a === '--mode') {
       const value = args[++i] ?? '';
       throw new Error(

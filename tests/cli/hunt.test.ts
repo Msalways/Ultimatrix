@@ -45,6 +45,22 @@ describe('parseHuntFlags', () => {
       .toThrow(/--skip/);
   });
 
+  it('accepts --skip interactive (web UI autonomous mode)', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com', '--skip', 'interactive']);
+    expect(opts.skip.has('interactive')).toBe(true);
+  });
+
+  it('accepts --no-interactive as shorthand for --skip interactive', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com', '--no-interactive']);
+    expect(opts.skip.has('interactive')).toBe(true);
+  });
+
+  it('combines --skip tests,interactive (web server default)', () => {
+    const opts = parseHuntFlags(['-t', 'http://x.com', '--skip', 'tests,interactive']);
+    expect(opts.skip.has('tests')).toBe(true);
+    expect(opts.skip.has('interactive')).toBe(true);
+  });
+
   it('accepts --existing-model', () => {
     const opts = parseHuntFlags(['-t', 'http://x.com', '--existing-model', '/tmp/m.json']);
     expect(opts.existingModelPath).toBe('/tmp/m.json');

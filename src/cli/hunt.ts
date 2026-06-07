@@ -285,7 +285,13 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   // Launch the interactive session in parallel. The user drives the
   // browser and types commands; the LLM attacks each URL they visit.
+  // Block 17: `--skip interactive` (or `--no-interactive`) lets the
+  // web UI / CI / non-TTY callers run the orchestrator only.
   const sessionPromise = (async () => {
+    if (opts.skip.has('interactive')) {
+      console.log(`  · Interactive session skipped (--skip interactive). Orchestrator only.`);
+      return;
+    }
     if (!process.stdin.isTTY) {
       // Non-interactive (CI, piped input) — skip the browser session.
       // The orchestrator handles the attacks on its own.

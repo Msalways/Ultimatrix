@@ -85,7 +85,10 @@ export function startWebServer(opts: WebServerOptions = {}): Promise<{ port: num
           '-o', outDir,
           // Skip the test-generation phase — the web UI doesn't need
           // the Playwright specs and skipping speeds up the demo.
-          '--skip', 'tests',
+          // Skip the interactive REPL — the web UI has no terminal
+          // for the user to type into, and the REPL would block
+          // runHunt from returning. The orchestrator runs alone.
+          '--skip', 'tests,interactive',
         ]);
         if (typeof msg.maxRuntimeMs === 'number') {
           huntArgs.maxRuntimeMs = msg.maxRuntimeMs;
