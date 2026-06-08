@@ -108,16 +108,27 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
     await target.close();
   });
 
-  it('LLM httpRequest → real HTTP request → real response → LLM writeFinding → finding emitted', async () => {
-    // The LLM is scripted to:
-    //   1) Send a wrapped httpRequest to /level1?query=<script>alert(1)</script>
-    //   2) Read the response body, see the script tag reflected, and call writeFinding
-    //   3) Triage confirms the finding is real
+  it('LLM spawnAgent → sub-agent httpRequest → real response → sub-agent writeFinding → finding emitted', async () => {
+    // The meta-orchestrator has only MANAGER tools. It must spawnAgent to
+    // delegate HTTP work. The sub-agent gets the execution primitives.
     const llm = new ScriptedLLM([
+      // Meta turn 1: spawn a sub-agent to probe /level1 for reflected XSS
       {
-        // Turn 1: probe with XSS payload (WRAPPED form per the schema)
         text: JSON.stringify({
-          thought: 'Reflected XSS — let\'s probe /level1 with a script tag in query.',
+          thought: 'I need to probe /level1 for reflected XSS. I\'ll spawn a sub-agent with httpRequest, evaluateRendered, and writeFinding.',
+          tool: 'spawnAgent',
+          args: {
+            task: 'Probe /level1?query with an XSS payload and report findings.',
+            tools: ['httpRequest', 'evaluateRendered', 'writeFinding', 'recordEvidence'],
+            maxAttempts: 5,
+            strategy: 'Send <script>alert(1)</script> in query param, check if unescaped in response.',
+          },
+        }),
+      },
+      // Sub-agent turn 1: send the HTTP request (real server hit)
+      {
+        text: JSON.stringify({
+          thought: 'Sending XSS payload in query param.',
           tool: 'httpRequest',
           args: {
             request: {
@@ -129,10 +140,10 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
           },
         }),
       },
+      // Sub-agent turn 2: finding emitted based on the response
       {
-        // Turn 2: confirm the payload appears unescaped, then writeFinding
         text: JSON.stringify({
-          thought: 'Response contains <script>alert(1)</script> unescaped. Confirmed reflected XSS.',
+          thought: 'Response contains <script>alert(1)</script> unescaped — confirmed XSS.',
           tool: 'writeFinding',
           args: {
             type: 'reflected-xss',
@@ -146,9 +157,17 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
           },
         }),
       },
+      // Sub-agent triage (called by emitFinding)
       {
-        // Triage (extra LLM call from emitFinding) — confirms real
         text: JSON.stringify({ real: true, reasoning: 'Payload appears unescaped in response body.' }),
+      },
+      // Meta turn 2: sub-agent found it, done
+      {
+        text: JSON.stringify({
+          thought: 'Sub-agent confirmed reflected XSS on /level1. Finding already recorded. Done.',
+          tool: 'giveUp',
+          args: {},
+        }),
       },
     ]);
 
@@ -169,15 +188,22 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
     expect(target.hits[0].url).toContain('/level1');
     expect(target.hits[0].url).toContain('script');
 
-    // 2) The agent ran 2 turns: httpRequest + writeFinding
+    // 2) The meta-orchestrator spawned a sub-agent, then gave up
     expect(trace.metaTurns.length).toBeGreaterThanOrEqual(2);
-    expect(trace.metaTurns[0].tool).toBe('httpRequest');
+    expect(trace.metaTurns[0].tool).toBe('spawnAgent');
     expect(trace.metaTurns[0].result?.ok).toBe(true);
-    const writeIdx = trace.metaTurns.findIndex((t) => t.tool === 'writeFinding');
-    expect(writeIdx).toBeGreaterThanOrEqual(1);
-    expect(trace.metaTurns[writeIdx]).toBeDefined();
 
-    // 3) A finding was emitted with the right shape
+    // 3) The sub-agent made the HTTP request internally
+    expect(trace.subAgents.length).toBe(1);
+    expect(trace.subAgents[0].turns.length).toBeGreaterThanOrEqual(2);
+    expect(trace.subAgents[0].turns[0].tool).toBe('httpRequest');
+    expect(trace.subAgents[0].turns[0].result?.ok).toBe(true);
+    const subWriteIdx = trace.subAgents[0].turns.findIndex((t) => t.tool === 'writeFinding');
+    expect(subWriteIdx).toBeGreaterThanOrEqual(1);
+    expect(trace.subAgents[0].turns[subWriteIdx]).toBeDefined();
+    expect(trace.subAgents[0].outcome).toBe('vulnerable');
+
+    // 4) A finding was emitted with the right shape (propagated from sub-agent)
     expect(findings).toHaveLength(1);
     expect(findings[0].type).toBe('reflected-xss');
     expect(findings[0].endpoint).toContain('/level1');
@@ -185,13 +211,27 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
     expect(findings[0].confidence).toBeGreaterThanOrEqual(0.7);
   });
 
-  it('LLM chained: httpRequest → parseResponse → writeFinding', async () => {
+  it('LLM spawnAgent → sub-agent httpRequest + parseResponse + writeFinding → finding emitted', async () => {
     target.hits.length = 0;
+    // Meta spawns a sub-agent to handle the full chain; sub-agent does
+    // httpRequest → parseResponse → writeFinding internally.
     const llm = new ScriptedLLM([
-      // Turn 1: send the request
+      // Meta turn 1: delegate to sub-agent
       {
         text: JSON.stringify({
-          thought: 'GET /level1?query=hi',
+          thought: 'Delegating request + parse + finding to a sub-agent.',
+          tool: 'spawnAgent',
+          args: {
+            task: 'Send GET to /level1?query=hi, parse response, and emit a finding if reflected.',
+            tools: ['httpRequest', 'parseResponse', 'writeFinding', 'recordEvidence'],
+            maxAttempts: 5,
+          },
+        }),
+      },
+      // Sub-agent turn 1: httpRequest
+      {
+        text: JSON.stringify({
+          thought: 'Sending request with query=hi.',
           tool: 'httpRequest',
           args: {
             request: {
@@ -203,10 +243,10 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
           },
         }),
       },
-      // Turn 2: parse the response (WRAPPED form per the schema)
+      // Sub-agent turn 2: parseResponse
       {
         text: JSON.stringify({
-          thought: 'Parse the response to look for the reflected value.',
+          thought: 'Parse the response to extract body.',
           tool: 'parseResponse',
           args: {
             response: {
@@ -222,10 +262,10 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
           },
         }),
       },
-      // Turn 3: writeFinding based on the parse
+      // Sub-agent turn 3: writeFinding
       {
         text: JSON.stringify({
-          thought: 'The response reflected "hi" — confirmed reflected XSS surface.',
+          thought: 'Response reflected "hi" — confirmed XSS surface.',
           tool: 'writeFinding',
           args: {
             type: 'reflected-xss',
@@ -239,9 +279,17 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
           },
         }),
       },
+      // Sub-agent triage
       {
-        // Triage confirms real
         text: JSON.stringify({ real: true, reasoning: 'Reflected user input.' }),
+      },
+      // Meta turn 2: done
+      {
+        text: JSON.stringify({
+          thought: 'Sub-agent found reflected XSS. Done.',
+          tool: 'giveUp',
+          args: {},
+        }),
       },
     ]);
 
@@ -256,15 +304,22 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
       maxMetaTurns: 5,
     });
 
-    expect(trace.metaTurns.length).toBeGreaterThanOrEqual(3);
-    expect(trace.metaTurns[0].tool).toBe('httpRequest');
+    // Meta spawned a sub-agent
+    expect(trace.metaTurns[0].tool).toBe('spawnAgent');
     expect(trace.metaTurns[0].result?.ok).toBe(true);
-    const parseIdx = trace.metaTurns.findIndex((t) => t.tool === 'parseResponse');
-    expect(parseIdx).toBe(1);
-    expect(trace.metaTurns[parseIdx].result?.ok).toBe(true);
-    const writeIdx = trace.metaTurns.findIndex((t) => t.tool === 'writeFinding');
-    expect(writeIdx).toBe(2);
-    expect(trace.metaTurns[writeIdx]).toBeDefined();
+
+    // Sub-agent executed httpRequest → parseResponse → writeFinding
+    expect(trace.subAgents.length).toBe(1);
+    expect(trace.subAgents[0].turns.length).toBeGreaterThanOrEqual(3);
+    expect(trace.subAgents[0].turns[0].tool).toBe('httpRequest');
+    expect(trace.subAgents[0].turns[0].result?.ok).toBe(true);
+    const spParseIdx = trace.subAgents[0].turns.findIndex((t) => t.tool === 'parseResponse');
+    expect(spParseIdx).toBeGreaterThanOrEqual(1);
+    expect(trace.subAgents[0].turns[spParseIdx].result?.ok).toBe(true);
+    const spWriteIdx = trace.subAgents[0].turns.findIndex((t) => t.tool === 'writeFinding');
+    expect(spWriteIdx).toBeGreaterThan(spParseIdx);
+
+    // Finding propagated upward
     expect(findings).toHaveLength(1);
     expect(findings[0].type).toBe('reflected-xss');
   });
