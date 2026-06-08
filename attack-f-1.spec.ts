@@ -10,7 +10,8 @@ test.describe('Finding f-1 — xss @ /search', () => {
     expect(['critical', 'high', 'medium', 'low']).toContain(finding.severity);
     expect(finding.confidence).toBeTruthy();
 
-    const res = await request.get("/search");
+    const url = "/search".split('?')[0] + '?' + "q" + '=' + encodeURIComponent("<script>");
+    const res = await request.get(url);
     expect(res.status()).toBeLessThan(500);
   });
 });

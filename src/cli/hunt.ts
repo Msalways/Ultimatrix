@@ -44,6 +44,7 @@ import { HuntPrompt, SLASH_HELP } from './prompt';
 // top-level REPL. The SLASH_HELP is used by handleSlash.
 import { InteractiveHuntSession } from './interactive-session';
 import { SpiderCrawler, type CrawlResult } from '../explorer/spider';
+import { spiderResultToAppModel } from '../explorer/spider-bridge';
 import { AutonomousV3Orchestrator, defaultNodeStrategy, type NodeStrategy, type NodeStrategyResolution, type WorkerSpawnInput, type WorkerSpawnResult } from '../pipeline/autonomous-v3';
 import { WorkflowStateGraph, type WorkflowStateNode } from '../core/workflow-state';
 import { SessionPool, getDefaultSessionPool } from '../core/session-pool';
@@ -52,6 +53,7 @@ import type { Hypothesis, Technique } from '../core/attack-plan';
 import type { AppModelEndpoint } from '../core/app-model';
 import type { PrimitiveContext } from '../primitives/types';
 import { LiveTestWriter } from '../codegen/live-writer';
+import { finalizeLiveSpec } from '../codegen/finalize';
 import { HuntCore } from '../hunt/core';
 import { wireHuntCore } from './hunt-core-wiring';
 
@@ -164,6 +166,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
       const before = new Set((existing.endpoints || []).map((e: any) => e.path || e.url));
       model = buildAppModelFromCrawl(crawlResult, opts.target);
+      await enrichModelEndpoints(model, crawlResult);
       await writeAppModelAsync(modelPath, model);
       hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
       // Block 19: emit a diff so the user can see what changed.
@@ -183,6 +186,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     const spider = new SpiderCrawler(mgr, 'default');
     const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
     model = buildAppModelFromCrawl(crawlResult, opts.target);
+    await enrichModelEndpoints(model, crawlResult);
     await writeAppModelAsync(modelPath, model);
     hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
   }
@@ -270,6 +274,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   // Shared finding callback — writes to app-model.json, prints to
   // the terminal so the user sees findings as they appear, and routes
   // through the HuntCore so dedup + v4 events fire from one place.
+  //
   const onOrchFinding = (finding: AppModelFinding) => {
     v3Findings.push(finding);
     updateAppModelSection(modelPath, 'findings', [finding], true);
@@ -469,8 +474,12 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     huntCore.stop(orchStillRunning ? 'time-budget' : 'user-quit');
   } catch { /* best effort */ }
 
-  model = readAppModel(modelPath);
-  const findingsAfter = model.findings.length - findingsBefore;
+  // Bug 6: merge v3Findings back into the stale in-memory model.
+  // `model` was loaded at hunt start; `updateAppModelSection` in
+  // onOrchFinding writes to file and returns a NEW in-memory copy
+  // that was never captured. v3Findings always has the freshest data.
+  model.findings = v3Findings;
+  const findingsAfter = v3Findings.length;
   hlog('info', `  ↳ ${findingsAfter} new findings (${model.findings.length} total)`);
 
   // 4. Chain engine (if not skipped)
@@ -518,7 +527,18 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
         hlog('info', `  · live-spec synthesis: wrote ${synthResult.outPath} (validated=${synthResult.validated})`);
       }
     } catch (e) {
-      hlog('info', `  · live-spec synthesis failed: ${(e as Error).message}`);
+      hlog('info', `  · live-spec synthesis: ${(e as Error).message}`);
+    }
+  }
+
+  // 5c. Finalise the live spec into a dedicated runnable Playwright file.
+  const liveSpecPath = path.join(opts.outputDir, 'live.spec.ts');
+  if (fs.existsSync(liveSpecPath) && !opts.skip.has('tests')) {
+    try {
+      const finalised = finalizeLiveSpec({ liveSpecPath, outDir: opts.outputDir });
+      hlog('info', `  · finalised Playwright test: ${finalised}`);
+    } catch (e) {
+      hlog('info', `  · finalised Playwright test skipped: ${(e as Error).message}`);
     }
   }
 
@@ -538,30 +558,89 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
   hlogWiring = null;
 }
 
+/**
+ * Phase 2D: enrich model endpoints with discovered params from multiple
+ * sources (URL query strings, DOM form fields, trace request bodies,
+ * response JSON bodies). The registry is loaded once per run and reused
+ * across all endpoints. Each discoverer is stateless and independently
+ * testable.
+ */
+async function enrichModelEndpoints(
+  model: AppModel,
+  crawl: CrawlResult,
+): Promise<void> {
+  const { ParamRegistry } = await import('../discover/registry');
+  const { DEFAULT_DISCOVERERS } = await import('../discover/defaults');
+  const registry = new ParamRegistry();
+  for (const d of DEFAULT_DISCOVERERS) registry.register(d);
+
+  for (const ep of model.endpoints) {
+    const matchedTrace = (crawl.trace || []).filter((t) => {
+      try {
+        return new URL(t.url).pathname === ep.path;
+      } catch {
+        return false;
+      }
+    });
+    const matchedSnapshot = (crawl.snapshots || []).find((s) => {
+      try {
+        return new URL(s.url).pathname === ep.path;
+      } catch {
+        return false;
+      }
+    });
+    const responseBody = matchedTrace.find((t) => t.responseBody)?.responseBody;
+
+    const ctx = {
+      url: ep.path,
+      method: ep.method,
+      bodyPreview: ep.bodyPreview ?? '',
+      contentType: ep.contentType ?? '',
+      trace: matchedTrace,
+      responseBody,
+      domSnapshot: matchedSnapshot,
+    };
+
+    const discovered = await registry.discover(ctx, { maxCost: 'cheap' });
+    for (const p of discovered) {
+      if (!ep.params.some((existing) => existing.name === p.name)) {
+        ep.params.push({
+          name: p.name,
+          type: p.type,
+          required: p.required ?? false,
+        });
+      }
+    }
+  }
+}
+
 function buildAppModelFromCrawl(crawl: CrawlResult, target: string): AppModel {
   const model: AppModel = JSON.parse(JSON.stringify(DEFAULT_MODEL));
   model.target = target;
   model.visitedUrls = crawl.visitedUrls;
-  // Copy the spider's auto-recording into recordedSessions['spider-auto']
-  // so the user-flow Playwright generator can replay it.
+
+  // Phase 1A: use spider-bridge for rich endpoint extraction (params from
+  // trace request bodies, form fields, URL query strings) instead of the
+  // old loop that created endpoints with method='GET' and params=[].
+  const bridge = spiderResultToAppModel(crawl, target);
+
+  // Merge bridge fields into the model. The bridge returns a full partial
+  // AppModel with endpoints, auth, cookies, forms, hypotheses, etc.
+  if (bridge.model.endpoints) model.endpoints = bridge.model.endpoints;
+  if (bridge.model.techStack) model.techStack = bridge.model.techStack;
+  if (bridge.model.cookies) model.cookies = bridge.model.cookies;
+  if (bridge.model.localStorage) model.localStorage = bridge.model.localStorage;
+  if (bridge.model.auth) model.auth = bridge.model.auth;
+  if (bridge.model.hypotheses) model.hypotheses = bridge.model.hypotheses;
+
+  // Copy recording into recordedSessions for Playwright replay
   if (crawl.recording && crawl.recording.length > 0) {
     model.recordedSessions = {
       ...(model.recordedSessions || {}),
       'spider-auto': crawl.recording,
     };
   }
-  // Map routes → endpoints
-  for (const route of crawl.routes) {
-    model.endpoints.push({
-      path: route.url,
-      method: 'GET',
-      responseStatus: 200,
-      contentType: route.contentType ?? 'text/html',
-      requiresAuth: false,
-      bodyPreview: route.bodyPreview ?? '',
-      params: [],
-    });
-  }
+
   return model;
 }
 

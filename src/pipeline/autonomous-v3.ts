@@ -120,7 +120,7 @@ export interface OnBeforeNodeHandler {
  * function. Production should always pass an explicit resolver.
  */
 export interface NodeStrategy {
-  resolve(node: WorkflowStateNode, appModel: AppModel, signal: { llmDriven: boolean }): Promise<NodeStrategyResolution | null>;
+  resolve(node: WorkflowStateNode, appModel: AppModel): Promise<NodeStrategyResolution | null>;
 }
 
 export interface NodeStrategyResolution {
@@ -265,13 +265,12 @@ export class AutonomousV3Orchestrator {
   }
 
   private async resolveSpec(node: WorkflowStateNode): Promise<NodeSpec | null> {
-    const sig = { llmDriven: false };
     const cached = this.resolvedStrategies.get(node.id);
     if (cached) return specFromResolution(node, cached, this.appModel ?? undefined);
-    const resolution = await this.strategy.resolve(node, this.appModel ?? ({} as AppModel), sig);
+    const resolution = await this.strategy.resolve(node, this.appModel ?? ({} as AppModel));
     if (!resolution) return null;
     this.resolvedStrategies.set(node.id, resolution);
-    this.log(`[orch] resolved ${node.id} → ${resolution.technique} (timeout=${resolution.timeoutMs}ms, severity=${resolution.expectedSeverity}, llmDriven=${sig.llmDriven})`);
+    this.log(`[orch] resolved ${node.id} → ${resolution.technique} (timeout=${resolution.timeoutMs}ms, severity=${resolution.expectedSeverity})`);
     return specFromResolution(node, resolution, this.appModel ?? undefined);
   }
 
@@ -365,7 +364,6 @@ export class AutonomousV3Orchestrator {
     let abortedByUser = false;
     const inFlight: Map<string, Promise<void>> = new Map();
     const processedIds = new Set<string>();
-    const signal = { llmDriven: false };
 
     const scheduleOne = (): boolean => {
       if (this.shouldAbort?.()) return false;
@@ -513,10 +511,23 @@ export class AutonomousV3Orchestrator {
     findings: AppModelFinding[],
   ): void {
     if (result.vulnerable && result.confidence >= 0.5) {
+      // Bug 2: the persisted AppModelFinding was missing `method` and
+      // `payload`. Codegen (finding-test-generator.ts) uses these to
+      // build a Playwright regression test that reproduces the vuln
+      // — without them the generated test just hits the bare URL and
+      // asserts status < 500, which doesn't actually prove the vuln
+      // (e.g. it wouldn't reproduce the XSS at /?query=<script>...).
+      // Pull the HTTP method from the resolved spec, and the first
+      // payload that actually worked from the worker's result.
+      const firstPayload = Array.isArray(result.payloads) && result.payloads.length > 0
+        ? result.payloads[0]
+        : '';
       const finding: AppModelFinding = {
         type: `${spec.technique}-v3`,
         endpoint: spec.url,
         param: spec.param ?? '',
+        method: spec.method,
+        payload: firstPayload,
         evidence: result.evidence,
         confidence: result.confidence >= 0.8 ? 'high' : result.confidence >= 0.5 ? 'medium' : 'low',
         confirmed: result.confidence >= 0.7,
@@ -592,16 +603,16 @@ function makeHypothesisForNode(spec: NodeSpec): Hypothesis {
  * without a custom strategy. In production, callers should always
  * inject a NodeStrategy that fits their target class.
  */
+const NODE_TIMEOUT_MS = 120_000;
+
 export const defaultNodeStrategy: NodeStrategy = {
-  async resolve(node, appModel, signal) {
+  async resolve(node, appModel) {
     if (node.type === 'modal' || node.type === 'redirect') return null;
     const endpoints = (appModel?.endpoints || []) as any[];
     const matchingEp = endpoints.find((e) => {
       if (!e?.path) return false;
       return node.url.endsWith(e.path) || e.path.endsWith(node.url.split('?')[0]);
     });
-    if (matchingEp && signal) signal.llmDriven = true;
-    const timeoutMs = heuristicTimeoutForNode(node, matchingEp);
     const expectedSeverity = heuristicSeverityForNode(node);
     let technique: Technique = 'xss';
     if (matchingEp) {
@@ -615,20 +626,11 @@ export const defaultNodeStrategy: NodeStrategy = {
       technique,
       method: node.type === 'api' ? 'POST' : 'GET',
       param: matchingEp?.params?.[0]?.name,
-      timeoutMs,
+      timeoutMs: NODE_TIMEOUT_MS,
       expectedSeverity,
     };
   },
 };
-
-function heuristicTimeoutForNode(node: WorkflowStateNode, ep: any): number {
-  let ms = 30_000;
-  if (node.type === 'api' || ep) ms = 120_000;
-  if (node.authRequired) ms = Math.max(ms, 60_000);
-  if (node.type === 'gated') ms = 180_000;
-  if (ep && Array.isArray(ep.params) && ep.params.length > 3) ms = Math.max(ms, 90_000);
-  return ms;
-}
 
 function heuristicSeverityForNode(node: WorkflowStateNode): AppModelFinding['severity'] {
   if (node.type === 'gated' || node.authRequired) return 'high';

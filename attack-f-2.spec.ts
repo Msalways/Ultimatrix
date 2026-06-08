@@ -10,7 +10,7 @@ test.describe('Finding f-2 — sqli @ /api/users', () => {
     expect(['critical', 'high', 'medium', 'low']).toContain(finding.severity);
     expect(finding.confidence).toBeTruthy();
 
-    const res = await request.post("/api/users", { data: { "id": "' OR 1=1--" } });
+    await request.post("/api/users", { data: { "id": "' OR 1=1--" } });
     expect(res.status()).toBeLessThan(500);
   });
 });

@@ -74,11 +74,14 @@ function extractAuthHeaders(reqHeaders: Record<string, string>): Record<string, 
 }
 
 function mineTraceForEndpoints(trace: TraceEntry[]): AppModelEndpoint[] {
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const endpoints: AppModelEndpoint[] = [];
 
   for (const entry of trace) {
-    if (entry.type !== 'xhr' && entry.type !== 'fetch') continue;
+    // Include navigation entries — iframe form submissions and page
+    // navigations carry query params in the URL that XSS/SSRF primitives
+    // need to target. Entries without params/body are filtered later.
+    if (entry.type !== 'xhr' && entry.type !== 'fetch' && entry.type !== 'navigation' && entry.type !== 'form') continue;
 
     let url: URL;
     try {
@@ -109,8 +112,29 @@ function mineTraceForEndpoints(trace: TraceEntry[]): AppModelEndpoint[] {
     }
 
     const uniqueKey = `${entry.method}:${pathname}`;
-    if (seen.has(uniqueKey)) continue;
-    seen.add(uniqueKey);
+
+    // Phase 1B: merge params from subsequent trace entries into existing
+    // endpoint instead of dropping them. A form submission POST may carry
+    // different fields than an earlier XHR POST to the same endpoint.
+    const existingIdx = seen.get(uniqueKey);
+    if (existingIdx !== undefined) {
+      const existing = endpoints[existingIdx];
+      for (const p of params) {
+        if (!existing.params.some(ep => ep.name === p.name)) {
+          existing.params.push(p);
+        }
+      }
+      // Also merge body fields from the later entry if the format is consistent
+      if (entry.requestBody && existing.bodyPreview !== entry.requestBody) {
+        const bodyLen = existing.bodyPreview?.length ?? 0;
+        const newLen = entry.requestBody.length;
+        // Keep the longer body preview (more complete request)
+        if (newLen > bodyLen) existing.bodyPreview = entry.requestBody;
+      }
+      continue;
+    }
+
+    seen.set(uniqueKey, endpoints.length);
 
     // Detect auth from request headers or response status
     const authHeaders = extractAuthHeaders(entry.requestHeaders);
@@ -355,7 +379,24 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
   const allEndpoints: AppModelEndpoint[] = [];
   for (const ep of [...minedEndpoints, ...formEndpoints]) {
     const key = `${ep.method}:${ep.path}`;
-    if (endpointSeen.has(key)) continue;
+    // Bug 5: when the same (method, path) appears in both the trace-mined
+    // list (params=[]) and the form-derived list (params=[{name: 'query'}]),
+    // the trace entry wins on the first pass and the form params are
+    // dropped. This is why an XSS like xss-game (form `name="query"` on
+    // `/level1/frame`) ends up with `params: []` and the codegen can't
+    // reproduce the vuln. Merge form params INTO the existing endpoint
+    // when we see a later entry for the same key.
+    if (endpointSeen.has(key)) {
+      const existing = allEndpoints.find((e) => `${e.method}:${e.path}` === key);
+      if (existing) {
+        for (const p of ep.params) {
+          if (!existing.params.some((ep) => ep.name === p.name)) {
+            existing.params.push(p);
+          }
+        }
+      }
+      continue;
+    }
     // Skip trace-only endpoints with no params and no body — likely resource fetches
     if (ep.params.length === 0 && !ep.bodyFields?.length
         && !formActionPaths.has(key) && !routePaths.has(ep.path)) {
