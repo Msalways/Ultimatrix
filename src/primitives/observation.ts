@@ -124,7 +124,7 @@ export const evaluateRendered: PrimitiveDefinition<
   description: 'Open a URL in a Playwright browser, inject the payload into the query, and check if it appears in the rendered DOM. The "real" XSS check — not the response body.',
   requiresBrowser: true,
   deterministic: true,
-  async execute(args, _ctx): Promise<PrimitiveResult<{ rendered: boolean; matchType: string; body: string }>> {
+  async execute(args, ctx): Promise<PrimitiveResult<{ rendered: boolean; matchType: string; body: string }>> {
     const start = Date.now();
     try {
       // Dynamic import to avoid loading Playwright when not needed
@@ -132,9 +132,20 @@ export const evaluateRendered: PrimitiveDefinition<
       const mgr = getSharedBrowserManager(true);
       const page = await mgr.getOrCreate('evaluator');
 
-      // Split URL and inject payload
+      // Split URL and inject payload into the query parameter.
+      // If the URL already has a query param, use its name.
+      // If no param exists, try injecting into common XSS-relevant param
+      // names first ('query', 'q', 'search', 'input', 'name', 'id', 's'),
+      // falling back to 'q' as last resort. xss-game uses 'query', OWASP
+      // juice shop uses 'q', etc. — we try them all in order.
       const u = new URL(args.url);
-      u.searchParams.set(u.searchParams.keys().next().value ?? 'q', args.payload);
+      const existingParam = u.searchParams.keys().next().value;
+      if (existingParam) {
+        u.searchParams.set(existingParam, args.payload);
+      } else {
+        const COMMON_PARAMS = ['query', 'q', 'search', 'input', 'name', 'id', 's', 'text', 'keyword', 'term'];
+        u.searchParams.set(COMMON_PARAMS[0], args.payload);
+      }
 
       await page.goto(u.toString(), { waitUntil: 'load' });
       const dom = await page.evaluate<string>('document.documentElement.outerHTML');
@@ -152,6 +163,19 @@ export const evaluateRendered: PrimitiveDefinition<
       else if (unescaped) matchType = 'unescaped';
       else if (exact) matchType = 'exact';
 
+      // Auto-record evidence when reflection is detected. This ensures
+      // the triage LLM sees actual DOM content (not just the agent's
+      // self-reported claim) when writeFinding is called later.
+      if (matchType !== 'none' && ctx) {
+        ctx.evidenceLog.push({
+          type: 'text',
+          data: `matchType=${matchType}\nurl=${u.toString()}\npayload=${args.payload}\nbody_snippet=${dom.slice(0, 500)}`,
+          label: `evaluateRendered/${matchType}`,
+          timestamp: Date.now(),
+          session: ctx.sessionRole,
+        });
+      }
+
       return {
         ok: true,
         value: { rendered: exact, matchType, body: dom },
@@ -164,6 +188,23 @@ export const evaluateRendered: PrimitiveDefinition<
         durationMs: Date.now() - start,
       };
     }
+  },
+  toPlaywrightStep(args, result) {
+    const a = args as { url?: string; payload?: string; matchMode?: string };
+    if (!result.ok || !a.url) return null;
+    const v = result.value as { matchType?: string } | undefined;
+    if (!v || v.matchType === 'none') {
+      return {
+        action: `await page.goto('${a.url}', { waitUntil: 'load' })`,
+        assertion: `await expect(page.locator('body')).not.toContainText('${(a.payload || '').replace(/'/g, "\\'")}')`,
+        description: `Verify payload NOT reflected at ${new URL(a.url).pathname}`,
+      };
+    }
+    return {
+      action: `await page.goto('${a.url}', { waitUntil: 'load' })`,
+      assertion: `await expect(page.locator('body')).toContainText('${(a.payload || '').replace(/'/g, "\\'")}')`,
+      description: `Verify XSS: payload ${v.matchType} in DOM at ${new URL(a.url).pathname}`,
+    };
   },
 };
 

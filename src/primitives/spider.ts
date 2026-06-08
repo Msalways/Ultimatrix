@@ -152,4 +152,14 @@ export const spiderCrawl: PrimitiveDefinition<SpiderCrawlArgs, SpiderCrawlPrimit
       };
     }
   },
+  toPlaywrightStep(args, result) {
+    if (!result.ok) return null;
+    const r = result.value as SpiderCrawlPrimitiveResult | undefined;
+    if (!r || !r.routes || r.routes.length === 0) return null;
+    const firstRoute = r.routes[0];
+    return {
+      action: `await page.goto('${firstRoute.path.startsWith('http') ? firstRoute.path : (args as any).targetUrl ?? ''}${firstRoute.path}', { waitUntil: 'load' })`,
+      description: `Spider discovered ${r.routes.length} routes (${r.visitedUrls?.length ?? 0} URLs visited)`,
+    };
+  },
 };

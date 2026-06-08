@@ -134,6 +134,12 @@ export type PrimitiveResult<T = unknown> = {
   };
 };
 
+export interface PlaywrightStepMeta {
+  action: string;
+  assertion?: string;
+  description: string;
+}
+
 export interface PrimitiveDefinition<TArgs = unknown, TReturn = unknown> {
   name: PrimitiveName;
   description: string;
@@ -142,4 +148,10 @@ export interface PrimitiveDefinition<TArgs = unknown, TReturn = unknown> {
   /** Whether the primitive is deterministic (no LLM needed) */
   deterministic: boolean;
   execute: (args: TArgs, ctx: PrimitiveContext) => Promise<PrimitiveResult<TReturn>> | PrimitiveResult<TReturn>;
+  /**
+   * Optional: generates a Playwright test step from this primitive's args/result.
+   * Used by the recording plugin to auto-generate living documentation.
+   * Return null if this primitive call doesn't map to a meaningful step.
+   */
+  toPlaywrightStep?: (args: unknown, result: PrimitiveResult) => PlaywrightStepMeta | null;
 }

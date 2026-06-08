@@ -65,9 +65,13 @@ export {
   type SpecialistToolkit,
 } from './agents/specialists';
 
-// v1 primitive catalog + composer
+// Plugin registry + built-in primitives
+export { getGlobalRegistry, resetGlobalRegistry } from './plugins/registry';
+export { registerBuiltins } from './plugins/builtin';
+export type { Plugin, PluginHooks } from './plugins/types';
+
+// Primitives
 export {
-  PRIMITIVE_CATALOG,
   PRIMITIVE_LIST,
   getPrimitive,
   listBrowserPrimitives,
