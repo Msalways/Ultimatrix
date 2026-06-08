@@ -1,6 +1,6 @@
 # Ultimatrix
 
-**An AI security researcher in your terminal.** An LLM-driven agent composes attack plans from a 23-primitive catalog, executes them via a single HuntCore event stream, and drives four front-ends (TUI, headless CI, chat, HTML report) from the same continuous loop.
+**An AI security researcher in your terminal.** An LLM-driven agent composes attack plans from a plugin-based primitive catalog, executes them via a single HuntCore event stream, and drives four front-ends (TUI, headless CI, chat, HTML report) from the same continuous loop.
 
 Real attacks, not theoretical. Real chains across 10 vulnerability classes. No mocks.
 
@@ -8,7 +8,7 @@ Real attacks, not theoretical. Real chains across 10 vulnerability classes. No m
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![1132 Tests](https://img.shields.io/badge/Tests-1132%20passing-success.svg)](#testing)
+[![1168 Tests](https://img.shields.io/badge/Tests-1168%20passing-success.svg)](#testing)
 [![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
 
 ---
@@ -36,88 +36,6 @@ A hunt is one continuous event stream (HuntCore). Four front-ends render it diff
 
 ---
 
-## Quick start
-
-### One-command demo (90s)
-
-```bash
-npx ultimatrix demo
-```
-
-Runs a canned xss-game hunt with a representative finding, writes a plain report, exits. No target needed.
-
-### Real hunt
-
-```bash
-npm install
-export GROQ_API_KEY=gsk_...   # or OPENAI_API_KEY, ANTHROPIC_API_KEY, NVIDIA_API_KEY, etc.
-npx ultimatrix hunt -t https://your-app.com --auto
-```
-
-### Web UI
-
-```bash
-npx ultimatrix web    # → http://localhost:3000
-```
-
-The UI shows a live agent tree, streaming event log, and target form. Click **Start hunt** and watch the LLM propose plans, execute primitives, and find real bugs.
-
-### CI / SARIF
-
-```bash
-npx ultimatrix hunt -t https://your-app.com --auto --max-runtime 300 --format sarif --output ./report.sarif --fail-on high
-```
-
-Exit code is 0 if no findings, 1 if any finding is at or above `--fail-on`, 2 if a critical finding is found, 3 on internal error.
-
-### TUI
-
-```bash
-npx ultimatrix hunt -t https://your-app.com   # TUI is the default
-```
-
-4-pane Ink interface: status / activity / findings / chat. Tab pauses; Enter submits chat.
-
-### Doctor
-
-```bash
-npx ultimatrix doctor
-```
-
-7-check environment report. Network failures are warnings, not blockers.
-
-### Codegen (turn live test into regression)
-
-```bash
-# after a hunt that wrote output/live.spec.ts:
-npx ultimatrix codegen --live output/live.spec.ts --out-dir ./regression
-# → regression/live.finalised.spec.ts + README.md
-# → npx playwright test regression/live.finalised.spec.ts
-```
-
----
-
-## Commands
-
-```
-ultimatrix hunt        -t <url>        canonical hunt (spider → recon → attack → tests)
-ultimatrix hunt        -t <url> --auto autonomous (no prompts)
-ultimatrix hunt        -t <url> --guided step-by-step (default)
-ultimatrix demo        --max-runtime 90 canned xss-game screencast
-ultimatrix doctor                       environment check
-ultimatrix codegen     --live <path>   finalise live.spec.ts as a Playwright test
-ultimatrix web         -p 3000         local web UI
-ultimatrix setup                       configure LLM providers (interactive)
-ultimatrix tools                        list 23 primitives + 9 specialists + 5 OOB categories
-ultimatrix mcp serve                    expose the hunt pipeline over MCP (stdio) for other AI tools
-```
-
-Deprecated v1 commands (still callable for backward compat, hidden from --help): `assess`, `interact`, `test`, `verify`. Use `hunt` instead.
-
-All flags: `ultimatrix <subcommand> --help`.
-
----
-
 ## Architecture
 
 ### v4 "Menace" — one core, four front-ends
@@ -139,13 +57,13 @@ All flags: `ultimatrix <subcommand> --help`.
 
 The HuntCore is the system of record. Each front-end is a pure projection of the same event stream. The agent loop, the recorder, the OOB server, the multi-session pool, the specialists — all talk to HuntCore, not to each other.
 
-### 23 primitives (the floor)
+### Plugin architecture + 23 primitives
 
-These are the only hardcoded things. The LLM picks which ones to call and in what order; the LLM names findings, severities, strategies, and tool subsets.
+Primitives are **plugins**, not hardcoded switch cases. The `PrimitivePluginRegistry` singleton manages lifecycle hooks (`beforePrimitive`, `afterPrimitive`) and auto-recording via `toPlaywrightStep` metadata. Built-in primitives register themselves on startup; future MCP plugins can add primitives from any language.
 
-`httpRequest` · `multipartUpload` · `followRedirects` · `craftPayload` · `craftBypass` · `craftXmlEntity` · `craftMultipart` · `injectInContext` · `omitHeader` · `parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse` · `extractSessionCookie` · `extractCsrfToken` · `useSession` · `spawnSubtask` · `recordEvidence` · `writeFinding`
+`httpRequest` · `multipartUpload` · `followRedirects` · `craftPayload` · `craftBypass` · `craftXmlEntity` · `craftMultipart` · `injectInContext` · `omitHeader` · `parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse` · `extractSessionCookie` · `extractCsrfToken` · `useSession` · `spawnSubtask` · `recordEvidence` · `writeFinding` · `spiderCrawl` · `recordTestStep`
 
-Plus 2 orchestration tools visible to the meta-orchestrator LLM: `spawnAgent` and `writeFinding`.
+The **meta-orchestrator** has only 7 `MANAGER_PRIMITIVES` + `spawnAgent`. HTTP, crafting, and injection work must be delegated to sub-agents — forcing natural decomposition.
 
 ### 9 specialists (v2, pluggable factories)
 
@@ -158,6 +76,35 @@ Each is a factory with `shouldInclude(plan)` and `build(plan, ctx)`. Specialists
 `SSRF` · `blind XSS` · `blind SQLi` · `XXE` · `deserialization`
 
 Each template contains `{host}` and `{uuid}` placeholders, so `withOobCallback(uuid, mutate, send)` can substitute the local OAST server's URL.
+
+---
+
+## Why not just use a fuzzer / scanner?
+
+Because the bug surface is the **chain**. A scanner finds 5 things. A human finds 5 things, sees that the SSRF + the JWT + the parameter-pollution bug combine to a critical. An LLM-driven agent does the same, in the time a human takes, with reproducible evidence and a regression test.
+
+Concretely: a hunt writes `output/live.spec.ts` (always valid) during the run, then auto-finalises it to `output/live.finalised.spec.ts` at the end. A recording plugin hooks every primitive call that declares `toPlaywrightStep` metadata — so the spec captures navigations, injections, and verifications without the LLM remembering. Run it with `npx playwright test output/live.finalised.spec.ts`. When the bug gets fixed, the test fails. When it regresses, the test fails. That's free CI.
+
+---
+
+## Quick start
+
+```bash
+# Install
+npm install
+npx playwright install chromium
+
+# Set an LLM API key
+export GROQ_API_KEY=gsk_...
+
+# Hunt a target
+npx ultimatrix hunt -t https://your-app.com --auto
+
+# Or run the canned demo (90s, no target needed)
+npm run demo
+```
+
+See [USAGE.md](USAGE.md) for the full command reference, configuration, interactive REPL, web UI, CI integration, and extension guide.
 
 ---
 
@@ -199,7 +146,7 @@ hunt:
   maxRuntimeSeconds: 1800
   spiderDepth: 2
   skip:
-    - spider       # if you already have output/app-model.json
+    - spider
 ```
 
 ### Env vars
@@ -207,18 +154,16 @@ hunt:
 | Var | Effect |
 |---|---|
 | `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call sites, tokens, duration |
-| `ULTIMATRIX_LLM_STREAM=1` | Stream tokens to the TUI / web |
+| `ULTIMATRIX_LLM_STREAM=1` | Stream tokens to TUI / web |
 | `HUNT_DEBUG=1` | Verbose hunt logging |
-| `WEB_E2E=1` | Run web UI E2E tests |
-| `CRAPI_URL=...` `CRAPI_CREDS='{...}'` | Opt-in CrAPI smoke |
-| `PORT` `HOST` | Web UI bind (default 3000 / 0.0.0.0) |
+| `PORT` / `HOST` | Web UI bind (default 3000 / 0.0.0.0) |
 
 ---
 
 ## Testing
 
 ```bash
-npx vitest run          # 1132 tests, 8 skipped (4 CrAPI opt-in + 4 v4 pipeline opt-in)
+npx vitest run          # 1168 tests, 8 skipped
 npx tsc --noEmit        # 0 type errors
 npx tsup                # clean build (ESM + CJS + .d.ts)
 ```
@@ -233,22 +178,11 @@ npx tsup                # clean build (ESM + CJS + .d.ts)
 - **Report** — diff fingerprint, HTML self-containment, ZIP store-mode
 - **CLI** — `runDoctor`, `runDemo`, `finalizeLiveSpec`
 
-Test count progression: 505 → 540 → 543 → 553 → 573 → 587 → 601 → 637 → 657 → 703 → 728 → 766 → 782 → 807 → 838 → 855 → 881 → 900 → 915 → 924 → 972 → 1023 → 1043 → 1091 → **1132**.
-
----
-
-## Why not just use a fuzzer / scanner?
-
-Because the bug surface is the **chain**. A scanner finds 5 things. A human finds 5 things, sees that the SSRF + the JWT + the parameter-pollution bug combine to a critical. An LLM-driven agent does the same, in the time a human takes, with reproducible evidence and a regression test.
-
-Concretely: a hunt emits an `expect()` assertion in `output/live.spec.ts` for every confirmed finding. After the hunt, `ultimatrix codegen` finalises that spec, and `npx playwright test` runs it. When the bug gets fixed, the test fails. When it regresses, the test fails. That's free CI.
-
 ---
 
 ## Roadmap
 
-- **v4 "Menace"** — Blocks 0-7 done. HuntCore + 4 front-ends + 21 primitives + 9 specialists + 5 OOB + SARIF + HTML + doctor + demo + codegen.
-- **v4.1 (Block 8)** — E2E smoke against xss-game, crapi, VAmPI; README rewrite; 90s screencast.
+- **v4 "Menace"** — Blocks 0-21 shipped. HuntCore + 4 front-ends + plugin-based primitives + 9 specialists + 5 OOB + SARIF + HTML + doctor + demo + auto-codegen. Plugin registry replaces hardcoded PRIMITIVE_CATALOG; delegation-first meta-orchestrator.
 - **v5** — Triage that surfaces *why* a finding is a finding (not just that it is); browser-side exploit proof (e.g. headless XSS proof of execution); multi-target runs; LLM-side remediation.
 
 ---
