@@ -1,10 +1,10 @@
 // src/agents/agent-loop.ts
 //
 // The meta-orchestrator: a ReAct loop where the LLM is the loop body.
-// Has all 24 tools (22 primitives + spawnAgent + writeFinding) and decides
-// the entire attack strategy. Can spawn sub-agents in parallel, recursively,
-// and with LLM-chosen tool subsets. No hardcoded techniques, strategies, or
-// finding types.
+// Has only MANAGER primitives directly — everything else must be delegated
+// to sub-agents via spawnAgent. This forces natural decomposition:
+// the meta-orchestrator plans and delegates, sub-agents execute.
+// No hardcoded techniques, strategies, or finding types.
 
 import type { LLMClient, LLMCallResult } from '../llm/client';
 import type { PrimitiveContext, PrimitiveName, PrimitiveResult } from '../primitives/types';
@@ -13,9 +13,20 @@ import { executePrimitive } from './primitive-helpers';
 import { emitFinding } from './finding';
 import { runSubAgent } from './sub-agent';
 import { buildMetaPrompt, buildMetaUserMessage } from './agent-prompts';
-import { allToolSchemas, schemasForToolNames } from './tool-schema';
+import { MANAGER_PRIMITIVES, MANAGER_TOOL_NAMES, schemasForToolNames } from './tool-schema';
 import type { AgentTrace, SubAgentRun, AgentTurn } from './agent-trace';
 import { TraceBuilder, summarizeTrace } from './agent-trace';
+import { getGlobalRegistry } from '../plugins/registry';
+import { registerBuiltins } from '../plugins/builtin';
+import { createRecordingPlugin } from '../plugins/recording';
+
+let pluginsInited = false;
+function ensurePlugins(): void {
+  if (pluginsInited) return;
+  pluginsInited = true;
+  registerBuiltins();
+  getGlobalRegistry().registerPlugin(createRecordingPlugin());
+}
 
 export interface AgentLoopOptions {
   target: {
@@ -76,13 +87,14 @@ export interface AgentLoopResult {
 }
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
+  ensurePlugins();
   const maxMetaTurns = opts.maxMetaTurns ?? 15;
   const maxSubAgentAttempts = opts.maxSubAgentAttempts ?? 5;
   const builder = new TraceBuilder();
   const allFindings: AppModelFinding[] = [];
   const targetStr = formatTarget(opts.target);
 
-  const systemPrompt = buildMetaPrompt(allToolSchemas());
+  const systemPrompt = buildMetaPrompt(schemasForToolNames(MANAGER_TOOL_NAMES));
 
   for (let i = 0; i < maxMetaTurns; i++) {
     const turnStart = Date.now();
@@ -174,6 +186,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     // writeFinding: confirm via triage, append, continue
     if (action.tool === 'writeFinding') {
+      opts.onPrimitive?.('writeFinding', action.args, { ok: true, durationMs: 0 });
       const { finding, triage } = await emitFinding(opts.ctx, action.args as never, opts.llm);
       const turn: AgentTurn = {
         turnIndex: i,
@@ -272,13 +285,7 @@ async function executeMetaPrimitive(
   builder: TraceBuilder,
   turnStart: number,
 ): Promise<AgentTurn> {
-  const validPrimitives: PrimitiveName[] = [
-    'httpRequest', 'multipartUpload', 'followRedirects', 'craftPayload', 'craftBypass',
-    'craftXmlEntity', 'craftMultipart', 'injectInContext', 'omitHeader', 'parseResponse',
-    'evaluateRendered', 'measureTiming', 'compareResponses', 'checkWaf',
-    'findEndpointsInResponse', 'extractSessionCookie', 'extractCsrfToken', 'useSession',
-    'spawnSubtask', 'recordEvidence', 'writeFinding', 'recordTestStep',
-  ];
+  const validPrimitives: PrimitiveName[] = MANAGER_PRIMITIVES;
 
   if (!validPrimitives.includes(action.tool as PrimitiveName)) {
     const turn: AgentTurn = {

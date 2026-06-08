@@ -17,8 +17,8 @@ import type { AppModelEndpoint, AppModelFinding } from '../../core/app-model';
 import {
   type PrimitiveContext,
   type PrimitiveName,
-  PRIMITIVE_CATALOG,
 } from '../../primitives';
+import { getGlobalRegistry } from '../../plugins/registry';
 
 export interface WafBypassInput {
   /** The original payload that was blocked */
@@ -85,10 +85,12 @@ export async function runWafBypass(input: WafBypassInput): Promise<WafBypassResu
   }
 
   // Always add deterministic variants (from craftBypass) as a baseline
-  const detResult = await Promise.resolve(PRIMITIVE_CATALOG['craftBypass'].execute(
+  const registry = getGlobalRegistry();
+  const detResult = await registry.executePrimitive(
+    'craftBypass',
     { payload: input.payload, wafType: input.wafVendor },
     mkCtx(),
-  ));
+  );
   if (detResult.ok && Array.isArray(detResult.value)) {
     variants = [...variants, ...(detResult.value as string[])];
   }
@@ -101,7 +103,8 @@ export async function runWafBypass(input: WafBypassInput): Promise<WafBypassResu
   for (const variant of variants) {
     try {
       // Build the request with the variant injected
-      const injected = await Promise.resolve(PRIMITIVE_CATALOG['injectInContext'].execute(
+      const injected = await registry.executePrimitive(
+        'injectInContext',
         {
           payload: variant,
           location: 'query',
@@ -113,10 +116,9 @@ export async function runWafBypass(input: WafBypassInput): Promise<WafBypassResu
           paramName: input.target.params?.[0],
         },
         ctx,
-      ));
+      );
       if (!injected.ok || !injected.value) continue;
-      const r = PRIMITIVE_CATALOG['httpRequest'].execute(injected.value as any, ctx);
-      const result = await Promise.resolve(r);
+      const result = await registry.executePrimitive('httpRequest', injected.value, ctx);
       variantsTried.push(variant);
       if (result.ok && result.value) {
         const res = result.value as { status: number; body: string };

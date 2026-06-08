@@ -14,7 +14,6 @@
 import type { LLMClient, LLMCallResult } from '../llm/client';
 import type { AppModelEndpoint, AppModelFinding, FindingEvidence } from '../core/app-model';
 import {
-  PRIMITIVE_CATALOG,
   type PrimitiveContext,
   type PrimitiveName,
   type PrimitiveRequest,
@@ -23,6 +22,7 @@ import {
   type InjectionLocation,
   type PayloadType,
 } from '../primitives';
+import { getGlobalRegistry } from '../plugins/registry';
 import { runWafBypass } from './specialists-composers/waf-bypass';
 import { runSecondOrder } from './specialists-composers/second-order';
 import { runChainReasoning } from './specialists-composers/chain-reasoning';
@@ -429,7 +429,7 @@ Propose 1-3 attack plans for this endpoint. Each plan must use primitives from t
 
       // Resolve $prev / $target placeholders
       const resolvedArgs = this.resolveArgs(step.args, prev, target);
-      const prim = PRIMITIVE_CATALOG[step.name];
+      const prim = getGlobalRegistry().getPrimitive(step.name);
       if (!prim) continue;
 
       const stepStart = Date.now();

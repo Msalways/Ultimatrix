@@ -15,8 +15,8 @@ import type { LLMClient } from '../../llm/client';
 import type { AppModelEndpoint, AppModelFinding } from '../../core/app-model';
 import {
   type PrimitiveContext,
-  PRIMITIVE_CATALOG,
 } from '../../primitives';
+import { getGlobalRegistry } from '../../plugins/registry';
 
 export interface SecondOrderInput {
   /** The endpoint where the payload was first submitted */
@@ -86,10 +86,12 @@ export async function runSecondOrder(input: SecondOrderInput): Promise<SecondOrd
     budget: { startedAt: Date.now(), maxMs: 60_000 },
   };
 
+  const registry = getGlobalRegistry();
   for (const variant of variants.slice(0, 8)) {
     try {
       // POST the variant to the storage endpoint
-      const postInjected = await Promise.resolve(PRIMITIVE_CATALOG['injectInContext'].execute(
+      const postInjected = await registry.executePrimitive(
+        'injectInContext',
         {
           payload: variant,
           location: 'body',
@@ -97,13 +99,13 @@ export async function runSecondOrder(input: SecondOrderInput): Promise<SecondOrd
           paramName: input.storageEndpoint.params?.[0] ?? 'data',
         },
         ctx,
-      ));
+      );
       if (!postInjected.ok || !postInjected.value) continue;
-      await Promise.resolve(PRIMITIVE_CATALOG['httpRequest'].execute(postInjected.value as any, ctx));
+      await registry.executePrimitive('httpRequest', postInjected.value, ctx);
 
       // GET the reflection endpoint
       const getReq = { method: 'GET', url: input.reflectionEndpoint.path, headers: {} };
-      const getRes = await Promise.resolve(PRIMITIVE_CATALOG['httpRequest'].execute(getReq, ctx));
+      const getRes = await registry.executePrimitive('httpRequest', getReq, ctx);
       if (!getRes.ok || !getRes.value) continue;
 
       const body = (getRes.value as any).body as string;

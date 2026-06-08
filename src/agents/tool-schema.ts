@@ -350,7 +350,7 @@ export const PRIMITIVE_SCHEMAS: Record<PrimitiveName, ToolSchema> = {
   writeFinding: {
     name: 'writeFinding',
     description:
-      'Emit a finalized finding. type, severity, and param are FREE-FORM STRINGS — the LLM names the finding however it wants. Will be triaged for confirmation; only call when you have concrete evidence.',
+      'Emit a finalized finding. type, severity, and param are FREE-FORM STRINGS — the LLM names the finding however it wants. Will be triaged for confirmation but is likely to pass if evaluateRendered returned a non-none matchType.',
     parameters: {
       type: 'object',
       properties: {
@@ -421,6 +421,37 @@ export const ORCHESTRATION_SCHEMAS: Record<string, ToolSchema> = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// Manager primitives — the only tools the meta-orchestrator can call directly.
+// Everything else must be delegated to sub-agents via spawnAgent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Tools the meta-orchestrator can call directly. Everything else (httpRequest,
+ * craftPayload, injectInContext, etc.) must be delegated to sub-agents via
+ * spawnAgent. This forces natural decomposition: the meta-orchestrator plans
+ * and delegates, sub-agents execute.
+ */
+export const MANAGER_PRIMITIVES: PrimitiveName[] = [
+  'evaluateRendered',
+  'parseResponse',
+  'findEndpointsInResponse',
+  'writeFinding',
+  'recordTestStep',
+  'recordEvidence',
+  'spawnSubtask',
+];
+
+/**
+ * Full tool names available to the meta-orchestrator, including spawnAgent
+ * (which is an orchestration tool, not a PrimitiveName). Used to build the
+ * meta-orchestrator's tool catalog prompt.
+ */
+export const MANAGER_TOOL_NAMES: string[] = [
+  ...MANAGER_PRIMITIVES,
+  'spawnAgent',
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
