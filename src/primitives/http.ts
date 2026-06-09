@@ -94,18 +94,19 @@ export const httpRequest: PrimitiveDefinition<PrimitiveRequest, PrimitiveRespons
     }
   },
   toPlaywrightStep(args, result) {
+    const _esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const req = args as PrimitiveRequest;
     if (!result.ok || !req.url) return null;
     const method = (req.method || 'GET').toUpperCase();
     const path = (() => { try { return new URL(req.url).pathname; } catch { return req.url; } })();
     if (method === 'GET') {
       return {
-        action: `await page.goto('${req.url}', { waitUntil: 'load' })`,
+        action: `await page.goto('${_esc(req.url)}', { waitUntil: 'load' })`,
         description: `Navigate to ${path}`,
       };
     }
     return {
-      action: `await page.evaluate(() => fetch('${req.url}', { method: '${method}', headers: ${JSON.stringify(req.headers ?? {})} }))`,
+      action: `await page.evaluate(() => fetch('${_esc(req.url)}', { method: '${_esc(method)}', headers: ${JSON.stringify(req.headers ?? {})} }))`,
       description: `${method} ${path}`,
     };
   },

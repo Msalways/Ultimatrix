@@ -46,6 +46,8 @@ import { InteractiveHuntSession } from './interactive-session';
 import { SpiderCrawler, type CrawlResult } from '../explorer/spider';
 import { spiderResultToAppModel } from '../explorer/spider-bridge';
 import { AutonomousV3Orchestrator, defaultNodeStrategy, type NodeStrategy, type NodeStrategyResolution, type WorkerSpawnInput, type WorkerSpawnResult } from '../pipeline/autonomous-v3';
+import { getGlobalMcpManager } from '../mcp/client';
+import { buildHuntConfig, type HuntConfigValues, type FullConfig } from '../core/hunt-config';
 import { WorkflowStateGraph, type WorkflowStateNode } from '../core/workflow-state';
 import { SessionPool, getDefaultSessionPool } from '../core/session-pool';
 import { getSharedBrowserManager } from '../tools/browser-tools';
@@ -53,9 +55,11 @@ import type { Hypothesis, Technique } from '../core/attack-plan';
 import type { AppModelEndpoint } from '../core/app-model';
 import type { PrimitiveContext } from '../primitives/types';
 import { LiveTestWriter } from '../codegen/live-writer';
+import { buildCoverageReport, renderCoverageHtml } from '../coverage/report';
 import { finalizeLiveSpec } from '../codegen/finalize';
 import { HuntCore } from '../hunt/core';
 import { wireHuntCore } from './hunt-core-wiring';
+import { getCurrentPrompt } from '../tools/ask-user-tool';
 
 import { parseHuntFlags as _parseHuntFlags, type HuntOptions } from './hunt-flags';
 import { deriveShortUrlLabel } from './url-label';
@@ -77,21 +81,64 @@ type Wiring = ReturnType<typeof wireHuntCore>;
 let hlogWiring: Wiring | null = null;
 const ANSI = /\x1b\[[0-9;]*m/g;
 export function hlog(level: 'info' | 'warn' | 'error' | 'debug', line: string): void {
-  if (level === 'error') console.error(line);
-  else if (level === 'warn') console.warn(line);
-  else console.log(line);
+  // When the interactive prompt is active, route through notify() so
+  // orchestrator messages don't clobber the REPL prompt line.
+  const p = getCurrentPrompt();
+  if (p) {
+    switch (level) {
+      case 'error': p.error(line); break;
+      case 'warn': p.warn(line); break;
+      default: p.notify(line); break;
+    }
+  } else {
+    fallbackLog(level, line);
+  }
   if (hlogWiring) {
     const plain = line.replace(ANSI, '');
     hlogWiring.onLog(level, plain);
   }
 }
+function fallbackLog(level: string, line: string): void {
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+}
 
 export async function runHunt(opts: HuntOptions): Promise<void> {
-  fs.mkdirSync(opts.outputDir, { recursive: true });
+  // Load config from ultimatrix.yaml FIRST — it's the ultimate source
+  let runtimeConfig: FullConfig | null = null;
+  try {
+    const { loadRuntimeConfig } = await import('./index');
+    runtimeConfig = await loadRuntimeConfig({
+      ...(opts.target ? { target: opts.target } : {}),
+      ...(opts.outputDir ? { output: opts.outputDir } : {}),
+    });
+  } catch { /* config loading is best-effort */ }
+
+  // Output dir: CLI flag > config file > default
+  if (!opts.outputDir && runtimeConfig?.output?.dir) {
+    opts.outputDir = runtimeConfig.output.dir;
+  }
+  const outDir = opts.outputDir || './output';
+  opts.outputDir = outDir;
+  fs.mkdirSync(outDir, { recursive: true });
   const modelPath = path.join(opts.outputDir, 'app-model.json');
   const startedAt = Date.now();
   hlog('info', `\n\x1b[1;32m▸ Ultimatrix hunt\x1b[0m → ${opts.target}`);
   hlog('info', `  output: ${opts.outputDir}, max runtime: ${opts.maxRuntimeMs === 0 ? 'unlimited' : `${Math.round(opts.maxRuntimeMs / 1000)}s`}\n`);
+
+  const huntCfg: HuntConfigValues = runtimeConfig
+    ? buildHuntConfig(runtimeConfig)
+    : buildHuntConfig({});
+
+  // Initialize MCP client from config
+  if (runtimeConfig?.mcp?.servers && Object.keys(runtimeConfig.mcp.servers).length > 0) {
+    hlog('info', `  · MCP servers configured: ${Object.keys(runtimeConfig.mcp.servers).join(', ')}`);
+    const mcpMgr = getGlobalMcpManager();
+    mcpMgr.initialize(runtimeConfig.mcp).catch((e) => {
+      hlog('warn', `  ! MCP init failed: ${e.message}`);
+    });
+  }
 
   // Block 21: default LLM token sink. If the caller didn't supply one
   // (e.g. the user just ran `ultimatrix hunt -t https://xss-game...`),
@@ -161,7 +208,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
       model = existing;
     }
     if (targetChanged || modelIsEmpty) {
-      const mgr = getSharedBrowserManager(true);
+      const mgr = getSharedBrowserManager();
       const spider = new SpiderCrawler(mgr, 'default');
       const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
       const before = new Set((existing.endpoints || []).map((e: any) => e.path || e.url));
@@ -182,7 +229,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     }
   } else {
     hlog('info', `[1/5] Spidering ${opts.target} (depth ${opts.depth})…`);
-    const mgr = getSharedBrowserManager(true);
+    const mgr = getSharedBrowserManager();
     const spider = new SpiderCrawler(mgr, 'default');
     const crawlResult: CrawlResult = await spider.crawl(opts.target, opts.depth, undefined, opts.outputDir);
     model = buildAppModelFromCrawl(crawlResult, opts.target);
@@ -190,6 +237,10 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     await writeAppModelAsync(modelPath, model);
     hlog('info', `  ↳ discovered ${crawlResult.visitedUrls.length} URLs, ${crawlResult.routes.length} routes`);
   }
+
+  // Close the spider's browser session so headed browser usage doesn't
+  // multiply (spider uses session "default", interactive session uses "manual").
+  try { getSharedBrowserManager().close('default'); } catch { /* best effort */ }
 
   // 2. Recon
   if (!opts.skip.has('recon')) {
@@ -289,9 +340,6 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     appModel: model,
     strategy: defaultNodeStrategy,
     workerFactory: orchestratorWorkerFactory,
-    // Block 21: forward LLM tokens to BOTH the caller's onLLMToken (e.g.
-    // web UI WebSocket or CLI dim stream) AND the HuntCore wiring (so
-    // the TUI / late-attach dashboards / dedup log also see them).
     onLLMToken: opts.onLLMToken
       ? (label, chunk) => {
           try { opts.onLLMToken?.(label, chunk); } catch { /* best effort */ }
@@ -304,10 +352,10 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
     onLog: (msg: string) => hlog('info', `  ${msg}`),
     onBeforeNode: async (): Promise<'proceed'> => 'proceed',
     maxRuntimeMs: opts.maxRuntimeMs,
-    maxNodes: 50,
+    maxNodes: huntCfg.maxNodes,
     enableConcurrency: true,
-    maxConcurrency: 4,
-    sleepBetweenNodesMs: 0,
+    maxConcurrency: huntCfg.maxConcurrency,
+    sleepBetweenNodesMs: huntCfg.nodeDelayMs,
     outDir: opts.outputDir,
   });
 
@@ -414,6 +462,7 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
         const llm = getDefaultLLMClient();
         return await callChat(llm, message, context);
       },
+      getOrchestratorStatus: () => orch.getStatus(),
     });
     try {
       await session.start();
@@ -463,6 +512,16 @@ export async function runHunt(opts: HuntOptions): Promise<void> {
 
   try {
     await pool.closeAll();
+  } catch { /* best effort */ }
+
+  // Generate coverage report
+  try {
+    const coverage = buildCoverageReport();
+    const html = renderCoverageHtml(coverage);
+    const coveragePath = path.join(opts.outputDir, 'coverage.html');
+    fs.mkdirSync(path.dirname(coveragePath), { recursive: true });
+    fs.writeFileSync(coveragePath, html, 'utf-8');
+    hlog('info', `  ↳ coverage report: ${coveragePath}`);
   } catch { /* best effort */ }
 
   // Block 14: stop the HuntCore. This flushes the live spec at
@@ -799,6 +858,7 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
     const result = await composer.run(target, ctx);
     if (result.findings.length > 0) {
       const f = result.findings[0];
+      ctx.liveSpec?.finalise();
       return {
         vulnerable: true,
         confidence: typeof f.confidence === 'number' ? f.confidence : 0.7,
@@ -819,6 +879,7 @@ async function huntWorkerRunner(input: WorkerSpawnInput): Promise<WorkerSpawnRes
     dlog(`composer error: ${(e as Error).message}`);
   }
 
+  ctx.liveSpec?.finalise();
   return {
     vulnerable: false,
     confidence: 0,

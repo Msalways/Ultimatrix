@@ -41,6 +41,7 @@ import { diffEndpoints, applyEndpointDiff, type EndpointDiff } from './endpoint-
 import type { AppModel, AppModelEndpoint, AppModelFinding } from '../core/app-model';
 import { readAppModel, writeAppModelAsync } from '../core/app-model';
 import { HuntPrompt, type HuntPromptCallbacks } from './prompt';
+import { setCurrentPrompt } from '../tools/ask-user-tool';
 import {
   callChat,
   trimHistory,
@@ -96,6 +97,12 @@ export interface InteractiveSessionOptions {
    * How often (ms) to scan the current page for new forms. Default 1500.
    */
   formWatchIntervalMs?: number;
+  /**
+   * Optional getter for orchestrator status. Called on each chat turn
+   * so the LLM knows what the orchestrator is doing (phase, in-flight
+   * workers, nodes completed/failed, rate-limit events).
+   */
+  getOrchestratorStatus?: () => import('../pipeline/autonomous-v3').OrchestratorStatus;
 }
 
 /**
@@ -225,16 +232,10 @@ export class InteractiveHuntSession {
   private lastUrl = '';
   /** Cached current page forms (updated by the watcher). */
   private currentForms: ChatForm[] = [];
+  /** When the session started (ms since epoch). */
+  private startedAt = 0;
 
   constructor(private opts: InteractiveSessionOptions) {
-    // Block 21: use the SHARED browser manager so the interactive
-    // session and the orchestrator / spider share the same browser
-    // process. Previously this was `new BrowserSessionManager(false)`
-    // which created a second instance: the spider + orchestrator
-    // launched their own headless browser, and the REPL opened a
-    // second headed browser on top. Two browsers fighting for the
-    // same proxy / network state = random auth-cookie losses, and
-    // every `getOrCreate('default')` round-trip re-allocated memory.
     this.browser = getSharedBrowserManager(false); // headed
     this.autotestForms = opts.autotestForms ?? true;
     this.formWatchIntervalMs = opts.formWatchIntervalMs ?? 1500;
@@ -246,6 +247,7 @@ export class InteractiveHuntSession {
    */
   async start(): Promise<InteractiveSessionResult> {
     const startedAt = Date.now();
+    this.startedAt = startedAt;
     const sessionId = 'manual';
 
     // Seed known URLs from the initial model + target
@@ -285,6 +287,7 @@ export class InteractiveHuntSession {
       onQuit: async () => { await this.stopAndExit(startedAt); },
     };
     this.prompt = new HuntPrompt(callbacks);
+    setCurrentPrompt(this.prompt);
 
     // Block until stopped
     while (!this.prompt.isClosed() && !this.stopped) {
@@ -383,6 +386,25 @@ export class InteractiveHuntSession {
           .map((m) => `  ${m.role === 'user' ? 'you' : 'agent'}: ${m.text}`)
           .join('\n');
       }
+      case 'status': {
+        const lines: string[] = [];
+        // Session counters (always available)
+        const elapsed = this.startedAt ? Math.floor((Date.now() - this.startedAt) / 1000) : 0;
+        const min = Math.floor(elapsed / 60);
+        const sec = elapsed % 60;
+        lines.push(`  session: ${min}m${sec}s  attacks: ${this.attackCount}  findings: ${this.findingCount}  pending: ${this.pendingAttacks.size}  known URLs: ${this.knownUrls.size}  autotest: ${this.autotestForms ? 'on' : 'off'}`);
+        // Orchestrator status (if available)
+        if (this.opts.getOrchestratorStatus) {
+          try {
+            const s = this.opts.getOrchestratorStatus();
+            const runtimeStr = s.maxRuntimeMs > 0 ? ` (max ${Math.round(s.maxRuntimeMs / 1000)}s)` : ' (unlimited)';
+            lines.push(`  orchestrator: phase=${s.phase}  elapsed=${Math.floor(s.elapsedMs / 1000)}s${runtimeStr}`);
+            lines.push(`  nodes: ${s.completedNodes} done, ${s.failedNodes} failed, ${s.inFlight} in-flight (${s.totalNodes} total)`);
+            lines.push(`  retry budget used: ${s.retryBudgetUsed}  rate-limit events: ${s.rateLimitEvents}`);
+          } catch { /* best effort */ }
+        }
+        return lines.join('\n');
+      }
       case 'help':
       case '?':
         return [
@@ -392,7 +414,7 @@ export class InteractiveHuntSession {
           '  type <sel> <value>  fill an input',
           '  attack <url> [t]    run LLM attack against <url>',
           '  findings            list current findings',
-          '  status              show session counters',
+          '  status              show session + orchestrator counters',
           '',
           'Slash commands:',
           '  /open <url>         navigate the browser to <url> (or reopen last URL if no <url>)',
@@ -402,6 +424,7 @@ export class InteractiveHuntSession {
           '  /report             render the HTML report',
           '  /add <url>          add a URL to the workflow graph',
           '  /autotest on|off    toggle form auto-test',
+          '  /status             show session + orchestrator status',
           '  /clear              clear chat history',
           '  /history            show last chat messages',
           '  /help               this message',
@@ -484,7 +507,10 @@ export class InteractiveHuntSession {
           break;
         }
         case 'status': {
-          this.prompt?.notify(`  attacks: ${this.attackCount}  findings: ${this.findingCount}  pending: ${this.pendingAttacks.size}  known URLs: ${this.knownUrls.size}  chat turns: ${this.chatTurnCount}  autotest: ${this.autotestForms ? 'on' : 'off'}`);
+          const elapsed = this.startedAt ? Math.floor((Date.now() - this.startedAt) / 1000) : 0;
+          const min = Math.floor(elapsed / 60);
+          const sec = elapsed % 60;
+          this.prompt?.notify(`  elapsed: ${min}m${sec}s  attacks: ${this.attackCount}  findings: ${this.findingCount}  pending: ${this.pendingAttacks.size}  known URLs: ${this.knownUrls.size}  autotest: ${this.autotestForms ? 'on' : 'off'}`);
           break;
         }
         case 'help': {
@@ -775,6 +801,24 @@ export class InteractiveHuntSession {
         spider = summarizeSpider(m);
       } catch { /* ignore — model not built yet */ }
     }
+    // Snapshot orchestrator status if a getter is wired
+    let orchestratorStatus: import('./chat-coordinator').ChatOrchestratorStatus | undefined;
+    if (this.opts.getOrchestratorStatus) {
+      try {
+        const raw = this.opts.getOrchestratorStatus();
+        orchestratorStatus = {
+          phase: raw.phase,
+          totalNodes: raw.totalNodes,
+          completedNodes: raw.completedNodes,
+          failedNodes: raw.failedNodes,
+          inFlight: raw.inFlight,
+          elapsedSec: Math.floor(raw.elapsedMs / 1000),
+          maxRuntimeSec: Math.floor(raw.maxRuntimeMs / 1000),
+          retryBudgetUsed: raw.retryBudgetUsed,
+          rateLimitEvents: raw.rateLimitEvents,
+        };
+      } catch { /* best effort */ }
+    }
     return {
       target: this.opts.target,
       currentUrl: this.lastUrl,
@@ -785,6 +829,7 @@ export class InteractiveHuntSession {
       autotest: this.autotestForms,
       triggerForm,
       spider,
+      orchestratorStatus,
     };
   }
 
@@ -905,7 +950,7 @@ export class InteractiveHuntSession {
     for (const t of this.watchedTimers) clearInterval(t);
     this.watchedTimers = [];
 
-    if (this.prompt) { this.prompt.close(); this.prompt = null; }
+    if (this.prompt) { this.prompt.close(); this.prompt = null; setCurrentPrompt(null); }
 
     let rec: MacroStep[] = [];
     try {

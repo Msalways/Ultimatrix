@@ -387,10 +387,10 @@ function generateFindingSpec(finding: AppModelFinding, _model: AppModel, _opts: 
 import { test, expect } from '@playwright/test';
 import { findings, findingsById } from './fixtures/findings';
 
-test.describe('Finding ${fid} — ${finding.type} @ ${finding.endpoint}', () => {
+test.describe('Finding ${fid} — ${escapeForComment(finding.type)} @ ${escapeForComment(finding.endpoint)}', () => {
   const finding = findingsById.get(${JSON.stringify(fid)}) || findings[0];
 
-  test('reproduces ${finding.type}', async ({ request }) => {
+  test('reproduces ${escapeForComment(finding.type)}', async ({ request }) => {
     expect(finding).toBeTruthy();
     expect(['critical', 'high', 'medium', 'low']).toContain(finding.severity);
     expect(finding.confidence).toBeTruthy();

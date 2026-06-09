@@ -1,4 +1,3 @@
-// tests/primitives/payload.test.ts
 import { describe, it, expect } from 'vitest';
 import {
   craftPayload,
@@ -8,44 +7,25 @@ import {
 } from '../../src/primitives/payload';
 
 describe('craftPayload', () => {
-  it('returns SQLi payloads for url context', () => {
+  it('returns empty array (LLM crafts payloads inline now)', () => {
     const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
     const r = craftPayload.execute({ type: 'sqli', context: 'url' }, ctx);
     expect(r.ok).toBe(true);
     expect(r.value).toBeInstanceOf(Array);
-    expect((r.value as string[]).length).toBeGreaterThan(0);
-    expect((r.value as string[]).some((p) => p.includes('OR 1=1'))).toBe(true);
+    expect((r.value as string[]).length).toBe(0);
   });
 
-  it('returns XSS payloads for html context', () => {
+  it('returns empty array regardless of type', () => {
     const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
     const r = craftPayload.execute({ type: 'xss', context: 'html' }, ctx);
     expect(r.ok).toBe(true);
-    expect((r.value as string[]).some((p) => p.includes('<script>'))).toBe(true);
+    expect((r.value as string[]).length).toBe(0);
   });
 
-  it('respects count limit', () => {
+  it('ignores count limit', () => {
     const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
     const r = craftPayload.execute({ type: 'sqli', context: 'url', count: 3 }, ctx);
-    expect((r.value as string[]).length).toBe(3);
-  });
-
-  it('returns SSTI payloads with engine', () => {
-    const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
-    const r = craftPayload.execute({ type: 'ssti', engine: 'jinja' }, ctx);
-    expect((r.value as string[]).some((p) => p.includes('config'))).toBe(true);
-  });
-
-  it('returns SSRF payloads', () => {
-    const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
-    const r = craftPayload.execute({ type: 'ssrf' }, ctx);
-    expect((r.value as string[]).some((p) => p.includes('169.254.169.254'))).toBe(true);
-  });
-
-  it('returns redirect payloads', () => {
-    const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
-    const r = craftPayload.execute({ type: 'redirect' }, ctx);
-    expect((r.value as string[]).some((p) => p.includes('evil.com'))).toBe(true);
+    expect((r.value as string[]).length).toBe(0);
   });
 });
 
@@ -66,17 +46,20 @@ describe('craftBypass', () => {
 });
 
 describe('craftXmlEntity', () => {
-  it('builds file XXE payload', () => {
+  it('wraps LLM payload in XML structure', () => {
     const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
-    const r = craftXmlEntity.execute({ target: 'file', path: '/etc/passwd' }, ctx);
+    const r = craftXmlEntity.execute({ payload: 'file:///etc/passwd' }, ctx);
     expect(r.ok).toBe(true);
     expect((r.value as string).includes('file:///etc/passwd')).toBe(true);
+    expect((r.value as string).includes('<!ENTITY xxe SYSTEM "file:///etc/passwd"')).toBe(true);
   });
 
-  it('builds SSRF XXE payload', () => {
+  it('supports custom entity name', () => {
     const ctx = { baseUrl: '', cookies: {}, evidenceLog: [], depth: 0, budget: { startedAt: 0, maxMs: 0 } };
-    const r = craftXmlEntity.execute({ target: 'ssrf', host: 'http://169.254.169.254/' }, ctx);
+    const r = craftXmlEntity.execute({ payload: 'http://169.254.169.254/', systemId: 'ssrf' }, ctx);
+    expect(r.ok).toBe(true);
     expect((r.value as string).includes('169.254.169.254')).toBe(true);
+    expect((r.value as string).includes('<!ENTITY ssrf SYSTEM "http://169.254.169.254/"')).toBe(true);
   });
 });
 

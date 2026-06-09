@@ -1,9 +1,0 @@
-provider:
-  name: nvidia
-  model: openai/gpt-oss-120b
-scan:
-  target: 
-output:
-  dir: ./output
-  format: html
-

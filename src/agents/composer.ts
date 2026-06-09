@@ -243,9 +243,10 @@ export class Composer {
     ctx.subtaskSink = subtasks;
     this.recentFindings = findings;
 
-    // Dispatch to the agent loop
+    // Dispatch to the agent loop (starts in attack phase since graph is pre-built)
     const { runAgentLoop } = await import('./agent-loop');
     const agentResult = await runAgentLoop({
+      initialPhase: 'attack',
       target: {
         url: target.path,
         method: target.method,

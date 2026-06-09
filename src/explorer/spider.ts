@@ -98,6 +98,11 @@ export class SpiderCrawler {
 
       try {
         const finalUrl = await this.manager.navigate(this.sessionId, url, { relaxed: true });
+        // Skip invalid/blank pages (bot detection, WAF block, network failure)
+        if (!finalUrl || finalUrl === 'about:blank' || finalUrl === '') {
+          visited.delete(url);
+          continue;
+        }
         const page = await this.manager.getOrCreate(this.sessionId);
 
         // Take full DOM snapshot — replaces manual form counting + link extraction

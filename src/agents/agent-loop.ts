@@ -1,10 +1,9 @@
 // src/agents/agent-loop.ts
 //
-// The meta-orchestrator: a ReAct loop where the LLM is the loop body.
-// Has only MANAGER primitives directly — everything else must be delegated
-// to sub-agents via spawnAgent. This forces natural decomposition:
-// the meta-orchestrator plans and delegates, sub-agents execute.
-// No hardcoded techniques, strategies, or finding types.
+// The meta-orchestrator: a 3-phase (Observe → Learn → Attack) ReAct loop.
+// Phase-gated tool availability: Observe has graph navigation only, Learn adds
+// probe tools, Attack adds spawnAgent for full execution delegation.
+// No hardcoded techniques, strategies, or finding types — the LLM invents all.
 
 import type { LLMClient, LLMCallResult } from '../llm/client';
 import type { PrimitiveContext, PrimitiveName, PrimitiveResult } from '../primitives/types';
@@ -12,13 +11,17 @@ import type { AppModelFinding } from '../core/app-model';
 import { executePrimitive } from './primitive-helpers';
 import { emitFinding } from './finding';
 import { runSubAgent } from './sub-agent';
-import { buildMetaPrompt, buildMetaUserMessage } from './agent-prompts';
-import { MANAGER_PRIMITIVES, MANAGER_TOOL_NAMES, schemasForToolNames } from './tool-schema';
+import { buildMetaPrompt, buildMetaUserMessage, getPhaseTools } from './agent-prompts';
+import type { AgentPhase } from './agent-prompts';
+import { MANAGER_PRIMITIVES, MANAGER_TOOL_NAMES, schemasForToolNames, type ToolSchema } from './tool-schema';
 import type { AgentTrace, SubAgentRun, AgentTurn } from './agent-trace';
 import { TraceBuilder, summarizeTrace } from './agent-trace';
 import { getGlobalRegistry } from '../plugins/registry';
 import { registerBuiltins } from '../plugins/builtin';
 import { createRecordingPlugin } from '../plugins/recording';
+import { getGlobalGraphStore } from '../workflow-graph/store';
+import { handleGraphTool } from '../workflow-graph/plugin';
+import { getGlobalMcpManager } from '../mcp/client';
 
 let pluginsInited = false;
 function ensurePlugins(): void {
@@ -53,15 +56,22 @@ export interface AgentLoopOptions {
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
   /** Free-form label for the trace */
   label?: string;
+  /** Initial phase (default 'observe') */
+  initialPhase?: AgentPhase;
 }
 
 interface MetaAction {
   thought: string;
   tool: string;
   args: Record<string, unknown>;
+  _phase?: AgentPhase;
 }
 
-const GIVEUP: MetaAction = { thought: '', tool: 'giveUp', args: {} };
+const PHASE_TRANSITION_PATTERN: Record<AgentPhase, AgentPhase> = {
+  observe: 'learn',
+  learn: 'attack',
+  attack: 'attack',
+};
 
 function parseAction(text: string): MetaAction | null {
   const match = text.match(/\{[\s\S]*\}/);
@@ -69,10 +79,12 @@ function parseAction(text: string): MetaAction | null {
   try {
     const obj = JSON.parse(match[0]);
     if (typeof obj.tool === 'string' && typeof obj.thought === 'string') {
+      const phase = typeof obj._phase === 'string' ? obj._phase as AgentPhase : undefined;
       return {
         thought: obj.thought,
         tool: obj.tool,
         args: (obj.args && typeof obj.args === 'object' ? obj.args : {}) as Record<string, unknown>,
+        _phase: phase,
       };
     }
   } catch {
@@ -86,6 +98,21 @@ export interface AgentLoopResult {
   findings: AppModelFinding[];
 }
 
+function getGraphSummary(): string {
+  const store = getGlobalGraphStore();
+  if (store.getNodeCount() === 0) return '(no graph data yet)';
+  const stats = store.getStats();
+  let s = `Graph: ${stats.nodes} nodes, ${stats.edges} edges, ${stats.observations} observations, ${stats.findings} findings\n`;
+  s += `Sources: ${Object.entries(stats.sources).map(([k, v]) => `${k}=${v}`).join(', ')}\n`;
+  const allNodes = store.getAllNodes().slice(0, 30);
+  for (const n of allNodes) {
+    const params = [...n.params.map((p) => p.name), ...n.bodyFields.map((p) => p.name)];
+    s += `  ${n.id}: ${n.method} ${n.url} [${n.contentType}] params=[${params.join(',')}] depth=${n.depth}\n`;
+  }
+  if (store.getNodeCount() > 30) s += `  ... and ${store.getNodeCount() - 30} more nodes\n`;
+  return s;
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   ensurePlugins();
   const maxMetaTurns = opts.maxMetaTurns ?? 15;
@@ -93,16 +120,35 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const builder = new TraceBuilder();
   const allFindings: AppModelFinding[] = [];
   const targetStr = formatTarget(opts.target);
+  let currentPhase: AgentPhase = opts.initialPhase ?? 'observe';
 
-  const systemPrompt = buildMetaPrompt(schemasForToolNames(MANAGER_TOOL_NAMES));
+  const mcpTools = await getGlobalMcpManager().listAllTools().catch(() => []);
+  const mcpToolNames = mcpTools.map(t => `mcp__${t.name}`);
+  const mcpToolSchemas: ToolSchema[] = mcpTools.map(t => ({
+    name: `mcp__${t.name}`,
+    description: t.description,
+    parameters: t.inputSchema as ToolSchema['parameters'],
+  }));
+
+  // Initial system prompt for the starting phase
+  const initialTools = getPhaseToolNames(currentPhase, mcpToolNames);
+  const initSchemas = [...schemasForToolNames(initialTools), ...mcpToolSchemas];
+  let systemPrompt = buildMetaPrompt(currentPhase, initSchemas);
 
   for (let i = 0; i < maxMetaTurns; i++) {
     const turnStart = Date.now();
+
+    // Inject graph summary in observe phase, phase status in user message
+    let graphSummary = '';
+    if (currentPhase === 'observe') {
+      graphSummary = getGraphSummary();
+    }
 
     const userMsg = buildMetaUserMessage({
       target: targetStr,
       turnIndex: i + 1,
       historySummary: summarizeTrace(builder.current()),
+      graphSummary,
     });
 
     let action: MetaAction | null = null;
@@ -166,6 +212,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       break;
     }
 
+    // Phase transition check
+    if (action._phase) {
+      const nextPhase = PHASE_TRANSITION_PATTERN[currentPhase];
+      if (action._phase === nextPhase) {
+        currentPhase = nextPhase;
+        const phaseTools = getPhaseToolNames(currentPhase, mcpToolNames);
+        const phaseSchemas = [...schemasForToolNames(phaseTools), ...mcpToolSchemas];
+        systemPrompt = buildMetaPrompt(currentPhase, phaseSchemas);
+      }
+      // If LLM requests invalid phase, ignore silently
+    }
+
     // Stop on giveUp
     if (action.tool === 'giveUp' || action.tool === 'stop') {
       const turn: AgentTurn = {
@@ -182,6 +240,42 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       builder.addMetaTurn(turn);
       builder.setOutcome(allFindings.length > 0 ? 'vulnerable' : 'clean');
       break;
+    }
+
+    // Graph tools — available in observe/learn phases
+    if (['queryGraph', 'drillDown', 'queryFlow', 'observeNode'].includes(action.tool)) {
+      if (currentPhase === 'observe' && action.tool === 'observeNode') {
+        const turn: AgentTurn = {
+          turnIndex: i,
+          thought: action.thought,
+          tool: action.tool,
+          args: action.args,
+          result: { ok: false, error: 'observeNode is not available in observe phase — transition to learn first', durationMs: Date.now() - turnStart },
+          durationMs: Date.now() - turnStart,
+          startedAt: turnStart,
+          level: 'meta',
+        };
+        builder.addMetaTurn(turn);
+        continue;
+      }
+      const gResult = handleGraphTool(action.tool, action.args);
+      const turn: AgentTurn = {
+        turnIndex: i,
+        thought: action.thought,
+        tool: action.tool,
+        args: action.args,
+        result: {
+          ok: gResult.ok,
+          value: gResult.data,
+          error: gResult.error,
+          durationMs: Date.now() - turnStart,
+        },
+        durationMs: Date.now() - turnStart,
+        startedAt: turnStart,
+        level: 'meta',
+      };
+      builder.addMetaTurn(turn);
+      continue;
     }
 
     // writeFinding: confirm via triage, append, continue
@@ -212,8 +306,22 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       continue;
     }
 
-    // spawnAgent: run a sub-agent. Collect specs and run in parallel.
+    // spawnAgent: only available in attack phase
     if (action.tool === 'spawnAgent') {
+      if (currentPhase !== 'attack') {
+        const turn: AgentTurn = {
+          turnIndex: i,
+          thought: action.thought,
+          tool: action.tool,
+          args: action.args,
+          result: { ok: false, error: 'spawnAgent is only available in attack phase — transition to attack first', durationMs: Date.now() - turnStart },
+          durationMs: Date.now() - turnStart,
+          startedAt: turnStart,
+          level: 'meta',
+        };
+        builder.addMetaTurn(turn);
+        continue;
+      }
       const spec = action.args as {
         task: string;
         tools: string[];
@@ -265,7 +373,30 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       continue;
     }
 
-    // Direct primitive call
+    // MCP tools — delegated to MCP server
+    if (action.tool.startsWith('mcp__')) {
+      const mcpFullName = action.tool.slice(5);
+      const result = await getGlobalMcpManager().callTool(mcpFullName, action.args as Record<string, any>);
+      const turn: AgentTurn = {
+        turnIndex: i,
+        thought: action.thought,
+        tool: action.tool,
+        args: action.args,
+        result: {
+          ok: result.ok,
+          value: result.data,
+          error: result.error,
+          durationMs: Date.now() - turnStart,
+        },
+        durationMs: Date.now() - turnStart,
+        startedAt: turnStart,
+        level: 'meta',
+      };
+      builder.addMetaTurn(turn);
+      continue;
+    }
+
+    // Direct primitive call (only MANAGER_PRIMITIVES + learn-phase tools)
     const turn = await executeMetaPrimitive(action, opts, builder, turnStart);
     // turn already added to builder inside executeMetaPrimitive
     void turn;
@@ -277,6 +408,25 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   }
   opts.onTrace?.(trace);
   return { trace, findings: allFindings };
+}
+
+function getPhaseToolNames(phase: AgentPhase, mcpToolNames: string[] = []): string[] {
+  const base: string[] = (() => {
+    switch (phase) {
+      case 'observe':
+        return ['queryGraph', 'drillDown', 'queryFlow'];
+      case 'learn':
+        return [
+          'queryGraph', 'drillDown', 'queryFlow', 'observeNode',
+          ...MANAGER_PRIMITIVES,
+        ];
+      case 'attack':
+        return MANAGER_TOOL_NAMES;
+      default:
+        return MANAGER_TOOL_NAMES;
+    }
+  })();
+  return [...base, ...mcpToolNames];
 }
 
 async function executeMetaPrimitive(

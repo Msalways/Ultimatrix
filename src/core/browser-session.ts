@@ -15,6 +15,16 @@ export interface TraceEntry {
   timestamp: number;
   duration: number;
   tags?: string[];
+  /** What caused this request — the trigger context */
+  triggerType?: 'click' | 'form-submit' | 'navigation' | 'redirect' | 'xhr-js' | 'hash-change';
+  /** CSS selector of the element that caused the request */
+  triggerSelector?: string;
+  /** Serialized form data if form-submit trigger */
+  triggerPayload?: string;
+  /** Groups requests into a single user flow */
+  flowId?: string;
+  /** The graph node ID of the page/state that produced this request */
+  parentNodeId?: string;
 }
 
 export interface MacroStep {

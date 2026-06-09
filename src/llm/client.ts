@@ -11,6 +11,17 @@ import * as path from 'path';
 import { providerRegistry } from '../providers/provider-registry';
 import type { LLMProviderName } from '../core/types';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { getCurrentPrompt } from '../tools/ask-user-tool';
+
+/** Write a status message to stderr, or to the interactive prompt if active. */
+function _writeStatus(msg: string): void {
+  const p = getCurrentPrompt();
+  if (p) {
+    p.notify(msg);
+  } else {
+    process.stderr.write(msg);
+  }
+}
 
 interface LoadedConfig {
   provider: string | null;
@@ -26,6 +37,13 @@ function yamlLoad(s: string): unknown {
     _yamlMod = require('js-yaml') as { load: (s: string) => unknown };
   }
   return _yamlMod.load(s);
+}
+
+function resolveProvidersPath(): string {
+  // Check CWD first (allows tests to override), then homedir
+  const local = path.join(process.cwd(), 'providers.yaml');
+  if (fs.existsSync(local)) return local;
+  return path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml');
 }
 
 export interface LLMClientConfig {
@@ -121,7 +139,7 @@ export class LLMClient {
       }
     }
     // 2. Global providers.yaml (secrets)
-    const providersPath = path.join(os.homedir(), '.config', 'ultimatrix', 'providers.yaml');
+    const providersPath = resolveProvidersPath();
     if (fs.existsSync(providersPath) && result.provider) {
       try {
         const parsed = yamlLoad(fs.readFileSync(providersPath, 'utf-8')) as any;
@@ -139,6 +157,7 @@ export class LLMClient {
   /** Returns the provider that would be used (without instantiating) */
   detectProvider(): LLMProviderName {
     if (this.config.provider) {
+      if (this.config.provider === 'mock') return 'mock';
       const cfg = this.loadYamlConfig();
       if (this.config.provider === cfg?.provider && (cfg?.apiKey || this.hasEnvFor(this.config.provider))) {
         if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] explicit provider matched yaml: ${this.config.provider}`);
@@ -163,7 +182,25 @@ export class LLMClient {
         return name;
       }
     }
-    if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] falling back to mock (no provider config found)`);
+    // Fall back to providers.yaml entries only when no project-level
+    // ultimatrix.yaml specifies a provider (cfg is null).
+    if (!cfg?.provider) {
+      const providersPath = resolveProvidersPath();
+      if (fs.existsSync(providersPath)) {
+        try {
+          const parsed = yamlLoad(fs.readFileSync(providersPath, 'utf-8')) as Record<string, any>;
+          if (parsed && typeof parsed === 'object') {
+            for (const name of PROVIDER_PRIORITY) {
+              if (name === 'mock') continue;
+              if (parsed[name] && (parsed[name].apiKey || parsed[name].api_key)) {
+                if (process.env.ULTIMATRIX_LLM_DEBUG === '1') console.error(`[llm] using providers.yaml provider: ${name}`);
+                return name;
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
     return 'mock';
   }
 
@@ -183,17 +220,27 @@ export class LLMClient {
       console.error(`[llm] detected provider: ${detected}`);
       console.error(`[llm] yaml config:`, cfg);
     }
+    // Explicit mock (new LLMClient({ provider: 'mock' })) is OK — returns false
+    if (detected === 'mock' && this.config.provider === 'mock') {
+      this.model = null;
+      return false;
+    }
+    // Implicit mock (no provider configured at all) is an error
+    if (detected === 'mock') {
+      throw new Error(
+        'No LLM provider configured. Set a provider via:\n' +
+        '  1. ultimatrix.yaml: provider: groq (or openai, anthropic, etc.)\n' +
+        '  2. Environment variable: GROQ_API_KEY, OPENAI_API_KEY, etc.\n' +
+        '  3. ~/.config/ultimatrix/providers.yaml\n' +
+        '  > Run: ultimatrix setup'
+      );
+    }
     const factory = providerRegistry.get(detected);
     if (!factory) {
-      this.provider = 'mock';
+      throw new Error(`LLM factory not found for provider "${detected}"`);
     }
     const { apiKey, modelId, baseUrl } = this.resolveCredentials(detected);
     this.modelId = modelId;
-    if (detected === 'mock' || !factory) {
-      this.model = null;
-      this.provider = 'mock';
-      return false;
-    }
     try {
       this.model = await factory.create({
         apiKey,
@@ -204,9 +251,10 @@ export class LLMClient {
       });
       return true;
     } catch (e) {
-      this.model = null;
-      this.provider = 'mock';
-      return false;
+      throw new Error(
+        `Failed to create LLM model for "${detected}": ${(e as Error).message}\n` +
+        '  Check your API key and credentials.'
+      );
     }
   }
 
@@ -221,6 +269,17 @@ export class LLMClient {
     }
     if (apiKey === 'mock' && cfg?.provider === name && cfg.apiKey) {
       apiKey = cfg.apiKey;
+    }
+    // Fall back to providers.yaml directly when no project-level config
+    if (apiKey === 'mock') {
+      const providersPath = resolveProvidersPath();
+      if (fs.existsSync(providersPath)) {
+        try {
+          const parsed = yamlLoad(fs.readFileSync(providersPath, 'utf-8')) as Record<string, any>;
+          if (parsed?.[name]?.apiKey) apiKey = parsed[name].apiKey;
+          else if (parsed?.[name]?.api_key) apiKey = parsed[name].api_key;
+        } catch { /* ignore */ }
+      }
     }
     const modelId = this.config.modelId ?? cfg?.modelId ?? this.defaultModelFor(name);
     const baseUrl = cfg?.baseUrl ?? undefined;
@@ -342,7 +401,7 @@ export class LLMClient {
       if (c.maxTokens !== undefined) opts.maxTokens = c.maxTokens;
       else if (this.config.maxTokens !== undefined) opts.maxTokens = this.config.maxTokens;
       // Announce the stream so the terminal makes the label clear.
-      process.stderr.write(`\n\x1b[36m▸ LLM ${labelPrefix}streaming…\x1b[0m `);
+      _writeStatus(`\n\x1b[36m▸ LLM ${labelPrefix}streaming…\x1b[0m `);
       let text = '';
       for await (const chunk of await this.model.stream(messages, opts)) {
         const piece = typeof chunk.content === 'string'
@@ -356,7 +415,7 @@ export class LLMClient {
         text += piece;
         onToken(piece);
       }
-      process.stderr.write('\n');
+      _writeStatus('\n');
       let json: unknown = null;
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
@@ -370,7 +429,7 @@ export class LLMClient {
         durationMs: Date.now() - start,
       };
     } catch (e) {
-      process.stderr.write('\n');
+      _writeStatus('\n');
       // Streaming failed — fall back to non-streaming call so the agent
       // can still complete the plan (the user just won't see tokens).
       if (process.env.ULTIMATRIX_LLM_DEBUG === '1') {

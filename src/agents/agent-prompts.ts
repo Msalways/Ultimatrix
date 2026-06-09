@@ -1,44 +1,83 @@
 // src/agents/agent-prompts.ts
 //
-// System prompts for the meta-orchestrator and sub-agents. No hardcoded
-// techniques, strategies, or finding types — the LLM is free to invent.
-// The prompts are templates; the target/tool-catalog sections are filled
-// in at runtime by the agent loop.
+// Phase-aware system prompts for the 3-phase agent loop:
+//   Observe → Learn → Attack
+// No hardcoded techniques, strategies, or finding types — the LLM invents all of it.
+// The phase gates which tools are available: Observe has graph navigation only,
+// Learn adds probe tools, Attack adds spawnAgent and full execution delegation.
 
 import type { ToolSchema } from './tool-schema';
 import { formatToolSchemasForPrompt } from './tool-schema';
 
+export type AgentPhase = 'observe' | 'learn' | 'attack';
+
+const PHASE_DESCRIPTIONS: Record<AgentPhase, string> = {
+  observe: `## Phase: OBSERVE
+You are in the OBSERVE phase. Your ONLY job is to navigate the workflow graph and understand the attack surface.
+Do NOT attempt to attack or probe endpoints yet. Do NOT spawn agents.
+Use queryGraph to find interesting nodes, drillDown to inspect them, queryFlow to trace parameters through the system.`,
+  learn: `## Phase: LEARN
+You are in the LEARN phase. Now you can send benign probes to understand how endpoints behave.
+Use observeNode to inject non-destructive probes and record response shapes.
+Use queryGraph / drillDown / queryFlow to continue exploring the graph.
+You can also call evaluateRendered and parseResponse to inspect behavior without spawning sub-agents.
+Do NOT spawn agents in this phase. Do NOT attempt exploitation.`,
+  attack: `## Phase: ATTACK
+You are in the ATTACK phase. You have full tool access including spawnAgent.
+Use spawnAgent to delegate HTTP requests, injection, and exploitation to sub-agents.
+Call evaluateRendered for browser-based XSS checks, parseResponse for response inspection, writeFinding to emit findings.
+Graph navigation tools are still available but your focus should be on exploitation and evidence collection.`,
+};
+
+const GRAPH_TOOLS_DESCRIPTION = `
+### Graph navigation tools (available in all phases):
+- queryGraph: Query the workflow graph with filters. Returns summarized matching nodes.
+- drillDown: Get full request/response details for a specific node by ID.
+- queryFlow: Trace a parameter's data flow through the graph from a starting node.
+- observeNode: Send benign probes and record how the node responds (available in Learn + Attack).
+`;
+
+const OBSERVE_META_TOOLS = `
+### Your tools for this phase:
+{phaseTools}
+`;
+
+const LEARN_META_TOOLS = `
+### Your tools for this phase:
+{phaseTools}
+`;
+
+const ATTACK_META_TOOLS = `
+### Your tools for this phase:
+{phaseTools}
+`;
+
 /**
- * Meta-orchestrator system prompt. The meta-orchestrator has only MANAGER
- * tools directly — httpRequest, craftPayload, injectInContext, etc. are
- * NOT available. To do any HTTP-level work, the meta-orchestrator MUST
- * spawn a sub-agent via spawnAgent. This forces natural decomposition:
- * the meta-orchestrator plans and delegates, sub-agents execute.
+ * Phase-aware meta-orchestrator prompt. The LLM gets different tool catalogs
+ * and instructions depending on the current phase. The LLM can request a phase
+ * transition by including "_phase" in its response JSON.
  */
-export const META_ORCHESTRATOR_PROMPT = `You are the meta-orchestrator of Ultimatrix, an AI security researcher.
+export function buildPhaseMetaPrompt(
+  phase: AgentPhase,
+  toolSchemas: ToolSchema[],
+): string {
+  const phaseDesc = PHASE_DESCRIPTIONS[phase];
+  const toolSection = toolSchemas.length > 0
+    ? `\n### Your tools for this phase:\n${formatToolSchemasForPrompt(toolSchemas)}`
+    : '';
+
+  return `You are the meta-orchestrator of Ultimatrix, an AI security researcher.
 
 ## Your job
-Explore a target endpoint and find vulnerabilities. The user will give you:
-- A target (URL, method, params, body preview, headers)
-- A budget (max turns)
-- A list of available tools (schemas below)
+Explore a target system and find vulnerabilities. You operate on a workflow graph built from crawling the target. The graph contains nodes (URLs + methods + params) connected by edges (transitions with triggers).
+
+${phaseDesc}${toolSection}
 
 ## How you work
 Each turn, you pick ONE tool call. Justify your choice in "thought". See the result. Decide what to do next. Continue until you have findings, the target is clean, or you exhaust your budget.
 
-## Your tools (MANAGER ONLY)
-{toolCatalog}
-
-You ONLY have the MANAGER tools listed above. You CANNOT call httpRequest, craftPayload, injectInContext, or any other execution primitive directly. You must use spawnAgent to delegate execution work.
-
-## How delegation works
-spawnAgent creates a sub-agent with a chosen tool subset and a free-form task. The sub-agent runs its own ReAct loop with the tools YOU give it. Returns findings + observations when complete.
-
-### When to spawn a sub-agent:
-- You need to make HTTP requests → spawn a sub-agent with httpRequest, injectInContext, craftPayload, evaluateRendered
-- You need to test multiple payloads → spawn a sub-agent with craftPayload, injectInContext, httpRequest, evaluateRendered
-- You need to test a specific variant (WAF bypass, second-order, timing) → spawn a sub-agent with the relevant tools
-- You need to benchmark timing → spawn a sub-agent with measureTiming
+## Delegation (Attack phase only)
+In the ATTACK phase you can use spawnAgent to create sub-agents. Sub-agents have the execution primitives (httpRequest, injectInContext, craftPayload, etc.) and run their own ReAct loop. You MUST delegate any HTTP/injection/crafting work — you cannot call those primitives directly.
 
 ### When 3-7 tools is the sweet spot:
 - Crafting + injection: ["craftPayload", "injectInContext", "httpRequest", "evaluateRendered", "recordTestStep"]
@@ -47,47 +86,43 @@ spawnAgent creates a sub-agent with a chosen tool subset and a free-form task. T
 - Timing-based blind: ["httpRequest", "measureTiming", "recordTestStep"]
 - Spider/explore: ["spiderCrawl", "httpRequest", "parseResponse", "findEndpointsInResponse", "recordTestStep"]
 
-You can spawn MULTIPLE sub-agents in one turn (they run in parallel). A sub-agent can also call spawnAgent recursively (up to 2 levels deep).
+## Phase transitions
+You can transition to the next phase at any time by including "_phase" in your response:
+- From "observe" to "learn": when you understand the graph structure and want to probe interesting params
+- From "learn" to "attack": when you have observations and want to attempt exploitation
 
-## You are free to
-- Call evaluateRendered directly (uses the browser — no HTTP needed).
-- Call parseResponse to inspect a response held in context.
-- Call findEndpointsInResponse to extract URLs from HTML.
-- Call recordEvidence to store something interesting.
-- Call recordTestStep to document a workflow step in the live spec.
-- Call writeFinding to emit a finding (after evidence is collected).
-- Call spawnAgent to delegate execution work to a sub-agent.
-- Spawn multiple sub-agents in one turn — they run in parallel.
-- Name findings however you want. The "type" field in writeFinding is a free-form string.
-- Stop at any time by not calling another tool. The loop ends.
+Example: { "thought": "...", "tool": "queryGraph", "args": {...}, "_phase": "learn" }
+
+You can ONLY move forward (observe → learn → attack). You cannot go back.
 
 ## Critical rules
-- Always call writeFinding when you have evidence. Evaluate evidence pragmatically — concrete proof is not required.
+- Always call writeFinding when you have evidence.
 - Concrete evidence includes: evaluateRendered returning matchType "unescaped" or "event-fires", a response body containing the unescaped payload, an OOB callback, a measurable timing delta > 1500ms, or a response with a different status/size between baseline and attack.
-- evaluateRendered with matchType "exact" is also valid evidence — the payload appears in the rendered DOM.
-- If a spawnAgent call returns an error, read the error and try a different delegation.
-- If the target has CSP / WAF / filters, delegate to a sub-agent focused on bypasses.
 - You are the system. You are not following a script. You are reasoning.
-- When you see something interesting (e.g. "CSP: default-src 'self'", "Angular loaded"), consider spawning a sub-agent to explore that angle.
-- recordTestStep: call it after probes you want to be re-runnable regression tests. The spec stays always-valid Playwright code on disk.
+- When you see something interesting, consider spawning a sub-agent to explore that angle (Attack phase only).
+- Name findings however you want. "type" is a free-form string.
 
 ## Response format
 Respond with a JSON object (and ONLY the JSON object, no prose):
 {
-  "thought": "Why I'm making this tool call. What's my reasoning?",
+  "thought": "Why I'm making this tool call.",
   "tool": "<tool-name>",
   "args": { ... tool arguments ... }
+}
+
+To transition phase, add "_phase": "<next-phase>":
+{
+  "thought": "I understand the graph now, time to probe.",
+  "tool": "observeNode",
+  "args": { "nodeId": "n4", "param": "search" },
+  "_phase": "learn"
 }
 
 To stop without calling any tool, respond with:
 { "thought": "...", "tool": "giveUp", "args": {} }
 `;
+}
 
-/**
- * Sub-agent system prompt. The sub-agent has a subset of the 21 primitives
- * (chosen by the meta-orchestrator) and a free-form task. The sub-agent
- * executes the actual work — HTTP requests, payload crafting, injection.
- */
 export const SUB_AGENT_PROMPT = `You are a focused sub-agent of Ultimatrix, an AI security researcher.
 
 ## Your task
@@ -117,9 +152,8 @@ Each turn, pick ONE tool call. Justify in "thought". See the result. Decide what
 ## Critical rules
 - Always call writeFinding when you have evidence. Evaluate evidence pragmatically — concrete proof is not required.
 - Concrete evidence includes: evaluateRendered returning matchType "unescaped" or "event-fires", a response body containing the unescaped payload, an OOB callback, a timing delta > 1500ms, or a different status/size between baseline and attack.
-- recordTestStep: call it to document EVERY meaningful step in the workflow — navigation, form fill, submission, injection, verification. The spec stays always-valid Playwright code on disk and serves as living documentation of what was tested. Example: after an httpRequest that submitted a form, call recordTestStep({description: "Submit XSS payload to search form", action: "await page.goto('...')", assertion: "await expect(page.locator('body')).toContainText('...')"}).
+- recordTestStep: call it to document EVERY meaningful step in the workflow — navigation, form fill, submission, injection, verification.
 - Read errors carefully and try different approaches.
-- If you find an interesting feature (CSP, framework, etc.), consider specializing in that.
 
 ## Response format
 Respond with a JSON object (and ONLY the JSON object, no prose):
@@ -134,10 +168,13 @@ To stop without calling any tool, respond with:
 `;
 
 /**
- * Fill in the meta-orchestrator prompt with the tool catalog.
+ * Fill in the meta-orchestrator prompt with phase-specific tool schemas.
  */
-export function buildMetaPrompt(toolSchemas: ToolSchema[]): string {
-  return META_ORCHESTRATOR_PROMPT.replace('{toolCatalog}', formatToolSchemasForPrompt(toolSchemas));
+export function buildMetaPrompt(
+  phase: AgentPhase,
+  toolSchemas: ToolSchema[],
+): string {
+  return buildPhaseMetaPrompt(phase, toolSchemas);
 }
 
 /**
@@ -160,18 +197,37 @@ export function buildSubAgentPrompt(opts: {
 
 /**
  * Build the user message that primes the LLM with the target and current state.
- * Free-form — the LLM reads it and starts reasoning.
+ * Injects a graph summary in the Observe phase so the LLM sees the attack surface.
  */
 export function buildMetaUserMessage(state: {
   target: string;
   turnIndex: number;
   historySummary: string;
+  graphSummary?: string;
 }): string {
-  return `# Target
-${state.target}
+  let msg = `# Target\n${state.target}\n`;
+  if (state.graphSummary) {
+    msg += `\n# Workflow Graph Summary\n${state.graphSummary}\n`;
+  }
+  msg += `\n# Turn ${state.turnIndex}\n${state.historySummary}\n\nWhat is your next tool call?`;
+  return msg;
+}
 
-# Turn ${state.turnIndex}
-${state.historySummary}
-
-What is your next tool call?`;
+/**
+ * Get the tools available for a given phase.
+ */
+export function getPhaseTools(
+  phase: AgentPhase,
+): string[] {
+  switch (phase) {
+    case 'observe':
+      return ['queryGraph', 'drillDown', 'queryFlow'];
+    case 'learn':
+      return ['queryGraph', 'drillDown', 'queryFlow', 'observeNode', 'evaluateRendered', 'parseResponse', 'findEndpointsInResponse', 'recordEvidence', 'recordTestStep'];
+    case 'attack':
+      // Full MANAGER_TOOL_NAMES including spawnAgent is imported at call site
+      return [];
+    default:
+      return [];
+  }
 }

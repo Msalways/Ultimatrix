@@ -6,6 +6,7 @@ import { select, input, confirm, password } from '@inquirer/prompts';
 import { providerRegistry, type ProviderConfig } from '../providers/provider-registry';
 import { readAppModel, writeAppModel, type AppModel } from '../core/app-model';
 import type { LLMProviderName, ScanTarget } from '../core/types';
+import { buildHuntConfig, buildSarifConfig, buildMcpConfig, type FullConfig } from '../core/hunt-config';
 import yaml from 'js-yaml';
 import { Logger, colors } from './logger';
 
@@ -36,33 +37,26 @@ program
   .description('AI-powered security testing')
   .version('2.0.0');
 
-// ── hunt: canonical combined flow (assess + interact + test) ──
+// ── hunt: canonical combined flow ──
 program
   .command('hunt')
-  .description('Canonical hunt — spider + recon + multi-session RBAC testing + chains + Playwright tests (replaces assess/interact/test)')
-  .option('-t, --target <url>', 'Target URL (required)')
-  .option('-o, --output <dir>', 'Output directory', './output')
-  .option('--skip <list>', 'Comma-separated phases to skip: spider,recon,chains,tests')
-  .option('--depth <n>', 'Spider depth', '2')
-  .option('--max-runtime <seconds>', 'Hard time limit, 0=unlimited (default 0)', '0')
-  .option('--existing-model <path>', 'Skip spider, load this app-model.json')
-  .option('--seed-urls <urls...>', 'Extra URLs to seed the workflow graph (relative to target origin)')
+  .description('Canonical hunt — spider + observe + learn + attack (all config in ultimatrix.yaml)')
+  .option('-t, --target <url>', 'Target URL (or set scan.target in ultimatrix.yaml)')
+  .option('-o, --output <dir>', 'Output directory (or set output.dir in ultimatrix.yaml)')
+  .option('--config <path>', 'Config file path (default: ./ultimatrix.yaml)')
+  .option('--auto', 'Autonomous mode (skip interactive REPL)')
+  .option('--skip <list>', 'Comma-separated phases to skip: spider,recon,chains,tests,observe,learn,attack,interactive')
+  .option('--max-runtime <seconds>', 'Hard time limit, 0=unlimited (default 0)')
   .action(async (opts) => {
     const { parseHuntFlags, runHunt } = await import('./hunt');
-    const seedUrls: string[] = opts.seedUrls ? (Array.isArray(opts.seedUrls) ? opts.seedUrls : [opts.seedUrls]) : [];
-    const extra: string[] = [];
-    for (const u of seedUrls) extra.push('--seed-url', u);
-    const huntOpts = parseHuntFlags([
-      '-t', opts.target || '',
-      '-o', opts.output,
-      opts.skip ? '--skip' : '',
-      opts.skip || '',
-      '--depth', opts.depth,
-      '--max-runtime', opts.maxRuntime,
-      opts.existingModel ? '--existing-model' : '',
-      opts.existingModel || '',
-      ...extra,
-    ].filter((x) => x !== '' && x !== null && x !== undefined));
+    const flags: string[] = [];
+    if (opts.target) flags.push('-t', opts.target);
+    if (opts.output) flags.push('-o', opts.output);
+    if (opts.config) flags.push('--config', opts.config);
+    if (opts.auto) flags.push('--auto');
+    if (opts.skip) flags.push('--skip', opts.skip);
+    if (opts.maxRuntime) flags.push('--max-runtime', opts.maxRuntime);
+    const huntOpts = parseHuntFlags(flags);
     await runHunt(huntOpts);
   });
 
@@ -576,8 +570,12 @@ function providerQuestions(provider: string): Array<{ field: string; question: s
   ];
 }
 
-async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ provider: { name: string; [key: string]: any }; scan: { target?: string; headless?: boolean; timeout?: number }; output: { dir: string; format: string } }> {
-  const config: any = { provider: {}, scan: {}, output: { dir: './output', format: 'html' } };
+export async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<FullConfig> {
+  const config: any = {
+    provider: {}, scan: {},
+    output: { dir: './output', format: 'html', includeCoverage: true },
+    hunt: {}, mcp: { servers: {} }, sarif: {},
+  };
 
   // 1. Global config
   const globalConfigPath = path.join(os.homedir(), '.config', 'ultimatrix', 'config.yaml');
@@ -591,8 +589,11 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
     } catch {}
   }
 
-  // 2. Project config file
-  for (const p of [path.join(process.cwd(), 'ultimatrix.yaml'), path.join(process.cwd(), 'ultimatrix.json')]) {
+  // 2. Project config file (support custom path via cliOpts.configPath)
+  const configPaths = cliOpts?.configPath
+    ? [cliOpts.configPath]
+    : [path.join(process.cwd(), 'ultimatrix.yaml'), path.join(process.cwd(), 'ultimatrix.json')];
+  for (const p of configPaths) {
     if (fs.existsSync(p)) {
       try {
         const content = fs.readFileSync(p, 'utf-8');
@@ -603,12 +604,11 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
           parsed = JSON.parse(content);
         }
         if (parsed) {
-          // Support old flat format: {"provider": "openai", "model": "gpt-4o", "target": "..."}
           if (typeof parsed.provider === 'string') {
             parsed = {
               provider: { name: parsed.provider, model: parsed.model },
               scan: { target: parsed.target, headless: parsed.headless, harPath: parsed.har },
-              output: { dir: parsed.output, format: parsed.format || 'html' },
+              output: { dir: parsed.output, format: parsed.format || 'html', includeCoverage: true },
             };
           }
           Object.assign(config, deepMerge(config, parsed));
@@ -629,7 +629,6 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
     } catch {}
   }
 
-  // Normalize: if provider is a string, convert to object
   if (typeof config.provider === 'string') {
     config.provider = { name: config.provider };
   }
@@ -664,7 +663,15 @@ async function loadRuntimeConfig(cliOpts?: Record<string, string>): Promise<{ pr
     if (process.env[envKey]) config.provider.apiKey = process.env[envKey];
   }
 
-  return config;
+  // 6. Build typed config sections (fill defaults)
+  config.hunt = buildHuntConfig(config);
+  config.sarif = buildSarifConfig(config);
+  config.mcp = buildMcpConfig(config);
+  if (typeof config.output.includeCoverage !== 'boolean') {
+    config.output.includeCoverage = true;
+  }
+
+  return config as FullConfig;
 }
 
 async function loadModel(config: any) {

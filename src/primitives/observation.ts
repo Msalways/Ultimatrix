@@ -190,19 +190,20 @@ export const evaluateRendered: PrimitiveDefinition<
     }
   },
   toPlaywrightStep(args, result) {
+    const _esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const a = args as { url?: string; payload?: string; matchMode?: string };
     if (!result.ok || !a.url) return null;
     const v = result.value as { matchType?: string } | undefined;
     if (!v || v.matchType === 'none') {
       return {
-        action: `await page.goto('${a.url}', { waitUntil: 'load' })`,
-        assertion: `await expect(page.locator('body')).not.toContainText('${(a.payload || '').replace(/'/g, "\\'")}')`,
+        action: `await page.goto('${_esc(a.url)}', { waitUntil: 'load' })`,
+        assertion: `await expect(page.locator('body')).not.toContainText('${_esc(a.payload || '')}')`,
         description: `Verify payload NOT reflected at ${new URL(a.url).pathname}`,
       };
     }
     return {
-      action: `await page.goto('${a.url}', { waitUntil: 'load' })`,
-      assertion: `await expect(page.locator('body')).toContainText('${(a.payload || '').replace(/'/g, "\\'")}')`,
+      action: `await page.goto('${_esc(a.url)}', { waitUntil: 'load' })`,
+      assertion: `await expect(page.locator('body')).toContainText('${_esc(a.payload || '')}')`,
       description: `Verify XSS: payload ${v.matchType} in DOM at ${new URL(a.url).pathname}`,
     };
   },

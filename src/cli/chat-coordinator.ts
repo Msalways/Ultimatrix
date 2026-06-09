@@ -158,6 +158,19 @@ export function formatSpiderSection(s: ChatSpiderSummary): string {
   return lines.join('\n');
 }
 
+/** Snapshot of orchestrator state for the chat LLM. */
+export interface ChatOrchestratorStatus {
+  phase: string;
+  totalNodes: number;
+  completedNodes: number;
+  failedNodes: number;
+  inFlight: number;
+  elapsedSec: number;
+  maxRuntimeSec: number;
+  retryBudgetUsed: number;
+  rateLimitEvents: number;
+}
+
 /** Context the chat LLM has access to. */
 export interface ChatContext {
   target: string;
@@ -179,6 +192,11 @@ export interface ChatContext {
    *  includes a "Spider summary:" section so the LLM knows what the
    *  spider has discovered. Populated by summarizeSpider(). */
   spider?: ChatSpiderSummary;
+  /** Optional orchestrator status snapshot. When present, the chat
+   *  prompt includes an "Orchestrator status:" section so the LLM
+   *  knows what the orchestrator is currently doing (phase, in-flight
+   *  workers, nodes completed/failed, etc.). */
+  orchestratorStatus?: ChatOrchestratorStatus;
 }
 
 export interface ChatMessage {
@@ -359,6 +377,15 @@ export function buildChatUserMessage(message: string, context: ChatContext): str
 
   if (context.spider) {
     lines.push(formatSpiderSection(context.spider));
+  }
+
+  if (context.orchestratorStatus) {
+    const s = context.orchestratorStatus;
+    const runtimeStr = s.maxRuntimeSec > 0 ? ` (max ${s.maxRuntimeSec}s)` : ' (unlimited)';
+    lines.push(`\nOrchestrator status:`);
+    lines.push(`  phase: ${s.phase}  elapsed: ${s.elapsedSec}s${runtimeStr}`);
+    lines.push(`  nodes: ${s.completedNodes} completed, ${s.failedNodes} failed, ${s.inFlight} in-flight (${s.totalNodes} total)`);
+    lines.push(`  retry budget used: ${s.retryBudgetUsed}  rate-limit events: ${s.rateLimitEvents}`);
   }
 
   lines.push(`\nUser: ${message}`);

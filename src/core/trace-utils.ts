@@ -341,5 +341,5 @@ function extractPath(url: string): string {
 }
 
 function escapeQuotes(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/`/g, '\\`');
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/`/g, '\\`').replace(/\$/g, '\\$');
 }

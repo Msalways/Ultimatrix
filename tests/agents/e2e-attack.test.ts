@@ -181,6 +181,7 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
       ctx,
       llm,
       maxMetaTurns: 5,
+      initialPhase: 'attack',
     });
 
     // 1) The HTTP request actually reached the target server
@@ -302,6 +303,7 @@ describe('e2e attack (Block 19): agent loop actually performs attacks', () => {
       ctx,
       llm,
       maxMetaTurns: 5,
+      initialPhase: 'attack',
     });
 
     // Meta spawned a sub-agent

@@ -1,9 +1,10 @@
 import type { AppModel, WorkflowNode, WorkflowEdge, AppModelForm, AppModelEndpoint } from '../core/app-model';
 import type { CrawlResult } from './spider';
 import type { TraceEntry } from '../core/browser-session';
+import { getGlobalGraphStore } from '../workflow-graph/store';
+import type { GraphNode, GraphEdge, GraphParam } from '../workflow-graph/types';
 
 const STATIC_EXT = /\.(css|js|woff2?|png|svg|ico|map|jpg|jpeg|gif|webp|ttf|eot|pdf)$/i;
-const API_CONTENT_TYPES = /json|xml|grpc|protobuf|graphql|form-data|x-www-form-urlencoded/i;
 
 export interface SpiderBridgeResult {
   model: Partial<AppModel>;
@@ -46,7 +47,6 @@ function parseBodyFields(body: string | undefined, contentType: string): { forma
     }
   } catch { /* best-effort parse */ }
 
-  // Fallback: try to parse as JSON regardless of content-type
   try {
     const parsed = JSON.parse(body);
     if (typeof parsed === 'object' && parsed !== null) {
@@ -73,88 +73,58 @@ function extractAuthHeaders(reqHeaders: Record<string, string>): Record<string, 
   return Object.keys(auth).length > 0 ? auth : undefined;
 }
 
-function mineTraceForEndpoints(trace: TraceEntry[]): AppModelEndpoint[] {
-  const seen = new Map<string, number>();
-  const endpoints: AppModelEndpoint[] = [];
+function traceEntryToGraphNode(entry: TraceEntry): GraphNode | null {
+  if (entry.type !== 'xhr' && entry.type !== 'fetch' && entry.type !== 'navigation' && entry.type !== 'form') return null;
+  try { new URL(entry.url); } catch { return null; }
+  if (STATIC_EXT.test(entry.url)) return null;
+  const CHALLENGE_PATHS = /^\/(cdn-cgi|__cf|__static)\//;
+  try {
+    const p = new URL(entry.url).pathname;
+    if (CHALLENGE_PATHS.test(p)) return null;
+  } catch { return null; }
 
-  for (const entry of trace) {
-    // Include navigation entries — iframe form submissions and page
-    // navigations carry query params in the URL that XSS/SSRF primitives
-    // need to target. Entries without params/body are filtered later.
-    if (entry.type !== 'xhr' && entry.type !== 'fetch' && entry.type !== 'navigation' && entry.type !== 'form') continue;
+  const params: GraphParam[] = [];
+  try {
+    const u = new URL(entry.url);
+    u.searchParams.forEach((v, k) => params.push({ name: k, in: 'query', type: 'string', value: v, required: false }));
+  } catch { /* ignore */ }
 
-    let url: URL;
-    try {
-      url = new URL(entry.url);
-    } catch {
-      continue;
-    }
-
-    const pathname = url.pathname;
-    if (STATIC_EXT.test(pathname)) continue;
-
-    const CHALLENGE_PATHS = /^\/(cdn-cgi|__cf|__static)\//;
-    if (CHALLENGE_PATHS.test(pathname)) continue;
-
-    const reqContentType = (entry.requestHeaders?.['content-type'] || entry.requestHeaders?.['Content-Type'] || '').toLowerCase();
-    const respContentType = (entry.responseHeaders?.['content-type'] || '').toLowerCase();
-
-    const params: Array<{ name: string; type: string; required: boolean }> = [];
-    url.searchParams.forEach((_, key) => {
-      params.push({ name: key, type: 'query', required: false });
-    });
-
-    // Parse request body for fields + format
-    const { format, fields } = parseBodyFields(entry.requestBody, reqContentType);
+  const bodyFields: GraphParam[] = [];
+  const reqCt = (entry.requestHeaders?.['content-type'] || '').toLowerCase();
+  const respCt = (entry.responseHeaders?.['content-type'] || '').toLowerCase();
+  if (entry.requestBody) {
+    const { fields } = parseBodyFields(entry.requestBody, reqCt);
     for (const f of fields) {
-      const exists = params.some(p => p.name === f.name);
-      if (!exists) params.push({ name: f.name, type: 'body', required: false });
+      bodyFields.push({ name: f.name, in: 'body', type: f.type, value: undefined, required: false });
     }
-
-    const uniqueKey = `${entry.method}:${pathname}`;
-
-    // Phase 1B: merge params from subsequent trace entries into existing
-    // endpoint instead of dropping them. A form submission POST may carry
-    // different fields than an earlier XHR POST to the same endpoint.
-    const existingIdx = seen.get(uniqueKey);
-    if (existingIdx !== undefined) {
-      const existing = endpoints[existingIdx];
-      for (const p of params) {
-        if (!existing.params.some(ep => ep.name === p.name)) {
-          existing.params.push(p);
-        }
-      }
-      // Also merge body fields from the later entry if the format is consistent
-      if (entry.requestBody && existing.bodyPreview !== entry.requestBody) {
-        const bodyLen = existing.bodyPreview?.length ?? 0;
-        const newLen = entry.requestBody.length;
-        // Keep the longer body preview (more complete request)
-        if (newLen > bodyLen) existing.bodyPreview = entry.requestBody;
-      }
-      continue;
-    }
-
-    seen.set(uniqueKey, endpoints.length);
-
-    // Detect auth from request headers or response status
-    const authHeaders = extractAuthHeaders(entry.requestHeaders);
-    const requiresAuth = !!(authHeaders || entry.status === 401 || entry.status === 403);
-
-    endpoints.push({
-      path: pathname,
-      method: entry.method || 'GET',
-      params,
-      requiresAuth,
-      responseStatus: entry.status,
-      contentType: respContentType,
-      bodyPreview: entry.requestBody || '',
-      bodyFormat: format,
-      bodyFields: fields.length > 0 ? fields : undefined,
-      authHeaders,
-    });
   }
 
-  return endpoints;
+  const tags: string[] = [];
+  if (entry.status === 401 || entry.status === 403) tags.push('auth-required');
+  if (params.length > 0 || bodyFields.length > 0) tags.push('has-params');
+  if (respCt.includes('json')) tags.push('returns-json');
+  if (respCt.includes('html')) tags.push('returns-html');
+
+  return {
+    id: '',
+    url: entry.url,
+    method: entry.method,
+    params,
+    bodyFields,
+    requestHeaders: entry.requestHeaders || {},
+    requestBody: entry.requestBody,
+    responseStatus: entry.status,
+    responseHeaders: entry.responseHeaders || {},
+    responseBodyPreview: entry.responseBody?.slice(0, 2000),
+    contentType: respCt || 'application/octet-stream',
+    cookies: {},
+    source: 'crawl',
+    tags,
+    observations: [],
+    attackResults: [],
+    depth: 0,
+    title: entry.url,
+  };
 }
 
 const TECHNIQUES = ['sqli', 'xss', 'ssrf'] as const;
@@ -164,7 +134,6 @@ function buildInitialHypotheses(
   forms: AppModelForm[],
 ): Record<string, unknown>[] {
   const hypotheses: Record<string, unknown>[] = [];
-
   for (const ep of endpoints) {
     for (const param of ep.params) {
       for (const technique of TECHNIQUES) {
@@ -183,15 +152,9 @@ function buildInitialHypotheses(
       }
     }
   }
-
-  // For forms that didn't map to endpoints (no params), still create hypotheses
   for (const form of forms) {
     let path: string;
-    try {
-      path = new URL(form.action, form.pageUrl).pathname;
-    } catch {
-      continue;
-    }
+    try { path = new URL(form.action, form.pageUrl).pathname; } catch { continue; }
     const method = form.method.toUpperCase();
     for (const field of form.fields) {
       const epExists = endpoints.some(
@@ -214,59 +177,73 @@ function buildInitialHypotheses(
       }
     }
   }
-
   return hypotheses;
 }
 
-function formsToEndpoints(forms: AppModelForm[]): AppModelEndpoint[] {
-  const seen = new Set<string>();
-  const endpoints: AppModelEndpoint[] = [];
+function graphNodeToEndpoint(n: GraphNode): AppModelEndpoint {
+  const bodyFields = n.bodyFields.map((f) => ({ name: f.name, type: f.type }));
+  let bodyFormat: AppModelEndpoint['bodyFormat'];
+  const ct = n.contentType.toLowerCase();
+  if (ct.includes('json')) bodyFormat = 'json';
+  else if (ct.includes('xml')) bodyFormat = 'xml';
+  else if (ct.includes('graphql')) bodyFormat = 'graphql';
+  else if (ct.includes('form')) bodyFormat = 'form';
+  else bodyFormat = undefined;
 
-  for (const form of forms) {
-    let path: string;
-    try {
-      path = new URL(form.action, form.pageUrl).pathname;
-    } catch {
-      continue;
-    }
+  let path: string;
+  try { path = new URL(n.url).pathname; } catch { path = n.url; }
 
-    if (STATIC_EXT.test(path)) continue;
-
-    const method = form.method.toUpperCase();
-    const key = `${method}:${path}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    endpoints.push({
-      path,
-      method,
-      params: form.fields.map((f) => ({
-        name: f.name,
-        type: method === 'GET' ? 'query' : 'form',
-        required: f.required ?? false,
-      })),
-      requiresAuth: false,
-      responseStatus: 0,
-      contentType: '',
-      bodyPreview: '',
-    });
+  const params = n.params.map((p) => ({ name: p.name, type: p.in, required: p.required }));
+  for (const f of n.bodyFields) {
+    if (!params.some((p) => p.name === f.name)) params.push({ name: f.name, type: 'body', required: f.required });
   }
 
-  return endpoints;
+  return {
+    path,
+    method: n.method,
+    params,
+    requiresAuth: n.tags.includes('auth-required'),
+    responseStatus: n.responseStatus,
+    contentType: n.contentType,
+    bodyPreview: n.requestBody || '',
+    bodyFormat,
+    bodyFields: bodyFields.length > 0 ? bodyFields : undefined,
+    authHeaders: extractAuthHeaders(n.requestHeaders),
+  };
 }
 
 export function spiderResultToAppModel(crawl: CrawlResult, target: string): SpiderBridgeResult {
-  const nodes: WorkflowNode[] = [];
-  const edges: WorkflowEdge[] = [];
+  const store = getGlobalGraphStore();
+  store.setTarget(target);
+
+  const workflowNodes: WorkflowNode[] = [];
+  const workflowEdges: WorkflowEdge[] = [];
   const forms: AppModelForm[] = [];
   let privateAppHint = '';
 
-  // Convert routes to workflow nodes
+  // Phase 1: Ingest crawl routes as graph nodes
   for (const route of crawl.routes) {
     const nodeId = `spider-${route.path.replace(/[^a-zA-Z0-9]/g, '_') || 'root'}`;
     const isLogin = /login|auth|signin|logon/.test(route.path);
-    nodes.push({
+    const node = store.upsertNode('GET', route.url, {
       id: nodeId,
+      responseStatus: route.status ?? 200,
+      contentType: route.contentType ?? 'text/html',
+      responseBodyPreview: route.bodyPreview,
+      source: 'crawl',
+      tags: isLogin ? ['login'] : [],
+      depth: route.depth ?? 0,
+      title: route.title || route.url,
+      params: [],
+      bodyFields: [],
+      requestHeaders: {},
+      responseHeaders: {},
+      cookies: {},
+      observations: [],
+      attackResults: [],
+    });
+    workflowNodes.push({
+      id: node.id,
       url: route.url,
       title: route.title,
       type: isLogin ? 'login' : 'page',
@@ -276,13 +253,11 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
       discoveryMethod: 'navigation',
     });
 
-    // Convert forms from DOM snapshots
+    // Extract forms from DOM snapshots
     const snapshot = crawl.snapshots.find(s => s.url === route.url);
     if (snapshot) {
       for (const f of snapshot.forms) {
-        const exists = forms.some(
-          (ef) => ef.pageUrl === snapshot.url && ef.action === f.action
-        );
+        const exists = forms.some((ef) => ef.pageUrl === snapshot!.url && ef.action === f.action);
         if (!exists) {
           forms.push({
             pageUrl: snapshot.url,
@@ -297,7 +272,6 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
           });
         }
       }
-      // Treat standalone inputs as virtual forms (no wrapping <form> tag)
       for (const inp of snapshot.inputs) {
         const fieldName = inp.resolvedParam || inp.name;
         if (!fieldName) continue;
@@ -319,30 +293,84 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
           });
         }
       }
+
+      // Form nodes → graph edges
+      for (const f of snapshot.forms) {
+        const formParams: GraphParam[] = f.fields.map((field) => ({
+          name: field.name,
+          in: 'body' as const,
+          type: field.type,
+          required: field.required,
+        }));
+        let actionPath: string;
+        try { actionPath = new URL(f.action, route.url).href; } catch { actionPath = f.action; }
+        const formNode = store.upsertNode(f.method.toUpperCase(), actionPath, {
+          bodyFields: formParams,
+          tags: ['form', 'has-params'],
+          source: 'crawl',
+          depth: route.depth! + 1,
+          title: `form @ ${f.selector || f.action}`,
+        });
+        store.addEdge({
+          fromId: node.id,
+          toId: formNode.id,
+          trigger: 'form_submit',
+          selector: f.selector,
+          formData: Object.fromEntries(f.fields.map((field) => [field.name, field.placeholder || ''])),
+          label: `form-submit: ${f.selector || f.action}`,
+        });
+      }
     }
   }
 
-  // Build edges from depth transitions
+  // Phase 2: Ingest trace entries as graph nodes + edges
+  for (const entry of crawl.trace || []) {
+    const gNode = traceEntryToGraphNode(entry);
+    if (!gNode) continue;
+    const key = `${entry.method}:${entry.url}`;
+    const existing = store.findNodeByUrl(entry.method, entry.url);
+    if (existing) {
+      for (const p of gNode.params) {
+        if (!existing.params.some((ep) => ep.name === p.name)) existing.params.push(p);
+      }
+      for (const p of gNode.bodyFields) {
+        if (!existing.bodyFields.some((ep) => ep.name === p.name)) existing.bodyFields.push(p);
+      }
+      if (entry.responseBody && !existing.responseBodyPreview) {
+        existing.responseBodyPreview = entry.responseBody.slice(0, 2000);
+      }
+      continue;
+    }
+
+    gNode.id = `cr-${key.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    store.addNode(gNode);
+
+    if (entry.parentNodeId && store.getNode(entry.parentNodeId)) {
+      store.addEdge({
+        fromId: entry.parentNodeId,
+        toId: gNode.id,
+        trigger: entry.triggerType === 'xhr-js' ? 'script' : (entry.triggerType || 'navigation') as GraphEdge['trigger'],
+        selector: entry.triggerSelector,
+        formData: entry.triggerPayload ? { payload: entry.triggerPayload } : undefined,
+        label: `${entry.method} ${entry.url}`,
+      });
+    }
+  }
+
+  // Phase 3: Build edges from crawl depth transitions
   const sorted = [...crawl.routes].sort((a, b) => a.visitedAt - b.visitedAt);
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1];
     const curr = sorted[i];
-    const fromNode = nodes.find(
-      (n) => n.url === prev.url || n.url.replace(/\/$/, '') === prev.url.replace(/\/$/, '')
-    );
-    const toNode = nodes.find(
-      (n) => n.url === curr.url || n.url.replace(/\/$/, '') === curr.url.replace(/\/$/, '')
-    );
+    const fromNode = store.findNodeByUrl('GET', prev.url);
+    const toNode = store.findNodeByUrl('GET', curr.url);
     if (fromNode && toNode && fromNode.id !== toNode.id) {
-      const exists = edges.some((e) => e.fromId === fromNode.id && e.toId === toNode.id);
-      if (!exists) {
-        edges.push({
-          fromId: fromNode.id,
-          toId: toNode.id,
-          trigger: 'navigation',
-          label: `spider depth ${curr.depth}`,
-        });
-      }
+      store.addEdge({
+        fromId: fromNode.id,
+        toId: toNode.id,
+        trigger: 'navigation',
+        label: `spider depth ${curr.depth}`,
+      });
     }
   }
 
@@ -353,70 +381,44 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
     privateAppHint = 'Few routes and no cookies — may require login';
   }
 
-  // Cookies present but no session cookie → partial auth
   const hasSessionCookie = Object.keys(crawl.cookies).some(
     (k) => /session|token|auth|sid|jwt|connect\.sid|phpsessid|jsessionid/i.test(k)
   );
 
-  const minedEndpoints = mineTraceForEndpoints(crawl.trace || []);
-  const formEndpoints = formsToEndpoints(forms);
+  // Derive endpoint list from graph nodes (backward compat)
+  const allNodes = store.getAllNodes();
+  const allEdges = store.getAllEdges();
+  const allEndpoints = allNodes.map(graphNodeToEndpoint);
 
-  // Merge endpoints: prefer mined (has response data) over form-created
-  // Filter out trace-only endpoints with no params — they're likely resource/favicon fetches
-  const formActionPaths = new Set(formEndpoints.map(e => `${e.method}:${e.path}`));
-  const routePaths = new Set(crawl.routes.map(r => r.path));
-  const routePreviewByPath = new Map<string, { bodyPreview: string; contentType: string; status: number }>();
-  for (const r of crawl.routes) {
-    if (r.bodyPreview) {
-      routePreviewByPath.set(r.path, {
-        bodyPreview: r.bodyPreview,
-        contentType: r.contentType ?? '',
-        status: r.status ?? 0,
+  // Re-derive workflow nodes/edges from graph store for consistency
+  const sortedNodes = allNodes.sort((a, b) => a.depth - b.depth);
+  for (const gn of sortedNodes) {
+    if (gn.source === 'crawl' && !workflowNodes.some((wn) => wn.url === gn.url)) {
+      let wfType = 'page';
+      if (gn.tags.includes('login')) wfType = 'login';
+      else if (gn.tags.includes('form')) wfType = 'form';
+      else if (gn.method !== 'GET') wfType = 'api';
+      workflowNodes.push({
+        id: gn.id,
+        url: gn.url,
+        title: gn.title || gn.url,
+        type: wfType === 'form' ? 'page' : wfType as 'page' | 'api' | 'login',
+        authRequired: gn.tags.includes('auth-required'),
+        authVerified: false,
+        discoveredFrom: null,
+        discoveryMethod: 'navigation',
       });
     }
   }
-  const endpointSeen = new Set<string>();
-  const allEndpoints: AppModelEndpoint[] = [];
-  for (const ep of [...minedEndpoints, ...formEndpoints]) {
-    const key = `${ep.method}:${ep.path}`;
-    // Bug 5: when the same (method, path) appears in both the trace-mined
-    // list (params=[]) and the form-derived list (params=[{name: 'query'}]),
-    // the trace entry wins on the first pass and the form params are
-    // dropped. This is why an XSS like xss-game (form `name="query"` on
-    // `/level1/frame`) ends up with `params: []` and the codegen can't
-    // reproduce the vuln. Merge form params INTO the existing endpoint
-    // when we see a later entry for the same key.
-    if (endpointSeen.has(key)) {
-      const existing = allEndpoints.find((e) => `${e.method}:${e.path}` === key);
-      if (existing) {
-        for (const p of ep.params) {
-          if (!existing.params.some((ep) => ep.name === p.name)) {
-            existing.params.push(p);
-          }
-        }
-      }
-      continue;
+  for (const ge of allEdges) {
+    if (!workflowEdges.some((we) => we.fromId === ge.fromId && we.toId === ge.toId)) {
+      workflowEdges.push({
+        fromId: ge.fromId,
+        toId: ge.toId,
+        trigger: ge.trigger as WorkflowEdge['trigger'],
+        label: ge.label,
+      });
     }
-    // Skip trace-only endpoints with no params and no body — likely resource fetches
-    if (ep.params.length === 0 && !ep.bodyFields?.length
-        && !formActionPaths.has(key) && !routePaths.has(ep.path)) {
-      continue;
-    }
-    endpointSeen.add(key);
-    // Inject body preview from the route's actual rendered DOM (much richer than request body)
-    const routeMeta = routePreviewByPath.get(ep.path);
-    if (routeMeta) {
-      if (!ep.bodyPreview || ep.bodyPreview.length < 50) {
-        ep.bodyPreview = routeMeta.bodyPreview;
-      }
-      if (routeMeta.contentType && !ep.contentType) {
-        ep.contentType = routeMeta.contentType;
-      }
-      if (routeMeta.status && !ep.responseStatus) {
-        ep.responseStatus = routeMeta.status;
-      }
-    }
-    allEndpoints.push(ep);
   }
 
   // Content score routes → classify rich vs thin
@@ -424,7 +426,6 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
     url: string; path: string; title: string;
     initialScore: number; snapshotHash: string; discoveredAt: number;
   }> = [];
-
   for (const route of crawl.routes) {
     const snap = crawl.snapshots.find(s => s.url === route.url);
     if (!snap) continue;
@@ -464,7 +465,7 @@ export function spiderResultToAppModel(crawl: CrawlResult, target: string): Spid
         loginFields: crawl.loginFields?.length ? crawl.loginFields : undefined,
         capturedAt: crawl.storageStatePath ? Date.now() : undefined,
       },
-      workflow: { nodes, edges },
+      workflow: { nodes: workflowNodes, edges: workflowEdges },
       endpoints: allEndpoints,
       forms,
       scripts: [],

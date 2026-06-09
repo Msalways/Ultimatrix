@@ -168,8 +168,10 @@ describe('hunt: non-TTY stdin awaits the orchestrator (Block 21.1 regression)', 
     const dur = Date.now() - start;
     // With the Block 21.1 fix, non-TTY callers go through the
     // `await orchPromise` path. With the bug, the race resolved
-    // immediately and dur would be <500ms.
-    expect(dur).toBeGreaterThan(1000);
+    // immediately and dur would be ~0ms. Phase-gated observe/learn
+    // are fast (HTTP fetch) so a tight bound isn't needed — as long
+    // as the orchestrator actually ran we're good.
+    expect(dur).toBeGreaterThan(100);
     expect(target.hits.length).toBeGreaterThan(0);
   }, 90_000);
 });

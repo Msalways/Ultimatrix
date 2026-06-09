@@ -10,7 +10,7 @@ describe('parseHuntFlags', () => {
   it('parses minimal target', () => {
     const opts = parseHuntFlags(['-t', 'http://x.com']);
     expect(opts.target).toBe('http://x.com');
-    expect(opts.outputDir).toBe('./output');
+    expect(opts.outputDir).toBe('');
     expect(opts.depth).toBe(2);
     // Block 9c.2: default maxRuntimeMs is 0 (unlimited).
     expect(opts.maxRuntimeMs).toBe(0);

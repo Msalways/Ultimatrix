@@ -7,7 +7,7 @@
 // (closing brace present) so it can be `npx playwright test`-ed
 // at any point in the hunt.
 
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BehavioralStep } from '../hunt/recorder/step-types';
 import type { PrimitiveCall } from '../hunt/events';
@@ -50,12 +50,33 @@ function sanitizeTestName(raw: string | undefined | null): string {
   return cleaned.slice(0, MAX_TEST_NAME_LEN);
 }
 
+// Module-level guard: install exit hooks exactly once across all workers.
+// Each worker creates its own LiveTestWriter; without this guard, N workers
+// register N×4 signal listeners, causing MaxListenersExceededWarning.
+let _exitHooksInstalled = false;
+function installExitHooks(writer: LiveTestWriter): void {
+  if (_exitHooksInstalled) return;
+  _exitHooksInstalled = true;
+  const finalize = (): void => {
+    try { writer.finalise(); } catch { /* best effort */ }
+  };
+  process.once('exit', finalize);
+  for (const sig of ('SIGINT SIGTERM SIGHUP' as const).split(' ') as NodeJS.Signals[]) {
+    try {
+      process.once(sig, () => {
+        finalize();
+        setImmediate(() => process.exit(130));
+      });
+    } catch { /* signal not available on this platform */ }
+  }
+}
+
 export class LiveTestWriter {
   private opts: LiveTestWriterOptions;
   private stepCount = 0;
   private assertionCount = 0;
-  private testStepCount = 0;        // # of LLM-driven recordTestStep calls
-  private primitiveCalls: PrimitiveCall[] = []; // tracked for Bug 4 synthesis
+  private testStepCount = 0;
+  private primitiveCalls: PrimitiveCall[] = [];
   private description = '';
   private body = '';
   private flushed = false;
@@ -71,38 +92,8 @@ export class LiveTestWriter {
     const dir = dirname(opts.outPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     this.initializeFile();
-    // Bug 1: if the process is killed (Ctrl+C, web server stop, crash)
-    // before `finalise()` is called, the file ends with an unclosed
-    // `test('Hunt ...', async ({ page }) => {` and `npx playwright test`
-    // fails with TS1005 '}' expected. Register a best-effort exit hook
-    // that closes the file on process exit. Best-effort because exit
-    // hooks can't do async I/O, but `writeFileSync` works.
-    this.installExitHook();
+    installExitHooks(this);
   }
-
-  private installExitHook(): void {
-    if (this.exitHookInstalled) return;
-    this.exitHookInstalled = true;
-    const finalize = (): void => {
-      try { this.finalise(); } catch { /* best effort */ }
-    };
-    process.once('exit', finalize);
-    // SIGINT/SIGTERM don't fire 'exit' reliably on all platforms
-    // (especially Windows). Catch them too.
-    for (const sig of ('SIGINT SIGTERM SIGHUP' as const).split(' ') as NodeJS.Signals[]) {
-      try {
-        process.once(sig, () => {
-          finalize();
-          // Re-raise so the process actually dies — but only if we
-          // own the signal (don't double-handle if the caller also
-          // installed one).
-          setImmediate(() => process.exit(130));
-        });
-      } catch { /* signal not available on this platform */ }
-    }
-  }
-
-  private exitHookInstalled = false;
 
   private initializeFile(): void {
     const header = [
@@ -262,11 +253,14 @@ export class LiveTestWriter {
   }
 
   private flush(): void {
-    // Always emit a valid file: if the body doesn't end with the closing brace yet,
-    // leave it off so we can keep appending; but never produce invalid syntax mid-line.
-    // Easiest: write the body up to the last complete line. Lines we append are
-    // always complete (newlines at end), so this is just a direct write.
-    writeFileSync(this.opts.outPath, this.body);
+    // Write to a temp file on the same volume, then atomically rename.
+    // This prevents corrupted output when the process crashes mid-write.
+    const tmpPath = this.opts.outPath + '.tmp';
+    writeFileSync(tmpPath, this.body);
+    if (existsSync(this.opts.outPath)) {
+      unlinkSync(this.opts.outPath);
+    }
+    renameSync(tmpPath, this.opts.outPath);
   }
 }
 
@@ -387,6 +381,19 @@ function primitiveCallToPlaywright(call: PrimitiveCall): string | null {
  * quotes, semicolons-only is OK). Returns the line to write, or a safe
  * fallback comment if validation fails.
  */
+/**
+ * Check if quotes within a JS line are balanced (even count after
+ * removing escaped quotes). Refuses lines with odd quote counts
+ * that would break the always-valid invariant.
+ */
+function hasBalancedQuotes(s: string): boolean {
+  const noEscaped = s.replace(/\\['"`]/g, '');
+  const singleQuotes = (noEscaped.match(/'/g) || []).length;
+  const doubleQuotes = (noEscaped.match(/"/g) || []).length;
+  const backticks = (noEscaped.match(/`/g) || []).length;
+  return singleQuotes % 2 === 0 && doubleQuotes % 2 === 0 && backticks % 2 === 0;
+}
+
 function sanitizeJsLine(raw: string): string {
   if (typeof raw !== 'string') return `// (invalid step: non-string arg)`;
   // Strip leading/trailing whitespace
@@ -395,6 +402,8 @@ function sanitizeJsLine(raw: string): string {
   if (/[\r\n]/.test(s)) return `// (skipped step: contains newline)`;
   // Reject obviously incomplete lines
   if (s.length === 0) return `// (skipped step: empty)`;
+  // Reject unbalanced quotes (would break JS syntax)
+  if (!hasBalancedQuotes(s)) return `// (skipped step: unbalanced quotes)`;
   // Truncate absurdly long lines
   if (s.length > 500) s = s.slice(0, 500) + ' // (truncated)';
   // Add trailing semicolon if not present and the line looks like a statement

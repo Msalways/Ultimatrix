@@ -113,16 +113,15 @@ export const PRIMITIVE_SCHEMAS: Record<PrimitiveName, ToolSchema> = {
   craftPayload: {
     name: 'craftPayload',
     description:
-      'Generate attack payloads for a given type and injection context. HELPER PRIMITIVE — you can also craft payloads inline in injectInContext.args.payload. The LLM is free to use this or skip it.',
+      'DEPRECATED — returns empty array. The LLM now crafts payloads inline in injectInContext.args.payload. Keeping this in the tool list for backward compatibility only.',
     parameters: {
       type: 'object',
       properties: {
-        type: { type: 'string', description: 'Free-form. E.g. "xss", "sqli", "weird-thing". The primitive does its best.' },
-        context: { type: 'string', description: 'Where the payload lands. E.g. "html", "attr", "js", "url".' },
-        engine: { type: 'string', description: 'Optional. E.g. "angular", "react", "mustache".' },
-        count: { type: 'number', description: 'How many variations to return.' },
+        type: { type: 'string', description: 'Ignored' },
+        context: { type: 'string', description: 'Ignored' },
+        engine: { type: 'string', description: 'Ignored' },
+        count: { type: 'number', description: 'Ignored' },
       },
-      required: ['type'],
     },
   },
 
@@ -142,15 +141,14 @@ export const PRIMITIVE_SCHEMAS: Record<PrimitiveName, ToolSchema> = {
 
   craftXmlEntity: {
     name: 'craftXmlEntity',
-    description: 'Craft an XML external entity payload for XXE attacks. Returns the full XML string ready to POST.',
+    description: 'Format-only: wraps the LLM-provided payload string in XML DOCTYPE + entity structure. payload is the entity value (e.g. file:///etc/passwd, http://oast-host, "id"), systemId is the entity name (default: xxe).',
     parameters: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'Free-form. E.g. "file", "ssrf", "rce"' },
-        path: { type: 'string', description: 'For file target: the path to read' },
-        host: { type: 'string', description: 'For ssrf target: the URL to fetch' },
+        payload: { type: 'string', description: 'The entity value to wrap in XML structure. E.g. "file:///etc/passwd", "http://oast-host/callback", "\' OR \'1\'=\'1"' },
+        systemId: { type: 'string', description: 'Optional entity name (default: xxe)' },
       },
-      required: ['target'],
+      required: ['payload'],
     },
   },
 
@@ -414,10 +412,73 @@ export const ORCHESTRATION_SCHEMAS: Record<string, ToolSchema> = {
           items: { type: 'string' },
           description: 'Array of primitive names from the 21 available. E.g. ["craftPayload", "httpRequest", "evaluateRendered"]. 3-7 tools is good.',
         },
+        targetNodeId: { type: 'string', description: 'Graph node ID of the endpoint to attack. The sub-agent receives the full edge context (request/response, probe results).' },
+        targetEdgeId: { type: 'string', description: 'Optional graph edge ID when the attack targets a specific transition between nodes.' },
         maxAttempts: { type: 'number', description: 'Max turns the sub-agent gets (default 5).' },
         strategy: { type: 'string', description: 'Free-form strategy guidance. E.g. "be exhaustive", "try bypasses only", "one quick probe".' },
       },
       required: ['task', 'tools'],
+    },
+  },
+};
+
+// Graph query tools — available to the meta-orchestrator for graph navigation
+export const GRAPH_TOOL_SCHEMAS: Record<string, ToolSchema> = {
+  queryGraph: {
+    name: 'queryGraph',
+    description:
+      'Query the workflow graph with filters (sinkTypes, requiresAuth, nodeTags, method, hasParams, source, maxDepth). Returns summarized list of matching nodes with URLs, methods, param names, tags. Use this to discover the attack surface — find all endpoints with params, API nodes, auth-required pages. Results capped at 50 nodes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sinkTypes: { type: 'array', items: { type: 'string' }, description: 'Content-type substrings. E.g. ["json", "html"]' },
+        requiresAuth: { type: 'boolean' },
+        nodeTags: { type: 'array', items: { type: 'string' }, description: 'E.g. ["has-params", "form", "returns-json"]' },
+        method: { type: 'string' },
+        hasParams: { type: 'boolean' },
+        source: { type: 'string', description: '"crawl", "har", "observation", "attack"' },
+        maxDepth: { type: 'number' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  drillDown: {
+    name: 'drillDown',
+    description:
+      'Get full request/response details for a specific graph node by ID. Shows headers, body, response preview, observations, child/parent edges. Call queryGraph first to find node IDs, then drillDown on interesting ones.',
+    parameters: {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Graph node ID from queryGraph results' },
+      },
+      required: ['nodeId'],
+    },
+  },
+  queryFlow: {
+    name: 'queryFlow',
+    description:
+      'Trace a parameter through the graph from a starting node. Shows every node the param flows through, whether it gets reflected/encoded in the response, and potential sink nodes. Use this to understand data flow before deciding where to attack.',
+    parameters: {
+      type: 'object',
+      properties: {
+        param: { type: 'string', description: 'Parameter name to trace' },
+        startNodeId: { type: 'string', description: 'Starting graph node ID' },
+      },
+      required: ['param', 'startNodeId'],
+    },
+  },
+  observeNode: {
+    name: 'observeNode',
+    description:
+      'Send benign probes to a graph node and record response shape, timing, and input reflection. This is the "Learn" phase tool — probe params to understand behavior before attacking. Probes are non-destructive strings. Observations persist on the node for later analysis.',
+    parameters: {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Graph node ID to probe' },
+        param: { type: 'string', description: 'Param name to inject probes into' },
+        probes: { type: 'array', items: { type: 'string' }, description: 'Benign probe values. Default ["test", "123", "true", quote]' },
+      },
+      required: ['nodeId', 'param'],
     },
   },
 };
@@ -451,6 +512,10 @@ export const MANAGER_PRIMITIVES: PrimitiveName[] = [
 export const MANAGER_TOOL_NAMES: string[] = [
   ...MANAGER_PRIMITIVES,
   'spawnAgent',
+  'queryGraph',
+  'drillDown',
+  'queryFlow',
+  'observeNode',
 ];
 
 // ---------------------------------------------------------------------------
@@ -461,13 +526,17 @@ export function allToolSchemas(): ToolSchema[] {
   return [
     ...Object.values(PRIMITIVE_SCHEMAS),
     ...Object.values(ORCHESTRATION_SCHEMAS),
+    ...Object.values(GRAPH_TOOL_SCHEMAS),
   ];
 }
 
 export function schemasForToolNames(names: string[]): ToolSchema[] {
   const out: ToolSchema[] = [];
   for (const n of names) {
-    const s = PRIMITIVE_SCHEMAS[n as PrimitiveName] ?? ORCHESTRATION_SCHEMAS[n];
+    const s =
+      PRIMITIVE_SCHEMAS[n as PrimitiveName] ??
+      ORCHESTRATION_SCHEMAS[n] ??
+      GRAPH_TOOL_SCHEMAS[n];
     if (s) out.push(s);
   }
   return out;

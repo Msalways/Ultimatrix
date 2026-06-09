@@ -23,6 +23,9 @@ import type { SessionPool } from '../core/session-pool';
 import type { Hypothesis, Technique } from '../core/attack-plan';
 import type { AppModelFinding, FindingEvidence, AppModel } from '../core/app-model';
 import type { ComposerLogEvent } from '../agents/composer';
+import type { HuntConfigValues } from '../core/hunt-config';
+import { getGlobalGraphStore } from '../workflow-graph/store';
+import { getGlobalMcpManager } from '../mcp/client';
 import { randomUUID } from 'crypto';
 
 export interface NodeSpec {
@@ -137,6 +140,8 @@ export interface AutonomousV3Options {
   workerFactory: WorkerFactory;
   appModel?: AppModel;
   strategy?: NodeStrategy;
+  huntConfig?: HuntConfigValues;
+  skipPhases?: Set<'observe' | 'learn' | 'attack'>;
   onFinding?: OnFindingHandler;
   onNodeUpdate?: OnNodeUpdateHandler;
   onBeforeNode?: OnBeforeNodeHandler;
@@ -148,36 +153,11 @@ export interface AutonomousV3Options {
   sleepBetweenNodesMs?: number;
   onLog?: (msg: string) => void;
   shouldAbort?: () => boolean;
-  /**
-   * Optional sink for LLM token streaming. Forwarded to every worker
-   * so the web UI / CLI can show LLM output in real-time.
-   */
   onLLMToken?: (label: string, chunk: string) => void;
-  /**
-   * Optional sink for structured Composer lifecycle events. Forwarded
-   * to every worker (and prefixed with the workflow node id) so the
-   * web UI can render the live plan/primitive/finding timeline.
-   */
   onComposerEvent?: (event: ComposerLogEvent) => void;
-  /**
-   * Optional sink for low-level primitive invocations across all
-   * workers. Useful for tests and for the "primitive" UI panel.
-   */
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
-  /**
-   * Optional output dir. Forwarded to every worker so they can write a
-   * per-node live Playwright spec via the recordTestStep primitive.
-   * Each worker gets its own file (`live-${nodeId}.spec.ts`) to avoid
-   * concurrent-write races between parallel workers.
-   */
   outDir?: string;
 }
-
-const DEFAULT_PER_TECHNIQUE_BUDGET = 3;
-const DEFAULT_MAX_NODES = 200;
-const DEFAULT_SLEEP_MS = 0;
-const DEFAULT_MAX_CONCURRENCY = 4;
-const RATE_LIMIT_BACKOFF_MS = 5_000;
 
 export interface OrchestrationResult {
   totalNodes: number;
@@ -188,6 +168,19 @@ export interface OrchestrationResult {
   durationMs: number;
   terminatedBy: 'exhausted' | 'budget' | 'time' | 'abort' | 'no-active-session' | 'max-nodes';
   effectiveMaxConcurrency: number;
+  rateLimitEvents: number;
+}
+
+/** Snapshot of orchestrator state for the interactive session / web UI. */
+export interface OrchestratorStatus {
+  phase: 'idle' | 'observe' | 'learn' | 'attack' | 'done';
+  totalNodes: number;
+  completedNodes: number;
+  failedNodes: number;
+  inFlight: number;
+  elapsedMs: number;
+  maxRuntimeMs: number;
+  retryBudgetUsed: number;
   rateLimitEvents: number;
 }
 
@@ -216,6 +209,12 @@ export class AutonomousV3Orchestrator {
   private rateLimitEvents: number = 0;
   private resolvedStrategies: Map<string, NodeStrategyResolution> = new Map();
   private strategyFailures: Map<string, number> = new Map();
+  private huntConfig: HuntConfigValues;
+  private skipPhases: Set<'observe' | 'learn' | 'attack'>;
+  /** Phase label for status queries. Updated at each phase transition. */
+  private _phase: OrchestratorStatus['phase'] = 'idle';
+  /** Epoch ms when run() started. 0 before run(). */
+  private _startTime: number = 0;
 
   constructor(opts: AutonomousV3Options) {
     this.graph = opts.graph;
@@ -226,13 +225,19 @@ export class AutonomousV3Orchestrator {
     this.onFinding = opts.onFinding;
     this.onNodeUpdate = opts.onNodeUpdate;
     this.onBeforeNode = opts.onBeforeNode;
-    this.perTechniqueBudget = opts.perTechniqueBudget ?? DEFAULT_PER_TECHNIQUE_BUDGET;
-    this.maxRuntimeMs = opts.maxRuntimeMs ?? 0; // 0 = unlimited (no time-budget termination)
-    this.maxNodes = opts.maxNodes ?? DEFAULT_MAX_NODES;
+    this.huntConfig = opts.huntConfig ?? {
+      maxNodes: 200, techniqueBudget: 3, nodeDelayMs: 100,
+      nodeTimeoutMs: 120_000, rateLimitBackoffMs: 5_000,
+      maxConcurrency: 4, formWatchIntervalMs: 1500,
+    };
+    this.skipPhases = opts.skipPhases ?? new Set();
+    this.perTechniqueBudget = opts.perTechniqueBudget ?? this.huntConfig.techniqueBudget;
+    this.maxRuntimeMs = opts.maxRuntimeMs ?? 0;
+    this.maxNodes = opts.maxNodes ?? this.huntConfig.maxNodes;
     this.enableConcurrency = opts.enableConcurrency ?? false;
-    this.sleepBetweenNodesMs = opts.sleepBetweenNodesMs ?? DEFAULT_SLEEP_MS;
+    this.sleepBetweenNodesMs = opts.sleepBetweenNodesMs ?? this.huntConfig.nodeDelayMs;
     this.shouldAbort = opts.shouldAbort;
-    this.maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    this.maxConcurrency = opts.maxConcurrency ?? this.huntConfig.maxConcurrency;
     this.onLog = opts.onLog;
     this.onLLMToken = opts.onLLMToken;
     this.onComposerEvent = opts.onComposerEvent;
@@ -252,16 +257,171 @@ export class AutonomousV3Orchestrator {
     return this.resolvedStrategies.get(nodeId);
   }
 
+  /** Return a snapshot of current orchestrator state. Thread-safe — reads properties. */
+  getStatus(): OrchestratorStatus {
+    const nodes = this.graph.getNodes();
+    const completedNodes = nodes.filter((n) => n.status === 'completed').length;
+    const failedNodes = nodes.filter((n) => n.status === 'failed').length;
+    const inFlight = nodes.filter((n) => n.status === 'in_progress').length;
+    return {
+      phase: this._phase,
+      totalNodes: this.graph.size().nodes,
+      completedNodes,
+      failedNodes,
+      inFlight,
+      elapsedMs: this._startTime > 0 ? Date.now() - this._startTime : 0,
+      maxRuntimeMs: this.maxRuntimeMs,
+      retryBudgetUsed: this.techniqueRetries.size,
+      rateLimitEvents: this.rateLimitEvents,
+    };
+  }
+
   private log(msg: string): void {
     if (this.onLog) this.onLog(msg);
   }
 
+  /**
+   * Phase 1 — Observe: fetch reachable URLs to determine
+   * content-type, status, and basic tags. Records into GraphStore.
+   * Uses HTTP fetch (not browser) — the spider already handled
+   * browser exploration.
+   */
+  private async runObservePhase(): Promise<void> {
+    const nodes = this.graph.getNodes().filter((n) => n.status === 'reachable');
+    if (nodes.length === 0) { this.log('[orch:observe] no reachable nodes'); return; }
+
+    const graphStore = getGlobalGraphStore();
+    let observed = 0;
+    for (const node of nodes.slice(0, this.maxNodes)) {
+      const gNode = graphStore.findNodeByUrl('GET', node.url);
+      if (gNode && gNode.tags.length > 0) continue;
+
+      try {
+        const resp = await fetch(node.url, {
+          method: 'GET',
+          signal: AbortSignal.timeout(this.huntConfig.nodeTimeoutMs),
+        });
+        const status = resp.status;
+        const ct = resp.headers.get('content-type') ?? '';
+        const text = await resp.text();
+        const bodyPreview = text.slice(0, 1500);
+        const tags: string[] = [];
+        if (ct.includes('html')) tags.push('returns-html');
+        if (ct.includes('json')) tags.push('returns-json');
+        if (text.includes('<form') || text.includes('<input')) tags.push('has-forms');
+        if (text.includes('name="') || text.includes('name=\'')) tags.push('has-params');
+        if (status === 401 || status === 403) tags.push('auth-required');
+
+        graphStore.upsertNode('GET', node.url, {
+          contentType: ct,
+          responseStatus: status,
+          responseBodyPreview: bodyPreview,
+          tags,
+          source: 'crawl',
+          depth: 0,
+        });
+        observed++;
+      } catch (e) {
+        this.log(`[orch:observe] fetch error ${node.url}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    this.log(`[orch:observe] tagged ${observed}/${nodes.length} nodes`);
+  }
+
+  /**
+   * Phase 2 — Learn: probe params on observed graph nodes with
+   * benign payloads and record any reflection observations.
+   * Only probes nodes already in GraphStore with params.
+   */
+  private async runLearnPhase(): Promise<void> {
+    const graphStore = getGlobalGraphStore();
+    const nodes = this.graph.getNodes().filter((n) => n.status === 'reachable');
+    let probed = 0;
+
+    for (const node of nodes.slice(0, this.maxNodes)) {
+      const gNode = graphStore.findNodeByUrl('GET', node.url);
+      if (!gNode) continue;
+      if (gNode.observations.length > 0) continue;
+      const params = [...(gNode.params || []), ...(gNode.bodyFields || [])];
+      if (params.length === 0) continue;
+
+      const probes = ['test', '<test>', '../../etc/passwd', "'"];
+      for (const param of params.slice(0, 3)) {
+        for (const probe of probes) {
+          try {
+            const sep = node.url.includes('?') ? '&' : '?';
+            const probeUrl = `${node.url}${sep}${param.name}=${encodeURIComponent(probe)}`;
+            const resp = await fetch(probeUrl, {
+              method: 'GET',
+              signal: AbortSignal.timeout(5000),
+            });
+            const text = await resp.text();
+            const reflected = text.includes(probe);
+            graphStore.addObservation(gNode.id, {
+              probe,
+              location: `param:${param.name}`,
+              responseDelta: reflected ? 'reflected' : 'no-change',
+              inferredSurface: reflected ? 'xss' : undefined,
+              responseStatus: resp.status,
+              responseBodySnippet: text.slice(0, 300),
+              timestamp: Date.now(),
+            });
+            if (reflected) {
+              graphStore.addTag(gNode.id, 'reflects-input');
+            }
+          } catch { /* probe failed — skip */ }
+        }
+        probed++;
+      }
+    }
+    this.log(`[orch:learn] probed ${probed} param(s) across graph nodes`);
+  }
+
   async run(): Promise<OrchestrationResult> {
+    this._startTime = Date.now();
     const size = this.graph.size();
     const reachable = this.graph.getNodes().filter((n) => n.status === 'reachable').length;
     this.log(`[orch] starting · graph: ${size.nodes} nodes, ${reachable} reachable, concurrency=${this.enableConcurrency ? this.maxConcurrency : 1}`);
-    if (this.enableConcurrency) return this.runConcurrent();
-    return this.runSequential();
+
+    // Phase 1 — Observe: visit reachable nodes in browser, tag GraphStore
+    if (!this.skipPhases.has('observe')) {
+      this._phase = 'observe';
+      this.log(`[orch] Phase 1: observe — visiting ${reachable} reachable nodes…`);
+      await this.runObservePhase();
+    } else {
+      this.log(`[orch] Phase 1: observe — skipped`);
+    }
+
+    // Phase 2 — Learn: probe params/forms, record observations
+    if (!this.skipPhases.has('learn')) {
+      this._phase = 'learn';
+      this.log(`[orch] Phase 2: learn — probing nodes with params…`);
+      await this.runLearnPhase();
+    } else {
+      this.log(`[orch] Phase 2: learn — skipped`);
+    }
+
+    // Phase 3 — Attack: existing sequential/concurrent loop
+    if (this.skipPhases.has('attack')) {
+      this._phase = 'done';
+      this.log(`[orch] Phase 3: attack — skipped`);
+      return {
+        totalNodes: this.graph.size().nodes,
+        completedNodes: 0,
+        failedNodes: 0,
+        blockedNodes: 0,
+        findings: [],
+        durationMs: 0,
+        terminatedBy: 'exhausted',
+        effectiveMaxConcurrency: this.maxConcurrency,
+        rateLimitEvents: 0,
+      };
+    }
+
+    this._phase = 'attack';
+    const result = this.enableConcurrency ? await this.runConcurrent() : await this.runSequential();
+    this._phase = 'done';
+    return result;
   }
 
   private async resolveSpec(node: WorkflowStateNode): Promise<NodeSpec | null> {
@@ -418,7 +578,7 @@ export class AutonomousV3Orchestrator {
             const prev = this.maxConcurrency;
             this.maxConcurrency = Math.max(1, Math.floor(this.maxConcurrency / 2));
             this.log(`[orch] rate-limited, reducing concurrency from ${prev} to ${this.maxConcurrency}`);
-            await sleep(RATE_LIMIT_BACKOFF_MS);
+            await sleep(this.huntConfig.rateLimitBackoffMs);
           }
           if (result.vulnerable && result.confidence >= 0.5) completed++;
           else if (result.error) failed++;
@@ -603,113 +763,59 @@ function makeHypothesisForNode(spec: NodeSpec): Hypothesis {
  * without a custom strategy. In production, callers should always
  * inject a NodeStrategy that fits their target class.
  */
-const NODE_TIMEOUT_MS = 120_000;
-
+/**
+ * Graph-aware node strategy. Reads GraphStore tags/observations/params
+ * and selects a technique based on observed node characteristics.
+ * No hardcoded URL-pattern regex mapping. Falls back to the workflow
+ * node type when graph data is insufficient, but never defaults to a
+ * single technique.
+ */
 export const defaultNodeStrategy: NodeStrategy = {
   async resolve(node, appModel) {
     if (node.type === 'modal' || node.type === 'redirect') return null;
-    const endpoints = (appModel?.endpoints || []) as any[];
-    const matchingEp = endpoints.find((e) => {
-      if (!e?.path) return false;
-      return node.url.endsWith(e.path) || e.path.endsWith(node.url.split('?')[0]);
-    });
-    const expectedSeverity = heuristicSeverityForNode(node);
+
+    const graphStore = getGlobalGraphStore();
+    const gNode = graphStore.findNodeByUrl('GET', node.url);
+
+    // Fall back to node-type heuristics when graph store has no data
+    // Fallback: if the graph store has no data for this URL, use the
+    // workflow node type as a hint (but don't default to a technique).
+    // This handles tests and early-scenario runs where the observe
+    // phase hasn't tagged nodes yet.
+    const hasGraphData = gNode && (gNode.tags.length > 0 || gNode.observations.length > 0 || gNode.params.length > 0 || gNode.bodyFields.length > 0);
+    const sourceParams = hasGraphData ? gNode! : { params: [], bodyFields: [] };
+    const params = [
+      ...sourceParams.params.map((p: any) => p.name),
+      ...sourceParams.bodyFields.map((b: any) => b.name),
+    ].slice(0, 5);
+    const firstParam = params[0] ?? sourceParams.params?.[0]?.name;
+
     let technique: Technique = 'xss';
-    if (matchingEp) {
-      technique = inferTechniqueFromEndpoint(matchingEp);
-    } else if (node.type === 'api' || /\/api\/|\/v\d+\//.test(node.url)) {
-      technique = 'sqli';
-    } else if (/login|auth|signin|signup/i.test(node.url)) {
-      technique = 'open-redirect';
-    }
+    const hasReflection = hasGraphData && gNode!.tags.includes('reflects-input');
+    const hasForms = hasGraphData && gNode!.tags.includes('has-forms');
+    const isAuth = hasGraphData && gNode!.tags.includes('auth-required') || node.authRequired;
+    const isJSON = hasGraphData && gNode!.tags.includes('returns-json');
+    const isHTML = hasGraphData && gNode!.tags.includes('returns-html');
+    const isAPI = node.type === 'api';
+
+    if (hasReflection && (isHTML || isJSON)) technique = 'xss';
+    else if (isAuth) technique = 'open-redirect';
+    else if ((isAPI || isJSON) && params.length > 0) technique = 'sqli';
+    else if (hasForms && !isAPI) technique = 'xss';
+    else if (params.some((p: string) => /url|uri|redirect|target|fetch/.test(p))) technique = 'ssrf';
+
+    const expectedSeverity: AppModelFinding['severity'] =
+      isAuth || isAPI || isJSON ? 'high' : 'medium';
+
     return {
       technique,
-      method: node.type === 'api' ? 'POST' : 'GET',
-      param: matchingEp?.params?.[0]?.name,
-      timeoutMs: NODE_TIMEOUT_MS,
+      method: isAPI || isJSON ? 'POST' : 'GET',
+      param: firstParam,
+      timeoutMs: 120_000,
       expectedSeverity,
     };
   },
 };
-
-function heuristicSeverityForNode(node: WorkflowStateNode): AppModelFinding['severity'] {
-  if (node.type === 'gated' || node.authRequired) return 'high';
-  if (node.type === 'api') return 'high';
-  return 'medium';
-}
-
-function inferTechniqueFromEndpoint(ep: any): Technique {
-  const path = String(ep.path || '').toLowerCase();
-  const method = String(ep.method || 'GET').toUpperCase();
-  const body = String(ep.body || ep.contentType || '').toLowerCase();
-
-  // OAuth / SSO / callback endpoints
-  if (/\/oauth|\/authorize|\/callback|\/redirect|response_type|client_id|redirect_uri/.test(path)) {
-    return 'open-redirect';
-  }
-
-  // SSRF — anything that takes a URL as a query param
-  if (/[?&](url|uri|target|dest|redirect|fetch|proxy|api_endpoint)=/.test(path)) {
-    return 'ssrf';
-  }
-
-  // SSTI — render/template endpoints
-  if (/\/render|\/template|\/view|\/compile|\/tpl/.test(path)) {
-    return 'ssti';
-  }
-
-  // Race condition — money/coupon/transfer/invite endpoints
-  if (/\/transfer|\/coupon|\/redeem|\/withdraw|\/claim|\/checkout|\/pay|\/vote|\/invite|\/register/.test(path) && method === 'POST') {
-    return 'race';
-  }
-
-  // JWT/auth token endpoints
-  if (/\/token|\/auth|\/login|\/signin|\/session/.test(path) && method === 'POST') {
-    return 'open-redirect';
-  }
-
-  // File upload — path traversal + bypass
-  if (/\/upload|\/file|\/attachment|\/media|\/image/.test(path) && method === 'POST') {
-    return 'path';
-  }
-
-  // GraphQL — SQLi-style introspection attacks
-  if (/\/graphql/.test(path)) {
-    return 'sqli';
-  }
-
-  // XML / XXE
-  if (/\.xml$|content-type.*xml/.test(path + body)) {
-    return 'xxe';
-  }
-
-  // File path with user-controlled ID
-  if (/:id\b|\/\d+\b|{\w+}/.test(path)) {
-    return 'idor';
-  }
-
-  // General API
-  if (/\/api\/|\/v\d+\//.test(path)) {
-    return 'sqli';
-  }
-
-  // Search / query strings
-  if (/\.json$|\/search\?|q=|query=|search/.test(path)) {
-    return 'xss';
-  }
-
-  // File/path manipulation
-  if (/\/upload|file|path|attachment/.test(path)) {
-    return 'path';
-  }
-
-  // Command exec
-  if (/\/exec|cmd|shell/.test(path)) {
-    return 'cmd';
-  }
-
-  return 'xss';
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

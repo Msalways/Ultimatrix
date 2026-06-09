@@ -13,6 +13,7 @@ export function u(input: Record<string, unknown>): Record<string, unknown> {
 
 import { createBrowserNavigateTool, createBrowserClickTool, createBrowserFillTool, createBrowserPressKeyTool, createBrowserScreenshotTool, createBrowserExtractTool, createBrowserEvaluateTool, createBrowserCloseTool, createBrowserGetFormsTool, createBrowserGetCookiesTool, createBrowserGetScriptsTool, createBrowserGetStorageTool, createBrowserStartRecordingTool, createBrowserStopRecordingTool, createBrowserGetRecordingTool, createBrowserStartTraceTool, createBrowserStopTraceTool, createBrowserGetTraceTool, createBrowserReplayMacroTool, createMacroListTool, createInjectCookieTool, createCreateBrowserSessionTool, createListBrowserSessionsTool, createSaveStorageStateTool, createLoadStorageStateTool, createManualRecordStartTool, createManualRecordStopTool } from './browser-tools';
 import { createReadAppModelTool, createUpdateAppModelTool } from './app-model-tools';
+import { getCurrentPrompt } from './ask-user-tool';
 import { createCrawlDiscoverTool } from './crawl-tools';
 import { createGetSessionStatusTool, createGetDomSnapshotTool, createExportHarTool, createWaitForNavigationTool, createResetSessionTool } from './session-tools';
 import { readAppModel, writeAppModel, calculateOverallRisk, renderWorkflowGraph, updateAppModelSection, type AppModelSection } from '../core/app-model';
@@ -1251,8 +1252,15 @@ toolRegistry.register({
   category: 'utility',
   description: 'Ask the user a question and wait for their response. Use when you need credentials, permission, clarification, or want to explain findings.',
   tags: ['utility', 'communication'],
-  factory: () => tool(async ({ question }) => {
-    return `User acknowledged: "${question}"`;
+  factory: () => tool(async ({ question, options: opts }) => {
+    const p = getCurrentPrompt();
+    if (!p) return 'No prompt available — cannot ask user';
+    p.notify(`\x1b[1;33m[ask_user]\x1b[0m ${question}`);
+    if (opts?.length) {
+      p.notify(`\x1b[2m  Options: ${opts.join(', ')}\x1b[0m`);
+    }
+    const answer = await p.nextLine();
+    return answer ?? 'User closed the prompt';
   }, {
     name: 'ask_user',
     description: 'Ask the user a question and wait for their response',

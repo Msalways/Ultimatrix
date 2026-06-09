@@ -1,81 +1,40 @@
-// src/cli/hunt-flags.ts
-//
-// Pure option parser for the `hunt` command. Extracted from hunt.ts so it
-// can be unit-tested without pulling in the orchestrator and browser deps.
-//
-// Flag surface (intentionally small):
-//   -t, --target <url>          Target URL (required)
-//   -o, --output <dir>          Output directory (default ./output)
-//   --skip <list>               Comma-separated phases to skip:
-//                                 spider,recon,chains,tests,interactive
-//                                 (default none)
-//   --depth <n>                 Spider depth (default 2)
-//   --max-runtime <seconds>     Hard time limit (default 0 = unlimited)
-//   --seed-url <url>            Extra URL to seed the workflow graph (repeatable)
-//   --existing-model <path>     Skip spider, load this app-model.json
-//   --no-interactive            Skip the terminal REPL/headed-browser
-//                                 session. Hunt runs the orchestrator only.
-//                                 Required by the web UI, CI, and any
-//                                 non-TTY caller.
-//
-// The hunt always runs the LLM attack pipeline. There is no `--mode` flag:
-// the LLM decides what to do. A headed browser is opened automatically so
-// the user can interact with the target; their manual clicks/inputs are
-// recorded and the LLM attacks each URL they touch in parallel.
-
 export interface HuntOptions {
   target: string;
   outputDir: string;
-  skip: Set<'spider' | 'recon' | 'chains' | 'tests' | 'interactive'>;
+  skip: Set<'spider' | 'recon' | 'chains' | 'tests' | 'interactive' | 'observe' | 'learn' | 'attack'>;
   depth: number;
   maxRuntimeMs: number;
+  auto: boolean;
+  configPath?: string;
   existingModelPath?: string;
   seedUrls?: string[];
-  /**
-   * Optional sink for LLM token streaming. When set, the Composer
-   * forwards every LLM token it receives (label + chunk). The web UI
-   * uses this to stream tokens to the browser over WebSocket. For
-   * terminal-only streaming, set ULTIMATRIX_LLM_STREAM=1 instead.
-   */
   onLLMToken?: (label: string, chunk: string) => void;
-  /**
-   * Optional sink for structured Composer lifecycle events
-   * (plan-proposed, primitive, triage, specialist-spawn, finding,
-   * plan-end). The web UI consumes these to render the live plan,
-   * primitive timeline, and findings list. Threaded through every
-   * worker spawned by the orchestrator.
-   */
   onComposerEvent?: (event: import('../agents/composer').ComposerLogEvent) => void;
-  /**
-   * Optional sink for low-level primitive invocations across all
-   * workers. Useful for tests and for the "primitive" UI panel.
-   */
   onPrimitive?: (name: string, args: unknown, result: { ok: boolean; error?: string; durationMs: number }) => void;
-  /**
-   * Block 16: hook called by `runHunt` right after the HuntCore is
-   * constructed and started, but before the orchestrator launches.
-   * The web server uses this to subscribe to v4 events and forward
-   * them over WebSocket. Optional — the CLI hunt runs fine without
-   * it.
-   */
   onHuntCore?: (core: import('../hunt/core').HuntCore) => void;
 }
 
-const VALID_SKIP = new Set(['spider', 'recon', 'chains', 'tests', 'interactive'] as const);
+const VALID_SKIP = new Set([
+  'spider', 'recon', 'chains', 'tests', 'interactive',
+  'observe', 'learn', 'attack',
+] as const);
 
 export function parseHuntFlags(args: string[]): HuntOptions {
   const opts: HuntOptions = {
     target: '',
-    outputDir: './output',
+    outputDir: '',
     skip: new Set(),
     depth: 2,
-    maxRuntimeMs: 0, // 0 = unlimited (orchestrator treats 0 as 'skip time-budget check')
+    maxRuntimeMs: 0,
+    auto: false,
     seedUrls: [],
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-t' || a === '--target') opts.target = args[++i];
     else if (a === '-o' || a === '--output') opts.outputDir = args[++i];
+    else if (a === '--config') opts.configPath = args[++i];
+    else if (a === '--auto') opts.auto = true;
     else if (a === '--skip') {
       const list = (args[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
       for (const item of list) {
@@ -106,5 +65,6 @@ export function parseHuntFlags(args: string[]): HuntOptions {
   if (!opts.target) {
     throw new Error('Missing required --target / -t <url>');
   }
+  if (opts.auto) opts.skip.add('interactive');
   return opts;
 }

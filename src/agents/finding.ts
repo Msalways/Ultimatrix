@@ -9,6 +9,7 @@ import type { LLMClient, LLMCallResult } from '../llm/client';
 import type { AppModelFinding, FindingEvidence } from '../core/app-model';
 import { recordEvidencePrimitive, writeFindingPrimitive } from './primitive-helpers';
 import type { PrimitiveContext } from '../primitives/types';
+import { getGlobalGraphStore } from '../workflow-graph/store';
 
 export interface ProposedFinding {
   type: string;
@@ -124,6 +125,32 @@ export async function emitFinding(
 
   if (!writeResult.ok || !writeResult.value) {
     return { finding: null, triage };
+  }
+
+  // Graph feedback: attach attack result to the matched graph node
+  try {
+    const store = getGlobalGraphStore();
+    const matchingNode = store.findNodeByUrl(
+      proposed.method || 'GET',
+      proposed.endpoint,
+    ) || store.findNodeByUrl(
+      'GET',
+      proposed.endpoint,
+    );
+    if (matchingNode) {
+      store.addAttackResult(matchingNode.id, {
+        technique: proposed.type,
+        findingId: writeResult.value.id || '',
+        confidence: proposed.confidence,
+        payload: proposed.payload || '',
+        evidence: ctx.evidenceLog.map((e) => `${e.label}: ${String(e.data).slice(0, 300)}`),
+        timestamp: Date.now(),
+      });
+      // Also add tag
+      store.addTag(matchingNode.id, `finding:${proposed.type}`);
+    }
+  } catch {
+    // Best-effort — graph feedback is non-blocking
   }
 
   return { finding: writeResult.value, triage };
