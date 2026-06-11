@@ -114,8 +114,8 @@ switch (subcommand) {
       const supervisor = createSupervisor(config)
 
       const { startTUI } = await import('../tui/index')
-      startTUI(target, modelName, async (text: string, onToken?: (token: string) => void) => {
-        const stream = await supervisor.stream(text, { memory: { thread: threadId, resource: 'ultimatrix' } })
+      startTUI(target, modelName, async (input: string, onToken?: (token: string) => void) => {
+        const stream = await supervisor.stream(input, { memory: { thread: threadId, resource: 'ultimatrix' } })
 
         let fullText = ''
         let streamed = false
@@ -136,15 +136,26 @@ switch (subcommand) {
             process.stderr.write(`[tui:stream] ${e instanceof Error ? e.message : String(e)}\n`)
           }
         }
+
         if (!fullText) {
           try {
-            fullText = (await stream.text) ?? ''
+            const output = await stream.getFullOutput()
+            fullText = output.text ?? ''
+            if (output.toolCalls?.length) {
+              process.stderr.write(`[tui] tool calls: ${output.toolCalls.map((t: any) => t.toolName).join(', ')}\n`)
+            }
+            if (output.toolResults?.length) {
+              process.stderr.write(`[tui] tool results: ${output.toolResults.map((t: any) => t.toolName).join(', ')}\n`)
+            }
+            process.stderr.write(`[tui] finishReason: ${output.finishReason}\n`)
           } catch (e) {
-            process.stderr.write(`[tui:text] ${e instanceof Error ? e.message : String(e)}\n`)
+            process.stderr.write(`[tui:fullOutput] ${e instanceof Error ? e.message : String(e)}\n`)
+            try {
+              fullText = (await stream.text) ?? ''
+            } catch (e2) {
+              process.stderr.write(`[tui:text] ${e2 instanceof Error ? e2.message : String(e2)}\n`)
+            }
           }
-        }
-        if (!fullText && !streamed) {
-          process.stderr.write(`[tui:warn] empty response from supervisor for "${text.slice(0, 40)}"\n`)
         }
 
         await getGlobalGraphStore().save()
