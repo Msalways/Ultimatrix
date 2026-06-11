@@ -1,137 +1,123 @@
-import http from 'http';
-import { randomUUID } from 'crypto';
-import fs from 'fs';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http'
+import { randomBytes } from 'node:crypto'
+import { getGlobalOastStore, OastCallback } from './store'
 
-export interface CallbackRecord {
-  uuid: string;
-  timestamp: number;
-  method: string;
-  url: string;
-  headers: Record<string, string>;
-  body: string;
-  remoteAddress: string;
+let server: ReturnType<typeof createServer> | null = null
+let serverPort = 0
+const oastHost = 'localhost'
+
+export function getOastUrl(): string {
+  if (serverPort === 0) return 'http://oast-not-started'
+  return `http://${oastHost}:${serverPort}`
 }
 
-export class OastServer {
-  private server: http.Server | null = null;
-  private callbacks: Map<string, CallbackRecord[]> = new Map();
-  private port: number;
-  private persistencePath: string | null;
-  private publicUrlTemplate: string | null;
-
-  constructor(port = 0, persistencePath?: string, publicUrlTemplate?: string) {
-    this.port = port;
-    this.persistencePath = persistencePath || null;
-    this.publicUrlTemplate = publicUrlTemplate || null;
-    this.loadPersisted();
-  }
-
-  private loadPersisted(): void {
-    if (!this.persistencePath) return;
-    try {
-      if (fs.existsSync(this.persistencePath)) {
-        const data = JSON.parse(fs.readFileSync(this.persistencePath, 'utf-8'));
-        for (const [uuid, records] of Object.entries(data)) {
-          this.callbacks.set(uuid, records as CallbackRecord[]);
-        }
-      }
-    } catch { /* best effort */ }
-  }
-
-  private savePersisted(): void {
-    if (!this.persistencePath) return;
-    try {
-      const data: Record<string, CallbackRecord[]> = {};
-      for (const [uuid, records] of this.callbacks) {
-        data[uuid] = records;
-      }
-      fs.writeFileSync(this.persistencePath, JSON.stringify(data, null, 2));
-    } catch { /* best effort */ }
-  }
-
-  start(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => {
-        const parsedUrl = new URL(req.url || '/', `http://localhost:${this.port || 0}`);
-
-        // API: check for callbacks by UUID
-        if (parsedUrl.pathname === '/api/check' && parsedUrl.searchParams.has('uuid')) {
-          const uuid = parsedUrl.searchParams.get('uuid')!;
-          const records = this.callbacks.get(uuid) || [];
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(records));
-          return;
-        }
-
-        // Record callback
-        const uuid = req.url?.split('/').filter(Boolean)[0] || 'unknown';
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          const record: CallbackRecord = {
-            uuid,
-            timestamp: Date.now(),
-            method: req.method || 'GET',
-            url: req.url || '/',
-            headers: req.headers as Record<string, string>,
-            body: Buffer.concat(chunks).toString('utf-8').slice(0, 4096),
-            remoteAddress: req.socket?.remoteAddress || 'unknown',
-          };
-          if (!this.callbacks.has(uuid)) this.callbacks.set(uuid, []);
-          this.callbacks.get(uuid)!.push(record);
-          this.savePersisted();
-          res.writeHead(200, { 'Content-Type': 'text/plain' });
-          res.end('ok');
-        });
-      });
-
-      this.server.listen(this.port, () => {
-        const addr = this.server?.address();
-        if (addr && typeof addr === 'object') {
-          this.port = addr.port;
-          resolve(addr.port);
-        } else {
-          reject(new Error('Failed to get port'));
-        }
-      });
-      this.server.on('error', reject);
-    });
-  }
-
-  createUrl(): { uuid: string; url: string } {
-    const uuid = randomUUID().replace(/-/g, '').slice(0, 12);
-    if (this.publicUrlTemplate) {
-      return { uuid, url: this.publicUrlTemplate.replace('{uuid}', uuid) };
-    }
-    return { uuid, url: `http://localhost:${this.port}/${uuid}` };
-  }
-
-  setPublicUrlTemplate(template: string): void {
-    this.publicUrlTemplate = template;
-  }
-
-  checkCallbacks(uuid?: string): CallbackRecord[] {
-    if (uuid) return this.callbacks.get(uuid) || [];
-    const all: CallbackRecord[] = [];
-    for (const records of this.callbacks.values()) all.push(...records);
-    return all;
-  }
-
-  getPort(): number { return this.port; }
-
-  stop(): void {
-    this.savePersisted();
-    if (this.server) {
-      this.server.close();
-      this.server = null;
-    }
-  }
-
-  isRunning(): boolean { return this.server !== null; }
-
-  getStats(): { totalCallbacks: number; uniqueUuids: number } {
-    let totalCallbacks = 0;
-    for (const records of this.callbacks.values()) totalCallbacks += records.length;
-    return { totalCallbacks, uniqueUuids: this.callbacks.size };
-  }
+function parseBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
+    req.on('error', () => resolve(''))
+  })
 }
+
+function parseQuery(url: string): Record<string, string> {
+  const idx = url.indexOf('?')
+  if (idx === -1) return {}
+  const qs = url.slice(idx + 1)
+  const params: Record<string, string> = {}
+  for (const part of qs.split('&')) {
+    const [k, v] = part.split('=')
+    if (k) params[decodeURIComponent(k)] = v ? decodeURIComponent(v) : ''
+  }
+  return params
+}
+
+function jsonResponse(res: ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify(data))
+}
+
+async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = req.url || '/'
+  const method = (req.method || 'GET').toUpperCase()
+  const path = url.split('?')[0]
+
+  if (path === '/callbacks' && method === 'GET') {
+    const store = getGlobalOastStore()
+    return jsonResponse(res, 200, { ok: true, count: store.count(), callbacks: store.getAll() })
+  }
+
+  if (path.startsWith('/callbacks/') && method === 'GET') {
+    const id = path.replace('/callbacks/', '')
+    const store = getGlobalOastStore()
+    const cb = store.getById(id)
+    if (!cb) return jsonResponse(res, 404, { ok: false, error: 'callback not found' })
+    return jsonResponse(res, 200, { ok: true, callback: cb })
+  }
+
+  if (path === '/callbacks' && method === 'DELETE') {
+    const store = getGlobalOastStore()
+    store.clear()
+    return jsonResponse(res, 200, { ok: true, cleared: true })
+  }
+
+  if (path === '/health' || path === '/') {
+    return jsonResponse(res, 200, { ok: true, service: 'oast', port: serverPort, callbacks: getGlobalOastStore().count() })
+  }
+
+  // Catch-all: record any request as a callback
+  const body = await parseBody(req)
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    headers[k] = String(v)
+  }
+
+  const callback: OastCallback = {
+    id: randomBytes(8).toString('hex'),
+    url,
+    method,
+    headers,
+    body,
+    query: parseQuery(url),
+    timestamp: Date.now(),
+    sourceIp: req.socket?.remoteAddress || 'unknown',
+  }
+
+  getGlobalOastStore().add(callback)
+  jsonResponse(res, 200, { ok: true, recorded: callback.id })
+}
+
+export async function startOastServer(port = 0): Promise<number> {
+  return new Promise((resolve, reject) => {
+    if (server) {
+      resolve(serverPort)
+      return
+    }
+
+    server = createServer(handleRequest)
+    server.listen(port, oastHost, () => {
+      const addr = server?.address()
+      if (addr && typeof addr === 'object') {
+        serverPort = addr.port
+      }
+      resolve(serverPort)
+    })
+    server.on('error', reject)
+  })
+}
+
+export async function stopOastServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server) {
+      resolve()
+      return
+    }
+    server.close(() => {
+      server = null
+      serverPort = 0
+      resolve()
+    })
+  })
+}
+
+export { getGlobalOastStore } from './store'

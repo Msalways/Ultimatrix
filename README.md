@@ -1,118 +1,195 @@
 # Ultimatrix
 
-**An AI security researcher in your terminal.** An LLM-driven agent composes attack plans from a plugin-based primitive catalog, executes them via a single HuntCore event stream, and drives four front-ends (TUI, headless CI, chat, HTML report) from the same continuous loop.
+**AI security researcher / autonomous penetration tester.** An LLM-driven supervisor orchestrates 4 specialist workers (injection, auth, advanced, recon) to discover vulnerabilities, chain findings, and generate replayable Playwright test suites. Every browser action is recorded as a TypeGraph node, annotated with happy/sad/edge/security test cases, and streamed to a `.spec.ts` file in parallel.
 
-Real attacks, not theoretical. Real chains across 10 vulnerability classes. No mocks.
+Real attacks, not theoretical. Real chains across 10+ vulnerability classes. No mocks.
 
 > ⚠️ **Under active development. Not yet published.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![1168 Tests](https://img.shields.io/badge/Tests-1168%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-passing-success.svg)](#testing)
 [![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
 
 ---
 
-## What it does
-
-A hunt is one continuous event stream (HuntCore). Four front-ends render it differently:
-
-1. **Spider** the target (Playwright-driven, depth 2 default) — discovers routes, forms, cookies, storage
-2. **Recon** in parallel — OAuth / GraphQL / JWT / cloud / framework fingerprints
-3. **Compose plans** — the LLM reads the app model and proposes 1–3 attack plans per endpoint
-4. **Execute primitives** — each plan is a sequence of primitives (HTTP request, payload craft, response compare, timing, WAF check, etc.)
-5. **Spawn specialists on signal** — if a primitive returns a 403, the WAF-bypass specialist is spawned; if storage + reflection pattern is detected, the second-order specialist; if you `/chain`, the chain-reasoning specialist
-6. **Triage** — heuristics + 1 LLM call ("is this finding real?") + 1 adversarial LLM call ("try to falsify it"); 2/3 votes = confirmed
-7. **Report** — self-contained HTML dashboard (no CDN, no JS framework), SARIF for CI, plain text, diff vs last hunt, zip export
-
-### Four front-ends, one loop
-
-| Front-end | When to use | Output |
-|---|---|---|
-| **TUI** (`ink@5`) | Interactive hunt on your laptop | Live activity, findings, screenshots, chat |
-| **Headless CI** | GitHub Actions / GitLab / any CI | SARIF 2.1.0, JSON, plain; exit 0/1/2/3 |
-| **Chat REPL** | Step-by-step hunt with prompt | Free-form commands, `/auto`, `/guided` |
-| **HTML Report** | Post-hunt review, share with team | Self-contained, diff vs prior, zip export |
-
----
-
-## Architecture
-
-### v4 "Menace" — one core, four front-ends
-
-```
-                  ┌─────────────────────────────────────────┐
-                  │              HuntCore                    │
-                  │  single event stream (15 event types)    │
-                  │  findings, behavior, llm-tokens, etc.    │
-                  └──────────────────┬──────────────────────┘
-                                     │
-       ┌─────────────┬──────────────┬┴──────────────┬─────────────┐
-       ▼             ▼              ▼               ▼             ▼
-    TUI ink       Headless CI     Chat REPL      Report HTML   Web UI
-   (4-pane)     (SARIF/JSON/    (interactive)   (self-contained
-                 plain; exit                     no CDN, no JS
-                 0/1/2/3)                       framework)
-```
-
-The HuntCore is the system of record. Each front-end is a pure projection of the same event stream. The agent loop, the recorder, the OOB server, the multi-session pool, the specialists — all talk to HuntCore, not to each other.
-
-### Plugin architecture + 23 primitives
-
-Primitives are **plugins**, not hardcoded switch cases. The `PrimitivePluginRegistry` singleton manages lifecycle hooks (`beforePrimitive`, `afterPrimitive`) and auto-recording via `toPlaywrightStep` metadata. Built-in primitives register themselves on startup; future MCP plugins can add primitives from any language.
-
-`httpRequest` · `multipartUpload` · `followRedirects` · `craftPayload` · `craftBypass` · `craftXmlEntity` · `craftMultipart` · `injectInContext` · `omitHeader` · `parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse` · `extractSessionCookie` · `extractCsrfToken` · `useSession` · `spawnSubtask` · `recordEvidence` · `writeFinding` · `spiderCrawl` · `recordTestStep`
-
-The **meta-orchestrator** has only 7 `MANAGER_PRIMITIVES` + `spawnAgent`. HTTP, crafting, and injection work must be delegated to sub-agents — forcing natural decomposition.
-
-### 9 specialists (v2, pluggable factories)
-
-`jwt` · `oauth` · `race` · `graphql` · `idor` · `cloud` · `waf-mutator` · `xss` · `second-order`
-
-Each is a factory with `shouldInclude(plan)` and `build(plan, ctx)`. Specialists are only spawned when the agent's primitives hit a signal (403, storage + reflection, /chain command, etc.).
-
-### 5 OOB categories
-
-`SSRF` · `blind XSS` · `blind SQLi` · `XXE` · `deserialization`
-
-Each template contains `{host}` and `{uuid}` placeholders, so `withOobCallback(uuid, mutate, send)` can substitute the local OAST server's URL.
-
----
-
-## Why not just use a fuzzer / scanner?
-
-Because the bug surface is the **chain**. A scanner finds 5 things. A human finds 5 things, sees that the SSRF + the JWT + the parameter-pollution bug combine to a critical. An LLM-driven agent does the same, in the time a human takes, with reproducible evidence and a regression test.
-
-Concretely: a hunt writes `output/live.spec.ts` (always valid) during the run, then auto-finalises it to `output/live.finalised.spec.ts` at the end. A recording plugin hooks every primitive call that declares `toPlaywrightStep` metadata — so the spec captures navigations, injections, and verifications without the LLM remembering. Run it with `npx playwright test output/live.finalised.spec.ts`. When the bug gets fixed, the test fails. When it regresses, the test fails. That's free CI.
-
----
-
-## Quick start
+## Quick Start
 
 ```bash
 # Install
 npm install
 npx playwright install chromium
 
-# Set an LLM API key
+# Set an LLM API key (or use ultimatrix.yaml)
 export GROQ_API_KEY=gsk_...
 
-# Hunt a target
-npx ultimatrix hunt -t https://your-app.com --auto
+# Full autonomous pentest
+npx ultimatrix assess -t https://your-app.com -o ./output
 
-# Or run the canned demo (90s, no target needed)
-npm run demo
+# Interactive REPL session
+npx ultimatrix interact -t https://your-app.com
+
+# Terminal UI
+npx ultimatrix -t https://your-app.com --tui
+
+# Web UI dashboard
+npx ultimatrix web
+
+# Re-run findings against a new deployment
+npx ultimatrix verify -a output/app-model.json -t https://new-app.com
 ```
 
-See [USAGE.md](USAGE.md) for the full command reference, configuration, interactive REPL, web UI, CI integration, and extension guide.
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `assess -t <url> -o <dir>` | Map → spider → extract → build model → test. Flags: `--depth`, `--skip-explore`, `--dashboard`, `--with-openapi/har/postman/src` |
+| `scan -t <url> -o <dir>` | Autonomous pentest (reuses existing `app-model.json`) |
+| `verify -a <model> -t <url>` | Re-run findings against fresh deployment |
+| `interact -t <url>` | REPL chat loop with agent |
+| `web` | Web UI dashboard at http://localhost:3000 |
+| `--tui` | Terminal UI with 4-split-pane layout |
+| `init` | Interactive provider setup wizard |
+
+---
+
+## Architecture (v5 — Action-as-Node)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      SUPERVISOR AGENT                             │
+│   14 tools: queryGraph, updateGraph, delegateToWorker,            │
+│   recordEvidence, writeFinding, askUser, getTestCoverage,         │
+│   getUntestedActions, getAuthFlows, getOastUrl, checkOastCallbacks│
+│   readAppModelSection, writeAppModelSection, delegateToWorker     │
+└──────┬──────────────┬──────────────┬──────────────┬──────────────┘
+       ▼              ▼              ▼              ▼
+  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │ Injection│  │AuthControl│  │ Advanced │  │  Recon   │
+  │ Worker   │  │  Worker   │  │  Worker  │  │  Worker  │
+  │ SQLi,XSS │  │IDOR,JWT, │  │Race,Logic│  │Discovery │
+  │WAF,2ndOrd│  │  OAuth   │  │ GraphQL  │  │FP,Crawl  │
+  └──────────┘  └──────────┘  └──────────┘  └──────────┘
+       │              │              │              │
+       └──────────────┴──────────────┴──────────────┘
+                      │
+        ┌─────────────▼─────────────────────────┐
+        │           ACTION RECORDER              │
+        │  Every tool call → Interaction node    │
+        │  → Test cases (happy/sad/edge/security)│
+        │  → Playwright code streamed to file    │
+        └─────────────┬─────────────────────────┘
+                      │
+        ┌─────────────▼─────────────────────────┐
+        │           TYPEGRAPH                    │
+        │  10 node types, 10 edge types          │
+        │  SQLite-backed, queryable via Mastra    │
+        │  tools                                 │
+        └────────────────────────────────────────┘
+```
+
+### Components
+
+- **Supervisor** (`src/manager/agent.ts`) — Mastra Agent with 14 tools. Runs the Observe-Learn-Attack loop. Spiders targets, delegates to workers, chains findings, records evidence.
+- **4 Specialist Workers** (`src/workers/`) — Independent Mastra Agents with Stagehand + AgentBrowser:
+  - **injection** — SQLi (error/boolean/time/UNION), XSS (reflected/stored/DOM), WAF bypass, second-order
+  - **authControl** — IDOR (horizontal/vertical), JWT (alg confusion, weak secrets), OAuth (CSRF, redirect URI, scope)
+  - **advanced** — Race conditions, business logic flaws, mass assignment, GraphQL introspection
+  - **recon** — Route discovery, tech fingerprinting, API endpoint mapping, auth requirement detection
+- **Spider Agent** (`src/spider/agent.ts`) — Hybrid crawler with Stagehand for natural language browsing + AgentBrowser for automation. Discovers pages, forms, hash routes, overlays, and auth flows.
+- **Action Recorder** (`src/recorder/`) — Records every Interaction, generates test cases (happy/sad/edge/security), streams Playwright code in parallel. Session is resumable on crash.
+- **Intelligence** (`src/intelligence/`) — Auth flow recording/replay, RBAC learning across roles, finding chaining (7 rules), dynamic hypothesis generation, session resume.
+- **TypeGraph** (`src/graph/`) — Full CRUD graph store with 8 node types and 10 edge types. Wraps `@nicia-ai/typegraph`. Persisted to `output/graph.json`.
+- **OAST Server** (`src/oast/`) — Local HTTP callback server for blind payload detection (XSS, SSRF, SQLi, XXE). Auto-starts before each session.
+- **TUI** (`src/tui/`) — Ink-based 4-split-pane terminal UI (Chat, Activity, Code, Graph) + StatusBar. Launched with `--tui` flag.
+- **Browser Bridge** (`src/browser/state-bridge.ts`) — State import/export between Stagehand and Playwright for shared auth sessions.
+
+---
+
+## TypeGraph Schema
+
+### 8 Node Types
+
+| Node | Properties |
+|------|-----------|
+| `Page` | url, method, contentType, status, tags, bodyPreview, requiresAuth |
+| `Action` | actionType (goto/click/fill/act/extract), selector, url, value, naturalLanguage |
+| `Input` | selector, inputType, name, placeholder, required, maxLength |
+| `Test` | testType (happy/sad/edge/security), status, endpoint, technique, payload |
+| `Finding` | severity (critical/high/medium/low/info), technique, endpoint, evidence[], remediation, cwe, confidence |
+| `AuthFlow` | flowType (login/logout/refresh), steps[], reusable, credentialHash |
+| `RBACRole` | roleName, accessibleEndpoints[], inaccessibleEndpoints[], visibleUIElements[] |
+| `Attack` | technique, payload, vulnerable, confidence, timestamp |
+
+### 10 Edge Types
+
+`HAS_ACTION` · `HAS_INPUT` · `HAS_TEST` · `FOUND_ON` · `REQUIRES_AUTH` · `CHAINED_FROM` · `TARGETS` · `PRODUCED` · `HAS_ROLE` · `PERMISSION`
+
+---
+
+## Mastra Tools (22+)
+
+### HTTP (4)
+`httpRequest` · `multipartUpload` · `followRedirects` · `omitHeader`
+
+### Injection (1)
+`injectInContext`
+
+### Observation (6)
+`parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse`
+
+### Session (3)
+`extractSessionCookie` · `extractCsrfToken` · `useSession`
+
+### Control (2)
+`recordEvidence` · `writeFinding`
+
+### Graph (6)
+`queryGraph` · `updateGraph` · `getTestCoverage` · `getAttackPath` · `getUntestedActions` · `getAuthFlows`
+
+### App Model (2)
+`readAppModelSection` · `writeAppModelSection`
+
+### Recon (5)
+`runRecon` · `graphqlIntrospect` · `jwtDecode` · `frameworkFingerprint` · `cloudMetadataProbe`
+
+### Interactive (1)
+`askUser`
+
+### Stagehand (3)
+`stagehandAct` · `stagehandExtract` · `stagehandAgent`
+
+### OAST (3)
+`getOastUrlTool` · `checkOastCallbacks` · `clearOastCallbacks`
+
+---
+
+## Observe-Learn-Attack Loop
+
+The supervisor cycles through three phases:
+
+1. **Observe** — Query the graph and app model to understand the target. If nothing is known, delegate to recon worker.
+2. **Learn** — Analyze endpoints, parameters, auth requirements, technology stack. Identify untested actions.
+3. **Attack** — Generate hypotheses per endpoint type, delegate to workers, chain findings, record evidence.
+
+Chain rules (7 built-in):
+- XSS + session cookies → session hijack
+- Session hijack + admin panel → IDOR
+- IDOR + user data → privilege escalation
+- Open redirect + auth callback → token theft
+- SQLi → data exfiltration
+- SSRF → internal network scan
+- IDOR → mass assignment
 
 ---
 
 ## Configuration
 
-### LLM provider
+### LLM Provider
 
-Ultimatrix auto-detects in this order: `groq → together → openai → anthropic → gemini → openrouter → azure-openai → mistral → nvidia → bedrock → mock`.
+Auto-detection order: `groq → together → openai → anthropic → gemini → openrouter → azure-openai → mistral → nvidia → bedrock → mock`.
 
 Three ways to configure:
 
@@ -129,33 +206,13 @@ Three ways to configure:
      apiKey: nvapi-...
    ```
 
-`npx ultimatrix setup` walks through this interactively.
-
-### Project yaml
-
-```yaml
-provider:
-  name: groq
-  model: llama-3.3-70b-versatile
-scan:
-  target: https://your-app.com
-output:
-  dir: ./output
-  format: html
-hunt:
-  maxRuntimeSeconds: 1800
-  spiderDepth: 2
-  skip:
-    - spider
-```
-
-### Env vars
+### Env Vars
 
 | Var | Effect |
 |---|---|
 | `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call sites, tokens, duration |
 | `ULTIMATRIX_LLM_STREAM=1` | Stream tokens to TUI / web |
-| `HUNT_DEBUG=1` | Verbose hunt logging |
+| `HUNT_DEBUG=1` | Verbose hunting logs |
 | `PORT` / `HOST` | Web UI bind (default 3000 / 0.0.0.0) |
 
 ---
@@ -163,27 +220,39 @@ hunt:
 ## Testing
 
 ```bash
-npx vitest run          # 1168 tests, 8 skipped
-npx tsc --noEmit        # 0 type errors
-npx tsup                # clean build (ESM + CJS + .d.ts)
+npm test            # vitest run — all tests
+npm run lint        # tsc --noEmit — 0 type errors
+npm run build       # tsup — clean ESM + CJS + .d.ts
+npm run test:watch  # vitest watch mode
+npm run test:e2e    # E2E smoke test
 ```
 
-### Test layers
+### Test Layers
 
-- **Unit** — primitives, helpers, parsers, formatters
-- **Behavioral** — `makeStep`, `BehavioralAnalyzer`, `LiveTestWriter` always-valid output
-- **Multi-session** — `MultiSessionPool` BOLA detection, cookie isolation
-- **OOB** — 5 categories, `withOobCallback`, OAST singleton
-- **CI** — `toJson` / `toPlain` / `toSarif`, exit code 0/1/2/3
-- **Report** — diff fingerprint, HTML self-containment, ZIP store-mode
-- **CLI** — `runDoctor`, `runDemo`, `finalizeLiveSpec`
+- **Unit** — Recorder, Graph, OAST, helpers, tools
+- **Behavioral** — Interaction recording, code generation, test case generation
+- **Chaining** — Finding chain detection and follow-up suggestion
+- **OAST** — Callback recording, retrieval, storage
+- **Browser Bridge** — State import/export
+- **Worker** — Worker creation, tool counts, delegation
 
 ---
 
-## Roadmap
+## Development
 
-- **v4 "Menace"** — Blocks 0-21 shipped. HuntCore + 4 front-ends + plugin-based primitives + 9 specialists + 5 OOB + SARIF + HTML + doctor + demo + auto-codegen. Plugin registry replaces hardcoded PRIMITIVE_CATALOG; delegation-first meta-orchestrator.
-- **v5** — Triage that surfaces *why* a finding is a finding (not just that it is); browser-side exploit proof (e.g. headless XSS proof of execution); multi-target runs; LLM-side remediation.
+```bash
+npm run dev         # tsx watch for hot reload
+npm run cli         # run CLI with tsx
+npm run demo        # canned demo (90s, no target needed)
+npm run web         # start web UI
+npm run clean       # remove dist/
+```
+
+## Requirements
+
+- Node.js 20+
+- TypeScript strict mode (enabled)
+- Playwright (Chromium)
 
 ---
 
