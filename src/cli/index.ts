@@ -118,22 +118,33 @@ switch (subcommand) {
         const stream = await supervisor.stream(text, { memory: { thread: threadId, resource: 'ultimatrix' } })
 
         let fullText = ''
+        let streamed = false
         if (onToken) {
           try {
-            const reader = stream.textStream.getReader()
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              const chunk = typeof value === 'string' ? value : new TextDecoder().decode(value)
-              fullText += chunk
-              onToken(chunk)
+            if (stream.textStream) {
+              const reader = stream.textStream.getReader()
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                const chunk = typeof value === 'string' ? value : new TextDecoder().decode(value)
+                fullText += chunk
+                onToken(chunk)
+                streamed = true
+              }
             }
-          } catch {
-            // textStream not available, fall back to .text
+          } catch (e) {
+            process.stderr.write(`[tui:stream] ${e instanceof Error ? e.message : String(e)}\n`)
           }
         }
         if (!fullText) {
-          fullText = await stream.text
+          try {
+            fullText = (await stream.text) ?? ''
+          } catch (e) {
+            process.stderr.write(`[tui:text] ${e instanceof Error ? e.message : String(e)}\n`)
+          }
+        }
+        if (!fullText && !streamed) {
+          process.stderr.write(`[tui:warn] empty response from supervisor for "${text.slice(0, 40)}"\n`)
         }
 
         await getGlobalGraphStore().save()

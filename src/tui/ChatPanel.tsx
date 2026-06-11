@@ -21,7 +21,7 @@ export function ChatPanel({
 }: Props) {
   return (
     <Box flexDirection="column" flexGrow={7} paddingX={1}>
-      <Box flexGrow={1} overflow="hidden">
+      <Box flexGrow={1} overflow="scroll">
         <MessageList messages={messages} />
       </Box>
       <Box height={1}>
