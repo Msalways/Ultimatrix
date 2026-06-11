@@ -114,11 +114,16 @@ switch (subcommand) {
       const supervisor = createSupervisor(config)
 
       const { startTUI } = await import('../tui/index')
-      startTUI(target, modelName, async (text: string) => {
-        const resp = await supervisor.generate(text, { memory: { thread: threadId, resource: 'ultimatrix' } })
+      startTUI(target, modelName, async (text: string, onToken?: (token: string) => void) => {
+        const stream = await supervisor.stream(text, { memory: { thread: threadId, resource: 'ultimatrix' } })
+        let fullText = ''
+        for await (const chunk of stream.textStream) {
+          fullText += chunk
+          onToken?.(chunk)
+        }
         await getGlobalGraphStore().save()
         await getGlobalOastStore().save()
-        return resp?.text || '(no response)'
+        return fullText || '(no response)'
       })
     }
 

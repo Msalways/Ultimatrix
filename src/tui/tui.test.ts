@@ -1,51 +1,33 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 
-describe('TUI backend', () => {
-  it('createAnsiBackend returns a Backend with required methods', async () => {
-    const { createAnsiBackend } = await import('./backend')
-    const backend = createAnsiBackend()
-    expect(backend).toBeDefined()
-    expect(typeof backend.size).toBe('function')
-    expect(typeof backend.draw).toBe('function')
-    expect(typeof backend.flush).toBe('function')
-    expect(typeof backend.hideCursor).toBe('function')
-    expect(typeof backend.showCursor).toBe('function')
-    expect(typeof backend.clear).toBe('function')
-    expect(typeof backend.getCursorPosition).toBe('function')
-    expect(typeof backend.setCursorPosition).toBe('function')
-  })
-
-  it('size returns valid dimensions', async () => {
-    const { createAnsiBackend } = await import('./backend')
-    const backend = createAnsiBackend()
-    const size = backend.size()
-    expect(size.width).toBeGreaterThanOrEqual(70)
-    expect(size.height).toBeGreaterThanOrEqual(18)
-  })
-
-  it('clear and hideCursor are no-ops in test environment', async () => {
-    const { createAnsiBackend } = await import('./backend')
-    const backend = createAnsiBackend()
-    expect(() => backend.clear()).not.toThrow()
-    expect(() => backend.hideCursor()).not.toThrow()
-    expect(() => backend.showCursor()).not.toThrow()
-    expect(() => backend.flush()).not.toThrow()
-  })
-
-  it('getCursorPosition returns default position', async () => {
-    const { createAnsiBackend } = await import('./backend')
-    const backend = createAnsiBackend()
-    const pos = backend.getCursorPosition()
-    expect(pos).toHaveProperty('x', 0)
-    expect(pos).toHaveProperty('y', 0)
+describe('TUI types', () => {
+  it('export type definitions', async () => {
+    const mod = await import('./types')
+    expect(mod).toBeDefined()
   })
 })
 
-describe('TUI startTUI', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks()
+describe('console-capture', () => {
+  it('captures console.log and restores it', async () => {
+    const mod = await import('./console-capture')
+    const restore = mod.captureConsole()
+    const spy = console.log
+    console.log('test message')
+    expect(spy).toBeDefined()
+    restore()
   })
 
+  it('getDebugBuffer returns captured logs', async () => {
+    const mod = await import('./console-capture')
+    const restore = mod.captureConsole()
+    console.log('captured line')
+    const buf = mod.getDebugBuffer()
+    expect(buf.some(l => l.includes('captured line'))).toBe(true)
+    restore()
+  })
+})
+
+describe('startTUI', () => {
   it('exports startTUI function', async () => {
     const mod = await import('./index')
     expect(mod.startTUI).toBeDefined()

@@ -2,9 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: {
-    alias: {
-      'terminui/jsx-dev-runtime': 'terminui/jsx-runtime',
-    },
+    alias: {},
   },
   test: {
     globals: true,
