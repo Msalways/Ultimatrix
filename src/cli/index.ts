@@ -116,11 +116,26 @@ switch (subcommand) {
       const { startTUI } = await import('../tui/index')
       startTUI(target, modelName, async (text: string, onToken?: (token: string) => void) => {
         const stream = await supervisor.stream(text, { memory: { thread: threadId, resource: 'ultimatrix' } })
+
         let fullText = ''
-        for await (const chunk of stream.textStream) {
-          fullText += chunk
-          onToken?.(chunk)
+        if (onToken) {
+          try {
+            const reader = stream.textStream.getReader()
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              const chunk = typeof value === 'string' ? value : new TextDecoder().decode(value)
+              fullText += chunk
+              onToken(chunk)
+            }
+          } catch {
+            // textStream not available, fall back to .text
+          }
         }
+        if (!fullText) {
+          fullText = await stream.text
+        }
+
         await getGlobalGraphStore().save()
         await getGlobalOastStore().save()
         return fullText || '(no response)'
