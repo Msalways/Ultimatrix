@@ -1,16 +1,19 @@
 ---
 name: sast
 description: "Static analysis — source-to-sink taint tracking, secret scanning, entry point detection"
+version: 1.0.0
+tags: [code, sast, static-analysis]
+toolRefs: [runRecon, findEndpointsInResponse, updateGraph, writeFinding]
 mitre_attack: T1595
 ---
 
 ## Static Analysis
 
 ### Taint Analysis
-Use the `taint_analyze` tool to scan source code for source-to-sink data flow vulnerabilities.
+Use the `findEndpointsInResponse` tool to scan for potential source-to-sink data flow vulnerabilities in source code.
 
 ### Secret Scanning
-Use `exec_command` with `grep -r` patterns for:
+Use `runRecon` with appropriate patterns for:
 - API keys, tokens, passwords in source code
 - Hardcoded credentials
 - `.env` files or exposed configuration
@@ -22,4 +25,4 @@ Examine source code for:
 - File read/write operations
 - Authentication/authorization logic
 
-Document all findings with `write_file`.
+Document all findings with `writeFinding`.

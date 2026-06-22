@@ -37,21 +37,23 @@ export const runRecon = createTool({
     const activeProbes = probes ?? []
     try {
       if (activeProbes.includes('whois')) {
-        const whoisRes = await fetch(`https://whois.freeaiapi.workers.dev/?domain=${encodeURIComponent(target)}`)
-        if (whoisRes.ok) {
-          const whoisData = await whoisRes.json()
-          result.whois = whoisData
-        }
+        // TODO: Implement WHOIS lookup
+        // const whoisRes = await fetch(`https://whois.freeaiapi.workers.dev/?domain=${encodeURIComponent(target)}`)
+        // if (whoisRes.ok) {
+        //   const whoisData = await whoisRes.json()
+        //   result.whois = whoisData
+        // }
       }
     } catch { /* best-effort */ }
 
     try {
       if (activeProbes.includes('dns')) {
-        const dnsRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(target)}&type=ANY`)
-        if (dnsRes.ok) {
-          const dnsData = await dnsRes.json()
-          result.dnsRecords = dnsData
-        }
+        // TODO: Implement DNS lookup
+        // const dnsRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(target)}&type=ANY`)
+        // if (dnsRes.ok) {
+        //   const dnsData = await dnsRes.json()
+        //   result.dnsRecords = dnsData
+        // }
       }
     } catch { /* best-effort */ }
 

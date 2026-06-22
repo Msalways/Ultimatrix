@@ -5,12 +5,12 @@ export const extractSessionCookie = createTool({
   id: 'extractSessionCookie',
   description: 'Parse Set-Cookie headers from HTTP response headers',
   inputSchema: z.object({
-    responseHeaders: z.record(z.string()),
+    responseHeaders: z.record(z.string(), z.string()),
   }),
   outputSchema: z.object({
     ok: z.boolean(),
     value: z.object({
-      cookies: z.record(z.string()),
+      cookies: z.record(z.string(), z.string()),
     }),
   }),
   execute: async (ctx) => {
@@ -68,14 +68,14 @@ export const useSession = createTool({
   description: 'Configure session context with role, cookies, and bearer token',
   inputSchema: z.object({
     role: z.string().default('guest'),
-    cookies: z.record(z.string()).optional(),
+    cookies: z.record(z.string(), z.string()).optional(),
     bearerToken: z.string().optional(),
   }),
   outputSchema: z.object({
     ok: z.boolean(),
     value: z.object({
       role: z.string(),
-      cookies: z.record(z.string()).optional(),
+      cookies: z.record(z.string(), z.string()).optional(),
       bearerToken: z.string().optional(),
     }),
   }),

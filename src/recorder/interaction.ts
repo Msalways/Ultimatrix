@@ -8,6 +8,7 @@ export enum InteractionType {
   DELEGATE = 'delegate',
   EVALUATE = 'evaluate',
   SNAPSHOT = 'snapshot',
+  API_CALL = 'api_call',
 }
 
 export interface Interaction {

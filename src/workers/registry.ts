@@ -1,58 +1,41 @@
-﻿import type { MastraLanguageModel } from '@mastra/core/agent'
-import type { MastraMemory } from '@mastra/core/memory'
+﻿import type { MastraMemory } from '@mastra/core/memory'
 import { Memory } from '@mastra/memory'
-import { InMemoryStore } from '@mastra/core/storage'
-import type { AgentBrowser } from '@mastra/agent-browser'
+import { LibSQLStore } from '@mastra/libsql'
+import type { StagehandBrowser } from '@mastra/stagehand'
 import { createInjectionWorker } from './injection'
 import { createAuthControlWorker } from './auth-control'
 import { createAdvancedWorker } from './advanced'
 import { createReconWorker } from './recon'
-import { ActionRecorder } from '../recorder/index'
-import { setGlobalStagehand } from '../tools/stagehand-tools'
-import { getBrowser } from '../browser/manager'
-import { Stagehand } from '@browserbasehq/stagehand'
-import { Browser, chromium } from 'playwright'
+import type { UltimatrixConfig } from '../config'
 
-let _sharedMemory: MastraMemory | null = null
-let _stagehand: Stagehand | null = null
-let _playwrightBrowser: Browser | null = null
+let _store: LibSQLStore | null = null
 
-function getSharedMemory(): MastraMemory {
-  if (!_sharedMemory) {
-    _sharedMemory = new Memory({
-      storage: new InMemoryStore(),
-      options: {
-        lastMessages: 10,
-        semanticRecall: false,
-        workingMemory: { enabled: false },
-      },
-    })
+export async function createMemoryStore(): Promise<LibSQLStore> {
+  if (!_store) {
+    _store = new LibSQLStore({ id: 'ultimatrix', url: 'file:./ultimatrix.db' })
+    await _store.init()
   }
-  return _sharedMemory
+  return _store
 }
 
-async function getStagehand(): Promise<Stagehand | null> {
-  if (_stagehand) return _stagehand
-  try {
-    _playwrightBrowser = await chromium.launch({ headless: true })
-    const context = await _playwrightBrowser.newContext()
-    const page = await context.newPage()
-    _stagehand = new (Stagehand as any)({ page, context, browser: _playwrightBrowser })
-    setGlobalStagehand(_stagehand as any)
-    return _stagehand
-  } catch {
-    return null
-  }
+export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore): Promise<MastraMemory> {
+  const storage = store ?? await createMemoryStore()
+  return new Memory({
+    storage,
+    options: {
+      lastMessages: config.memory.lastMessages,
+      semanticRecall: config.memory.semanticRecall,
+      workingMemory: { enabled: config.memory.workingMemory },
+    },
+  })
 }
 
-export async function createAllWorkers(model: MastraLanguageModel, browser?: AgentBrowser, recorder?: ActionRecorder) {
-  const memory = getSharedMemory()
-  await getStagehand()
+export async function createAllWorkers(config: UltimatrixConfig, browser?: StagehandBrowser, memory?: MastraMemory) {
   return {
-    injection: createInjectionWorker(model, browser, memory, recorder),
-    authControl: createAuthControlWorker(model, browser, memory, recorder),
-    advanced: createAdvancedWorker(model, browser, memory, recorder),
-    recon: createReconWorker(model, browser, memory, recorder),
+    injection: createInjectionWorker(config, browser, memory),
+    authControl: createAuthControlWorker(config, browser, memory),
+    advanced: createAdvancedWorker(config, browser, memory),
+    recon: createReconWorker(config, browser, memory),
   }
 }
 

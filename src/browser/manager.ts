@@ -1,14 +1,19 @@
-import { AgentBrowser } from '@mastra/agent-browser'
+import { StagehandBrowser } from '@mastra/stagehand'
+import type { UltimatrixConfig } from '../config'
 
-let browser: AgentBrowser | null = null
+let browser: StagehandBrowser | null = null
 
-export function getBrowser(): AgentBrowser {
+export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
   if (!browser) {
-    browser = new AgentBrowser({
-      headless: true,
-      viewport: { width: 1280, height: 720 },
-      timeout: 30000,
-      scope: 'shared',
+    browser = new StagehandBrowser({
+      headless: config.browser.headless,
+      viewport: config.browser.viewport,
+      timeout: config.timeout,
+      env: config.browser.env as any,
+      selfHeal: config.browser.selfHeal,
+      domSettleTimeout: config.browser.domSettleTimeout,
+      verbose: config.browser.verbose as 0 | 1 | 2,
+      disablePino: true,
     })
   }
   return browser
@@ -20,7 +25,3 @@ export async function closeBrowser(): Promise<void> {
     browser = null
   }
 }
-
-process.on('exit', () => { if (browser) browser.close().catch(() => {}) })
-process.on('SIGINT', () => { if (browser) browser.close().catch(() => {}).finally(() => process.exit(0)) })
-process.on('SIGTERM', () => { if (browser) browser.close().catch(() => {}).finally(() => process.exit(0)) })

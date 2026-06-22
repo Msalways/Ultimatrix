@@ -1,6 +1,7 @@
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
 import type { AnyNodeData, ActionNode, PageNode } from '../graph/schema'
+import type { SkillRegistry } from '../skills/registry'
 
 export interface Hypothesis {
   id: string
@@ -10,6 +11,57 @@ export interface Hypothesis {
   priority: number
   description: string
   actionType?: string
+}
+
+export function generateDynamicHypotheses(
+  skillRegistry: SkillRegistry,
+  targetFeatures: string[] = []
+): Hypothesis[] {
+  const hypotheses: Hypothesis[] = []
+  let id = 0
+
+  // Use skill search to find relevant techniques for target features
+  for (const feature of targetFeatures) {
+    const matchingSkills = skillRegistry.search(feature)
+    for (const skill of matchingSkills.slice(0, 3)) {
+      hypotheses.push({
+        id: `h-${skill.id}-${++id}`,
+        technique: skill.id,
+        endpointId: 'dynamic',
+        endpointUrl: feature,
+        priority: calculatePriority(skill.tags),
+        description: skill.description,
+      })
+    }
+  }
+
+  // Also search for common patterns
+  const commonPatterns = ['injection', 'xss', 'api', 'auth', 'upload', 'graphql']
+  for (const pattern of commonPatterns) {
+    const skills = skillRegistry.search(pattern)
+    for (const skill of skills.slice(0, 2)) {
+      if (!hypotheses.some(h => h.technique === skill.id)) {
+        hypotheses.push({
+          id: `h-${skill.id}-${++id}`,
+          technique: skill.id,
+          endpointId: 'pattern',
+          endpointUrl: pattern,
+          priority: calculatePriority(skill.tags),
+          description: skill.description,
+        })
+      }
+    }
+  }
+
+  hypotheses.sort((a, b) => b.priority - a.priority)
+  return hypotheses
+}
+
+function calculatePriority(tags: string[]): number {
+  if (tags.includes('exploit')) return 3
+  if (tags.includes('auth')) return 3
+  if (tags.includes('recon')) return 2
+  return 1
 }
 
 export function generateHypotheses(): Hypothesis[] {

@@ -109,6 +109,20 @@ export interface RBACRoleNode extends GraphNodeData {
   }
 }
 
+export interface TestNode extends GraphNodeData {
+  type: NodeType.TEST
+  properties: {
+    testType: string
+    status: string
+    endpoint: string
+    technique: string
+    payload: string
+    tags?: string[]
+    expectedResult?: string
+    actualResult?: string
+  }
+}
+
 export interface AttackNode extends GraphNodeData {
   type: NodeType.ATTACK
   properties: {
@@ -120,13 +134,13 @@ export interface AttackNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
   [NodeType.ACTION]: ['actionType', 'selector', 'url', 'value', 'naturalLanguage'],
   [NodeType.INPUT]: ['selector', 'inputType', 'name', 'placeholder', 'required', 'maxLength'],
-  [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload'],
+  [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload', 'tags', 'expectedResult', 'actualResult'],
   [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'remediation', 'cwe', 'confidence'],
   [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash'],
   [NodeType.RBAC_ROLE]: ['roleName', 'accessibleEndpoints', 'inaccessibleEndpoints', 'visibleUIElements'],

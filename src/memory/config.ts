@@ -1,18 +1,13 @@
 ﻿import { Memory } from '@mastra/memory'
+import type { UltimatrixConfig } from '../config'
 
-export interface MemoryConfig {
-  lastMessages?: number
-  semanticRecall?: boolean
-  workingEnabled?: boolean
-}
-
-export function createMemoryConfig(opts?: MemoryConfig) {
+export function createMemoryFromConfig(config: UltimatrixConfig) {
   return new Memory({
     options: {
-      lastMessages: opts?.lastMessages ?? 50,
-      semanticRecall: opts?.semanticRecall ?? true,
+      lastMessages: config.memory.lastMessages,
+      semanticRecall: config.memory.semanticRecall,
       workingMemory: {
-        enabled: opts?.workingEnabled ?? true,
+        enabled: config.memory.workingMemory,
         template: `
 ## Working Memory
 - Target: {{target}}

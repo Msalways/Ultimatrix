@@ -1,26 +1,22 @@
-import { Agent } from '@mastra/core/agent'
-import type { MastraLanguageModel } from '@mastra/core/agent'
 import type { MastraMemory } from '@mastra/core/memory'
-import type { AgentBrowser } from '@mastra/agent-browser'
-import {
-  stagehandAct, stagehandExtract,
-  updateGraph,
-  getOastUrlTool,
-} from '../tools/registry'
+import type { StagehandBrowser } from '@mastra/stagehand'
+import { createAgent } from '../mastra/index.js'
 import { spiderInstructions } from './instructions'
+import type { UltimatrixConfig } from '../config'
 
-export function createSpiderAgent(model: MastraLanguageModel, browser?: AgentBrowser, memory?: MastraMemory) {
-  return new Agent({
-    id: 'spider-agent',
-    name: 'Spider Crawler',
-    instructions: spiderInstructions,
-    model,
-    memory,
+export function createSpiderAgent(
+  config: UltimatrixConfig,
+  memory?: MastraMemory,
+  browser?: StagehandBrowser,
+) {
+  const agent = createAgent(config, {
     browser,
-    tools: {
-      stagehandAct, stagehandExtract,
-      updateGraph,
-      getOastUrlTool,
-    },
+    memory: memory as any,
   })
+
+  agent.id = 'spider-agent'
+  agent.name = 'Spider Crawler'
+  agent.instructions = spiderInstructions
+
+  return agent
 }

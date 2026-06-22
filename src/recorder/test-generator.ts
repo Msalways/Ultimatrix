@@ -106,6 +106,22 @@ export function generateTestCases(interaction: Interaction): TestCase[] {
         tags: ['extract', 'happy'],
       })
       break
+
+    case InteractionType.API_CALL: {
+      const method = (interaction.metadata?.method as string) || 'GET'
+      testCases.push({
+        id: `${baseId}-happy`,
+        name: `api ${method} ${interaction.url?.slice(0, 40)}`,
+        type: 'happy',
+        description: interaction.description,
+        interactions: [interaction],
+        assertions: [],
+        tags: ['api', 'happy'],
+        endpoint: interaction.url,
+        method,
+      })
+      break
+    }
   }
 
   return testCases

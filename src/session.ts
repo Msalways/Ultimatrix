@@ -1,142 +1,143 @@
-﻿import { marked } from 'marked'
-import TerminalRenderer from 'marked-terminal'
-import { createSupervisor } from './manager/agent'
-import { getBrowser, closeBrowser } from './browser/manager'
+﻿import { createSupervisor } from './manager/agent'
+import { getOrCreateBrowser, closeBrowser } from './browser/manager'
 import { loadConfig } from './config'
-import { readLine } from './utils/readline'
 import { log } from './utils/logger'
 import { startOastServer, stopOastServer } from './oast/server'
 import { getGlobalOastStore } from './oast/store'
-import { createRecorder, getGlobalRecorder, setGlobalRecorder } from './recorder/index'
-import type { FindingNode } from './graph/schema'
 import { getGlobalGraphStore } from './graph/store'
-import { createSpiderAgent } from './spider/agent'
-import { createAllWorkers } from './workers/registry'
-import { setSharedWorkers } from './tools/delegate-tool'
-import { dismissOverlays, exploreFormsOnPage, fillAndSubmitForm } from './explorer/spider-features'
-import { getReusableAuthFlow, replayAuthFlow, detectLogoutFlow, detectTokenRefreshFlow, createAuthFlow } from './intelligence/auth-recorder'
-import { emitSpiderProgress, emitActivityStart, emitActivityComplete } from './events/emitter'
-import { checkForPreviousSession, resumeSession } from './intelligence/session-resume'
+import { createAllWorkers, createMemoryStore, createMemory } from './workers/registry'
+import { userInputEmitter } from './tools/interaction-tools'
 import { detectChains } from './intelligence/chaining'
-import { chromium } from 'playwright'
+import type { FindingNode } from './graph/schema'
+import { createSpiderAgent } from './spider/agent'
+import { createInterface } from 'node:readline/promises'
 
-marked.setOptions({
-  renderer: new TerminalRenderer(),
-})
+const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
 export async function main(targetUrl?: string) {
   const config = loadConfig()
+  if (targetUrl) config.target = targetUrl
   const threadId = 'ultimatrix-' + Date.now()
+  const resourceId = 'ultimatrix'
 
-  const sessionSummary = await checkForPreviousSession()
-  if (sessionSummary.hasPreviousSession) {
-    log.info(`Previous session found: ${sessionSummary.findingCount} findings, ${sessionSummary.pageCount} pages, ${sessionSummary.actionCount} actions`)
-    await resumeSession(sessionSummary.lastSessionName)
-  }
+  const store = await createMemoryStore()
+  const memory = await createMemory(config, store)
+  await getGlobalGraphStore().load()
+  await getGlobalOastStore().load()
 
-  if (targetUrl) {
-    if (!getGlobalRecorder()) {
-      createRecorder(targetUrl)
-    }
-  }
+  const browser = getOrCreateBrowser(config)
+  await browser.ensureReady()
 
   const oastPort = await startOastServer()
   log.info(`OAST server started on port ${oastPort}`)
-  await getGlobalOastStore().load()
 
-  await getGlobalGraphStore().load()
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
 
-  const browser = getBrowser()
+  function getLine(): Promise<string | null> {
+    return new Promise(resolve => {
+      rl.once('line', line => resolve(line))
+      rl.once('close', () => resolve(null))
+    })
+  }
+
+  userInputEmitter.on('askUser-question', (question: string) => {
+    process.stdout.write('\n' + question + ' ')
+    rl.once('line', (answer: string) => {
+      userInputEmitter.emit('askUser-response', answer)
+    })
+  })
+
+  async function consumeStream(stream: AsyncIterable<any>) {
+    let reasoningBuf: string[] = []
+    let reasoningTimer: ReturnType<typeof setTimeout> | null = null
+
+    const flushReasoning = () => {
+      if (reasoningTimer) clearTimeout(reasoningTimer)
+      reasoningTimer = null
+      if (reasoningBuf.length > 0) {
+        const text = reasoningBuf.join('')
+        log.dim(text)
+        reasoningBuf = []
+      }
+    }
+
+    const scheduleReasoning = () => {
+      if (reasoningTimer) clearTimeout(reasoningTimer)
+      reasoningTimer = setTimeout(flushReasoning, 150)
+    }
+
+    for await (const chunk of stream) {
+      switch (chunk.type) {
+        case 'text-delta':
+          flushReasoning()
+          process.stdout.write(chunk.payload.text)
+          break
+        case 'reasoning-delta':
+          reasoningBuf.push(chunk.payload.text)
+          scheduleReasoning()
+          break
+        case 'reasoning-end':
+          flushReasoning()
+          break
+        case 'tool-call':
+          if (chunk.payload.toolName === 'askUser') break
+          if (internalTools.has(chunk.payload.toolName)) break
+          flushReasoning()
+          log.dim(chunk.payload.toolName + '...')
+          break
+        case 'tool-result':
+          if (internalTools.has(chunk.payload.toolName)) break
+          flushReasoning()
+          log.success(chunk.payload.toolName)
+          break
+        case 'tool-error':
+          flushReasoning()
+          log.error(chunk.payload.toolName + ': ' + chunk.payload.error)
+          break
+        case 'error':
+          flushReasoning()
+          log.error(String(chunk.payload.error))
+          break
+        case 'step-finish':
+          await getGlobalGraphStore().save()
+          break
+        case 'background-task-started':
+          flushReasoning()
+          log.dim('background task: ' + chunk.payload.toolName + '...')
+          break
+        case 'background-task-completed':
+          flushReasoning()
+          log.success('background task: ' + chunk.payload.toolName)
+          break
+        case 'background-task-failed':
+          flushReasoning()
+          log.error('background task: ' + chunk.payload.toolName)
+          break
+      }
+    }
+    flushReasoning()
+  }
 
   if (targetUrl) {
     try {
-      log.info(`Starting spider crawl of ${targetUrl}...`)
-      emitSpiderProgress(targetUrl, 0)
-
-      const spiderAgent = createSpiderAgent(config.model as any, browser)
-      const result = await spiderAgent.generate(
-        `Use stagehandAct to navigate to ${targetUrl} and discover pages, forms, and endpoints. Record everything with updateGraph.`,
-        { memory: { thread: threadId + '-spider', resource: 'ultimatrix-spider' } }
+      log.info('Crawling ' + targetUrl + '...')
+      const spiderAgent = createSpiderAgent(config, memory, browser)
+      const result = await spiderAgent.stream(
+        `Navigate to ${targetUrl} using stagehand_navigate. Use stagehand tools to dismiss overlays, discover forms/fill them, detect auth flows (login/logout/login/logout/refresh), and record everything with updateGraph. Report all findings.`,
+        { memory: { thread: threadId + '-spider', resource: resourceId + '-spider' }, toolChoice: 'required' },
       )
-      log.markdown(await marked.parse(result?.text || ''))
-
-      let playwrightBrowser: any
-      try {
-        playwrightBrowser = await chromium.launch({ headless: config.headless })
-        const context = await playwrightBrowser.newContext()
-        const page = await context.newPage()
-        await page.goto(targetUrl, { waitUntil: 'load', timeout: 30000 })
-
-        const overlays = await dismissOverlays(page)
-        if (overlays.length > 0) {
-          log.info(`Dismissed ${overlays.length} overlay(s): ${[...new Set(overlays.map(o => o.includes('"') ? o.split('"')[1] || o : o))].slice(0, 5).join(', ')}`)
-        }
-
-        const pageContent = await page.content()
-        const logoutFlow = detectLogoutFlow(pageContent)
-        if (logoutFlow) {
-          log.info(`Logout flow detected: selector="${logoutFlow.logoutSelector}"`)
-          createAuthFlow('logout', [{ action: 'click', selector: logoutFlow.logoutSelector }])
-        }
-
-        const tokenRefresh = detectTokenRefreshFlow(pageContent)
-        if (tokenRefresh) {
-          log.info(`Token refresh likely at ${tokenRefresh.refreshUrl} (${tokenRefresh.likelyMethod})`)
-          createAuthFlow('refresh', [{ action: 'api-call', url: tokenRefresh.refreshUrl }])
-        }
-
-        const existingAuthFlow = getReusableAuthFlow()
-        if (existingAuthFlow) {
-          log.info(`Found reusable auth flow (${existingAuthFlow.properties.flowType}), available for replay`)
-        }
-
-        const forms = await exploreFormsOnPage(page)
-        if (forms.length > 0) {
-          log.info(`Discovered ${forms.length} form(s) on the page`)
-          for (const f of forms) {
-            log.dim(`  Form action="${f.action}" method="${f.method}" with ${f.fields.length} field(s)`)
-            const fieldValues: Record<string, string> = {}
-            for (const field of f.fields) {
-              if (field.type === 'email') fieldValues[field.name] = 'test@example.com'
-              else if (field.type === 'password') fieldValues[field.name] = 'TestPass123!'
-              else if (field.type === 'text') fieldValues[field.name] = 'test'
-              else if (field.type === 'search') fieldValues[field.name] = 'xss'
-              else if (field.type === 'tel') fieldValues[field.name] = '555-0100'
-              else if (field.name.toLowerCase().includes('user')) fieldValues[field.name] = 'admin'
-              else if (field.name.toLowerCase().includes('name')) fieldValues[field.name] = 'Test User'
-              else fieldValues[field.name] = 'test'
-            }
-            if (Object.keys(fieldValues).length > 0) {
-              const filled = await fillAndSubmitForm(page, f.selector, fieldValues)
-              if (filled) log.info(`  → Auto-filled and submitted form "${f.action}"`)
-            }
-          }
-        }
-
-        emitSpiderProgress(targetUrl, 200)
-        await page.close()
-      } catch {
-        log.warn('Could not run executable spider features (Playwright page required)')
-      } finally {
-        if (playwrightBrowser) await playwrightBrowser.close()
-      }
-
+      await consumeStream(result.fullStream)
       await getGlobalGraphStore().save()
     } catch (err) {
       log.error(err instanceof Error ? err.message : String(err))
     }
   }
 
-  const recorder = getGlobalRecorder() || undefined
+  const workers = await createAllWorkers(config, browser, memory)
+  const supervisor = createSupervisor(config, { workers, browser, memory })
 
-  emitActivityStart('spider', 'Creating specialist workers')
-  const workers = await createAllWorkers(config.model as any, browser, recorder)
-  setSharedWorkers(workers)
-  emitActivityComplete('spider', 'All workers created')
-
-  const supervisor = createSupervisor(config)
-
-  log.banner('Ultimatrix Security Assistant v5', 'Model: ' + config.model + (targetUrl ? '  |  Target: ' + targetUrl : '') + `  |  OAST: :${oastPort}`)
+  log.banner('Ultimatrix Security Assistant v5',
+    'Model: ' + config.model + (targetUrl ? '  |  Target: ' + targetUrl : '') + `  |  OAST: :${oastPort}`)
 
   if (!targetUrl) {
     log.info('No target set. Tell me a URL to investigate.')
@@ -148,39 +149,43 @@ export async function main(targetUrl?: string) {
 
   try {
     for (;;) {
-      let line: string
-      try {
-        line = await readLine()
-      } catch {
-        break
-      }
+      process.stdout.write('> ')
+      const line = await getLine()
+      if (line === null) break
       if (!line.trim()) continue
 
       try {
-        const resp = await supervisor.generate(line, { memory: { thread: threadId, resource: 'ultimatrix' } })
-        log.markdown(await marked.parse(resp?.text || ''))
+        process.stdout.write('\n')
+        const result = await supervisor.stream(line, {
+          memory: { thread: threadId, resource: resourceId },
+          maxSteps: config.agent.maxSteps,
+        })
+        await consumeStream(result.fullStream)
+        process.stdout.write('\n')
 
-        const store = getGlobalGraphStore()
-        await store.save()
-        await getGlobalOastStore().save()
-
-        const allNodes = store.queryNodes()
+        const graph = getGlobalGraphStore()
+        const allNodes = graph.queryNodes()
         const findings = allNodes.filter(n => n.type === 'Finding') as FindingNode[]
         if (findings.length > 0) {
           const chains = detectChains(findings)
           for (const chain of chains) {
-            log.info(`Chain detected: ${chain.rule.name} — ${chain.source.properties.technique} → ${chain.target.properties.technique} (${chain.rule.severity})`)
+            log.info('Chain detected: ' + chain.rule.name + ' — ' + chain.source.properties.technique + ' → ' + chain.target.properties.technique + ' (' + chain.rule.severity + ')')
           }
         }
+
+        await getGlobalGraphStore().save()
+        await getGlobalOastStore().save()
       } catch (err) {
+        process.stdout.write('\n')
         log.error(err instanceof Error ? err.message : String(err))
       }
-      log.nl()
+      process.stdout.write('\n')
     }
   } finally {
     await getGlobalGraphStore().save()
     await getGlobalOastStore().save()
     await stopOastServer()
     await closeBrowser()
+    rl.close()
   }
 }

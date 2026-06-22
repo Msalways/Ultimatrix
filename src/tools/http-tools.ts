@@ -1,5 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
+import { log } from '../utils/logger'
 
 export const httpRequest = createTool({
   id: 'httpRequest',
@@ -7,7 +8,7 @@ export const httpRequest = createTool({
   inputSchema: z.object({
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
     url: z.string().url().describe('Target URL'),
-    headers: z.record(z.string()).optional().describe('Request headers'),
+    headers: z.record(z.string(), z.string()).optional().describe('Request headers'),
     body: z.string().optional().describe('Request body'),
     timeoutMs: z.number().int().positive().default(10000).describe('Timeout in milliseconds'),
   }),
@@ -27,6 +28,7 @@ export const httpRequest = createTool({
       const responseBody = await raw.text()
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
       return {
         ok: true,
         value: {
@@ -38,6 +40,7 @@ export const httpRequest = createTool({
         },
       }
     } catch (e) {
+      log.warn(`httpRequest ${method} ${url} failed: ${(e as Error).message}`, { method, url, error: (e as Error).message, durationMs: performance.now() - start })
       return {
         ok: false,
         error: (e as Error).message,
@@ -54,7 +57,7 @@ export const multipartUpload = createTool({
     filename: z.string().describe('Filename for the uploaded file'),
     contentType: z.string().default('application/octet-stream').describe('MIME type of the file content'),
     content: z.string().describe('File content as string'),
-    headers: z.record(z.string()).optional().describe('Additional request headers'),
+    headers: z.record(z.string(), z.string()).optional().describe('Additional request headers'),
   }),
   execute: async ({  url, filename, contentType, content, headers  }) => {
     const start = performance.now()
@@ -75,6 +78,7 @@ export const multipartUpload = createTool({
       const responseBody = await raw.text()
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      log.info(`multipartUpload POST ${url} (file=${filename}) → ${raw.status}`, { method: 'POST', url, filename, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
       return {
         ok: true,
         value: {
@@ -86,6 +90,7 @@ export const multipartUpload = createTool({
         },
       }
     } catch (e) {
+      log.warn(`multipartUpload POST ${url} failed: ${(e as Error).message}`, { url, filename, error: (e as Error).message, durationMs: performance.now() - start })
       return {
         ok: false,
         error: (e as Error).message,
@@ -99,7 +104,7 @@ export const followRedirects = createTool({
   description: 'Follow 3xx redirects from a URL up to maxHops and return the final response.',
   inputSchema: z.object({
     url: z.string().url().describe('Starting URL'),
-    headers: z.record(z.string()).optional().describe('Request headers'),
+    headers: z.record(z.string(), z.string()).optional().describe('Request headers'),
     maxHops: z.number().int().positive().default(5).describe('Maximum number of redirects to follow'),
   }),
   execute: async ({  url, headers, maxHops  }) => {
@@ -121,6 +126,7 @@ export const followRedirects = createTool({
           const body = await raw.text()
           const resHeaders: Record<string, string> = {}
           raw.headers.forEach((v, k) => { resHeaders[k] = v })
+          log.info(`followRedirects ${url} → ${raw.status} (${hops} hops)`, { url, status: raw.status, hops, durationMs: performance.now() - start, bodySize: body.length })
           return {
             ok: true,
             value: {
@@ -140,6 +146,7 @@ export const followRedirects = createTool({
         error: `Exceeded max redirect hops (${maxHops})`,
       }
     } catch (e) {
+      log.warn(`followRedirects ${url} failed: ${(e as Error).message}`, { url, error: (e as Error).message, durationMs: performance.now() - start })
       return {
         ok: false,
         error: (e as Error).message,
@@ -173,6 +180,7 @@ export const omitHeader = createTool({
       const responseBody = await raw.text()
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      log.info(`omitHeader ${method} ${url} (omit=${headerToOmit}) → ${raw.status}`, { method, url, omittedHeader: headerToOmit, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
       return {
         ok: true,
         value: {
@@ -185,6 +193,7 @@ export const omitHeader = createTool({
         omittedHeader: headerToOmit,
       }
     } catch (e) {
+      log.warn(`omitHeader ${method} ${url} failed: ${(e as Error).message}`, { method, url, error: (e as Error).message, durationMs: performance.now() - start })
       return {
         ok: false,
         error: (e as Error).message,

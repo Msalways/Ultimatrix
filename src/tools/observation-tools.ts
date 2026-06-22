@@ -23,7 +23,7 @@ export const parseResponse = createTool({
   description: 'Normalize an HTTP response: parse JSON, extract string-valued text snippets for later matching, capture body as DOM.',
   inputSchema: z.object({
     body: z.string(),
-    headers: z.record(z.string()),
+    headers: z.record(z.string(), z.string()),
     status: z.number(),
   }),
   outputSchema: z.object({
@@ -31,7 +31,7 @@ export const parseResponse = createTool({
     value: z.object({
       status: z.number(),
       body: z.string(),
-      headers: z.record(z.string()),
+      headers: z.record(z.string(), z.string()),
       json: z.any().nullable(),
       dom: z.string(),
       textSnippets: z.array(z.string()),
@@ -286,7 +286,7 @@ export const checkWaf = createTool({
   id: 'checkWaf',
   description: 'Inspect response headers and body for WAF fingerprints. Returns detected vendor and 0-1 confidence score.',
   inputSchema: z.object({
-    responseHeaders: z.record(z.string()),
+    responseHeaders: z.record(z.string(), z.string()),
     responseBody: z.string(),
   }),
   outputSchema: z.object({

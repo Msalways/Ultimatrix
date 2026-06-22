@@ -91,6 +91,23 @@ function interactionToPlaywright(interaction: Interaction): string[] {
         lines.push(`${indent}await expect(page.locator('${escapeQuotes(interaction.selector)}')).toBeVisible()`)
       }
       break
+
+    case InteractionType.API_CALL: {
+      const method = (interaction.metadata?.method as string) || 'GET'
+      const url = interaction.url || ''
+      const methodLower = method.toLowerCase()
+      const methodVar = methodLower === 'delete' ? 'del' : methodLower
+      if (['get', 'post', 'put', 'patch', 'del'].includes(methodVar)) {
+        lines.push(`${indent}// ${interaction.description}`)
+        if (interaction.metadata?.body) {
+          lines.push(`${indent}const response = await page.request.${methodVar}('${escapeQuotes(url)}', { data: ${JSON.stringify(interaction.metadata.body)} })`)
+        } else {
+          lines.push(`${indent}const response = await page.request.${methodVar}('${escapeQuotes(url)}')`)
+        }
+        lines.push(`${indent}expect(response.ok()).toBeTruthy()`)
+      }
+      break
+    }
   }
 
   return lines

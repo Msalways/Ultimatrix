@@ -1,33 +1,11 @@
-import { Agent } from '@mastra/core/agent'
-import type { MastraLanguageModel } from '@mastra/core/agent'
+import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
-import type { AgentBrowser } from '@mastra/agent-browser'
-import {
-  httpRequest, parseResponse, evaluateRendered, measureTiming,
-  followRedirects, findEndpointsInResponse,
-  updateGraph, recordEvidence, writeFinding,
-  stagehandAct, stagehandExtract,
-} from '../tools/registry'
+import { createAdvancedAgent } from '../mastra/index.js'
 import { advancedInstructions } from './instructions/advanced'
-import { ActionRecorder } from '../recorder/index'
-import { wrapAllMastraTools } from '../recorder/tool-wrapper'
+import type { UltimatrixConfig } from '../config'
 
-export function createAdvancedWorker(model: MastraLanguageModel, browser?: AgentBrowser, memory?: MastraMemory, recorder?: ActionRecorder) {
-  return new Agent({
-    id: 'advanced-worker',
-    name: 'Advanced Attack Specialist',
-    instructions: advancedInstructions,
-    model,
-    memory,
-    browser,
-    tools: (() => {
-      const tools = {
-        httpRequest, parseResponse, evaluateRendered, measureTiming,
-        followRedirects, findEndpointsInResponse,
-        updateGraph, recordEvidence, writeFinding,
-        stagehandAct, stagehandExtract,
-      }
-      return recorder ? wrapAllMastraTools(tools, recorder) : tools
-    })(),
-  })
+export function createAdvancedWorker(config: UltimatrixConfig, browser?: StagehandBrowser, memory?: MastraMemory) {
+  const agent = createAdvancedAgent(config, browser, undefined, memory)
+  agent.instructions = advancedInstructions
+  return agent
 }
