@@ -1,45 +1,26 @@
 # Ultimatrix
 
-**AI security researcher / autonomous penetration tester.** An LLM-driven supervisor orchestrates 4 specialist workers (injection, auth, advanced, recon) to discover vulnerabilities, chain findings, and generate replayable Playwright test suites. Every browser action is recorded as a TypeGraph node, annotated with happy/sad/edge/security test cases, and streamed to a `.spec.ts` file in parallel.
+**AI-powered autonomous security researcher.** An LLM-driven supervisor orchestrates 4 specialist workers via Mastra agents to discover vulnerabilities, chain findings across attack classes, and generate replayable Playwright test suites. Every browser action is recorded as a TypeGraph node, annotated with test cases, and streamed to `.spec.ts` files in parallel.
 
-Real attacks, not theoretical. Real chains across 10+ vulnerability classes. No mocks.
-
-> ⚠️ **Development Status**: Active development with working test suite and core functionality. CLI and web UI components are functional but may require additional setup.
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4+-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/Tests-passing-success.svg)](#testing)
-[![Node 20+](https://img.shields.io/badge/Node-%3E%3D20-green.svg)]()
+Real attacks, not theoretical. No mocks.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone and setup
-git clone <repository-url>
-cd project-sentinal
+git clone <repository-url> && cd project-sentinal
 npm install
-
-# Install Playwright browsers
 npx playwright install chromium
 
-# Validate your setup
-npm run validate              # Check if everything is working
-npm test                     # Run all 300 tests (should pass)
-
-# Set an LLM API key (required for full functionality)
-export GROQ_API_KEY=gsk_...
-# or use ultimatrix.yaml configuration
+# Configure your LLM provider
+npx ultimatrix init          # Interactive provider setup wizard
 
 # Test with a simple target
 npx ultimatrix interact -t https://httpbin.org
 
-# Start the web UI
-npx ultimatrix web
-
-# Quick demo (no API key needed)
-npm run demo
+# Web UI
+npx ultimatrix web           # http://localhost:3000
 ```
 
 ---
@@ -48,97 +29,132 @@ npm run demo
 
 | Command | Description |
 |---------|-------------|
-| `assess -t <url> -o <dir>` | Map → spider → extract → build model → test. Flags: `--depth`, `--skip-explore`, `--dashboard`, `--with-openapi/har/postman/src` |
-| `scan -t <url> -o <dir>` | Autonomous pentest (reuses existing `app-model.json`) |
-| `verify -a <model> -t <url>` | Re-run findings against fresh deployment |
-| `interact -t <url>` | REPL chat loop with agent |
-| `web` | Web UI dashboard at http://localhost:3000 |
-| `--tui` | Terminal UI with 4-split-pane layout |
-| `init` | Interactive provider setup wizard |
+| `ultimatrix init` | Interactive provider + config setup wizard |
+| `ultimatrix interact -t <url>` | REPL chat loop with the security agent |
+| `ultimatrix web` | Start Next.js web UI at localhost:3000 |
+| `ultimatrix assess -t <url> -o <dir>` | Full assessment: map, spider, extract, build model, test |
+| `ultimatrix scan -t <url>` | Autonomous scan (reuses existing app model) |
+| `ultimatrix verify -a <model> -t <url>` | Re-run findings against a fresh deployment |
 
 ---
 
-## Architecture (v5 — Action-as-Node)
+## Configuration
+
+Config is split across two files:
+
+### `ultimatrix.yaml` (project config)
+
+```yaml
+provider: nvidia
+model: nvidia/nemotron-3-super-120b-a12b
+browser:
+  headless: false
+  viewport:
+    width: 1280
+    height: 720
+memory:
+  lastMessages: 10
+  semanticRecall: false
+  workingMemory: true
+agent:
+  maxSteps: 50
+  scansDir: ./scans
+```
+
+### `~/.config/ultimatrix/providers.yaml` (credentials)
+
+```yaml
+nvidia:
+  apiKey: nvapi-...
+groq:
+  apiKey: gsk_...
+```
+
+Model IDs pass through **exactly** as provided — no parsing, no prefixing.
+
+Supported providers: `openai`, `anthropic`, `google`, `nvidia`, `groq`, `together`, `deepseek`, `mistral`, `xai`, `perplexity`, `cerebras`, `deepinfra`, `openrouter`, `azure`, `bedrock`
+
+### Environment Variables
+
+| Var | Effect |
+|-----|--------|
+| `TARGET` | Override target URL |
+| `LLM_PROVIDER` | Override provider |
+| `LLM_MODEL` | Override model |
+| `HEADLESS=false` | Force headed browser |
+| `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call details |
+| `DEPLOYED=true` | HTTP-only mode (no browser) |
+
+---
+
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      SUPERVISOR AGENT                             │
-│   14 tools: queryGraph, updateGraph, delegateToWorker,            │
-│   recordEvidence, writeFinding, askUser, getTestCoverage,         │
-│   getUntestedActions, getAuthFlows, getOastUrl, checkOastCallbacks│
-│   readAppModelSection, writeAppModelSection, delegateToWorker     │
-└──────┬──────────────┬──────────────┬──────────────┬──────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    SUPERVISOR AGENT                           │
+│   Mastra Agent with 20+ tools (graph, control, OAST,        │
+│   session, observation, HTTP, recon) + 7 Stagehand tools    │
+└──────┬──────────────┬──────────────┬──────────────┬─────────┘
        ▼              ▼              ▼              ▼
   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-  │ Injection│  │AuthControl│  │ Advanced │  │  Recon   │
-  │ Worker   │  │  Worker   │  │  Worker  │  │  Worker  │
-  │ SQLi,XSS │  │IDOR,JWT, │  │Race,Logic│  │Discovery │
-  │WAF,2ndOrd│  │  OAuth   │  │ GraphQL  │  │FP,Crawl  │
+  │Injection │  │AuthCtrl  │  │Advanced  │  │  Recon   │
+  │ Worker   │  │ Worker   │  │ Worker   │  │ Worker   │
+  │SQLi,XSS  │  │IDOR,JWT  │  │Race,SSRF │  │Discovery │
+  │WAF,Bypass│  │OAuth,Sess│  │Logic,XXE │  │Fingerprint│
   └──────────┘  └──────────┘  └──────────┘  └──────────┘
        │              │              │              │
        └──────────────┴──────────────┴──────────────┘
                       │
-        ┌─────────────▼─────────────────────────┐
-        │           ACTION RECORDER              │
-        │  Every tool call → Interaction node    │
-        │  → Test cases (happy/sad/edge/security)│
-        │  → Playwright code streamed to file    │
-        └─────────────┬─────────────────────────┘
+         ┌────────────▼────────────────────────┐
+         │          TYPEGRAPH                   │
+         │  8 node types, 10 edge types        │
+         │  JSON-backed, queryable via tools    │
+         └────────────┬────────────────────────┘
                       │
-        ┌─────────────▼─────────────────────────┐
-        │           TYPEGRAPH                    │
-        │  10 node types, 10 edge types          │
-        │  SQLite-backed, queryable via Mastra    │
-        │  tools                                 │
-        └────────────────────────────────────────┘
+         ┌────────────▼────────────────────────┐
+         │        ACTION RECORDER              │
+         │  Tool calls → Interaction nodes     │
+         │  → Test cases (happy/sad/edge/sec)  │
+         │  → Playwright .spec.ts files        │
+         └─────────────────────────────────────┘
 ```
 
-### Components
+### Core Components
 
-- **Supervisor** (`src/manager/agent.ts`) — Mastra Agent with 14 tools. Runs the Observe-Learn-Attack loop. Spiders targets, delegates to workers, chains findings, records evidence.
-- **4 Specialist Workers** (`src/workers/`) — Independent Mastra Agents with Stagehand + AgentBrowser:
-  - **injection** — SQLi (error/boolean/time/UNION), XSS (reflected/stored/DOM), WAF bypass, second-order
-  - **authControl** — IDOR (horizontal/vertical), JWT (alg confusion, weak secrets), OAuth (CSRF, redirect URI, scope)
-  - **advanced** — Race conditions, business logic flaws, mass assignment, GraphQL introspection
-  - **recon** — Route discovery, tech fingerprinting, API endpoint mapping, auth requirement detection
-- **Spider Agent** (`src/spider/agent.ts`) — Hybrid crawler with Stagehand for natural language browsing + AgentBrowser for automation. Discovers pages, forms, hash routes, overlays, and auth flows.
-- **Action Recorder** (`src/recorder/`) — Records every Interaction, generates test cases (happy/sad/edge/security), streams Playwright code in parallel. Session is resumable on crash.
-- **Intelligence** (`src/intelligence/`) — Auth flow recording/replay, RBAC learning across roles, finding chaining (7 rules), dynamic hypothesis generation, session resume.
-- **TypeGraph** (`src/graph/`) — Full CRUD graph store with 8 node types and 10 edge types. Wraps `@nicia-ai/typegraph`. Persisted to `output/graph.json`.
-- **OAST Server** (`src/oast/`) — Local HTTP callback server for blind payload detection (XSS, SSRF, SQLi, XXE). Auto-starts before each session.
-- **TUI** (`src/tui/`) — Ink-based 4-split-pane terminal UI (Chat, Activity, Code, Graph) + StatusBar. Launched with `--tui` flag.
-- **Browser Bridge** (`src/browser/state-bridge.ts`) — State import/export between Stagehand and Playwright for shared auth sessions.
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **Supervisor** | `src/manager/agent.ts` | Mastra Agent orchestrating the Observe-Learn-Attack loop |
+| **4 Workers** | `src/workers/` | Specialist agents: injection, authControl, advanced, recon |
+| **Mastra Factory** | `src/mastra/index.ts` | Centralized agent creation with schema sanitization |
+| **Model Factory** | `src/models/factory.ts` | Resolves AI SDK LanguageModelV2 instances per provider |
+| **Schema Sanitizer** | `src/models/schema-sanitizer.ts` | Strips provider-incompatible JSON Schema keywords |
+| **Spider Agent** | `src/spider/agent.ts` | Stagehand-based hybrid crawler |
+| **Action Recorder** | `src/recorder/` | Records browser actions → test cases → Playwright code |
+| **TypeGraph** | `src/graph/` | 8 node types, 10 edge types, JSON-backed graph store |
+| **Intelligence** | `src/intelligence/` | Auth flows, RBAC, chain detection, hypothesis generation |
+| **OAST Server** | `src/oast/` | Blind callback detector for XSS/SSRF/SQLi/XXE |
+| **Skill Registry** | `src/skills/` | Plugin system for extensible attack techniques |
+| **Agent Manager** | `src/lib/agent-manager.ts` | Singleton: owns browser, workers, supervisor, OAST |
+| **Web UI** | `src/app/`, `src/components/` | Next.js 15 + shadcn/ui interface |
+| **Config** | `src/config.ts` | Provider registry, validation, YAML loading |
 
----
+### Web UI
 
-## TypeGraph Schema
-
-### 8 Node Types
-
-| Node | Properties |
-|------|-----------|
-| `Page` | url, method, contentType, status, tags, bodyPreview, requiresAuth |
-| `Action` | actionType (goto/click/fill/act/extract), selector, url, value, naturalLanguage |
-| `Input` | selector, inputType, name, placeholder, required, maxLength |
-| `Test` | testType (happy/sad/edge/security), status, endpoint, technique, payload |
-| `Finding` | severity (critical/high/medium/low/info), technique, endpoint, evidence[], remediation, cwe, confidence |
-| `AuthFlow` | flowType (login/logout/refresh), steps[], reusable, credentialHash |
-| `RBACRole` | roleName, accessibleEndpoints[], inaccessibleEndpoints[], visibleUIElements[] |
-| `Attack` | technique, payload, vulnerable, confidence, timestamp |
-
-### 10 Edge Types
-
-`HAS_ACTION` · `HAS_INPUT` · `HAS_TEST` · `FOUND_ON` · `REQUIRES_AUTH` · `CHAINED_FROM` · `TARGETS` · `PRODUCED` · `HAS_ROLE` · `PERMISSION`
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/chat` | POST | Agent streaming via `toAISdkV5Stream` SSE |
+| `/api/status` | GET | Agent state (initialized, model, target, findings) |
+| `/api/config` | GET/POST | Read/update LLM config + browser settings |
+| `/api/findings` | GET | Finding nodes from graph, filterable by severity/type |
+| `/api/code` | GET | Generated Playwright test code |
+| `/api/activity` | GET | SSE event stream for live activity log |
 
 ---
 
-## Mastra Tools (22+)
+## Tools (30+)
 
 ### HTTP (4)
 `httpRequest` · `multipartUpload` · `followRedirects` · `omitHeader`
-
-### Injection (1)
-`injectInContext`
 
 ### Observation (6)
 `parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse`
@@ -146,26 +162,29 @@ npm run demo
 ### Session (3)
 `extractSessionCookie` · `extractCsrfToken` · `useSession`
 
-### Control (2)
-`recordEvidence` · `writeFinding`
+### Control (3)
+`recordEvidence` · `writeFinding` · `recordTestCase`
 
 ### Graph (6)
 `queryGraph` · `updateGraph` · `getTestCoverage` · `getAttackPath` · `getUntestedActions` · `getAuthFlows`
 
+### Recon (5)
+`runRecon` · `graphqlIntrospect` · `jwtDecode` · `frameworkFingerprint` · `cloudMetadataProbe`
+
 ### App Model (2)
 `readAppModelSection` · `writeAppModelSection`
 
-### Recon (5)
-`runRecon` · `graphqlIntrospect` · `jwtDecode` · `frameworkFingerprint` · `cloudMetadataProbe`
+### OAST (3)
+`getOastUrlTool` · `checkOastCallbacks` · `clearOastCallbacks`
 
 ### Interactive (1)
 `askUser`
 
-### Stagehand (3)
-`stagehandAct` · `stagehandExtract` · `stagehandAgent`
+### Stagehand Browser (7)
+`stagehand_act` · `stagehand_extract` · `stagehand_observe` · `stagehand_navigate` · `stagehand_tabs` · `stagehand_close` · `stagehand_screenshot`
 
-### OAST (3)
-`getOastUrlTool` · `checkOastCallbacks` · `clearOastCallbacks`
+### Supervisor-only (5)
+`skillSearch` · `skillLoad` · `spawnWorker` · `spawnSwarm` · `executeDirect`
 
 ---
 
@@ -173,160 +192,60 @@ npm run demo
 
 The supervisor cycles through three phases:
 
-1. **Observe** — Query the graph and app model to understand the target. If nothing is known, delegate to recon worker.
-2. **Learn** — Analyze endpoints, parameters, auth requirements, technology stack. Identify untested actions.
-3. **Attack** — Generate hypotheses per endpoint type, delegate to workers, chain findings, record evidence.
+1. **Observe** — Query the graph and app model. If nothing is known, delegate to recon worker.
+2. **Learn** — Analyze endpoints, parameters, auth requirements, tech stack. Identify untested actions.
+3. **Attack** — Generate hypotheses, delegate to specialist workers, chain findings, record evidence.
 
-Chain rules (7 built-in):
-- XSS + session cookies → session hijack
-- Session hijack + admin panel → IDOR
-- IDOR + user data → privilege escalation
-- Open redirect + auth callback → token theft
-- SQLi → data exfiltration
-- SSRF → internal network scan
-- IDOR → mass assignment
-
----
-
-## Configuration
-
-### LLM Provider
-
-Auto-detection order: `groq → together → openai → anthropic → gemini → openrouter → azure-openai → mistral → nvidia → bedrock → mock`.
-
-Three ways to configure:
-
-1. **Env var**: `export GROQ_API_KEY=gsk_...`
-2. **Project yaml** (`ultimatrix.yaml`):
-   ```yaml
-   provider:
-     name: nvidia
-     model: openai/gpt-oss-120b
-   ```
-3. **Global secrets** (`~/.config/ultimatrix/providers.yaml`):
-   ```yaml
-   nvidia:
-     apiKey: nvapi-...
-   ```
-
-### Env Vars
-
-| Var | Effect |
-|---|---|
-| `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call sites, tokens, duration |
-| `ULTIMATRIX_LLM_STREAM=1` | Stream tokens to TUI / web |
-| `HUNT_DEBUG=1` | Verbose hunting logs |
-| `PORT` / `HOST` | Web UI bind (default 3000 / 0.0.0.0) |
+**Chain rules** (7 built-in): XSS + session cookies → session hijack, hijack + admin panel → IDOR, IDOR + user data → privilege escalation, open redirect + auth callback → token theft, SQLi → data exfiltration, SSRF → internal network scan, IDOR → mass assignment.
 
 ---
 
 ## Testing
 
 ```bash
-npm test                    # Run all 300 tests (should pass)
-npm run test:watch          # Watch mode for development
+npm test                    # 333 tests (23 files) — should all pass
+npm run test:watch          # Watch mode
 npm run lint                # TypeScript type checking
-npm run build               # Build the project
-npm run test:e2e            # E2E smoke test
-npm run validate             # Quick setup validation
+npm run build               # tsup + next build
+npm run validate            # Setup validation
 ```
 
-### Test the System
+### Test structure
 
-```bash
-# Verify everything is working
-npm test                    # All 300 tests should pass
-npm run validate             # Check setup and dependencies
+Tests live in `test/` organized by module:
 
-# Test individual components
-npm run test -- --reporter=verbose  # Detailed test output
-npm run test -- --run=test/recorder  # Test only recorder components
-npm run test -- --run=test/graph     # Test only graph components
-
-# Custom test runners
-npm run test:runner          # Helpful test runner with output
-npm run demo                 # Quick demo without API key
 ```
-
-### Test Layers
-
-- **Unit** — Recorder, Graph, OAST, helpers, tools (300 tests total)
-- **Behavioral** — Interaction recording, code generation, test case generation
-- **Chaining** — Finding chain detection and follow-up suggestion
-- **OAST** — Callback recording, retrieval, storage
-- **Browser Bridge** — State import/export
-- **Worker** — Worker creation, tool counts, delegation
-
-### Test Status
-
-✅ **300 tests passing** - Core functionality verified  
-✅ **Import paths fixed** - All module imports working  
-✅ **Dead code cleaned** - Removed unused imports and commented code  
-✅ **Validation scripts** - Setup validation and demo scripts available  
-🔄 **TypeScript compilation** - Some type errors remain (working on it)
+test/
+├── browser/          # State bridge import/export
+├── config/           # Config loading, validation
+├── events/           # Event emitter
+├── graph/            # TypeGraph store, tools
+├── intelligence/     # Auth recorder, chaining, hypotheses
+├── memory/           # Memory store, schemas
+├── models/           # Config factory, schema sanitizer, provider integration
+├── oast/             # OAST server, store
+├── recorder/         # Codegen, interaction recording, test generation
+├── tools/            # Tool registry, app model tools
+└── workers/          # Worker creation, delegation
+```
 
 ---
 
 ## Development
 
 ```bash
-npm run dev         # tsx watch for hot reload
-npm run cli         # run CLI with tsx
-npm run demo        # canned demo (90s, no target needed)
-npm run web         # start web UI
-npm run clean       # remove dist/
-npm run format      # Format code with Prettier
+npm run dev         # next dev (hot reload)
+npm run cli         # CLI with tsx
+npm run web         # web UI
+npm run build       # production build (tsup + next)
+npm run clean       # remove dist/ + .next
 ```
 
 ## Requirements
 
 - Node.js 20+
-- TypeScript strict mode (enabled)
 - Playwright (Chromium)
 - 8GB+ RAM recommended for large scans
-
-## Setup and Validation
-
-```bash
-# 1. Clone and install
-git clone <repository-url>
-cd project-sentinal
-npm install
-
-# 2. Install Playwright browsers
-npx playwright install chromium
-
-# 3. Verify installation
-npm run validate             # Should pass all checks
-npm test                    # Should pass all 300 tests
-
-# 4. Test with a demo (no API key needed)
-npm run demo                # Quick validation demo
-
-# 5. Configure your first target
-export GROQ_API_KEY=gsk_...
-npx ultimatrix interact -t https://httpbin.org
-
-# 6. Start the web UI
-npx ultimatrix web
-```
-
-## Quick Scripts
-
-```bash
-npm run validate    # Check if setup is working
-npm run demo       # Quick demo without API key
-npm run test:runner # Run tests with helpful output
-```
-
-## Troubleshooting
-
-- **Test failures**: Run `npm test -- --reporter=verbose` for details
-- **Setup issues**: Run `npm run validate` for diagnostic information
-- **Build errors**: Check TypeScript types with `npm run lint`
-- **Memory issues**: Reduce scan depth with `--depth 2`
-- **LLM errors**: Verify API keys and network connectivity
-- **Import errors**: Check that all dependencies are installed with `npm install`
 
 ## License
 
