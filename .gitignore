@@ -32,3 +32,38 @@ output-*/
 
 # Graphify output (rebuilt by graphify skill)
 graphify-out/
+
+.next
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Debug/temp files
+debug_*.js
+debug_*.json
+parse_err.txt
+parse_session.cjs
+intermediate.json
+
+# Runtime artifacts
+web-server.err
+web-server.log
+.xss-game-l1-storage.json
+
+# Generated test output (from root)
+attack-f-*.spec.ts
+chain-c-*.spec.ts
+
+# Root-level misplaced tests (belong in test/)
+agent-manager-files.test.ts
+context-reader.test.ts
+context-schemas.test.ts
+context-writer.test.ts
+graph-store.test.ts
+graph-store-libsql.test.ts
+scan-manager.test.ts
+tool-registry.test.ts
+test-e2e.ts
+test-worker.ts
