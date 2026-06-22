@@ -15,8 +15,8 @@ export async function scanCommand(args: string[]): Promise<void> {
     process.exit(1)
   }
 
-  log.banner('Ultimatrix v5 — Scan Mode', `Target: ${target}`)
-  log.info('Running autonomous pentest (reusing existing app model if available)')
+  log.banner('Ultimatrix v6 — Scan Mode', `Target: ${target}`)
+  log.info('Running autonomous pentest with dynamic skill discovery (reusing existing app model if available)')
 
   await main(target)
 }

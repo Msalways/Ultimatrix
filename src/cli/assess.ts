@@ -21,8 +21,9 @@ export async function assessCommand(args: string[]): Promise<void> {
     process.env.OUTPUT_DIR = resolve(outputDir)
   }
 
-  log.banner('Ultimatrix v5 — Assess Mode', `Target: ${target}`)
-  log.info('Running full assessment: spider → extract → build model → test')
+  log.banner('Ultimatrix v6 — Assess Mode', `Target: ${target}`)
+  log.info('Running full assessment: spider → extract → build model → dynamic skill search → test')
+  log.info('Skills are loaded dynamically from ./skills directory')
 
   await main(target)
 }

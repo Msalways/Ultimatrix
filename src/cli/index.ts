@@ -6,19 +6,16 @@ import { scanCommand } from './scan'
 import { verifyCommand } from './verify'
 import { interactCommand } from './interact'
 import { webCommand } from './web'
-import { log } from '../utils/logger'
-import { getBrowser } from '../browser/manager'
-import { startOastServer, stopOastServer } from '../oast/server'
-import { getGlobalOastStore } from '../oast/store'
-import { createRecorder, getGlobalRecorder } from '../recorder/index'
-import { getGlobalGraphStore } from '../graph/store'
-import { createAllWorkers } from '../workers/registry'
-import { setSharedWorkers } from '../tools/delegate-tool'
-import { createSupervisor } from '../manager/agent'
-import { checkForPreviousSession, resumeSession } from '../intelligence/session-resume'
+import { log, setPinoLogger } from '../utils/logger'
+import { initLogger, initObservability } from '../observability'
 
 const args = process.argv.slice(2)
 const subcommand = args[0]
+
+// Initialize structured logging + observability for all subcommands
+const pino = initLogger()
+setPinoLogger(pino)
+initObservability()
 
 switch (subcommand) {
   case 'init':
@@ -64,108 +61,17 @@ switch (subcommand) {
     break
 
   default: {
-    if (args.includes('--cli')) {
-      const targetIdx = args.indexOf('-t')
-      const targetFlagIdx = args.indexOf('--target')
-      const cliTarget = targetIdx !== -1 ? args[targetIdx + 1] : targetFlagIdx !== -1 ? args[targetFlagIdx + 1] : args[0]
-      const config = loadConfig()
-      const target = cliTarget || config.target
-
-      if (target) {
-        log.info('Target: ' + target)
-      }
-
-      main(target).catch((err) => {
-        log.error('Fatal: ' + (err instanceof Error ? err.message : String(err)))
-        process.exit(1)
-      })
-      break
-    }
-
     const targetIdx = args.indexOf('-t')
     const targetFlagIdx = args.indexOf('--target')
-    const cliTarget = targetIdx !== -1 ? args[targetIdx + 1] : targetFlagIdx !== -1 ? args[targetFlagIdx + 1] : args[0]
     const config = loadConfig()
-    const target = cliTarget || config.target
-    const modelName = config.modelId
+    const target = (targetIdx !== -1 ? args[targetIdx + 1] : targetFlagIdx !== -1 ? args[targetFlagIdx + 1] : undefined) || config.target
 
-    const tryStartTui = async () => {
-      const threadId = 'ultimatrix-' + Date.now()
-
-      const sessionSummary = await checkForPreviousSession()
-      if (sessionSummary.hasPreviousSession) {
-        log.info(`Previous session found: ${sessionSummary.findingCount} findings, ${sessionSummary.pageCount} pages, ${sessionSummary.actionCount} actions`)
-        await resumeSession(sessionSummary.lastSessionName)
-      }
-
-      if (target && !getGlobalRecorder()) createRecorder(target)
-
-      const oastPort = await startOastServer()
-      log.info(`OAST server started on port ${oastPort}`)
-      await getGlobalOastStore().load()
-      await getGlobalGraphStore().load()
-
-      const browser = getBrowser()
-      const recorder = getGlobalRecorder() || undefined
-
-      const workers = await createAllWorkers(config.model as any, browser, recorder)
-      setSharedWorkers(workers)
-
-      const supervisor = createSupervisor(config)
-
-      const { startTUI } = await import('../tui/index')
-      startTUI(target, modelName, async (input: string, onToken?: (token: string) => void) => {
-        const stream = await supervisor.stream(input, { memory: { thread: threadId, resource: 'ultimatrix' } })
-
-        let fullText = ''
-        let streamed = false
-        if (onToken) {
-          try {
-            if (stream.textStream) {
-              const reader = stream.textStream.getReader()
-              while (true) {
-                const { done, value } = await reader.read()
-                if (done) break
-                const chunk = typeof value === 'string' ? value : new TextDecoder().decode(value)
-                fullText += chunk
-                onToken(chunk)
-                streamed = true
-              }
-            }
-          } catch (e) {
-            process.stderr.write(`[tui:stream] ${e instanceof Error ? e.message : String(e)}\n`)
-          }
-        }
-
-        if (!fullText) {
-          try {
-            const output = await stream.getFullOutput()
-            fullText = output.text ?? ''
-            if (output.toolCalls?.length) {
-              process.stderr.write(`[tui] tool calls: ${output.toolCalls.map((t: any) => t.toolName).join(', ')}\n`)
-            }
-            if (output.toolResults?.length) {
-              process.stderr.write(`[tui] tool results: ${output.toolResults.map((t: any) => t.toolName).join(', ')}\n`)
-            }
-            process.stderr.write(`[tui] finishReason: ${output.finishReason}\n`)
-          } catch (e) {
-            process.stderr.write(`[tui:fullOutput] ${e instanceof Error ? e.message : String(e)}\n`)
-            try {
-              fullText = (await stream.text) ?? ''
-            } catch (e2) {
-              process.stderr.write(`[tui:text] ${e2 instanceof Error ? e2.message : String(e2)}\n`)
-            }
-          }
-        }
-
-        await getGlobalGraphStore().save()
-        await getGlobalOastStore().save()
-        return fullText || '(no response)'
-      })
+    if (target) {
+      log.info('Target: ' + target)
     }
 
-    tryStartTui().catch((err) => {
-      log.error('TUI: ' + (err instanceof Error ? err.message : String(err)))
+    main(target).catch((err) => {
+      log.error('Fatal: ' + (err instanceof Error ? err.message : String(err)))
       process.exit(1)
     })
     break

@@ -9,10 +9,11 @@ export default defineConfig({
     environment: 'node',
     testTimeout: 60000,
     hookTimeout: 30000,
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/*.spec.ts'],
+    include: ['test/**/*.test.ts', 'test/**/*.test.tsx', 'test/**/*.spec.ts', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/*.spec.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
     },
+
   },
 });

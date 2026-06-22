@@ -1,3 +1,18 @@
-model: nvidia/openai/gpt-oss-120b
-depth: 2
-headless: true
+provider: nvidia
+model: nvidia/nemotron-3-super-120b-a12b
+browser:
+  headless: false
+  viewport:
+    width: 1280
+    height: 720
+  domSettleTimeout: 5000
+  env: LOCAL
+  selfHeal: true
+  verbose: 0
+memory:
+  lastMessages: 10
+  semanticRecall: false
+  workingMemory: true
+agent:
+  maxSteps: 50
+  scansDir: ./scans
