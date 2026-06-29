@@ -73,11 +73,47 @@ export interface AgentConfig {
   scansDir: string
 }
 
+export interface RateLimitConfig {
+  requestsPerMinute: number
+  maxConcurrent: number
+  retryOnLimit: boolean
+  maxRetries: number
+}
+
 export interface ModelTiers {
   fast?: string
   balanced?: string
   powerful?: string
 }
+
+export interface AuthorizationConfig {
+  confirmed: boolean
+  method: 'bounty' | 'pentest-contract' | 'written-permission' | 'self-owned' | 'lab'
+  target: string
+  timestamp: string
+}
+
+export interface SolverConfig {
+  maxToolCalls?: number
+  /** @deprecated maxTokens is not enforced. Use maxToolCalls to control turn budget. */
+  maxTokens?: number
+  maxDurationMs?: number
+  maxParallel?: number
+}
+
+export interface AntiLoopConfig {
+  staleThreshold?: number
+  maxFailedTarget?: number
+}
+
+export interface ReflexionConfig {
+  enabled?: boolean
+  maxSameVulnFails?: number
+  maxTotalNoProgress?: number
+  escalationMaxLevel?: number
+}
+
+export type EngineType = 'legacy' | 'solver'
 
 export interface UltimatrixConfig {
   provider: string
@@ -90,6 +126,41 @@ export interface UltimatrixConfig {
   browser: BrowserConfig
   memory: MemoryConfig
   agent: AgentConfig
+  rateLimit: RateLimitConfig
+  authorization?: AuthorizationConfig
+  engine?: EngineType
+  solver?: SolverConfig
+  antiLoop?: AntiLoopConfig
+  reflexion?: ReflexionConfig
+}
+
+// ─── Dynamic memory sizing based on model context window ─────────────
+
+const CONTEXT_WINDOW_MAP: Record<string, number> = {
+  'groq/llama3-8b-8192': 8192,
+  'groq/llama3-70b-8192': 8192,
+  'groq/llama3.1-8b-instant': 131072,
+  'groq/llama-3.1-8b-instant': 131072,
+  'groq/llama-3.3-70b-versatile': 131072,
+  'groq/gemma2-9b-it': 8192,
+  'openai/gpt-4o': 128000,
+  'openai/gpt-4o-mini': 128000,
+  'openai/gpt-4-turbo': 128000,
+  'anthropic/claude-3-5-sonnet': 200000,
+  'anthropic/claude-3-opus': 200000,
+  'google/gemini-2.0-flash': 1048576,
+  'google/gemini-2.5-pro': 1048576,
+  'nvidia/nvidia/nemotron-3-ultra-550b-a55b': 131072,
+  'nvidia/nemotron-3-ultra-550b-a55b': 131072,
+}
+
+export function computeLastMessages(model: string, defaultLastMessages: number): number {
+  const ctx = CONTEXT_WINDOW_MAP[model]
+  if (!ctx) return defaultLastMessages
+  if (ctx <= 8192) return 4
+  if (ctx <= 32000) return 10
+  if (ctx <= 131072) return 20
+  return Math.min(30, defaultLastMessages)
 }
 
 // ─── Single source of truth for providers ────────────────────────────
@@ -254,6 +325,48 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     }
   }
 
+  // Validate engine
+  const engine = raw.engine as EngineType | undefined
+  if (engine !== undefined && engine !== 'legacy' && engine !== 'solver') {
+    errors.push(`engine must be "legacy" or "solver", got "${engine}"`)
+  }
+
+  // Validate solver config
+  const solverRaw = raw.solver as Record<string, unknown> | undefined
+  if (solverRaw) {
+    for (const key of ['maxToolCalls', 'maxTokens', 'maxDurationMs', 'maxParallel'] as const) {
+      const val = solverRaw[key]
+      if (val !== undefined && (typeof val !== 'number' || !Number.isFinite(val) || val < 1)) {
+        errors.push(`solver.${key} must be a positive number, got ${JSON.stringify(val)}`)
+      }
+    }
+  }
+
+  // Validate antiLoop config
+  const antiLoopRaw = raw.antiLoop as Record<string, unknown> | undefined
+  if (antiLoopRaw) {
+    for (const key of ['staleThreshold', 'maxFailedTarget'] as const) {
+      const val = antiLoopRaw[key]
+      if (val !== undefined && (typeof val !== 'number' || !Number.isFinite(val) || val < 1)) {
+        errors.push(`antiLoop.${key} must be a positive number, got ${JSON.stringify(val)}`)
+      }
+    }
+  }
+
+  // Validate reflexion config
+  const reflexionRaw = raw.reflexion as Record<string, unknown> | undefined
+  if (reflexionRaw) {
+    for (const key of ['maxSameVulnFails', 'maxTotalNoProgress', 'escalationMaxLevel'] as const) {
+      const val = reflexionRaw[key]
+      if (val !== undefined && (typeof val !== 'number' || !Number.isFinite(val) || val < 1)) {
+        errors.push(`reflexion.${key} must be a positive number, got ${JSON.stringify(val)}`)
+      }
+    }
+    if (reflexionRaw.enabled !== undefined && typeof reflexionRaw.enabled !== 'boolean') {
+      errors.push(`reflexion.enabled must be a boolean, got ${JSON.stringify(reflexionRaw.enabled)}`)
+    }
+  }
+
   // Validate modelTiers provider creds if specified
   const modelTiers = raw.modelTiers as ModelTiers | undefined
   if (modelTiers) {
@@ -292,6 +405,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
   const browserRaw = (raw.browser ?? {}) as Record<string, unknown>
   const memoryRaw = (raw.memory ?? {}) as Record<string, unknown>
   const agentRaw = (raw.agent ?? {}) as Record<string, unknown>
+  const rateLimitRaw = (raw.rateLimit ?? {}) as Record<string, unknown>
 
   return {
     provider: provider!,
@@ -323,6 +437,35 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       maxSteps: Number(agentRaw.maxSteps ?? 50),
       scansDir: String(agentRaw.scansDir ?? './scans'),
     },
+    rateLimit: {
+      requestsPerMinute: Number(rateLimitRaw.requestsPerMinute ?? 60),
+      maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? 3),
+      retryOnLimit: rateLimitRaw.retryOnLimit != null ? Boolean(rateLimitRaw.retryOnLimit) : true,
+      maxRetries: Number(rateLimitRaw.maxRetries ?? 3),
+    },
+    engine: (engine as EngineType) || 'solver',
+    ...(solverRaw ? {
+      solver: {
+        ...(solverRaw.maxToolCalls != null ? { maxToolCalls: Number(solverRaw.maxToolCalls) } : {}),
+        ...(solverRaw.maxTokens != null ? { maxTokens: Number(solverRaw.maxTokens) } : {}),
+        ...(solverRaw.maxDurationMs != null ? { maxDurationMs: Number(solverRaw.maxDurationMs) } : {}),
+        ...(solverRaw.maxParallel != null ? { maxParallel: Number(solverRaw.maxParallel) } : {}),
+      },
+    } : {}),
+    ...(antiLoopRaw ? {
+      antiLoop: {
+        ...(antiLoopRaw.staleThreshold != null ? { staleThreshold: Number(antiLoopRaw.staleThreshold) } : {}),
+        ...(antiLoopRaw.maxFailedTarget != null ? { maxFailedTarget: Number(antiLoopRaw.maxFailedTarget) } : {}),
+      },
+    } : {}),
+    ...(reflexionRaw ? {
+      reflexion: {
+        ...(reflexionRaw.enabled != null ? { enabled: Boolean(reflexionRaw.enabled) } : {}),
+        ...(reflexionRaw.maxSameVulnFails != null ? { maxSameVulnFails: Number(reflexionRaw.maxSameVulnFails) } : {}),
+        ...(reflexionRaw.maxTotalNoProgress != null ? { maxTotalNoProgress: Number(reflexionRaw.maxTotalNoProgress) } : {}),
+        ...(reflexionRaw.escalationMaxLevel != null ? { escalationMaxLevel: Number(reflexionRaw.escalationMaxLevel) } : {}),
+      },
+    } : {}),
   }
 }
 
@@ -523,6 +666,17 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
     output.agent = {
       maxSteps: a.maxSteps,
       scansDir: a.scansDir,
+    }
+  }
+
+  // Write non-default rate limit config
+  const rl = config.rateLimit
+  if (rl.requestsPerMinute !== 60 || rl.maxConcurrent !== 3 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
+    output.rateLimit = {
+      requestsPerMinute: rl.requestsPerMinute,
+      maxConcurrent: rl.maxConcurrent,
+      retryOnLimit: rl.retryOnLimit,
+      maxRetries: rl.maxRetries,
     }
   }
 

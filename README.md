@@ -1,8 +1,8 @@
-# Ultimatrix
+# Ultimatrix v8
 
-**AI-powered autonomous security researcher.** An LLM-driven supervisor orchestrates 4 specialist workers via Mastra agents to discover vulnerabilities, chain findings across attack classes, and generate replayable Playwright test suites. Every browser action is recorded as a TypeGraph node, annotated with test cases, and streamed to `.spec.ts` files in parallel.
+**AI-powered autonomous security researcher with dual engine architecture.** Captures traffic, reasons over it with LLM intelligence, tests for vulnerabilities directly, and generates replayable security tests. Zero hardcoded patterns. All intelligence from LLM reasoning.
 
-Real attacks, not theoretical. No mocks.
+Real attacks, not theoretical.
 
 ---
 
@@ -14,13 +14,16 @@ npm install
 npx playwright install chromium
 
 # Configure your LLM provider
-npx ultimatrix init          # Interactive provider setup wizard
+npx ultimatrix init
 
-# Test with a simple target
+# Interactive session (recommended)
 npx ultimatrix interact -t https://httpbin.org
 
-# Web UI
-npx ultimatrix web           # http://localhost:3000
+# Direct solve — single goal, autonomous testing
+npx ultimatrix solve -t https://httpbin.org
+
+# Full scan: capture → analyze → generate tests → report
+npx ultimatrix scan -t https://httpbin.org
 ```
 
 ---
@@ -30,216 +33,202 @@ npx ultimatrix web           # http://localhost:3000
 | Command | Description |
 |---------|-------------|
 | `ultimatrix init` | Interactive provider + config setup wizard |
-| `ultimatrix interact -t <url>` | REPL chat loop with the security agent |
-| `ultimatrix web` | Start Next.js web UI at localhost:3000 |
-| `ultimatrix assess -t <url> -o <dir>` | Full assessment: map, spider, extract, build model, test |
-| `ultimatrix scan -t <url>` | Autonomous scan (reuses existing app model) |
-| `ultimatrix verify -a <model> -t <url>` | Re-run findings against a fresh deployment |
-
----
-
-## Configuration
-
-Config is split across two files:
-
-### `ultimatrix.yaml` (project config)
-
-```yaml
-provider: nvidia
-model: nvidia/nemotron-3-super-120b-a12b
-browser:
-  headless: false
-  viewport:
-    width: 1280
-    height: 720
-memory:
-  lastMessages: 10
-  semanticRecall: false
-  workingMemory: true
-agent:
-  maxSteps: 50
-  scansDir: ./scans
-```
-
-### `~/.config/ultimatrix/providers.yaml` (credentials)
-
-```yaml
-nvidia:
-  apiKey: nvapi-...
-groq:
-  apiKey: gsk_...
-```
-
-Model IDs pass through **exactly** as provided — no parsing, no prefixing.
-
-Supported providers: `openai`, `anthropic`, `google`, `nvidia`, `groq`, `together`, `deepseek`, `mistral`, `xai`, `perplexity`, `cerebras`, `deepinfra`, `openrouter`, `azure`, `bedrock`
-
-### Environment Variables
-
-| Var | Effect |
-|-----|--------|
-| `TARGET` | Override target URL |
-| `LLM_PROVIDER` | Override provider |
-| `LLM_MODEL` | Override model |
-| `HEADLESS=false` | Force headed browser |
-| `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call details |
-| `DEPLOYED=true` | HTTP-only mode (no browser) |
+| `ultimatrix solve -t <url>` | OODA solver engine — autonomous goal-driven testing |
+| `ultimatrix interact -t <url>` | REPL chat with security agent (solver or legacy engine) |
+| `ultimatrix scan -t <url>` | Full scan: learn + generate + report |
+| `ultimatrix learn -t <url>` | Capture traffic, parse HAR, analyze patterns |
+| `ultimatrix generate -t <url>` | Learn → generate Playwright test cases |
+| `ultimatrix replay` | Re-run previously generated tests |
+| `ultimatrix report` | Generate JSON/HTML/Markdown report |
+| `ultimatrix web` | Next.js web UI at localhost:3000 |
+| `ultimatrix assess -t <url>` | Full assessment (legacy engine) |
+| `ultimatrix verify -a <model> -t <url>` | Re-run findings against new deployment |
 
 ---
 
 ## Architecture
 
+### Dual Engine
+
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    SUPERVISOR AGENT                           │
-│   Mastra Agent with 20+ tools (graph, control, OAST,        │
-│   session, observation, HTTP, recon) + 7 Stagehand tools    │
-└──────┬──────────────┬──────────────┬──────────────┬─────────┘
-       ▼              ▼              ▼              ▼
-  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-  │Injection │  │AuthCtrl  │  │Advanced  │  │  Recon   │
-  │ Worker   │  │ Worker   │  │ Worker   │  │ Worker   │
-  │SQLi,XSS  │  │IDOR,JWT  │  │Race,SSRF │  │Discovery │
-  │WAF,Bypass│  │OAuth,Sess│  │Logic,XXE │  │Fingerprint│
-  └──────────┘  └──────────┘  └──────────┘  └──────────┘
-       │              │              │              │
-       └──────────────┴──────────────┴──────────────┘
-                      │
-         ┌────────────▼────────────────────────┐
-         │          TYPEGRAPH                   │
-         │  8 node types, 10 edge types        │
-         │  JSON-backed, queryable via tools    │
-         └────────────┬────────────────────────┘
-                      │
-         ┌────────────▼────────────────────────┐
-         │        ACTION RECORDER              │
-         │  Tool calls → Interaction nodes     │
-         │  → Test cases (happy/sad/edge/sec)  │
-         │  → Playwright .spec.ts files        │
-         └─────────────────────────────────────┘
+                    ┌──────────────────────┐
+                    │   Engine Selector    │ ← config.engine: 'legacy' | 'solver'
+                    │   (dual engine)      │
+                    └──────────┬───────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                 ▼
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
+    │  Legacy      │  │  Solver      │  │  Shared Layer    │
+    │  Supervisor  │  │  Engine      │  │  (used by both)  │
+    │  (Phase 1-5) │  │  (OODA)      │  │                  │
+    │              │  │              │  │  • Evidence Gate  │
+    │  observe →   │  │  REASON →    │  │  • Reflexion      │
+    │  learn →     │  │  EXPLORE →   │  │  • Anti-Loop      │
+    │  attack →    │  │  CONCLUDE →  │  │  • Finding Life   │
+    │  loop        │  │  loop        │  │  • Failed Paths   │
+    └──────────────┘  └──────────────┘  └──────────────────┘
+              │                │                 │
+              └────────────────┼────────────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │  Skill-Tool Filter   │ ← resolveToolsForSkills(skillIds)
+                    │  (tool-filter.ts)    │   core tools always included
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────┴───────────┐
+                    ▼                      ▼
+           ┌──────────────┐      ┌──────────────────┐
+           │  Skills Lib  │      │  Agent (filtered) │
+           │  (21 skills) │      │  tools + skills   │
+           │  YAML meta   │      │  instructions     │
+           └──────────────┘      └──────────────────┘
 ```
 
-### Core Components
+### Intelligence Layer (v8)
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| **Supervisor** | `src/manager/agent.ts` | Mastra Agent orchestrating the Observe-Learn-Attack loop |
-| **4 Workers** | `src/workers/` | Specialist agents: injection, authControl, advanced, recon |
-| **Mastra Factory** | `src/mastra/index.ts` | Centralized agent creation with schema sanitization |
-| **Model Factory** | `src/models/factory.ts` | Resolves AI SDK LanguageModelV2 instances per provider |
-| **Schema Sanitizer** | `src/models/schema-sanitizer.ts` | Strips provider-incompatible JSON Schema keywords |
-| **Spider Agent** | `src/spider/agent.ts` | Stagehand-based hybrid crawler |
-| **Action Recorder** | `src/recorder/` | Records browser actions → test cases → Playwright code |
-| **TypeGraph** | `src/graph/` | 8 node types, 10 edge types, JSON-backed graph store |
-| **Intelligence** | `src/intelligence/` | Auth flows, RBAC, chain detection, hypothesis generation |
-| **OAST Server** | `src/oast/` | Blind callback detector for XSS/SSRF/SQLi/XXE |
-| **Skill Registry** | `src/skills/` | Plugin system for extensible attack techniques |
-| **Agent Manager** | `src/lib/agent-manager.ts` | Singleton: owns browser, workers, supervisor, OAST |
-| **Web UI** | `src/app/`, `src/components/` | Next.js 15 + shadcn/ui interface |
-| **Config** | `src/config.ts` | Provider registry, validation, YAML loading |
+| Module | Location | Purpose |
+|--------|----------|---------|
+| **Evidence Gate** | `src/intelligence/evidence-gate.ts` | Anti-hallucination: cross-check LLM claims against real tool output |
+| **Reflexion Engine** | `src/intelligence/reflexion.ts` | Failure classification, L0-L4 escalation, experience extraction |
+| **Anti-Loop** | `src/intelligence/anti-loop.ts` | Stale detection, dead-end detection, structured attack path extraction |
+| **Blackboard** | `src/solver/blackboard.ts` | Fact/Intent state-space for OODA solver |
+| **Solver** | `src/solver/solver.ts` | OODA loop: REASON → EXPLORE → CONCLUDE |
+| **Core Contract** | `src/prompts/core-contract.ts` | Anti-hallucination, workflow rules, PATH declarations |
+| **Skill Dispatcher** | `src/skills/dispatcher.ts` | Keyword routing + searchSkills fallback |
+| **Reflexion Store** | `src/intelligence/reflexion-store.ts` | Persist/load reflexion state to graph (target-scoped) |
 
-### Web UI
+### Skills Library (21 total)
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/chat` | POST | Agent streaming via `toAISdkV5Stream` SSE |
-| `/api/status` | GET | Agent state (initialized, model, target, findings) |
-| `/api/config` | GET/POST | Read/update LLM config + browser settings |
-| `/api/findings` | GET | Finding nodes from graph, filterable by severity/type |
-| `/api/code` | GET | Generated Playwright test code |
-| `/api/activity` | GET | SSE event stream for live activity log |
+**Core (7):** Recon, Vuln Discovery, Exploitation, Post-Exploitation, Reporting, WAF Bypass, Pentest Flow
+
+**Specialized (14):** Web Pentest, Web Security Advanced, Crypto Toolkit, CTF Web, CTF Crypto, CTF Misc, OSINT Recon, AI/MCP Security, Intranet Pentest, Pentest Tools, Authorization, Business Logic, Info Disclosure, Race Conditions
+
+All skills are **knowledge-based** — concepts and reasoning, not payload checklists.
+
+### Graph Schema (11 node types, 12 edge types)
+
+**Nodes:** Endpoint, Finding, Action, Input, AuthFlow, RBACMatrix, AttackPath, AttackStep, Test, Session, Fact, Intent, Reflexion
+
+**Edges:** REQUESTS, USES_AUTH, REQUIRES_ROLE, PRODUCES, CHAINS_TO, EXPLOITS, ALTERNATIVE, BUILT_ON, PRODUCED_BY
 
 ---
 
-## Tools (30+)
+## Configuration
 
-### HTTP (4)
-`httpRequest` · `multipartUpload` · `followRedirects` · `omitHeader`
+### `ultimatrix.yaml`
 
-### Observation (6)
-`parseResponse` · `evaluateRendered` · `measureTiming` · `compareResponses` · `checkWaf` · `findEndpointsInResponse`
+```yaml
+provider: groq
+model: llama3-8b-8192
+target: https://your-app.com
+engine: solver              # 'legacy' | 'solver'
 
-### Session (3)
-`extractSessionCookie` · `extractCsrfToken` · `useSession`
+solver:
+  maxToolCalls: 50          # LLM rounds per turn (each round = multiple tool calls)
+  maxDurationMs: 300000     # 5 minute timeout per turn
+  maxParallel: 1
 
-### Control (3)
-`recordEvidence` · `writeFinding` · `recordTestCase`
+antiLoop:
+  staleThreshold: 3         # Same attack path repeated N times → switch
 
-### Graph (6)
-`queryGraph` · `updateGraph` · `getTestCoverage` · `getAttackPath` · `getUntestedActions` · `getAuthFlows`
+reflexion:
+  persistToGraph: true
 
-### Recon (5)
-`runRecon` · `graphqlIntrospect` · `jwtDecode` · `frameworkFingerprint` · `cloudMetadataProbe`
+browser:
+  headless: false
 
-### App Model (2)
-`readAppModelSection` · `writeAppModelSection`
+credentials:
+  your-app:
+    email: user@example.com
+    password: secure123
+```
 
-### OAST (3)
-`getOastUrlTool` · `checkOastCallbacks` · `clearOastCallbacks`
+### Engine Routing
 
-### Interactive (1)
-`askUser`
+- `config.engine: 'legacy'` — Uses supervisor + 4 worker agents (v6 architecture)
+- `config.engine: 'solver'` — Uses OODA solver loop (v8 architecture)
+- `ultimatrix solve` always uses solver engine
+- `ultimatrix interact` respects `config.engine`
 
-### Stagehand Browser (7)
-`stagehand_act` · `stagehand_extract` · `stagehand_observe` · `stagehand_navigate` · `stagehand_tabs` · `stagehand_close` · `stagehand_screenshot`
+### Environment Variables
 
-### Supervisor-only (5)
-`skillSearch` · `skillLoad` · `spawnWorker` · `spawnSwarm` · `executeDirect`
+| Var | Effect |
+|-----|--------|
+| `GROQ_API_KEY` | Groq API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google API key |
+| `TARGET` | Override target URL |
+| `HEADLESS=false` | Force headed browser |
+| `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call details |
 
----
-
-## Observe-Learn-Attack Loop
-
-The supervisor cycles through three phases:
-
-1. **Observe** — Query the graph and app model. If nothing is known, delegate to recon worker.
-2. **Learn** — Analyze endpoints, parameters, auth requirements, tech stack. Identify untested actions.
-3. **Attack** — Generate hypotheses, delegate to specialist workers, chain findings, record evidence.
-
-**Chain rules** (7 built-in): XSS + session cookies → session hijack, hijack + admin panel → IDOR, IDOR + user data → privilege escalation, open redirect + auth callback → token theft, SQLi → data exfiltration, SSRF → internal network scan, IDOR → mass assignment.
+Supported providers: `openai`, `anthropic`, `google`, `nvidia`, `groq`, `together`, `deepseek`, `mistral`, `xai`, `perplexity`, `cerebras`, `deepinfra`, `openrouter`, `azure`, `bedrock`
 
 ---
 
 ## Testing
 
 ```bash
-npm test                    # 333 tests (23 files) — should all pass
+npm test                    # 809 tests (54 files)
 npm run test:watch          # Watch mode
-npm run lint                # TypeScript type checking
-npm run build               # tsup + next build
-npm run validate            # Setup validation
+npx tsup                    # Build (ESM + CJS + DTS)
 ```
 
 ### Test structure
 
-Tests live in `test/` organized by module:
-
 ```
 test/
-├── browser/          # State bridge import/export
-├── config/           # Config loading, validation
-├── events/           # Event emitter
-├── graph/            # TypeGraph store, tools
-├── intelligence/     # Auth recorder, chaining, hypotheses
-├── memory/           # Memory store, schemas
-├── models/           # Config factory, schema sanitizer, provider integration
-├── oast/             # OAST server, store
-├── recorder/         # Codegen, interaction recording, test generation
-├── tools/            # Tool registry, app model tools
-└── workers/          # Worker creation, delegation
+├── analysis/           # Skill loader, HAR analyzer, instructions
+├── browser/            # State bridge import/export
+├── capture/            # HAR parser, network capture, browser launcher, human observer
+├── config/             # Config loading, validation
+├── events/             # Event emitter
+├── generation/         # Test generator, parameterizer, storage
+├── graph/              # Graph store, focused tools
+├── http/               # HTTP client, session manager
+├── intelligence/       # Evidence gate, anti-loop, reflexion, chaining, hypotheses
+├── memory/             # Memory store, schemas
+├── models/             # Config factory, schema sanitizer, rate limiter, middleware
+├── oast/               # OAST server, store
+├── prompts/            # Core contract tests
+├── recorder/           # Codegen, interaction recording, test generation
+├── replay/             # Test runner, result comparator
+├── report/             # Report generation
+├── sdk/                # Config validation tests
+├── skills/             # Skill dispatcher tests
+├── solver/             # Solver, blackboard, plan tools
+└── tools/              # Tool registry, control tools, flow tools, skill tools
 ```
 
 ---
 
-## Development
+## Key Files
 
-```bash
-npm run dev         # next dev (hot reload)
-npm run cli         # CLI with tsx
-npm run web         # web UI
-npm run build       # production build (tsup + next)
-npm run clean       # remove dist/ + .next
-```
+**v8 Intelligence:**
+- `src/intelligence/evidence-gate.ts` — Anti-hallucination gate
+- `src/intelligence/reflexion.ts` — Failure classification engine
+- `src/intelligence/anti-loop.ts` — Stale detection + attack path extraction
+- `src/solver/blackboard.ts` — Fact/Intent state-space
+- `src/solver/solver.ts` — OODA solver loop with memory, timeout, truncation
+- `src/solver/brain-instructions.ts` — Capability-based instructions (no hardcoded tool names)
+- `src/solver/brain-tools.ts` — Brain agent creation with orchestration tools
+- `src/prompts/core-contract.ts` — Anti-hallucination rules
+- `src/skills/dispatcher.ts` — Skill routing
+- `src/skills/tool-filter.ts` — Skill-driven tool filtering
+
+**v8 Human-in-the-Loop:**
+- `src/capture/human-observer.ts` — Browser action capture
+- `src/tools/flow-tools.ts` — Session save/restore, flow reproduction
+- `src/tools/interaction-tools.ts` — askUser with timeout + screenshot capture
+
+**v8 Session:**
+- `src/session.ts` — REPL loop with graceful shutdown, session summary
+- `src/cli/solve.ts` — Solve command
+- `src/config.ts` — Config with engine/solver/antiLoop/reflexion settings
+- `src/workspace.ts` — Per-target workspace isolation
+
+---
 
 ## Requirements
 
@@ -250,5 +239,3 @@ npm run clean       # remove dist/ + .next
 ## License
 
 MIT.
-
-> "Real attacks, not theoretical." — every primitive here is something we've seen in the wild, named as the attacker would name it.

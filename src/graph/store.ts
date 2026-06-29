@@ -9,11 +9,15 @@ import {
   PageNode,
   ActionNode,
   InputNode,
+  EndpointNode,
   FindingNode,
   AuthFlowNode,
   RBACRoleNode,
   AttackNode,
   TestNode,
+  FactNode,
+  IntentNode,
+  ReflexionNode,
   AnyNodeData,
 } from './schema'
 
@@ -165,6 +169,101 @@ export class GraphStore {
     return node
   }
 
+  addEndpoint(data: Partial<EndpointNode['properties']> & { url: string; method: string }): EndpointNode {
+    const existing = Array.from(this.nodes.values()).find(
+      n => n.type === NodeType.ENDPOINT &&
+        (n.properties as EndpointNode['properties']).url === data.url &&
+        (n.properties as EndpointNode['properties']).method?.toUpperCase() === data.method.toUpperCase()
+    )
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as EndpointNode
+    }
+
+    const id = `endpoint:${data.method.toUpperCase()}:${data.url}:${Date.now()}`
+    const node: EndpointNode = {
+      id,
+      type: NodeType.ENDPOINT,
+      label: `${data.method.toUpperCase()} ${data.url}`,
+      properties: {
+        url: data.url,
+        method: data.method.toUpperCase(),
+        params: data.params || [],
+        ...(data.description ? { description: data.description } : {}),
+        ...(data.headers ? { headers: data.headers } : {}),
+        ...(data.bodySchema ? { bodySchema: data.bodySchema } : {}),
+        ...(data.authRequired !== undefined ? { authRequired: data.authRequired } : {}),
+        ...(data.authType ? { authType: data.authType } : {}),
+        ...(data.tags ? { tags: data.tags } : {}),
+        ...(data.source ? { source: data.source } : {}),
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
+  getTargetSummary(): {
+    totalEndpoints: number
+    endpoints: Array<{ id: string; url: string; method: string; params: number; authRequired?: boolean; hasHeaders: boolean; headerCount: number }>
+    totalFindings: number
+    findingsBySeverity: Record<string, number>
+    totalTests: number
+    authFlows: number
+    rbacRoles: number
+    untestedActions: number
+    totalCapturedHeaders: number
+  } {
+    const endpoints = this.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
+    const findings = this.queryNodes(NodeType.FINDING) as FindingNode[]
+    const tests = this.queryNodes(NodeType.TEST) as TestNode[]
+    const authFlows = this.queryNodes(NodeType.AUTH_FLOW) as AuthFlowNode[]
+    const rbacRoles = this.queryNodes(NodeType.RBAC_ROLE) as RBACRoleNode[]
+    const untested = this.getUntestedActions()
+
+    const findingsBySeverity: Record<string, number> = {}
+    for (const f of findings) {
+      const sev = f.properties.severity || 'unknown'
+      findingsBySeverity[sev] = (findingsBySeverity[sev] || 0) + 1
+    }
+
+    let totalCapturedHeaders = 0
+    for (const e of endpoints) {
+      totalCapturedHeaders += (e.properties.headers || []).length
+    }
+
+    return {
+      totalEndpoints: endpoints.length,
+      endpoints: endpoints.map(e => {
+        const h = e.properties.headers || []
+        return {
+          id: e.id,
+          url: e.properties.url,
+          method: e.properties.method,
+          params: (e.properties.params || []).length,
+          authRequired: e.properties.authRequired,
+          hasHeaders: h.length > 0,
+          headerCount: h.length,
+        }
+      }),
+      totalFindings: findings.length,
+      findingsBySeverity,
+      totalTests: tests.length,
+      authFlows: authFlows.length,
+      rbacRoles: rbacRoles.length,
+      untestedActions: untested.length,
+      totalCapturedHeaders,
+    }
+  }
+
+  getEndpointsWithParams(): EndpointNode[] {
+    return (this.queryNodes(NodeType.ENDPOINT) as EndpointNode[]).filter(
+      e => e.properties.params && e.properties.params.length > 0
+    )
+  }
+
   addFinding(data: Partial<FindingNode['properties']>): FindingNode {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.addFinding(data)
@@ -268,6 +367,66 @@ export class GraphStore {
     return node
   }
 
+  addFact(data: { description: string; source: string; confidence?: number; relatedIntents?: string[] }): FactNode {
+    const id = `fact:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const node: FactNode = {
+      id,
+      type: NodeType.FACT,
+      label: `Fact: ${data.description.slice(0, 60)}`,
+      properties: {
+        description: data.description,
+        source: data.source,
+        confidence: data.confidence ?? 0.5,
+        ...(data.relatedIntents ? { relatedIntents: data.relatedIntents } : {}),
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
+  addIntent(data: { description: string; fromFacts?: string[]; attackPath?: string }): IntentNode {
+    const id = `intent:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const node: IntentNode = {
+      id,
+      type: NodeType.INTENT,
+      label: `Intent: ${data.description.slice(0, 60)}`,
+      properties: {
+        description: data.description,
+        status: 'open',
+        ...(data.fromFacts ? { fromFacts: data.fromFacts } : {}),
+        ...(data.attackPath ? { attackPath: data.attackPath } : {}),
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
+  addReflexion(data: { workerId: string; vulnType: string; failureCategory: string; escalationLevel?: number; failedPaths?: string[]; hints?: string[]; targetOrigin?: string }): ReflexionNode {
+    const id = `reflexion:${data.workerId}:${Date.now()}`
+    const node: ReflexionNode = {
+      id,
+      type: NodeType.REFLEXION,
+      label: `Reflexion: ${data.vulnType} (${data.failureCategory})`,
+      properties: {
+        workerId: data.workerId,
+        vulnType: data.vulnType,
+        failureCategory: data.failureCategory,
+        escalationLevel: data.escalationLevel ?? 0,
+        failedPaths: data.failedPaths ?? [],
+        hints: data.hints ?? [],
+        targetOrigin: data.targetOrigin,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
   chainFindings(fromId: string, toId: string): void {
     if (this.useLibSQL && this.libSQLStore) {
       this.libSQLStore.chainFindings(fromId, toId)
@@ -296,6 +455,24 @@ export class GraphStore {
     }
     this.edges.push(edge)
     return edge
+  }
+
+  queryEdges(filters?: { fromId?: string; toId?: string; type?: EdgeType }): GraphEdgeData[] {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.queryEdges(filters)
+    }
+
+    let result = this.edges
+    if (filters?.fromId) {
+      result = result.filter(e => e.fromId === filters.fromId)
+    }
+    if (filters?.toId) {
+      result = result.filter(e => e.toId === filters.toId)
+    }
+    if (filters?.type) {
+      result = result.filter(e => e.type === filters.type)
+    }
+    return result
   }
 
   queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[] {
@@ -491,8 +668,7 @@ let _globalGraphStore: GraphStore | null = null
 
 export function getGlobalGraphStore(): GraphStore {
   if (!_globalGraphStore) {
-    // Default to JSON for backward compatibility
-    _globalGraphStore = new GraphStore()
+    throw new Error('Graph store not initialized. Ensure workspace.switchTarget() is called before accessing the graph store.')
   }
   return _globalGraphStore
 }
