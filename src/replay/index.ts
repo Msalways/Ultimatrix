@@ -1,0 +1,6 @@
+export { TestRunner } from './test-runner'
+export type { TestResult, RunResults } from './test-runner'
+export { compareResults } from './result-comparator'
+export type { ComparisonResult } from './result-comparator'
+export { detectRegressions } from './regression-detector'
+export type { Regression } from './regression-detector'

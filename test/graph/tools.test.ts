@@ -9,6 +9,7 @@ const mockStore = {
   upsertPage: vi.fn(),
   addAction: vi.fn(),
   addInput: vi.fn(),
+  addEndpoint: vi.fn(),
   addTest: vi.fn(),
   addFinding: vi.fn(),
   addAuthFlow: vi.fn(),
@@ -19,6 +20,9 @@ const mockStore = {
   getUntestedActions: vi.fn(),
   getAuthFlows: vi.fn(),
   getAttackPath: vi.fn(),
+  getEndpointsWithParams: vi.fn(),
+  getTargetSummary: vi.fn(),
+  save: vi.fn().mockResolvedValue(undefined),
 }
 
 vi.mock('../../src/graph/store', () => ({
@@ -253,6 +257,104 @@ describe('graph tools', () => {
       mockStore.getAttackPath.mockImplementation(() => { throw new Error('fail') })
       const result = await callTool(getAttackPath, { findingId: 'x' })
       expect(result.ok).toBe(false)
+    })
+  })
+
+  describe('focused mutation tools', () => {
+    it('upsertPage records page and saves', async () => {
+      const { upsertPage } = await import('../../src/graph/tools')
+      mockStore.upsertPage.mockReturnValue({ id: 'page:http://test.com' })
+
+      const result = await callTool(upsertPage, { url: 'http://test.com', title: 'Test' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.upsertPage).toHaveBeenCalledWith('http://test.com', { url: 'http://test.com', title: 'Test' })
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addAction records action and saves', async () => {
+      const { addAction } = await import('../../src/graph/tools')
+      mockStore.addAction.mockReturnValue({ id: 'action:1' })
+
+      const result = await callTool(addAction, { pageId: 'page:http://test.com', actionType: 'click', selector: '#btn' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addAction).toHaveBeenCalledWith('page:http://test.com', { pageId: 'page:http://test.com', actionType: 'click', selector: '#btn' })
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addInput records input and saves', async () => {
+      const { addInput } = await import('../../src/graph/tools')
+      mockStore.addInput.mockReturnValue({ id: 'input:1' })
+
+      const result = await callTool(addInput, { actionId: 'action:1', selector: '#email', inputType: 'email', name: 'email' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addInput).toHaveBeenCalledWith('action:1', { actionId: 'action:1', selector: '#email', inputType: 'email', name: 'email' })
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addEndpoint records endpoint and saves', async () => {
+      const { addEndpoint } = await import('../../src/graph/tools')
+      mockStore.addEndpoint.mockReturnValue({ id: 'endpoint:1' })
+
+      const result = await callTool(addEndpoint, { url: 'http://test.com/api', method: 'GET', authRequired: true })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addEndpoint).toHaveBeenCalledWith({ url: 'http://test.com/api', method: 'GET', authRequired: true })
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addFinding records finding and saves', async () => {
+      const { addFinding } = await import('../../src/graph/tools')
+      mockStore.addFinding.mockReturnValue({ id: 'finding:1' })
+
+      const result = await callTool(addFinding, { endpoint: '/api', technique: 'SQLi', severity: 'high', confidence: 0.9, description: 'Test' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addAuthFlow records auth flow and saves', async () => {
+      const { addAuthFlow } = await import('../../src/graph/tools')
+      mockStore.addAuthFlow.mockReturnValue({ id: 'auth:1' })
+
+      const result = await callTool(addAuthFlow, { flowType: 'login', startUrl: '/login' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith({ flowType: 'login', startUrl: '/login' })
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addRBACRole records role and saves', async () => {
+      const { addRBACRole } = await import('../../src/graph/tools')
+      mockStore.addRBACRole.mockReturnValue({ id: 'rbac:admin' })
+
+      const result = await callTool(addRBACRole, { roleName: 'admin', accessibleEndpoints: ['/admin'] })
+      expect(result.ok).toBe(true)
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('addAttack records attack and saves', async () => {
+      const { addAttack } = await import('../../src/graph/tools')
+      mockStore.addAttack.mockReturnValue({ id: 'attack:1' })
+
+      const result = await callTool(addAttack, { technique: 'XSS', payload: '<script>', vulnerable: true, confidence: 0.8 })
+      expect(result.ok).toBe(true)
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('chainFindings chains and saves', async () => {
+      const { chainFindings } = await import('../../src/graph/tools')
+      mockStore.chainFindings.mockReturnValue(undefined)
+
+      const result = await callTool(chainFindings, { fromId: 'f1', toId: 'f2' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.chainFindings).toHaveBeenCalledWith('f1', 'f2')
+      expect(mockStore.save).toHaveBeenCalled()
+    })
+
+    it('focused tools return error on exception', async () => {
+      const { upsertPage } = await import('../../src/graph/tools')
+      mockStore.upsertPage.mockImplementation(() => { throw new Error('store exploded') })
+
+      const result = await callTool(upsertPage, { url: 'http://test.com' })
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe('store exploded')
     })
   })
 })

@@ -147,6 +147,168 @@ describe('GraphStore', () => {
     })
   })
 
+  describe('addFact', () => {
+    it('creates a fact node with provided values', () => {
+      const store = createStore()
+      const fact = store.addFact({ description: 'Endpoint accepts unescaped input', source: 'tool_output', confidence: 0.8 })
+      expect(fact.type).toBe(NodeType.FACT)
+      expect(fact.properties.description).toBe('Endpoint accepts unescaped input')
+      expect(fact.properties.source).toBe('tool_output')
+      expect(fact.properties.confidence).toBe(0.8)
+      expect(fact.id).toMatch(/^fact:/)
+    })
+
+    it('defaults confidence to 0.5', () => {
+      const store = createStore()
+      const fact = store.addFact({ description: 'XSS via search param', source: 'llm_conclusion' })
+      expect(fact.properties.confidence).toBe(0.5)
+    })
+
+    it('stores relatedIntents when provided', () => {
+      const store = createStore()
+      const fact = store.addFact({ description: 'SQLi on /api', source: 'origin', relatedIntents: ['intent:1', 'intent:2'] })
+      expect(fact.properties.relatedIntents).toEqual(['intent:1', 'intent:2'])
+    })
+
+    it('is queryable by NodeType.FACT', () => {
+      const store = createStore()
+      store.addFact({ description: 'a', source: 'origin' })
+      store.addFact({ description: 'b', source: 'tool_output' })
+      store.upsertPage('http://x.com')
+      const facts = store.queryNodes(NodeType.FACT)
+      expect(facts).toHaveLength(2)
+    })
+  })
+
+  describe('addIntent', () => {
+    it('creates an intent node with status open', () => {
+      const store = createStore()
+      const intent = store.addIntent({ description: 'Test for SQLi on login', attackPath: 'sqli' })
+      expect(intent.type).toBe(NodeType.INTENT)
+      expect(intent.properties.description).toBe('Test for SQLi on login')
+      expect(intent.properties.status).toBe('open')
+      expect(intent.properties.attackPath).toBe('sqli')
+      expect(intent.id).toMatch(/^intent:/)
+    })
+
+    it('stores fromFacts when provided', () => {
+      const store = createStore()
+      const intent = store.addIntent({ description: 'Probe endpoint', fromFacts: ['fact:1'] })
+      expect(intent.properties.fromFacts).toEqual(['fact:1'])
+    })
+
+    it('omits optional fields when not provided', () => {
+      const store = createStore()
+      const intent = store.addIntent({ description: 'Bare intent' })
+      expect(intent.properties.fromFacts).toBeUndefined()
+      expect(intent.properties.attackPath).toBeUndefined()
+      expect(intent.properties.resultFact).toBeUndefined()
+    })
+  })
+
+  describe('addReflexion', () => {
+    it('creates a reflexion node with defaults', () => {
+      const store = createStore()
+      const reflexion = store.addReflexion({ workerId: 'w1', vulnType: 'xss', failureCategory: 'blocked_by_waf' })
+      expect(reflexion.type).toBe(NodeType.REFLEXION)
+      expect(reflexion.properties.workerId).toBe('w1')
+      expect(reflexion.properties.vulnType).toBe('xss')
+      expect(reflexion.properties.failureCategory).toBe('blocked_by_waf')
+      expect(reflexion.properties.escalationLevel).toBe(0)
+      expect(reflexion.properties.failedPaths).toEqual([])
+      expect(reflexion.properties.hints).toEqual([])
+      expect(reflexion.id).toMatch(/^reflexion:w1:/)
+    })
+
+    it('stores escalationLevel, failedPaths, and hints', () => {
+      const store = createStore()
+      const reflexion = store.addReflexion({
+        workerId: 'w2',
+        vulnType: 'sqli',
+        failureCategory: 'no_impact',
+        escalationLevel: 2,
+        failedPaths: ['union', 'blind'],
+        hints: ['try time-based'],
+      })
+      expect(reflexion.properties.escalationLevel).toBe(2)
+      expect(reflexion.properties.failedPaths).toEqual(['union', 'blind'])
+      expect(reflexion.properties.hints).toEqual(['try time-based'])
+    })
+  })
+
+  describe('BUILT_ON and PRODUCED_BY edges', () => {
+    it('creates BUILT_ON edge between intent and fact', () => {
+      const store = createStore()
+      const fact = store.addFact({ description: 'Endpoint accepts user input', source: 'origin' })
+      const intent = store.addIntent({ description: 'Test for XSS', fromFacts: [fact.id] })
+
+      const edges = store['edges']
+      const edge = {
+        fromId: intent.id,
+        toId: fact.id,
+        type: EdgeType.BUILT_ON,
+        properties: {},
+        createdAt: Date.now(),
+        id: `edge:${intent.id}:${fact.id}:BUILT_ON`,
+      }
+      store['edges'].push(edge)
+
+      const builtOn = store.queryEdges({ fromId: intent.id, type: EdgeType.BUILT_ON })
+      expect(builtOn).toHaveLength(1)
+      expect(builtOn[0].toId).toBe(fact.id)
+    })
+
+    it('creates PRODUCED_BY edge from fact back to intent', () => {
+      const store = createStore()
+      const intent = store.addIntent({ description: 'Probe SSRF' })
+      const fact = store.addFact({ description: 'SSRF confirmed via /fetch', source: 'tool_output' })
+
+      store['edges'].push({
+        fromId: fact.id,
+        toId: intent.id,
+        type: EdgeType.PRODUCED_BY,
+        properties: {},
+        createdAt: Date.now(),
+        id: `edge:${fact.id}:${intent.id}:PRODUCED_BY`,
+      })
+
+      const producedBy = store.queryEdges({ fromId: fact.id, type: EdgeType.PRODUCED_BY })
+      expect(producedBy).toHaveLength(1)
+      expect(producedBy[0].toId).toBe(intent.id)
+    })
+
+    it('supports full intent→fact→intent chain via edges', () => {
+      const store = createStore()
+      const fact1 = store.addFact({ description: 'Input reflects without encoding', source: 'origin' })
+      const intent1 = store.addIntent({ description: 'Investigate XSS', fromFacts: [fact1.id] })
+
+      store['edges'].push({
+        fromId: intent1.id,
+        toId: fact1.id,
+        type: EdgeType.BUILT_ON,
+        properties: {},
+        createdAt: Date.now(),
+        id: `edge:${intent1.id}:${fact1.id}:BUILT_ON`,
+      })
+
+      const fact2 = store.addFact({ description: 'Stored XSS confirmed', source: 'llm_conclusion', relatedIntents: [intent1.id] })
+
+      store['edges'].push({
+        fromId: fact2.id,
+        toId: intent1.id,
+        type: EdgeType.PRODUCED_BY,
+        properties: {},
+        createdAt: Date.now(),
+        id: `edge:${fact2.id}:${intent1.id}:PRODUCED_BY`,
+      })
+
+      const builtOn = store.queryEdges({ fromId: intent1.id, type: EdgeType.BUILT_ON })
+      expect(builtOn).toHaveLength(1)
+      const producedBy = store.queryEdges({ fromId: fact2.id, type: EdgeType.PRODUCED_BY })
+      expect(producedBy).toHaveLength(1)
+    })
+  })
+
   describe('chainFindings', () => {
     it('creates CHAINED_FROM edge between findings', () => {
       const store = createStore()
@@ -351,11 +513,20 @@ describe('GraphStore', () => {
 })
 
 describe('getGlobalGraphStore', () => {
-  it('creates singleton instance', async () => {
-    const { getGlobalGraphStore, setGlobalGraphStore } = await import('../../src/graph/store')
-    setGlobalGraphStore(null as any)
+  it('returns the same instance set via setGlobalGraphStore', async () => {
+    const { getGlobalGraphStore, setGlobalGraphStore, GraphStore } = await import('../../src/graph/store')
+    const store = new GraphStore()
+    setGlobalGraphStore(store)
     const s1 = getGlobalGraphStore()
     const s2 = getGlobalGraphStore()
     expect(s1).toBe(s2)
+    expect(s1).toBe(store)
+  })
+
+  it('throws when not initialized', async () => {
+    const { setGlobalGraphStore } = await import('../../src/graph/store')
+    setGlobalGraphStore(null as any)
+    const { getGlobalGraphStore } = await import('../../src/graph/store')
+    expect(() => getGlobalGraphStore()).toThrow('Graph store not initialized')
   })
 })

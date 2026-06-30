@@ -1,6 +1,6 @@
 import { mkdir, existsSync, stat } from 'fs/promises'
 import { join } from 'path'
-import { Logger } from '../utils/logger.js'
+import { Logger } from './utils/logger.js'
 
 export interface ScanManagerConfig {
   scansDir: string

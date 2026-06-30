@@ -29,7 +29,7 @@ export function generateDynamicHypotheses(
         technique: skill.id,
         endpointId: 'dynamic',
         endpointUrl: feature,
-        priority: calculatePriority(skill.tags),
+        priority: calculatePriority(skill),
         description: skill.description,
       })
     }
@@ -46,7 +46,7 @@ export function generateDynamicHypotheses(
           technique: skill.id,
           endpointId: 'pattern',
           endpointUrl: pattern,
-          priority: calculatePriority(skill.tags),
+          priority: calculatePriority(skill),
           description: skill.description,
         })
       }
@@ -57,10 +57,10 @@ export function generateDynamicHypotheses(
   return hypotheses
 }
 
-function calculatePriority(tags: string[]): number {
-  if (tags.includes('exploit')) return 3
-  if (tags.includes('auth')) return 3
-  if (tags.includes('recon')) return 2
+function calculatePriority(skill: { id: string; description: string; toolRefs: string[] }): number {
+  if (skill.toolRefs.length > 0) return 3
+  if (skill.description.toLowerCase().includes('auth')) return 3
+  if (skill.description.toLowerCase().includes('recon')) return 2
   return 1
 }
 

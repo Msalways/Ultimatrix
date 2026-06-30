@@ -5,45 +5,54 @@ import type { SkillRegistry } from '../../skills/registry'
 export function createSkillSearchTool(skillRegistry: SkillRegistry) {
   return createTool({
     id: 'skill-search',
-    description: 'Search for available skills by name, category, or capability',
+    description: 'Search for available skills by name, tag, or capability',
     inputSchema: z.object({
-      query: z.string().describe('Search query (name, category, or capability)'),
-      category: z.string().optional().describe('Filter by skill category'),
+      query: z.string().describe('Search query (name, tag, or capability description)'),
+      tag: z.string().optional().describe('Filter by skill tag'),
     }),
     outputSchema: z.object({
       skills: z.array(z.object({
         id: z.string(),
         name: z.string(),
         description: z.string(),
-        category: z.string(),
-        tier: z.string(),
+        tags: z.array(z.string()),
       })),
     }),
-    execute: async ({ context }) => {
-      const { query, category } = context
-      let skills = skillRegistry.list()
-      
-      if (category) {
-        skills = skills.filter(s => s.category === category)
-      }
-      
-      if (query) {
-        const q = query.toLowerCase()
-        skills = skills.filter(s => 
-          s.id.toLowerCase().includes(q) ||
-          s.name.toLowerCase().includes(q) ||
-          s.description.toLowerCase().includes(q) ||
-          s.category.toLowerCase().includes(q)
+    execute: async ({ query, tag }) => {
+
+      if (tag) {
+        const q = tag.toLowerCase()
+        const filtered = skillRegistry.list().filter(s =>
+          s.tags.some(t => t.toLowerCase().includes(q))
         )
+        return {
+          skills: filtered.map(s => ({
+            id: s.id,
+            name: s.name,
+            description: s.description,
+            tags: s.tags,
+          })),
+        }
       }
-      
+
+      if (query) {
+        const results = skillRegistry.search(query)
+        return {
+          skills: results.map(s => ({
+            id: s.id,
+            name: s.name,
+            description: s.description,
+            tags: s.tags,
+          })),
+        }
+      }
+
       return {
-        skills: skills.map(s => ({
+        skills: skillRegistry.list().map(s => ({
           id: s.id,
           name: s.name,
           description: s.description,
-          category: s.category,
-          tier: s.tier,
+          tags: s.tags,
         })),
       }
     },

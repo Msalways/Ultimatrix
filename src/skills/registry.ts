@@ -1,11 +1,11 @@
-import { loadAllSkills, type Skill } from './loader'
+import { getAllSkills, type Skill } from './loader'
 
 export class SkillRegistry {
   private skills: Map<string, Skill> = new Map()
 
   loadFromDirectory(dir: string): void {
-    const skills = loadAllSkills(dir)
-    for (const skill of skills) {
+    const allSkills = getAllSkills()
+    for (const skill of allSkills) {
       this.skills.set(skill.id, skill)
     }
   }
@@ -29,12 +29,8 @@ export class SkillRegistry {
       if (skill.id.toLowerCase().includes(q)) score += 10
       if (skill.name.toLowerCase().includes(q)) score += 8
       if (skill.description.toLowerCase().includes(q)) score += 5
-      for (const tag of skill.tags) {
-        if (tag.toLowerCase().includes(q)) score += 4
-      }
       if (skill.instructions.toLowerCase().includes(q)) score += 2
       if (skill.toolRefs.some(t => t.toLowerCase().includes(q))) score += 3
-      if (skill.mitreAttack?.some(m => m.toLowerCase().includes(q))) score += 3
 
       if (score > 0) results.push({ skill, score })
     }

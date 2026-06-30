@@ -7,23 +7,26 @@ import { createAuthControlWorker } from './auth-control'
 import { createAdvancedWorker } from './advanced'
 import { createReconWorker } from './recon'
 import type { UltimatrixConfig } from '../config'
+import { computeLastMessages } from '../config'
 
 let _store: LibSQLStore | null = null
 
-export async function createMemoryStore(): Promise<LibSQLStore> {
+export async function createMemoryStore(dbPath?: string): Promise<LibSQLStore> {
   if (!_store) {
-    _store = new LibSQLStore({ id: 'ultimatrix', url: 'file:./ultimatrix.db' })
+    const url = dbPath ? `file:${dbPath}` : 'file:./ultimatrix.db'
+    _store = new LibSQLStore({ id: 'ultimatrix', url })
     await _store.init()
   }
   return _store
 }
 
-export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore): Promise<MastraMemory> {
-  const storage = store ?? await createMemoryStore()
+export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore, dbPath?: string): Promise<MastraMemory> {
+  const storage = store ?? await createMemoryStore(dbPath)
+  const lastMessages = computeLastMessages(config.model, config.memory.lastMessages)
   return new Memory({
     storage,
     options: {
-      lastMessages: config.memory.lastMessages,
+      lastMessages,
       semanticRecall: config.memory.semanticRecall,
       workingMemory: { enabled: config.memory.workingMemory },
     },

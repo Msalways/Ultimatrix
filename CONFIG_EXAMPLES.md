@@ -127,3 +127,29 @@ ultimatrix scan -t https://example.com --model ollama/llama3.1:8b
 2. **Use Larger Models for Deep Analysis**: Use 70B+ models for complex vulnerabilities
 3. **Tiered Approach**: Configure different models for different stages
 4. **Local Testing**: Use Ollama for sensitive targets or offline work
+
+## Solver Engine Config
+
+The solver engine runs a single agent stream per turn. Configure budgets per your provider's limits:
+
+```yaml
+engine: solver
+solver:
+  maxToolCalls: 50       # Max tool-call rounds per turn (Mastra maxSteps)
+  maxTokens: 100000      # Max tokens per turn (adjust to provider context window)
+  maxDurationMs: 300000  # Max wall-clock time per turn (5 min default)
+  maxParallel: 1         # Parallel solver brains (future use)
+antiLoop:
+  staleThreshold: 3      # Reflexion triggers after N stale cycles
+```
+
+**Provider-specific tuning:**
+
+| Provider | Model | maxTokens | maxToolCalls | Notes |
+|----------|-------|-----------|--------------|-------|
+| Groq | llama3-8b-8192 | 8000 | 20 | Small context window |
+| Groq | llama-3.1-8b-instant | 128000 | 50 | Large context |
+| OpenAI | gpt-4o-mini | 128000 | 50 | Good all-round |
+| Anthropic | claude-3-5-sonnet | 200000 | 50 | Largest context |
+| Google | gemini-2.0-flash | 1048576 | 100 | Huge context |
+| NVIDIA | nemotron-3-ultra | 131072 | 50 | Large context |

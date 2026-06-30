@@ -1,77 +1,165 @@
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
-import { join, dirname, basename } from 'path'
-import { load } from 'js-yaml'
+import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
+import { join, basename } from 'path'
+import { load as yamlLoad } from 'js-yaml'
+
+export interface Reference {
+  id: string
+  title: string
+  content: string
+}
 
 export interface Skill {
   id: string
   name: string
+  category: 'core' | 'specialized'
   description: string
-  version: string
-  tags: string[]
   instructions: string
-  references: string[]
-  scripts: string[]
+  references: Reference[]
   toolRefs: string[]
-  mitreAttack?: string[]
 }
 
-export function parseFrontmatter(content: string): { frontmatter: unknown; body: string } {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
-  if (!match) return { frontmatter: {}, body: content }
-  return { frontmatter: load(match[1]), body: match[2] }
-}
+// ESM: import.meta.dirname (Node 21.2+). CJS: tsup shims import.meta, falls back to __dirname.
+const _dir = import.meta.dirname || __dirname
 
-function listFiles(dir: string): string[] {
-  if (!existsSync(dir)) return []
+// After build: _dir = dist/ → ../skills reaches package root
+// During dev (tsx): _dir = src/skills/ → ../../skills reaches package root
+const _root = existsSync(join(_dir, '..', 'skills', 'core'))
+  ? join(_dir, '..')
+  : join(_dir, '..', '..')
+const SKILLS_DIR = join(_root, 'skills')
+const ANALYSIS_SKILLS_DIR = join(_root, 'skills', 'analysis')
+
+let skillCache: Map<string, Skill> | null = null
+
+function parseFrontmatter(raw: string): { meta: Record<string, unknown>; body: string } {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
+  if (!match) return { meta: {}, body: raw }
   try {
-    return readdirSync(dir).map(f => join(dir, f))
+    const meta = yamlLoad(match[1]) as Record<string, unknown>
+    return { meta: meta || {}, body: match[2] }
   } catch {
-    return []
+    return { meta: {}, body: raw }
   }
 }
 
-export function loadSkill(skillPath: string): Skill {
-  const content = readFileSync(skillPath, 'utf-8')
-  const { frontmatter, body } = parseFrontmatter(content)
+function parseSkillFile(filePath: string, category: 'core' | 'specialized'): Skill | null {
+  try {
+    const raw = readFileSync(filePath, 'utf-8')
+    const id = basename(filePath, '.md')
+    const { meta, body } = parseFrontmatter(raw)
 
-  const dir = dirname(skillPath)
-  const id = basename(dir)
-  const fm = frontmatter as Record<string, any>
+    const name = (typeof meta.name === 'string' ? meta.name : null)
+      || (body.match(/^#\s+(.+)/m)?.[1]?.trim()) || id
 
-  return {
-    id,
-    name: fm.name || id,
-    description: fm.description || '',
-    version: fm.version || '1.0.0',
-    tags: Array.isArray(fm.tags) ? fm.tags : [],
-    instructions: body.trim(),
-    references: listFiles(join(dir, 'references')),
-    scripts: listFiles(join(dir, 'scripts')),
-    toolRefs: Array.isArray(fm.toolRefs) ? fm.toolRefs : [],
-    mitreAttack: fm.mitre_attack
-      ? String(fm.mitre_attack).split(',').map((s: string) => s.trim())
-      : undefined,
-  }
-}
+    const description = (typeof meta.description === 'string' ? meta.description : null)
+      || (body.match(/(?:^|\n)##?\s*Description\s*\n([\s\S]*?)(?=\n##?\s|\n*$)/i)?.[1]?.trim())
+      || name
 
-export function loadSkillsFromDirectory(dir: string): Skill[] {
-  if (!existsSync(dir)) return []
-  const skills: Skill[] = []
-  for (const entry of readdirSync(dir)) {
-    const subPath = join(dir, entry)
-    const stat = statSync(subPath)
-    if (stat.isDirectory()) {
-      const skillFile = join(subPath, 'SKILL.md')
-      if (existsSync(skillFile)) {
-        skills.push(loadSkill(skillFile))
-      } else {
-        skills.push(...loadSkillsFromDirectory(subPath))
-      }
+    const toolRefs = Array.isArray(meta.toolRefs) ? meta.toolRefs.filter((t): t is string => typeof t === 'string') : []
+
+    return {
+      id,
+      name,
+      category,
+      description,
+      instructions: body,
+      references: [],
+      toolRefs,
     }
+  } catch {
+    return null
   }
-  return skills
 }
 
-export function loadAllSkills(baseDir: string = './skills'): Skill[] {
-  return loadSkillsFromDirectory(baseDir)
+function loadReferences(skillDir: string): Reference[] {
+  const refs: Reference[] = []
+  const refsDir = join(skillDir, 'refs')
+  if (!existsSync(refsDir) || !statSync(refsDir).isDirectory()) return refs
+
+  try {
+    const files = readdirSync(refsDir).filter(f => f.endsWith('.md'))
+    for (const file of files) {
+      try {
+        const content = readFileSync(join(refsDir, file), 'utf-8')
+        const id = basename(file, '.md')
+        const titleMatch = content.match(/^#\s+(.+)/m)
+        refs.push({
+          id,
+          title: titleMatch ? titleMatch[1].trim() : id,
+          content,
+        })
+      } catch {}
+    }
+  } catch {}
+
+  return refs
+}
+
+function loadAllSkills(): Map<string, Skill> {
+  if (skillCache) return skillCache
+
+  const cache = new Map<string, Skill>()
+
+  const loadDir = (dir: string, category: 'core' | 'specialized') => {
+    if (!existsSync(dir)) return
+    try {
+      const files = readdirSync(dir).filter(f => f.endsWith('.md'))
+      for (const file of files) {
+        const skill = parseSkillFile(join(dir, file), category)
+        if (skill) {
+          skill.references = loadReferences(join(dir, basename(file)))
+          cache.set(skill.id, skill)
+        }
+      }
+    } catch {}
+  }
+
+  loadDir(join(SKILLS_DIR, 'core'), 'core')
+  loadDir(join(SKILLS_DIR, 'specialized'), 'specialized')
+  loadDir(ANALYSIS_SKILLS_DIR, 'specialized')
+
+  skillCache = cache
+  return cache
+}
+
+export function loadSkill(id: string): Skill | null {
+  const skills = loadAllSkills()
+  return skills.get(id) || null
+}
+
+export function getAllSkills(): Skill[] {
+  return [...loadAllSkills().values()]
+}
+
+export function searchSkills(query: string): Skill[] {
+  const q = query.toLowerCase()
+  const all = getAllSkills()
+
+  const scored = all.map(skill => {
+    let score = 0
+    if (skill.id.toLowerCase().includes(q)) score += 10
+    if (skill.name.toLowerCase().includes(q)) score += 8
+    if (skill.description.toLowerCase().includes(q)) score += 5
+    if (skill.instructions.toLowerCase().includes(q)) score += 2
+    if (skill.toolRefs.some(t => t.toLowerCase().includes(q))) score += 3
+    return { skill, score }
+  })
+
+  return scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).map(s => s.skill)
+}
+
+export function loadReference(skillId: string, referenceId: string): string | null {
+  const skill = loadSkill(skillId)
+  if (!skill) return null
+  const ref = skill.references.find(r => r.id === referenceId)
+  return ref ? ref.content : null
+}
+
+export function listReferences(skillId: string): Reference[] {
+  const skill = loadSkill(skillId)
+  return skill ? skill.references : []
+}
+
+export function resetSkillCache(): void {
+  skillCache = null
 }

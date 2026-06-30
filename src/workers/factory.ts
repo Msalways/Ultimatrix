@@ -2,7 +2,8 @@ import type { StagehandBrowser } from '@mastra/stagehand'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../skills/registry'
 import { createAgent } from '../mastra/index.js'
-import { resolveTools } from '../tools/resolver'
+import { loadSkill } from '../skills/loader'
+import { CORE_CONTRACT } from '../prompts/core-contract'
 
 export interface WorkerConfig {
   skillId: string
@@ -19,21 +20,21 @@ export class WorkerFactory {
   ) {}
 
   create(workerConfig: WorkerConfig): any {
-    const skill = this.skillRegistry.get(workerConfig.skillId)
-    const tools = resolveTools(skill.toolRefs)
+    const skill = loadSkill(workerConfig.skillId)
 
     const agent = createAgent(this.config, {
       browser: workerConfig.browser,
       tier: workerConfig.tier,
+      skillIds: [workerConfig.skillId],
+      skills: skill ? [skill] : undefined,
     })
 
     agent.id = `${workerConfig.skillId}-${Date.now()}`
-    agent.name = `${skill.name} Specialist`
-    agent.instructions = `${skill.instructions}
+    agent.name = skill ? `${skill.name} Specialist` : `${workerConfig.skillId} Specialist`
 
-## Current Task
-${workerConfig.task}`
-    agent.tools = tools
+    if (skill) {
+      agent.instructions = `${CORE_CONTRACT}\n\n${skill.instructions}\n\n## Current Task\n${workerConfig.task}`
+    }
 
     return agent
   }

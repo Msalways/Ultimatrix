@@ -1,17 +1,28 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { log } from '../utils/logger'
+import { getForensicLog } from './report-tools'
+
+const MAX_BODY_CHARS = 50_000
+
+function truncateBody(body: string): string {
+  if (body.length <= MAX_BODY_CHARS) return body
+  return body.slice(0, MAX_BODY_CHARS) + `\n\n[truncated — showing first ${MAX_BODY_CHARS} of ${body.length} chars total]`
+}
 
 export const httpRequest = createTool({
   id: 'httpRequest',
-  description: 'Send an HTTP request with method/headers/body/cookies. Does NOT follow redirects.',
+  description: 'Send an HTTP request with method/headers/body. Does NOT follow redirects.',
   inputSchema: z.object({
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
     url: z.string().url().describe('Target URL'),
-    headers: z.record(z.string(), z.string()).optional().describe('Request headers'),
-    body: z.string().optional().describe('Request body'),
+    headers: z.record(z.string(), z.string()).optional().describe('Request headers — use getCapturedHeaders to get real auth context'),
+    body: z.string().optional().describe('Request body — only valid with POST, PUT, or PATCH'),
     timeoutMs: z.number().int().positive().default(10000).describe('Timeout in milliseconds'),
-  }),
+  }).refine(
+    (data) => !['GET', 'HEAD'].includes(data.method) || data.body === undefined,
+    { message: 'GET and HEAD requests cannot have a body. Use POST/PUT/PATCH for requests with a body.' },
+  ),
   execute: async ({  method, url, headers, body, timeoutMs  }) => {
     const start = performance.now()
     try {
@@ -21,14 +32,23 @@ export const httpRequest = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs ?? 10000),
       }
-      if (body !== undefined) {
+      if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
         fetchOpts.body = body
       }
       const raw = await fetch(url, fetchOpts)
-      const responseBody = await raw.text()
+      const responseBody = truncateBody(await raw.text())
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
+      // LOG-3: Record HTTP request/response before truncation
+      getForensicLog()?.log({
+        type: 'http-request',
+        agent: 'worker',
+        tool: 'httpRequest',
+        args: { method, url, headers, body: body?.substring(0, 1000) },
+        result: { status: raw.status, headers: resHeaders, bodyLength: responseBody.length },
+        duration: Math.round(performance.now() - start),
+      })
       return {
         ok: true,
         value: {
@@ -75,7 +95,7 @@ export const multipartUpload = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(15_000),
       })
-      const responseBody = await raw.text()
+      const responseBody = truncateBody(await raw.text())
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       log.info(`multipartUpload POST ${url} (file=${filename}) → ${raw.status}`, { method: 'POST', url, filename, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
@@ -123,7 +143,7 @@ export const followRedirects = createTool({
         const isRedirect = raw.status >= 300 && raw.status < 400
         const location = raw.headers.get('location')
         if (!isRedirect || !location) {
-          const body = await raw.text()
+          const body = truncateBody(await raw.text())
           const resHeaders: Record<string, string> = {}
           raw.headers.forEach((v, k) => { resHeaders[k] = v })
           log.info(`followRedirects ${url} → ${raw.status} (${hops} hops)`, { url, status: raw.status, hops, durationMs: performance.now() - start, bodySize: body.length })
@@ -157,27 +177,33 @@ export const followRedirects = createTool({
 
 export const omitHeader = createTool({
   id: 'omitHeader',
-  description: 'Send an HTTP request omitting a specific header. Useful for CSRF/auth bypass testing.',
+  description: 'Send an HTTP request with a specific header removed. Pass the FULL current headers and the name of the one to strip. Useful for testing auth bypass, CSRF protection, and header-dependent security controls.',
   inputSchema: z.object({
     url: z.string().url().describe('Target URL'),
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
-    headerToOmit: z.string().describe('Header name to omit from the request'),
+    headers: z.record(z.string(), z.string()).describe('Full current headers — the one named in headerToOmit will be removed'),
+    headerToOmit: z.string().describe('Header name to remove from the request'),
     body: z.string().optional().describe('Request body'),
-  }),
-  execute: async ({  url, method, headerToOmit, body  }) => {
+  }).refine(
+    (data) => !['GET', 'HEAD'].includes(data.method) || data.body === undefined,
+    { message: 'GET and HEAD requests cannot have a body. Use POST/PUT/PATCH for requests with a body.' },
+  ),
+  execute: async ({  url, method, headers, headerToOmit, body  }) => {
     const start = performance.now()
     try {
+      const stripped = { ...headers }
+      delete stripped[headerToOmit]
       const fetchOpts: RequestInit = {
         method,
-        headers: {},
+        headers: stripped,
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       }
-      if (body !== undefined) {
+      if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
         fetchOpts.body = body
       }
       const raw = await fetch(url, fetchOpts)
-      const responseBody = await raw.text()
+      const responseBody = truncateBody(await raw.text())
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       log.info(`omitHeader ${method} ${url} (omit=${headerToOmit}) → ${raw.status}`, { method, url, omittedHeader: headerToOmit, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
@@ -189,8 +215,8 @@ export const omitHeader = createTool({
           headers: resHeaders,
           body: responseBody,
           durationMs: performance.now() - start,
+          omittedHeader: headerToOmit,
         },
-        omittedHeader: headerToOmit,
       }
     } catch (e) {
       log.warn(`omitHeader ${method} ${url} failed: ${(e as Error).message}`, { method, url, error: (e as Error).message, durationMs: performance.now() - start })

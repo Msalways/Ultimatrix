@@ -17,6 +17,7 @@ const fakeConfig: UltimatrixConfig = {
   browser: { headless: true, viewport: { width: 1280, height: 720 }, domSettleTimeout: 5000, env: 'LOCAL', selfHeal: true, verbose: 0 },
   memory: { lastMessages: 10, semanticRecall: false, workingMemory: true },
   agent: { maxSteps: 50, scansDir: './scans' },
+  rateLimit: { requestsPerMinute: 60, maxConcurrent: 3, retryOnLimit: true, maxRetries: 3 },
 }
 
 describe('injection worker', () => {

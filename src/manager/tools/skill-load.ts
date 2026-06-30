@@ -21,8 +21,7 @@ export function createSkillLoadTool(skillRegistry: SkillRegistry) {
         outputSchema: z.unknown(),
       }).nullable(),
     }),
-    execute: async ({ context }) => {
-      const { skillId } = context
+    execute: async ({ skillId }) => {
       const skill = skillRegistry.get(skillId)
       
       if (!skill) {

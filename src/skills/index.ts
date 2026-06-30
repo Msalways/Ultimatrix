@@ -1,2 +1,3 @@
-export { SkillRegistry, loadAllSkills, loadSkill, loadSkillsFromDirectory, parseFrontmatter } from './registry'
-export type { Skill } from './registry'
+export { SkillRegistry } from './registry'
+export { getAllSkills, loadSkill, searchSkills, loadReference, listReferences, resetSkillCache } from './registry'
+export type { Skill, Reference } from './registry'

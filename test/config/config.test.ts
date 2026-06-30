@@ -14,6 +14,7 @@ function baseConfig(overrides: Partial<UltimatrixConfig> = {}): UltimatrixConfig
     browser: { headless: true, viewport: { width: 1280, height: 720 }, domSettleTimeout: 5000, env: 'LOCAL', selfHeal: true, verbose: 0 },
     memory: { lastMessages: 10, semanticRecall: false, workingMemory: true },
     agent: { maxSteps: 50, scansDir: './scans' },
+    rateLimit: { requestsPerMinute: 60, maxConcurrent: 3, retryOnLimit: true, maxRetries: 3 },
     ...overrides,
   }
 }
@@ -73,7 +74,25 @@ describe('validateConfig', () => {
     expect(config.browser.headless).toBe(true)
     expect(config.browser.viewport).toEqual({ width: 1280, height: 720 })
     expect(config.memory.lastMessages).toBe(10)
-    expect(config.agent.maxSteps).toBe(50)
+    expect(config.agent.maxSteps).toBe(25)
+    expect(config.rateLimit.requestsPerMinute).toBe(25)
+    expect(config.rateLimit.maxConcurrent).toBe(2)
+    expect(config.rateLimit.retryOnLimit).toBe(true)
+    expect(config.rateLimit.maxRetries).toBe(3)
+  })
+
+  it('uses user-provided rateLimit values', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      target: 'https://example.com',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      rateLimit: { requestsPerMinute: 25, maxConcurrent: 2, retryOnLimit: false, maxRetries: 5 },
+    })
+    expect(config.rateLimit.requestsPerMinute).toBe(25)
+    expect(config.rateLimit.maxConcurrent).toBe(2)
+    expect(config.rateLimit.retryOnLimit).toBe(false)
+    expect(config.rateLimit.maxRetries).toBe(5)
   })
 
   it('uses user-provided optional values', () => {
@@ -96,6 +115,152 @@ describe('validateConfig', () => {
     expect(config.memory.semanticRecall).toBe(true)
     expect(config.agent.maxSteps).toBe(100)
     expect(config.agent.scansDir).toBe('./output')
+  })
+})
+
+describe('engine config', () => {
+  it('engine defaults to solver (v8 default)', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      target: 'https://example.com',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+    })
+    expect(config.engine).toBe('solver')
+    expect(config.solver).toBeUndefined()
+    expect(config.antiLoop).toBeUndefined()
+    expect(config.reflexion).toBeUndefined()
+  })
+
+  it('accepts engine=legacy', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'legacy',
+    })
+    expect(config.engine).toBe('legacy')
+  })
+
+  it('accepts engine=solver', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'solver',
+    })
+    expect(config.engine).toBe('solver')
+  })
+
+  it('rejects invalid engine value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'hybrid',
+    })).toThrow('engine must be "legacy" or "solver"')
+  })
+
+  it('accepts solver config block', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'solver',
+      solver: { maxToolCalls: 20, maxTokens: 50000, maxDurationMs: 120000, maxParallel: 3 },
+    })
+    expect(config.solver).toEqual({ maxToolCalls: 20, maxTokens: 50000, maxDurationMs: 120000, maxParallel: 3 })
+  })
+
+  it('accepts partial solver config', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      solver: { maxToolCalls: 15 },
+    })
+    expect(config.solver).toEqual({ maxToolCalls: 15 })
+  })
+
+  it('rejects solver.maxToolCalls with non-positive value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      solver: { maxToolCalls: -1 },
+    })).toThrow('solver.maxToolCalls must be a positive number')
+  })
+
+  it('rejects solver.maxToolCalls with zero', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      solver: { maxToolCalls: 0 },
+    })).toThrow('solver.maxToolCalls must be a positive number')
+  })
+
+  it('accepts antiLoop config block', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      antiLoop: { staleThreshold: 5, maxFailedTarget: 3 },
+    })
+    expect(config.antiLoop).toEqual({ staleThreshold: 5, maxFailedTarget: 3 })
+  })
+
+  it('rejects antiLoop with non-positive value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      antiLoop: { staleThreshold: 0 },
+    })).toThrow('antiLoop.staleThreshold must be a positive number')
+  })
+
+  it('accepts reflexion config block', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      reflexion: { enabled: true, maxSameVulnFails: 3, maxTotalNoProgress: 5, escalationMaxLevel: 3 },
+    })
+    expect(config.reflexion).toEqual({ enabled: true, maxSameVulnFails: 3, maxTotalNoProgress: 5, escalationMaxLevel: 3 })
+  })
+
+  it('rejects reflexion.enabled with non-boolean', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      reflexion: { enabled: 'yes' as any },
+    })).toThrow('reflexion.enabled must be a boolean')
+  })
+
+  it('rejects reflexion with non-positive numeric value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      reflexion: { maxSameVulnFails: -1 },
+    })).toThrow('reflexion.maxSameVulnFails must be a positive number')
+  })
+
+  it('accepts all engine blocks together', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'solver',
+      solver: { maxToolCalls: 20 },
+      antiLoop: { staleThreshold: 5 },
+      reflexion: { enabled: true, maxSameVulnFails: 3 },
+    })
+    expect(config.engine).toBe('solver')
+    expect(config.solver).toEqual({ maxToolCalls: 20 })
+    expect(config.antiLoop).toEqual({ staleThreshold: 5 })
+    expect(config.reflexion).toEqual({ enabled: true, maxSameVulnFails: 3 })
   })
 })
 

@@ -3,6 +3,7 @@ import type { LanguageModelV2 } from '@ai-sdk/provider'
 import { PROVIDER_INFO } from '../config'
 import type { UltimatrixConfig } from '../config'
 import { getSanitizeKeywords, sanitizeRequestBody } from './schema-sanitizer'
+import { wrapModel } from './middleware'
 
 /**
  * Resolve which provider credentials to use for a tier string like "groq/llama3-8b-8192".
@@ -51,61 +52,67 @@ function buildModel(
   const transformRequestBody = keywords
     ? (body: Record<string, unknown>) => sanitizeRequestBody(body, keywords)
     : undefined
+  let model: LanguageModelV2
 
   if (!info) {
-    return createOpenAICompatible({
+    model = createOpenAICompatible({
       name: provider,
       baseURL: 'https://localhost',
       apiKey: '',
       transformRequestBody,
     }).chatModel(modelId)
-  }
-
-  switch (provider) {
-    case 'azure': {
-      const az = creds as import('../config').AzureCreds | undefined
-      const apiKey = az?.apiKey || process.env[info.envVar] || ''
-      const endpoint = az?.endpoint || info.defaultBaseUrl
-      return createOpenAICompatible({
-        name: 'azure',
-        baseURL: endpoint,
-        apiKey,
-        headers: az?.apiVersion ? { 'api-version': az.apiVersion } : undefined,
-        transformRequestBody,
-      }).chatModel(modelId)
-    }
-
-    case 'bedrock': {
-      const br = creds as import('../config').BedrockCreds | undefined
-      if (br) {
-        if (br.authMethod === 'api_key' && br.apiKey) {
-          process.env.AWS_BEARER_TOKEN_BEDROCK = br.apiKey
-        } else if (br.authMethod === 'iam') {
-          if (br.accessKeyId) process.env.AWS_ACCESS_KEY_ID = br.accessKeyId
-          if (br.secretAccessKey) process.env.AWS_SECRET_ACCESS_KEY = br.secretAccessKey
-          if (br.sessionToken) process.env.AWS_SESSION_TOKEN = br.sessionToken
-          if (br.region) process.env.AWS_REGION = br.region
-        }
+  } else {
+    switch (provider) {
+      case 'azure': {
+        const az = creds as import('../config').AzureCreds | undefined
+        const apiKey = az?.apiKey || process.env[info.envVar] || ''
+        const endpoint = az?.endpoint || info.defaultBaseUrl
+        model = createOpenAICompatible({
+          name: 'azure',
+          baseURL: endpoint,
+          apiKey,
+          headers: az?.apiVersion ? { 'api-version': az.apiVersion } : undefined,
+          transformRequestBody,
+        }).chatModel(modelId)
+        break
       }
-      return createOpenAICompatible({
-        name: 'bedrock',
-        baseURL: info.defaultBaseUrl,
-        apiKey: '',
-        transformRequestBody,
-      }).chatModel(modelId)
-    }
 
-    default: {
-      const apiKeyCreds = creds as import('../config').ApiKeyCreds | undefined
-      const apiKey = apiKeyCreds?.apiKey || process.env[info.envVar] || ''
-      const baseUrl = apiKeyCreds?.baseUrl || info.defaultBaseUrl
+      case 'bedrock': {
+        const br = creds as import('../config').BedrockCreds | undefined
+        if (br) {
+          if (br.authMethod === 'api_key' && br.apiKey) {
+            process.env.AWS_BEARER_TOKEN_BEDROCK = br.apiKey
+          } else if (br.authMethod === 'iam') {
+            if (br.accessKeyId) process.env.AWS_ACCESS_KEY_ID = br.accessKeyId
+            if (br.secretAccessKey) process.env.AWS_SECRET_ACCESS_KEY = br.secretAccessKey
+            if (br.sessionToken) process.env.AWS_SESSION_TOKEN = br.sessionToken
+            if (br.region) process.env.AWS_REGION = br.region
+          }
+        }
+        model = createOpenAICompatible({
+          name: 'bedrock',
+          baseURL: info.defaultBaseUrl,
+          apiKey: '',
+          transformRequestBody,
+        }).chatModel(modelId)
+        break
+      }
 
-      return createOpenAICompatible({
-        name: provider,
-        baseURL: baseUrl,
-        apiKey,
-        transformRequestBody,
-      }).chatModel(modelId)
+      default: {
+        const apiKeyCreds = creds as import('../config').ApiKeyCreds | undefined
+        const apiKey = apiKeyCreds?.apiKey || process.env[info.envVar] || ''
+        const baseUrl = apiKeyCreds?.baseUrl || info.defaultBaseUrl
+
+        model = createOpenAICompatible({
+          name: provider,
+          baseURL: baseUrl,
+          apiKey,
+          transformRequestBody,
+        }).chatModel(modelId)
+        break
+      }
     }
   }
+
+  return wrapModel(model, config)
 }

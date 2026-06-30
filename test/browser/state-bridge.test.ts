@@ -2,9 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { BrowserState } from '../../src/browser/state-bridge'
 
 function makeStagehand(context: any = null, page: any = null, overrides: Record<string, any> = {}) {
+  const ctx = context ? {
+    ...context,
+    activePage: context.activePage || (() => page),
+    pages: context.pages || (() => page ? [page] : []),
+  } : null
   return {
-    context,
-    page,
+    context: ctx,
     ...overrides,
   }
 }

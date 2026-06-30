@@ -7,50 +7,79 @@ import { UltimatrixConfig } from '../config.js'
 import { resolveModel } from '../models/factory.js'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer.js'
 import { Logger } from '../utils/logger.js'
+import { resolveToolsForSkills, type Skill } from '../skills/tool-filter.js'
 import type { MastraMemory } from '@mastra/core/memory'
-import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 
-function sanitizeToolArray(tools: any[], provider?: string): any[] {
+function sanitizeToolRecord(tools: Record<string, any>, provider?: string): Record<string, any> {
   if (!provider) return tools
-  return tools.map(tool => {
+  const sanitized: Record<string, any> = {}
+  for (const [key, tool] of Object.entries(tools)) {
     if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in tool.inputSchema) {
-      return {
+      sanitized[key] = {
         ...tool,
-        inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, provider),
+        inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider),
       }
+    } else {
+      sanitized[key] = tool
     }
-    return tool
-  })
+  }
+  return sanitized
 }
 
-// Centralized agent creation factory
+export interface AgentOptions {
+  skillRegistry?: SkillRegistry
+  workerPool?: WorkerPool
+  browser?: StagehandBrowser
+  tools?: ToolRegistry
+  logger?: Logger
+  memory?: MastraMemory
+  tier?: 'fast' | 'balanced' | 'powerful' | 'default'
+  skillIds?: string[]
+  skills?: Skill[]
+  extraTools?: Record<string, any>
+}
+
 export function createAgent(
   config: UltimatrixConfig,
-  options?: {
-    skillRegistry?: SkillRegistry
-    workerPool?: WorkerPool
-    browser?: StagehandBrowser
-    tools?: ToolRegistry
-    logger?: Logger
-    memory?: MastraMemory
-    tier?: 'fast' | 'balanced' | 'powerful' | 'default'
-  },
+  options?: AgentOptions,
 ): Agent {
   const log = options?.logger || new Logger('AgentFactory')
-  const toolRegistry = options?.tools || createToolRegistry(log)
+  const fullRegistry = options?.tools || createToolRegistry(log)
 
-  const allTools = Object.values(toolRegistry)
-  if (options?.browser) {
-    const stagehandTools = Object.values(createStagehandTools(options.browser))
-    allTools.push(...stagehandTools)
+  let allTools: Record<string, any>
+
+  if (options?.skillIds && options.skillIds.length > 0) {
+    const allowedToolIds = new Set(resolveToolsForSkills(options.skillIds))
+    allTools = {}
+    for (const [key, tool] of Object.entries(fullRegistry)) {
+      if (allowedToolIds.has(key)) {
+        allTools[key] = tool
+      }
+    }
+    log.info(`Skill-filtered: ${Object.keys(allTools).length} tools from skills [${options.skillIds.join(', ')}]`)
+  } else {
+    allTools = { ...fullRegistry }
   }
+
+  if (options?.extraTools) {
+    Object.assign(allTools, options.extraTools)
+  }
+
+  if (options?.browser) {
+    Object.assign(allTools, createStagehandTools(options.browser))
+  }
+
+  const skillInstructions = options?.skills
+    ? options.skills.map(s => s.instructions).join('\n\n')
+    : ''
 
   const agentConfig: any = {
     name: 'ultimatrix-agent',
     model: resolveModel(config, options?.tier),
     target: config.target,
-    tools: sanitizeToolArray(allTools, config.provider),
-    instructions: getAgentInstructions(config),
+    tools: sanitizeToolRecord(allTools, config.provider),
+    instructions: getAgentInstructions(config, skillInstructions),
   }
 
   if (options?.memory) {
@@ -63,53 +92,53 @@ export function createAgent(
     }
   }
 
-  log.info(`Creating agent with ${allTools.length} tools${options?.browser ? ' (incl. Stagehand)' : ''}`)
+  log.info(`Creating agent with ${Object.keys(allTools).length} tools${options?.browser ? ' (incl. Stagehand)' : ''}`)
 
   return new Agent(agentConfig)
 }
 
-// Get agent instructions based on config
-function getAgentInstructions(config: UltimatrixConfig): string {
+function getAgentInstructions(config: UltimatrixConfig, skillInstructions: string = ''): string {
   const baseInstructions = `
-You are Ultimatrix, an autonomous security researcher that discovers vulnerabilities through systematic testing.
+You are Ultimatrix, an autonomous security researcher. You test web applications for vulnerabilities by directly executing attacks using your tools. You are NOT a router — you are the attacker.
 
 Core Principles:
-1. Be thorough and methodical in your approach
-2. Focus on practical, exploitable vulnerabilities
-3. Document findings with clear evidence
-4. Respect the target and avoid unnecessary damage
-5. Collaborate with other agents when needed
+1. Test endpoints directly using your tools — do not just plan, ACT
+2. Use the skill methodology loaded below to guide your approach
+3. Record every observation in the graph with updateGraph
+4. Write findings with evidence using writeFinding
+5. If you need parallel testing, delegate with spawn-worker or spawn-swarm
+6. Learn from failures — if an approach fails, try the next one from the skill
 
-Key Responsibilities:
-- Discover vulnerabilities through systematic testing
-- Document findings with clear evidence
-- Chain vulnerabilities together to understand attack paths
-- Generate test cases for discovered vulnerabilities
-- Maintain accurate state of the application
+Attack Protocol:
+1. Read the loaded skill methodology below — it tells you HOW to test
+2. Use your available tools to execute the attack steps
+3. Record what you find (endpoints, responses, errors, patterns)
+4. When you confirm a vulnerability, write a finding with evidence
+5. If you hit a dead end, try a different approach from the skill
+6. If you need to test many endpoints in parallel, spawn workers
 
-Communication Style:
-- Use clear, concise language
-- Provide specific details about findings
-- Explain your reasoning for each action
-- Be transparent about limitations and uncertainties
+Human-in-the-Loop (Mutual Attack):
+- If you need the human to log in, solve a CAPTCHA, or perform a manual action:
+  call askUser({ waitForBrowserAction: true, question: "..." })
+- The human acts in the browser window, you capture what they did
+- After they act: observeHumanActions() → saveSession() → continue testing
+- If you're stuck on authentication: ask the human to demonstrate, then reproduce
 
-Safety Guidelines:
-- Only test for publicly accessible endpoints
-- Respect rate limits and server capacity
-- Avoid destructive actions unless explicitly instructed
-- Report any issues that could impact availability
+Safety:
+- Only test the authorized target
+- Respect rate limits
+- Do not cause denial of service
 `
 
-  if (config.target) {
-    return `${baseInstructions}
+  const targetBlock = config.target
+    ? `\n\nCurrent Target: ${config.target}`
+    : ''
 
-Current Target: ${config.target}
+  const skillBlock = skillInstructions
+    ? `\n\n## Loaded Skill Methodology\n\n${skillInstructions}`
+    : '\n\nNo skill loaded. Use searchSkills to find relevant methodology, or proceed with general web security testing knowledge.'
 
-Focus on this target and provide detailed analysis of potential vulnerabilities.
-`
-  }
-
-  return baseInstructions
+  return baseInstructions + targetBlock + skillBlock
 }
 
 // Agent creation utilities for different worker types
@@ -122,25 +151,25 @@ export function createReconAgent(
   const log = logger || new Logger('ReconAgentFactory')
   const toolRegistry = createToolRegistry(log)
 
-  const reconTools = [
-    toolRegistry.runRecon,
-    toolRegistry.graphqlIntrospect,
-    toolRegistry.jwtDecode,
-    toolRegistry.frameworkFingerprint,
-    toolRegistry.cloudMetadataProbe,
-    toolRegistry.httpRequest,
-    toolRegistry.findEndpointsInResponse,
-  ]
+  const reconTools: Record<string, any> = {
+    runRecon: toolRegistry.runRecon,
+    graphqlIntrospect: toolRegistry.graphqlIntrospect,
+    jwtDecode: toolRegistry.jwtDecode,
+    frameworkFingerprint: toolRegistry.frameworkFingerprint,
+    cloudMetadataProbe: toolRegistry.cloudMetadataProbe,
+    httpRequest: toolRegistry.httpRequest,
+    findEndpointsInResponse: toolRegistry.findEndpointsInResponse,
+  }
 
   if (browser) {
-    reconTools.push(...Object.values(createStagehandTools(browser)))
+    Object.assign(reconTools, createStagehandTools(browser))
   }
 
   const agentConfig: any = {
     id: 'recon-worker',
     name: 'Recon Worker',
     model: resolveModel(config),
-    tools: sanitizeToolArray(reconTools, config.provider),
+    tools: sanitizeToolRecord(reconTools, config.provider),
     instructions: `
 You are a reconnaissance specialist focused on mapping the attack surface of web applications.
 
@@ -181,28 +210,28 @@ export function createInjectionAgent(
   const log = logger || new Logger('InjectionAgentFactory')
   const toolRegistry = createToolRegistry(log)
 
-  const injectionTools = [
-    toolRegistry.httpRequest,
-    toolRegistry.multipartUpload,
-    toolRegistry.followRedirects,
-    toolRegistry.parseResponse,
-    toolRegistry.evaluateRendered,
-    toolRegistry.checkWaf,
-    toolRegistry.recordEvidence,
-    toolRegistry.writeFinding,
-    toolRegistry.queryGraph,
-    toolRegistry.updateGraph,
-  ]
+  const injectionTools: Record<string, any> = {
+    httpRequest: toolRegistry.httpRequest,
+    multipartUpload: toolRegistry.multipartUpload,
+    followRedirects: toolRegistry.followRedirects,
+    parseResponse: toolRegistry.parseResponse,
+    evaluateRendered: toolRegistry.evaluateRendered,
+    checkWaf: toolRegistry.checkWaf,
+    recordEvidence: toolRegistry.recordEvidence,
+    writeFinding: toolRegistry.writeFinding,
+    queryGraph: toolRegistry.queryGraph,
+    updateGraph: toolRegistry.updateGraph,
+  }
 
   if (browser) {
-    injectionTools.push(...Object.values(createStagehandTools(browser)))
+    Object.assign(injectionTools, createStagehandTools(browser))
   }
 
   const agentConfig: any = {
     id: 'injection-worker',
     name: 'Injection Worker',
     model: resolveModel(config),
-    tools: sanitizeToolArray(injectionTools, config.provider),
+    tools: sanitizeToolRecord(injectionTools, config.provider),
     instructions: `
 You are an injection testing specialist focused on finding and exploiting injection vulnerabilities.
 
@@ -244,28 +273,28 @@ export function createAuthControlAgent(
   const log = logger || new Logger('AuthControlAgentFactory')
   const toolRegistry = createToolRegistry(log)
 
-  const authTools = [
-    toolRegistry.extractSessionCookie,
-    toolRegistry.extractCsrfToken,
-    toolRegistry.useSession,
-    toolRegistry.httpRequest,
-    toolRegistry.parseResponse,
-    toolRegistry.recordEvidence,
-    toolRegistry.writeFinding,
-    toolRegistry.queryGraph,
-    toolRegistry.updateGraph,
-    toolRegistry.getAuthFlows,
-  ]
+  const authTools: Record<string, any> = {
+    extractSessionCookie: toolRegistry.extractSessionCookie,
+    extractCsrfToken: toolRegistry.extractCsrfToken,
+    useSession: toolRegistry.useSession,
+    httpRequest: toolRegistry.httpRequest,
+    parseResponse: toolRegistry.parseResponse,
+    recordEvidence: toolRegistry.recordEvidence,
+    writeFinding: toolRegistry.writeFinding,
+    queryGraph: toolRegistry.queryGraph,
+    updateGraph: toolRegistry.updateGraph,
+    getAuthFlows: toolRegistry.getAuthFlows,
+  }
 
   if (browser) {
-    authTools.push(...Object.values(createStagehandTools(browser)))
+    Object.assign(authTools, createStagehandTools(browser))
   }
 
   const agentConfig: any = {
     id: 'auth-control-worker',
     name: 'Auth Control Worker',
     model: resolveModel(config),
-    tools: sanitizeToolArray(authTools, config.provider),
+    tools: sanitizeToolRecord(authTools, config.provider),
     instructions: `
 You are an authentication testing specialist focused on finding and exploiting authentication vulnerabilities.
 
@@ -307,34 +336,34 @@ export function createAdvancedAgent(
   const log = logger || new Logger('AdvancedAgentFactory')
   const toolRegistry = createToolRegistry(log)
 
-  const advancedTools = [
-    toolRegistry.httpRequest,
-    toolRegistry.multipartUpload,
-    toolRegistry.followRedirects,
-    toolRegistry.parseResponse,
-    toolRegistry.evaluateRendered,
-    toolRegistry.measureTiming,
-    toolRegistry.compareResponses,
-    toolRegistry.checkWaf,
-    toolRegistry.recordEvidence,
-    toolRegistry.writeFinding,
-    toolRegistry.queryGraph,
-    toolRegistry.updateGraph,
-    toolRegistry.getAttackPath,
-    toolRegistry.getUntestedActions,
-    toolRegistry.frameworkFingerprint,
-    toolRegistry.cloudMetadataProbe,
-  ]
+  const advancedTools: Record<string, any> = {
+    httpRequest: toolRegistry.httpRequest,
+    multipartUpload: toolRegistry.multipartUpload,
+    followRedirects: toolRegistry.followRedirects,
+    parseResponse: toolRegistry.parseResponse,
+    evaluateRendered: toolRegistry.evaluateRendered,
+    measureTiming: toolRegistry.measureTiming,
+    compareResponses: toolRegistry.compareResponses,
+    checkWaf: toolRegistry.checkWaf,
+    recordEvidence: toolRegistry.recordEvidence,
+    writeFinding: toolRegistry.writeFinding,
+    queryGraph: toolRegistry.queryGraph,
+    updateGraph: toolRegistry.updateGraph,
+    getAttackPath: toolRegistry.getAttackPath,
+    getUntestedActions: toolRegistry.getUntestedActions,
+    frameworkFingerprint: toolRegistry.frameworkFingerprint,
+    cloudMetadataProbe: toolRegistry.cloudMetadataProbe,
+  }
 
   if (browser) {
-    advancedTools.push(...Object.values(createStagehandTools(browser)))
+    Object.assign(advancedTools, createStagehandTools(browser))
   }
 
   const agentConfig: any = {
     id: 'advanced-worker',
     name: 'Advanced Worker',
     model: resolveModel(config),
-    tools: sanitizeToolArray(advancedTools, config.provider),
+    tools: sanitizeToolRecord(advancedTools, config.provider),
     instructions: `
 You are an advanced security testing specialist focused on complex vulnerabilities and attack chains.
 

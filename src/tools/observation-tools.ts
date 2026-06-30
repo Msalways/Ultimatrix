@@ -1,6 +1,13 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 
+const MAX_BODY_CHARS = 50_000
+
+function truncateBody(body: string): string {
+  if (body.length <= MAX_BODY_CHARS) return body
+  return body.slice(0, MAX_BODY_CHARS) + `\n\n[truncated — showing first ${MAX_BODY_CHARS} of ${body.length} chars total]`
+}
+
 // ── WAF vendor patterns ──
 
 const WAF_SIGNATURES: Array<{ vendor: string; patterns: RegExp[] }> = [
@@ -38,9 +45,10 @@ export const parseResponse = createTool({
     }),
   }),
   execute: async (ctx) => {
+    const truncatedBody = truncateBody(ctx.body)
     let json: unknown = null
     try {
-      json = JSON.parse(ctx.body)
+      json = JSON.parse(truncatedBody)
     } catch {
       json = null
     }
@@ -66,10 +74,10 @@ export const parseResponse = createTool({
       ok: true,
       value: {
         status: ctx.status,
-        body: ctx.body,
+        body: truncatedBody,
         headers: ctx.headers,
         json,
-        dom: ctx.body,
+        dom: truncatedBody,
         textSnippets,
       },
     }
@@ -131,7 +139,7 @@ export const evaluateRendered = createTool({
       }
 
       const res = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
-      const body = await res.text()
+      const body = truncateBody(await res.text())
       const lower = body.toLowerCase()
       const lowerPayload = ctx.payload.toLowerCase()
 

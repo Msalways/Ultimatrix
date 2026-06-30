@@ -2,27 +2,23 @@ import type { SubAgent } from '@mastra/core/agent'
 import { Agent } from '@mastra/core/agent'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
-import {
-  httpRequest, followRedirects, omitHeader,
-  queryGraph, updateGraph,
-  readAppModelSection, writeAppModelSection,
-  recordEvidence, writeFinding,
-  askUser,
-  getTestCoverage, getUntestedActions, getAuthFlows, getAttackPath,
-  getOastUrlTool, checkOastCallbacks,
-} from '../tools/registry'
 import { createAgent } from '../mastra/index.js'
 import { supervisorInstructions } from './instructions'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../skills/registry'
 import type { WorkerPool } from '../workers/pool'
-import { createSkillSearchTool } from './tools/skill-search'
-import { createSkillLoadTool } from './tools/skill-load'
 import { createSpawnWorkerTool } from './tools/spawn-worker'
 import { createSpawnSwarmTool } from './tools/spawn-swarm'
 import { createExecuteDirectTool } from './tools/execute-direct'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+
+function sanitizeOrchTool(tool: any, provider?: string): any {
+  if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
+    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, provider) }
+  }
+  return tool
+}
 
 export interface SupervisorOptions {
   // Dynamic mode
@@ -42,29 +38,23 @@ export function createSupervisor(
   const isDynamic = options.skillRegistry && options.workerPool
 
   if (isDynamic) {
+    const orchestrationTools: Record<string, any> = {
+      spawnWorker: sanitizeOrchTool(createSpawnWorkerTool(config, options.skillRegistry!, options.workerPool!), config.provider),
+      spawnSwarm: sanitizeOrchTool(createSpawnSwarmTool(config, options.skillRegistry!, options.workerPool!), config.provider),
+      executeDirect: sanitizeOrchTool(createExecuteDirectTool(config, options.skillRegistry!), config.provider),
+    }
+
     const agent = createAgent(config, {
       skillRegistry: options.skillRegistry,
       workerPool: options.workerPool,
       browser: options.browser,
       memory: options.memory,
+      extraTools: orchestrationTools,
     })
 
     agent.id = 'ultimatrix-supervisor'
     agent.name = 'Ultimatrix Security Lead'
     agent.instructions = supervisorInstructions
-
-    agent.tools.push(
-      ...[createSkillSearchTool(options.skillRegistry!),
-      createSkillLoadTool(options.skillRegistry!),
-      createSpawnWorkerTool(config, options.skillRegistry!, options.workerPool!),
-      createSpawnSwarmTool(config, options.skillRegistry!, options.workerPool!),
-      createExecuteDirectTool()].map(tool => {
-        if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
-          return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, config.provider) }
-        }
-        return tool
-      }),
-    )
 
     return agent
   }

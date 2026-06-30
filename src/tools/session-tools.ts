@@ -1,5 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
+import { getGlobalSessionManager } from '../http/session-manager'
 
 export const extractSessionCookie = createTool({
   id: 'extractSessionCookie',
@@ -65,27 +66,60 @@ export const extractCsrfToken = createTool({
 
 export const useSession = createTool({
   id: 'useSession',
-  description: 'Configure session context with role, cookies, and bearer token',
+  description: 'Create or retrieve a session for a role. Stores cookies and tokens in the shared SessionManager so other workers can use them. After login, call this with cookies/token to persist. Before making requests, call this to get stored auth.',
   inputSchema: z.object({
-    role: z.string().default('guest'),
-    cookies: z.record(z.string(), z.string()).optional(),
-    bearerToken: z.string().optional(),
+    role: z.string().describe('Session role (e.g. "admin", "user", "guest")'),
+    url: z.string().url().describe('Base URL for the session'),
+    cookies: z.record(z.string(), z.string()).optional().describe('Session cookies to store (from Set-Cookie or browser)'),
+    token: z.string().optional().describe('Bearer token to store'),
   }),
   outputSchema: z.object({
     ok: z.boolean(),
     value: z.object({
       role: z.string(),
-      cookies: z.record(z.string(), z.string()).optional(),
-      bearerToken: z.string().optional(),
+      sessionName: z.string(),
+      cookies: z.record(z.string(), z.string()),
+      token: z.string().nullable(),
+      headers: z.record(z.string(), z.string()),
     }),
   }),
   execute: async (ctx) => {
+    const mgr = getGlobalSessionManager()
+    const { role, url, cookies, token } = ctx
+
+    let baseUrl: string
+    try {
+      const urlObj = new URL(url)
+      baseUrl = `${urlObj.origin}`
+    } catch {
+      baseUrl = url
+    }
+
+    const sessionName = `${role}:${baseUrl}`
+    let session = mgr.getSession(sessionName)
+    if (!session) {
+      session = mgr.createSession(sessionName, baseUrl)
+    }
+
+    if (cookies) {
+      for (const [k, v] of Object.entries(cookies)) {
+        session.cookies[k] = v
+      }
+    }
+    if (token) {
+      mgr.setToken(sessionName, token)
+    }
+
+    const headers = mgr.getAllHeaders(sessionName)
+
     return {
       ok: true,
       value: {
-        role: ctx.role ?? 'guest',
-        cookies: ctx.cookies,
-        bearerToken: ctx.bearerToken,
+        role,
+        sessionName,
+        cookies: session.cookies,
+        token: session.token,
+        headers,
       },
     }
   },

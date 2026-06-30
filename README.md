@@ -1,8 +1,47 @@
 # Ultimatrix v8
 
-**AI-powered autonomous security researcher with dual engine architecture.** Captures traffic, reasons over it with LLM intelligence, tests for vulnerabilities directly, and generates replayable security tests. Zero hardcoded patterns. All intelligence from LLM reasoning.
+**An AI security researcher that thinks before it attacks.**
 
-Real attacks, not theoretical.
+Ultimatrix isn't another vulnerability scanner with hardcoded CVE patterns. It's an autonomous security researcher that observes your application, builds a mental model of how it works, reasons about attack surfaces, and then tests for real vulnerabilities — the way a human pentester would, but at machine speed.
+
+It talks to you like a consultant. It learns from its mistakes. And it never stops watching.
+
+---
+
+## Why Ultimatrix?
+
+Security tools typically fall into two camps: **signature-based scanners** that match known patterns (and miss everything novel), and **manual testing frameworks** that require a human operator to drive them. Ultimatrix is neither.
+
+It uses LLM reasoning to **understand** your application — not just its endpoints, but its behavior, its logic, its assumptions about trust. Then it tests those assumptions with real HTTP requests, real browser interactions, and real exploitation attempts.
+
+**The key insight:** Observation is the foundation of security testing. Before Ultimatrix attacks anything, it maps your entire attack surface — endpoints, authentication flows, role-based access, technology stack, exposed secrets, JavaScript bundles. It builds a knowledge graph. Then it reasons over that graph to decide what's worth testing and how.
+
+This is why it finds things scanners miss. A scanner checks for SQL injection patterns. Ultimatrix understands that your user profile endpoint takes an ID parameter, that the ID is sequential, that there's no authorization check, and that the response leaks database error messages — then it crafts a payload specific to *your* application's context.
+
+---
+
+## What It Actually Does
+
+```
+You: "Test https://your-app.com for security issues"
+
+Ultimatrix: [observes] Mapping attack surface... found 47 endpoints,
+  3 auth flows, 5 role transitions, 12 input parameters.
+
+Ultimatrix: [reasons] Your admin panel at /admin uses session cookies
+  but the API at /api/users doesn't validate roles. The password reset
+  token is predictable. There's a .env backup at /.env.bak.
+
+Ultimatrix: [tests] Sending crafted requests to each vector...
+  - IDOR on /api/users/123 → swapped to /api/users/456 → got full profile
+  - Admin panel access with regular user token → 200 OK (privilege escalation)
+  - .env.bak → contains DATABASE_URL, JWT_SECRET, SMTP credentials
+
+Ultimatrix: [reports] Found 3 critical, 2 high, 4 medium issues.
+  Here's the full report with reproduction steps.
+```
+
+That's not a toy. That's a security consultant that works 24/7.
 
 ---
 
@@ -16,127 +55,159 @@ npx playwright install chromium
 # Configure your LLM provider
 npx ultimatrix init
 
-# Interactive session (recommended)
+# Interactive session — talk to the agent like a colleague
 npx ultimatrix interact -t https://httpbin.org
 
-# Direct solve — single goal, autonomous testing
+# Autonomous solve — give it a goal, let it work
 npx ultimatrix solve -t https://httpbin.org
 
-# Full scan: capture → analyze → generate tests → report
+# Full scan pipeline: capture → analyze → generate tests → report
 npx ultimatrix scan -t https://httpbin.org
 ```
 
----
+### Configure your LLM
 
-## CLI Commands
+```bash
+# Works with any provider — Groq is free and fast for testing
+export GROQ_API_KEY=gsk_your_key_here
 
-| Command | Description |
-|---------|-------------|
-| `ultimatrix init` | Interactive provider + config setup wizard |
-| `ultimatrix solve -t <url>` | OODA solver engine — autonomous goal-driven testing |
-| `ultimatrix interact -t <url>` | REPL chat with security agent (solver or legacy engine) |
-| `ultimatrix scan -t <url>` | Full scan: learn + generate + report |
-| `ultimatrix learn -t <url>` | Capture traffic, parse HAR, analyze patterns |
-| `ultimatrix generate -t <url>` | Learn → generate Playwright test cases |
-| `ultimatrix replay` | Re-run previously generated tests |
-| `ultimatrix report` | Generate JSON/HTML/Markdown report |
-| `ultimatrix web` | Next.js web UI at localhost:3000 |
-| `ultimatrix assess -t <url>` | Full assessment (legacy engine) |
-| `ultimatrix verify -a <model> -t <url>` | Re-run findings against new deployment |
+# Or use OpenAI, Anthropic, Google, NVIDIA, and 10+ others
+export OPENAI_API_KEY=sk_your_key_here
+```
 
 ---
 
-## Architecture
+## The Intelligence Layer
 
-### Dual Engine
+What makes Ultimatrix different from "LLM in a loop" is its intelligence layer — four interconnected systems that make it actually *smart*:
+
+### Evidence Gate
+The agent can't hallucinate findings. Every claim it makes must be backed by actual tool output. If it says "SQL injection found," it must show you the HTTP response that proves it. No proof = no finding. This is enforced at the architecture level, not as a prompt suggestion.
+
+### Reflexion Engine
+When an attack fails, Ultimatrix doesn't just move on. It classifies the failure (L0: bad luck, L1: wrong tool, L2: wrong strategy, L3: wrong model, L4: fundamental gap), extracts lessons, and applies them to future attempts. Over a session, it gets progressively smarter about *your* specific target.
+
+### Anti-Loop Detector
+LLMs love to repeat themselves. The anti-loop system detects when the agent is stuck — trying the same approach with slight variations — and forces it down unexplored paths. It also extracts structured attack paths from the conversation, tracking what was tried, what worked, and what failed.
+
+### Knowledge Graph
+Every interaction builds a persistent knowledge graph: endpoints, findings, authentication flows, RBAC matrices, attack paths, facts, and intents. The agent queries this graph before acting, preventing redundant work and enabling compound reasoning. "I already tested /api/users for IDOR — but I haven't tested /api/admin yet, and they share the same middleware."
+
+---
+
+## Dual Engine Architecture
+
+Ultimatrix has two engines, because different situations call for different approaches:
+
+### Solver Engine (OODA Loop)
+The primary engine. Observes → Orients → Decides → Acts, in a tight loop. Best for:
+- Autonomous goal-driven testing ("find all privilege escalation vectors")
+- Interactive sessions where you guide the research
+- Targets where you need deep, iterative reasoning
+
+### Legacy Supervisor
+The battle-tested engine. Observe → Learn → Attack → Report. Best for:
+- Structured scans with clear phases
+- Environments where you want predictable, linear progression
+- Compatibility with older configurations
+
+Both engines share the same intelligence layer, the same 21 skills, and the same tool set. The engine selector just changes *how* they're orchestrated.
+
+---
+
+## 21 Knowledge-Based Skills
+
+Not payload lists. Not regex patterns. **Knowledge.**
+
+Each skill is a markdown file containing security expertise — reasoning patterns, testing methodologies, what to look for and why. The LLM reads these skills and applies the knowledge using its own reasoning capabilities.
+
+### Core Skills
+| Skill | What It Knows |
+|-------|---------------|
+| **Recon** | Deep page analysis, JavaScript bundle secrets, exposed files, technology fingerprinting |
+| **Vuln Discovery** | Dynamic payload crafting, input type analysis, WAF adaptation, context-aware encoding |
+| **Exploitation** | Proof-of-concept development, impact assessment, chaining vectors |
+| **Post-Exploitation** | Lateral movement, privilege escalation, persistence |
+| **Reporting** | Finding documentation, risk quantification, remediation guidance |
+| **WAF Bypass** | Encoding tricks, fragmentation, timing attacks |
+| **Pentest Flow** | Structured methodology, scope management, documentation |
+
+### Specialized Skills
+| Skill | What It Knows |
+|-------|---------------|
+| **Web Pentest** | OWASP Top 10, API testing, authentication bypass |
+| **Authorization** | Multi-role testing, IDOR, JWT attacks, OAuth bypass |
+| **Business Logic** | Workflow bypass, price manipulation, race conditions |
+| **Info Disclosure** | JS bundle analysis, .env exposure, error message leakage |
+| **Race Conditions** | Concurrent request testing, TOCTOU, mass assignment |
+| **Crypto Toolkit** | Hash analysis, key extraction, algorithm weaknesses |
+| **AI/MCP Security** | Prompt injection, model manipulation, tool poisoning |
+| **CTF Skills** | Web, Crypto, Misc CTF challenge methodologies |
+
+---
+
+## Human-in-the-Loop
+
+Ultimatrix isn't a black box. It works *with* you:
+
+- **Browser visibility** — Watch it navigate in real time, or take the wheel yourself
+- **Action capture** — Record your manual testing sessions and reproduce them
+- **Session persistence** — Save and restore sessions across restarts
+- **Interactive REPL** — Chat with the agent, ask questions, redirect its approach
+- **Screenshot evidence** — Every finding includes visual proof
+
+When it needs your help (CAPTCHA, MFA, complex login), it asks. When it can handle something autonomously, it does. The balance shifts as it learns your target.
+
+---
+
+## Graph-Powered Reasoning
+
+Under the hood, Ultimatrix maintains a knowledge graph with 11 node types and 12 edge types:
 
 ```
-                    ┌──────────────────────┐
-                    │   Engine Selector    │ ← config.engine: 'legacy' | 'solver'
-                    │   (dual engine)      │
-                    └──────────┬───────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                 ▼
-    ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
-    │  Legacy      │  │  Solver      │  │  Shared Layer    │
-    │  Supervisor  │  │  Engine      │  │  (used by both)  │
-    │  (Phase 1-5) │  │  (OODA)      │  │                  │
-    │              │  │              │  │  • Evidence Gate  │
-    │  observe →   │  │  REASON →    │  │  • Reflexion      │
-    │  learn →     │  │  EXPLORE →   │  │  • Anti-Loop      │
-    │  attack →    │  │  CONCLUDE →  │  │  • Finding Life   │
-    │  loop        │  │  loop        │  │  • Failed Paths   │
-    └──────────────┘  └──────────────┘  └──────────────────┘
-              │                │                 │
-              └────────────────┼────────────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │  Skill-Tool Filter   │ ← resolveToolsForSkills(skillIds)
-                    │  (tool-filter.ts)    │   core tools always included
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────┴───────────┐
-                    ▼                      ▼
-           ┌──────────────┐      ┌──────────────────┐
-           │  Skills Lib  │      │  Agent (filtered) │
-           │  (21 skills) │      │  tools + skills   │
-           │  YAML meta   │      │  instructions     │
-           └──────────────┘      └──────────────────┘
+Endpoint ──REQUESTS──> Finding
+    │                      │
+    ├──USES_AUTH──> AuthFlow    ├──EXPLOITS──> AttackPath
+    │                      │                      │
+    ├──PRODUCES──> Input        ├──CHAINS_TO──> AttackStep
+    │                      │                      │
+    └──REQUIRES_ROLE──> RBACMatrix    └──BUILT_ON──> Test
 ```
 
-### Intelligence Layer (v8)
-
-| Module | Location | Purpose |
-|--------|----------|---------|
-| **Evidence Gate** | `src/intelligence/evidence-gate.ts` | Anti-hallucination: cross-check LLM claims against real tool output |
-| **Reflexion Engine** | `src/intelligence/reflexion.ts` | Failure classification, L0-L4 escalation, experience extraction |
-| **Anti-Loop** | `src/intelligence/anti-loop.ts` | Stale detection, dead-end detection, structured attack path extraction |
-| **Blackboard** | `src/solver/blackboard.ts` | Fact/Intent state-space for OODA solver |
-| **Solver** | `src/solver/solver.ts` | OODA loop: REASON → EXPLORE → CONCLUDE |
-| **Core Contract** | `src/prompts/core-contract.ts` | Anti-hallucination, workflow rules, PATH declarations |
-| **Skill Dispatcher** | `src/skills/dispatcher.ts` | Keyword routing + searchSkills fallback |
-| **Reflexion Store** | `src/intelligence/reflexion-store.ts` | Persist/load reflexion state to graph (target-scoped) |
-
-### Skills Library (21 total)
-
-**Core (7):** Recon, Vuln Discovery, Exploitation, Post-Exploitation, Reporting, WAF Bypass, Pentest Flow
-
-**Specialized (14):** Web Pentest, Web Security Advanced, Crypto Toolkit, CTF Web, CTF Crypto, CTF Misc, OSINT Recon, AI/MCP Security, Intranet Pentest, Pentest Tools, Authorization, Business Logic, Info Disclosure, Race Conditions
-
-All skills are **knowledge-based** — concepts and reasoning, not payload checklists.
-
-### Graph Schema (11 node types, 12 edge types)
-
-**Nodes:** Endpoint, Finding, Action, Input, AuthFlow, RBACMatrix, AttackPath, AttackStep, Test, Session, Fact, Intent, Reflexion
-
-**Edges:** REQUESTS, USES_AUTH, REQUIRES_ROLE, PRODUCES, CHAINS_TO, EXPLOITS, ALTERNATIVE, BUILT_ON, PRODUCED_BY
+This isn't just data storage. The agent *queries* the graph to make decisions:
+- "What endpoints haven't I tested yet?"
+- "Which findings chain together for a critical attack?"
+- "What authentication flows protect this admin endpoint?"
+- "Have I seen this pattern before in a different context?"
 
 ---
 
 ## Configuration
 
-### `ultimatrix.yaml`
-
 ```yaml
+# ultimatrix.yaml
 provider: groq
 model: llama3-8b-8192
 target: https://your-app.com
-engine: solver              # 'legacy' | 'solver'
+engine: solver
 
 solver:
-  maxToolCalls: 50          # LLM rounds per turn (each round = multiple tool calls)
-  maxDurationMs: 300000     # 5 minute timeout per turn
+  maxToolCalls: 25           # LLM rounds per turn
+  maxDurationMs: 300000      # 5 minute timeout
   maxParallel: 1
 
+rateLimit:
+  requestsPerMinute: 25      # Conservative default
+  maxConcurrent: 2
+
 antiLoop:
-  staleThreshold: 3         # Same attack path repeated N times → switch
+  staleThreshold: 3          # Force direction change after N repeats
 
 reflexion:
-  persistToGraph: true
+  persistToGraph: true       # Learn across sessions
 
 browser:
-  headless: false
+  headless: false            # Watch the agent work
 
 credentials:
   your-app:
@@ -144,89 +215,36 @@ credentials:
     password: secure123
 ```
 
-### Engine Routing
+### Supported Providers
+`openai` · `anthropic` · `google` · `nvidia` · `groq` · `together` · `deepseek` · `mistral` · `xai` · `perplexity` · `cerebras` · `deepinfra` · `openrouter` · `azure` · `bedrock`
 
-- `config.engine: 'legacy'` — Uses supervisor + 4 worker agents (v6 architecture)
-- `config.engine: 'solver'` — Uses OODA solver loop (v8 architecture)
-- `ultimatrix solve` always uses solver engine
-- `ultimatrix interact` respects `config.engine`
+---
 
-### Environment Variables
+## CLI Reference
 
-| Var | Effect |
-|-----|--------|
-| `GROQ_API_KEY` | Groq API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | Google API key |
-| `TARGET` | Override target URL |
-| `HEADLESS=false` | Force headed browser |
-| `ULTIMATRIX_LLM_DEBUG=1` | Log LLM call details |
-
-Supported providers: `openai`, `anthropic`, `google`, `nvidia`, `groq`, `together`, `deepseek`, `mistral`, `xai`, `perplexity`, `cerebras`, `deepinfra`, `openrouter`, `azure`, `bedrock`
+| Command | What It Does |
+|---------|-------------|
+| `ultimatrix init` | Interactive setup wizard — provider, model, credentials |
+| `ultimatrix solve -t <url>` | Autonomous OODA solver — give it a goal, it works |
+| `ultimatrix interact -t <url>` | REPL chat — talk to the agent like a colleague |
+| `ultimatrix scan -t <url>` | Full pipeline: capture → analyze → generate → report |
+| `ultimatrix learn -t <url>` | Capture traffic, parse HAR, analyze patterns |
+| `ultimatrix generate -t <url>` | Generate Playwright test cases from captured traffic |
+| `ultimatrix replay` | Re-run previously generated tests |
+| `ultimatrix report` | Generate JSON/HTML/Markdown reports |
+| `ultimatrix web` | Next.js web UI at localhost:3000 |
+| `ultimatrix assess -t <url>` | Full assessment (legacy engine) |
+| `ultimatrix verify -a <model> -t <url>` | Re-run findings against new deployment |
 
 ---
 
 ## Testing
 
 ```bash
-npm test                    # 809 tests (54 files)
+npm test                    # 809 tests, 54 files
 npm run test:watch          # Watch mode
-npx tsup                    # Build (ESM + CJS + DTS)
+npx tsup                    # Build (ESM 1.19MB + CJS 1.21MB + DTS)
 ```
-
-### Test structure
-
-```
-test/
-├── analysis/           # Skill loader, HAR analyzer, instructions
-├── browser/            # State bridge import/export
-├── capture/            # HAR parser, network capture, browser launcher, human observer
-├── config/             # Config loading, validation
-├── events/             # Event emitter
-├── generation/         # Test generator, parameterizer, storage
-├── graph/              # Graph store, focused tools
-├── http/               # HTTP client, session manager
-├── intelligence/       # Evidence gate, anti-loop, reflexion, chaining, hypotheses
-├── memory/             # Memory store, schemas
-├── models/             # Config factory, schema sanitizer, rate limiter, middleware
-├── oast/               # OAST server, store
-├── prompts/            # Core contract tests
-├── recorder/           # Codegen, interaction recording, test generation
-├── replay/             # Test runner, result comparator
-├── report/             # Report generation
-├── sdk/                # Config validation tests
-├── skills/             # Skill dispatcher tests
-├── solver/             # Solver, blackboard, plan tools
-└── tools/              # Tool registry, control tools, flow tools, skill tools
-```
-
----
-
-## Key Files
-
-**v8 Intelligence:**
-- `src/intelligence/evidence-gate.ts` — Anti-hallucination gate
-- `src/intelligence/reflexion.ts` — Failure classification engine
-- `src/intelligence/anti-loop.ts` — Stale detection + attack path extraction
-- `src/solver/blackboard.ts` — Fact/Intent state-space
-- `src/solver/solver.ts` — OODA solver loop with memory, timeout, truncation
-- `src/solver/brain-instructions.ts` — Capability-based instructions (no hardcoded tool names)
-- `src/solver/brain-tools.ts` — Brain agent creation with orchestration tools
-- `src/prompts/core-contract.ts` — Anti-hallucination rules
-- `src/skills/dispatcher.ts` — Skill routing
-- `src/skills/tool-filter.ts` — Skill-driven tool filtering
-
-**v8 Human-in-the-Loop:**
-- `src/capture/human-observer.ts` — Browser action capture
-- `src/tools/flow-tools.ts` — Session save/restore, flow reproduction
-- `src/tools/interaction-tools.ts` — askUser with timeout + screenshot capture
-
-**v8 Session:**
-- `src/session.ts` — REPL loop with graceful shutdown, session summary
-- `src/cli/solve.ts` — Solve command
-- `src/config.ts` — Config with engine/solver/antiLoop/reflexion settings
-- `src/workspace.ts` — Per-target workspace isolation
 
 ---
 
@@ -234,8 +252,11 @@ test/
 
 - Node.js 20+
 - Playwright (Chromium)
+- An LLM API key (Groq free tier works for testing)
 - 8GB+ RAM recommended for large scans
+
+---
 
 ## License
 
-MIT.
+MIT

@@ -434,12 +434,12 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       workingMemory: Boolean(memoryRaw.workingMemory ?? true),
     },
     agent: {
-      maxSteps: Number(agentRaw.maxSteps ?? 50),
+      maxSteps: Number(agentRaw.maxSteps ?? 25),
       scansDir: String(agentRaw.scansDir ?? './scans'),
     },
     rateLimit: {
-      requestsPerMinute: Number(rateLimitRaw.requestsPerMinute ?? 60),
-      maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? 3),
+      requestsPerMinute: Number(rateLimitRaw.requestsPerMinute ?? 25),
+      maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? 2),
       retryOnLimit: rateLimitRaw.retryOnLimit != null ? Boolean(rateLimitRaw.retryOnLimit) : true,
       maxRetries: Number(rateLimitRaw.maxRetries ?? 3),
     },
@@ -671,7 +671,7 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
 
   // Write non-default rate limit config
   const rl = config.rateLimit
-  if (rl.requestsPerMinute !== 60 || rl.maxConcurrent !== 3 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
+  if (rl.requestsPerMinute !== 25 || rl.maxConcurrent !== 2 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
     output.rateLimit = {
       requestsPerMinute: rl.requestsPerMinute,
       maxConcurrent: rl.maxConcurrent,

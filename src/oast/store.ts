@@ -18,9 +18,11 @@ const OAST_PERSIST_PATH = resolve('output', 'oast-callbacks.json')
 export class OastStore {
   private callbacks: OastCallback[] = []
   private readonly maxEntries: number
+  private readonly persistPath: string
 
-  constructor(maxEntries = 1000) {
+  constructor(maxEntries = 1000, persistPath?: string) {
     this.maxEntries = maxEntries
+    this.persistPath = persistPath || resolve('output', 'oast-callbacks.json')
   }
 
   add(callback: OastCallback): void {
@@ -51,14 +53,15 @@ export class OastStore {
   }
 
   async save(): Promise<void> {
-    await mkdir(resolve('output'), { recursive: true })
-    await writeFile(OAST_PERSIST_PATH, JSON.stringify(this.callbacks, null, 2), 'utf-8')
+    const dir = resolve(this.persistPath, '..')
+    await mkdir(dir, { recursive: true })
+    await writeFile(this.persistPath, JSON.stringify(this.callbacks, null, 2), 'utf-8')
   }
 
   async load(): Promise<void> {
-    if (!existsSync(OAST_PERSIST_PATH)) return
+    if (!existsSync(this.persistPath)) return
     try {
-      const raw = await readFile(OAST_PERSIST_PATH, 'utf-8')
+      const raw = await readFile(this.persistPath, 'utf-8')
       const data = JSON.parse(raw)
       if (Array.isArray(data)) {
         this.callbacks = data.slice(-this.maxEntries)
@@ -76,6 +79,10 @@ export function getGlobalOastStore(): OastStore {
     _globalOastStore = new OastStore()
   }
   return _globalOastStore
+}
+
+export function setGlobalOastStore(store: OastStore): void {
+  _globalOastStore = store
 }
 
 export { OAST_PERSIST_PATH }

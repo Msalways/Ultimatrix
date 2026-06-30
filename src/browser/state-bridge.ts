@@ -6,12 +6,17 @@ export interface BrowserState {
   sessionStorage: Record<string, string>
 }
 
+function getActivePage(stagehand: Stagehand): ReturnType<NonNullable<Stagehand['context']>['activePage']> | null {
+  const ctx = stagehand.context
+  if (!ctx) return null
+  return ctx.activePage() || ctx.pages()[0] || null
+}
+
 export async function importStateIntoStagehand(
   stagehand: Stagehand,
   state: BrowserState
 ): Promise<void> {
-  // Stagehand V3 uses context property
-  const ctx = (stagehand as any).context
+  const ctx = stagehand.context
   if (!ctx) throw new Error('Stagehand context not available')
 
   if (state.cookies?.length > 0) {
@@ -28,7 +33,7 @@ export async function importStateIntoStagehand(
   }
 
   if (state.localStorage && Object.keys(state.localStorage).length > 0) {
-    const page = (stagehand as any).page
+    const page = getActivePage(stagehand)
     if (page) {
       for (const [key, value] of Object.entries(state.localStorage)) {
         await page.evaluate((k: string, v: string) => localStorage.setItem(k, v), key, value)
@@ -40,8 +45,8 @@ export async function importStateIntoStagehand(
 export async function exportStateFromStagehand(
   stagehand: Stagehand
 ): Promise<BrowserState> {
-  const ctx = (stagehand as any).context
-  const page = (stagehand as any).page
+  const ctx = stagehand.context
+  const page = getActivePage(stagehand)
 
   const cookies = ctx ? await ctx.cookies() : []
 
@@ -90,7 +95,7 @@ export async function importStateFromPlaywright(
   }
 
   if (state.cookies) {
-    const ctx = (stagehand as any).context
+    const ctx = stagehand.context
     if (ctx) {
       await ctx.addCookies(state.cookies.map(c => ({
         name: c.name,
@@ -106,7 +111,7 @@ export async function importStateFromPlaywright(
   }
 
   if (state.origins && state.origins.length > 0) {
-    const page = (stagehand as any).page
+    const page = getActivePage(stagehand)
     if (page) {
       for (const origin of state.origins) {
         if (origin.localStorage) {

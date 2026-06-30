@@ -36,10 +36,10 @@ function getEnrichedGoalCap(model?: string): number {
   if (!model) return 8000
   const ctx = CONTEXT_WINDOW_MAP[model]
   if (!ctx) return 8000
-  if (ctx <= 8192) return 2000
-  if (ctx <= 32000) return 4000
-  if (ctx <= 131072) return 8000
-  return 16000
+  if (ctx <= 8192) return 4000
+  if (ctx <= 32000) return 8000
+  if (ctx <= 131072) return 16000
+  return 32000
 }
 
 /**
@@ -125,6 +125,7 @@ export interface SolveParams {
   origin: string
   goal: string
   hints?: string[]
+  matchedSkills?: Array<{ id: string; name: string; description: string; instructions?: string }>
   model?: string
   config?: SolverConfig
   blackboard?: Blackboard
@@ -137,7 +138,7 @@ export interface SolveParams {
 }
 
 const DEFAULTS: Required<SolverConfig> = {
-  maxToolCalls: 50,
+  maxToolCalls: 25,
   maxDurationMs: 300000,
   staleThreshold: 3,
   maxParallel: 1,
@@ -241,6 +242,7 @@ export async function solve(
 
   // Auto-inject graph context + blackboard state into the goal message
   let enrichedGoal = params.goal
+
   try {
     const store = getGlobalGraphStore()
     const summary = store.getTargetSummary()
@@ -282,6 +284,14 @@ export async function solve(
     // Reflexion store not available
   }
 
+  // Inject matched skill methodology (from per-message skill matching)
+  if (params.matchedSkills && params.matchedSkills.length > 0) {
+    const skillBlock = params.matchedSkills
+      .map(s => s.instructions ? `### ${s.name}\n${s.instructions}` : `### ${s.name}\n${s.description}`)
+      .join('\n\n')
+    enrichedGoal += `\n\n## Relevant Methodology\n\n${skillBlock}`
+  }
+
   // Inject stale detection context
   if (loopDetector.isStale(cfg.staleThreshold)) {
     enrichedGoal += `\n\n## WARNING: Stale detection triggered`
@@ -300,6 +310,14 @@ export async function solve(
     }
   }
 
+  // Inject reflexion strategy suggestions (if any failures recorded)
+  if (reflexion.shouldReflect()) {
+    const reflexionBlock = reflexion.toPromptBlock()
+    if (reflexionBlock) {
+      enrichedGoal += `\n\n## Strategy Adjustment\n${reflexionBlock}`
+    }
+  }
+
   // Truncate enriched goal to fit model context budget
   const goalCap = getEnrichedGoalCap(params.model)
   enrichedGoal = truncateEnrichedGoal(enrichedGoal, params.goal, goalCap)
@@ -308,6 +326,7 @@ export async function solve(
 
   let fullText = ''
   let toolCallCount = 0
+  let textBeforeToolCall = ''  // Buffer text before each tool call for claim verification
 
   try {
     // Single stream call — Mastra handles tool loops internally (like v7)
@@ -328,12 +347,14 @@ export async function solve(
       switch (chunk.type) {
         case 'text-delta':
           fullText += chunk.payload.text
+          textBeforeToolCall += chunk.payload.text
           emit({ phase: 'reason', step: toolCallCount, text: chunk.payload.text })
           break
 
         case 'reasoning-delta':
           if (chunk.payload.text) {
             fullText += chunk.payload.text
+            textBeforeToolCall += chunk.payload.text
           }
           break
 
@@ -356,12 +377,45 @@ export async function solve(
               ? chunk.payload.result
               : JSON.stringify(chunk.payload.result)
 
-            // Passive observation — record but don't gate
+            // Record tool output in evidence gate
             evidence.recordToolOutput(output)
 
+            // Verify claims the LLM made before this tool call
+            if (textBeforeToolCall.length > 50) {
+              const verification = evidence.verifyClaim(textBeforeToolCall)
+              if (!verification.verified) {
+                log.dim(`[evidence] Claim ungrounded: ${verification.missing.slice(0, 2).join('; ')}`)
+              }
+            }
+            textBeforeToolCall = ''  // Reset buffer after verification
+
+            // Track attack paths
             const detectedPath = extractAttackPath(output)
             if (detectedPath) {
               loopDetector.recordAttackPath(detectedPath)
+            }
+
+            // Determine if this tool call produced a new finding
+            const toolName = chunk.payload.toolName.toLowerCase()
+            const hasNewFinding = toolName.includes('finding') || toolName.includes('writefinding')
+              || (typeof output === 'string' && output.includes('finding'))
+
+            // Update loop detector (stale tracking)
+            loopDetector.recordRound(hasNewFinding)
+
+            // Record failures in reflexion engine
+            if (chunk.payload.result && typeof chunk.payload.result === 'object') {
+              const result = chunk.payload.result as any
+              if (result.error || result.status === 'failed') {
+                reflexion.recordAttempt({
+                  path: chunk.payload.toolName,
+                  success: false,
+                  category: null,
+                  details: result.error || String(result),
+                  vulnType: '',
+                  timestamp: new Date().toISOString(),
+                })
+              }
             }
 
             // Notify caller (graph save, etc.)
@@ -372,6 +426,20 @@ export async function solve(
         case 'tool-error':
           if (chunk.payload.toolName) {
             log.error(`${chunk.payload.toolName} failed: ${chunk.payload.error}`)
+
+            // Record failure in reflexion engine
+            reflexion.recordAttempt({
+              path: chunk.payload.toolName,
+              success: false,
+              category: null,
+              details: chunk.payload.error,
+              vulnType: '',
+              timestamp: new Date().toISOString(),
+            })
+
+            // Record error in loop detector (counts as no progress)
+            loopDetector.recordRound(false)
+
             forensicLog?.log({
               type: 'tool-error',
               agent: 'solver-brain',

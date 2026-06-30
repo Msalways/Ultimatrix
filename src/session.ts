@@ -345,8 +345,8 @@ export async function main(targetUrl?: string) {
       log.info('Crawling ' + target + '...')
       const spiderAgent = createSpiderAgent(config, memory, browser)
       const result = await spiderAgent.stream(
-        `Navigate to ${target} using stagehand_navigate. Use stagehand tools to dismiss overlays, discover forms/fill them, detect auth flows (login/logout/login/logout/refresh), and record everything with updateGraph. Report all findings.`,
-        { memory: { thread: threadId + '-spider', resource: resourceId + '-spider' }, toolChoice: 'required' },
+        `Navigate to ${target} using stagehand_navigate. Use stagehand tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials). Record everything with the graph tools. Report all findings.`,
+        { memory: { thread: threadId + '-spider', resource: resourceId + '-spider' }, maxSteps: config.agent.maxSteps },
       )
       await consumeStream(result.fullStream, 'spider')
       await workspace.getGraphStore()?.save()
@@ -456,6 +456,7 @@ export async function main(targetUrl?: string) {
             goal: line,
             model: config.model,
             memory: { thread: threadId, resource: resourceId },
+            matchedSkills: matchedSkills.length > 0 ? matchedSkills : undefined,
             blackboard: sessionBlackboard,
             evidence: sessionEvidence,
             loopDetector: sessionLoopDetector,
