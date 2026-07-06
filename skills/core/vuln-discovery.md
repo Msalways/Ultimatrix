@@ -2,7 +2,9 @@
 name: vuln-discovery
 description: "Systematic identification and verification of security weaknesses in target applications"
 category: core
+tier: balanced
 toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+triggers: ["find vulnerabilities", "security testing", "vulnerability scanning", "weakness identification", "security assessment", "bug hunting", "vuln detection", "security flaws", "test for vulnerabilities", "security issues"]
 ---
 
 # Vulnerability Discovery

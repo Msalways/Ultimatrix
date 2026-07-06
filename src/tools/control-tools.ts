@@ -7,8 +7,15 @@ import { generateFromFinding, type Finding } from '../generation/test-generator'
 import { TestStorage } from '../generation/test-storage'
 import { log } from '../utils/logger'
 import { captureScreenshot } from '../browser/manager'
+import type { EvidenceGate } from '../intelligence/evidence-gate'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string }>>()
+
+let _evidenceGate: EvidenceGate | null = null
+
+export function setEvidenceGateForFindings(gate: EvidenceGate): void {
+  _evidenceGate = gate
+}
 
 export const recordEvidence = createTool({
   id: 'recordEvidence',
@@ -103,10 +110,26 @@ export const writeFinding = createTool({
     const evidenceLevel = determineEvidenceLevel(evidenceItems)
     const findingId = buildFindingId(args.type, args.endpoint, args.param)
 
+    // Maker/Checker: cross-check claim against recorded evidence
+    let effectiveSeverity = args.severity
+    if (_evidenceGate && args.severity !== 'info') {
+      const claim = `${args.type} on ${args.endpoint}`
+      const verification = _evidenceGate.verifyClaim(claim)
+      if (!verification.verified) {
+        // Downgrade severity when evidence doesn't support the claim
+        const sevOrder = ['critical', 'high', 'medium', 'low', 'info']
+        const idx = sevOrder.indexOf(args.severity)
+        if (idx < sevOrder.length - 1) {
+          effectiveSeverity = sevOrder[idx + 1] as typeof args.severity
+          log.warn(`EvidenceGate: "${claim}" lacks supporting evidence, downgrading ${args.severity} → ${effectiveSeverity}`)
+        }
+      }
+    }
+
     const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
 
     const lifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
-      (args.severity === 'high' || args.severity === 'critical') && evidenceLevel === 'L1'
+      (effectiveSeverity === 'high' || effectiveSeverity === 'critical') && evidenceLevel === 'L1'
         ? 'pending_verification'
         : 'verified'
 
@@ -117,7 +140,7 @@ export const writeFinding = createTool({
     if (duplicate) {
       duplicate.properties = {
         ...duplicate.properties,
-        severity: args.severity,
+        severity: effectiveSeverity,
         evidence: evidenceTexts,
         screenshots: screenshotPaths,
         confidence: args.confidence,
@@ -130,7 +153,7 @@ export const writeFinding = createTool({
       findingNode = duplicate
     } else {
       findingNode = store.addFinding({
-        severity: args.severity,
+        severity: effectiveSeverity,
         technique: args.type,
         endpoint: args.endpoint,
         evidence: evidenceTexts,
@@ -152,7 +175,7 @@ export const writeFinding = createTool({
       method: args.method || 'GET',
       payload: args.payload || '',
       description: args.description || '',
-      severity: args.severity,
+      severity: effectiveSeverity,
       confidence: args.confidence,
       confirmed: args.confidence >= 0.7,
       evidence: evidenceItems,
@@ -206,6 +229,9 @@ async function autoGenerateTest(finding: {
       firstSeen: new Date(),
       lastSeen: new Date(),
       status: 'open',
+      payload: finding.payload ? { data: finding.payload } : undefined,
+      param: finding.param ? { name: finding.param } : undefined,
+      evidenceMarkers: finding.evidence.map(e => e.label),
     }
 
     const test = generateFromFinding(testFinding)
@@ -215,4 +241,70 @@ async function autoGenerateTest(finding: {
   } catch (err) {
     log.dim('Test generation skipped: ' + (err instanceof Error ? err.message : String(err)))
   }
+}
+
+/**
+ * Maker/Checker: re-verify pending_verification findings by replaying the
+ * request. Promotes to 'verified' or downgrades to 'disproven'.
+ */
+export async function verifyPendingFindings(options?: {
+  maxPerRound?: number
+  timeoutMs?: number
+}): Promise<{ verified: string[]; disproven: string[]; skipped: string[] }> {
+  const store = getGlobalGraphStore()
+  const allFindings = store.queryNodes(NodeType.FINDING) as FindingNode[]
+  const pending = allFindings.filter(f => f.properties.lifecycleStatus === 'pending_verification')
+
+  const max = options?.maxPerRound ?? 5
+  const timeout = options?.timeoutMs ?? 30_000
+  const verified: string[] = []
+  const disproven: string[] = []
+  const skipped: string[] = []
+
+  const toCheck = pending.slice(0, max)
+
+  for (const finding of toCheck) {
+    try {
+      const endpoint = finding.properties.endpoint
+      const method = (finding.properties.technique?.includes('GET') ? 'GET' : 'GET') as string
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeout)
+
+      const response = await fetch(endpoint, {
+        method,
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: { 'User-Agent': 'Ultimatrix-Verifier/1.0' },
+      }).catch(() => null)
+
+      clearTimeout(timer)
+
+      if (response && response.status >= 200 && response.status < 500) {
+        // Endpoint is alive and responsive — finding stands
+        finding.properties.lifecycleStatus = 'verified'
+        finding.updatedAt = Date.now()
+        verified.push(finding.id)
+        log.info(`Verifier: ${finding.id} → verified (${response.status})`)
+      } else {
+        // Endpoint unreachable or server error — cannot confirm
+        finding.properties.lifecycleStatus = 'disproven'
+        finding.properties.evidence = [
+          ...(finding.properties.evidence ?? []),
+          `[Verifier] Re-check failed: endpoint returned ${response?.status ?? 'no response'}`,
+        ]
+        finding.updatedAt = Date.now()
+        disproven.push(finding.id)
+        log.info(`Verifier: ${finding.id} → disproven (${response?.status ?? 'timeout'})`)
+      }
+    } catch {
+      skipped.push(finding.id)
+    }
+  }
+
+  if (verified.length > 0 || disproven.length > 0) {
+    store.save().catch(err => log.error('Graph save failed after verification: ' + String(err)))
+  }
+
+  return { verified, disproven, skipped }
 }

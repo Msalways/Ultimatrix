@@ -1,39 +1,65 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModelV2 } from '@ai-sdk/provider'
-import { PROVIDER_INFO } from '../config'
+import { PROVIDER_INFO, resolveProviderAlias } from '../config'
 import type { UltimatrixConfig } from '../config'
 import { getSanitizeKeywords, sanitizeRequestBody } from './schema-sanitizer'
 import { wrapModel } from './middleware'
-
-/**
- * Resolve which provider credentials to use for a tier string like "groq/llama3-8b-8192".
- * Returns the provider name for credential lookup.
- */
-function tierProvider(tierModel: string): string {
-  const slashIdx = tierModel.indexOf('/')
-  if (slashIdx === -1) return ''
-  return tierModel.slice(0, slashIdx)
-}
+import type { ModelSelector } from './selector'
+import { log } from '../utils/logger'
 
 /**
  * Resolve a model for a given tier.
  * Returns an actual AI SDK LanguageModelV2 instance — NOT a config object.
- * The model ID is passed through EXACTLY as-is — no prefixing, no parsing, no stripping.
+ *
+ * Overload: resolveModel(config, { modelId?, tier?, selector? })
  */
 export function resolveModel(
   config: UltimatrixConfig,
-  tier: 'fast' | 'balanced' | 'powerful' | 'default' = 'default',
+  tierOrOptions?: 'fast' | 'balanced' | 'powerful' | 'default' | { modelId?: string; tier?: string; selector?: ModelSelector },
 ): LanguageModelV2 {
-  const normalisedTier = tier === 'default' ? 'balanced' : tier
+  let resolvedProvider: string
+  let resolvedModelId: string
 
-  if (config.modelTiers?.[normalisedTier]) {
-    const tierModel = config.modelTiers[normalisedTier]!
-    const tierProv = tierProvider(tierModel)
-    const provider = tierProv || config.provider
-    return buildModel(config, provider, tierModel)
+  if (tierOrOptions && typeof tierOrOptions === 'object' && 'selector' in tierOrOptions) {
+    // Selector-based resolution: use selector to pick model
+    const { selector, modelId, tier } = tierOrOptions
+    if (modelId) {
+      // Explicit model ID — resolve directly
+      const [prov = config.provider, model = modelId] = modelId.split('/')
+      resolvedProvider = prov
+      resolvedModelId = model
+    } else if (selector && tier) {
+      // Tier-based with selector context
+      const tierCfg = config.modelTiers?.[tier as keyof typeof config.modelTiers]
+      if (tierCfg) {
+        resolvedProvider = tierCfg.provider
+        resolvedModelId = tierCfg.model
+      } else {
+        resolvedProvider = config.provider
+        resolvedModelId = config.model
+      }
+    } else {
+      resolvedProvider = config.provider
+      resolvedModelId = config.model
+    }
+  } else {
+    // Legacy tier-based resolution
+    const tier = (tierOrOptions as string) ?? 'default'
+    const normalisedTier = tier === 'default' ? 'balanced' : tier
+
+    const tierCfg = config.modelTiers?.[normalisedTier as keyof typeof config.modelTiers]
+    if (tierCfg) {
+      resolvedProvider = tierCfg.provider
+      resolvedModelId = tierCfg.model
+    } else {
+      resolvedProvider = config.provider
+      resolvedModelId = config.model
+    }
   }
 
-  return buildModel(config, config.provider, config.model)
+   log.dim(`Resolving model: ${resolvedProvider}/${resolvedModelId}${typeof tierOrOptions === 'string' ? ` (tier: ${tierOrOptions})` : ''}`)
+
+  return buildModel(config, resolvedProvider, resolvedModelId)
 }
 
 /**
@@ -45,9 +71,10 @@ function buildModel(
   provider: string,
   modelId: string,
 ): LanguageModelV2 {
-  const creds = config.creds?.[provider]
-  const info = PROVIDER_INFO[provider]
-  const keywords = getSanitizeKeywords(provider)
+  const baseProvider = resolveProviderAlias(provider)
+  const creds = config.creds?.[provider] ?? config.creds?.[baseProvider] ?? config.providerKeys?.[provider]
+  const info = PROVIDER_INFO[baseProvider]
+  const keywords = getSanitizeKeywords(baseProvider)
 
   const transformRequestBody = keywords
     ? (body: Record<string, unknown>) => sanitizeRequestBody(body, keywords)
@@ -55,6 +82,9 @@ function buildModel(
   let model: LanguageModelV2
 
   if (!info) {
+    // Unknown provider even after alias resolution — warn and create client
+    // Use the original provider name for the client name (for debugging)
+    console.warn(`[resolveModel] Unknown provider "${provider}" — creating client with no base URL. Set creds.${provider} or use a known provider.`)
     model = createOpenAICompatible({
       name: provider,
       baseURL: 'https://localhost',
@@ -62,7 +92,7 @@ function buildModel(
       transformRequestBody,
     }).chatModel(modelId)
   } else {
-    switch (provider) {
+    switch (baseProvider) {
       case 'azure': {
         const az = creds as import('../config').AzureCreds | undefined
         const apiKey = az?.apiKey || process.env[info.envVar] || ''

@@ -45,6 +45,11 @@ export class LoopDetector {
   failedTargets = new Map<string, number>()
   blockedTargets = new Set<string>()
   private attackPathHistory: AttackPath[] = []
+  private maxFailedTarget: number
+
+  constructor(maxFailedTarget = 3) {
+    this.maxFailedTarget = maxFailedTarget
+  }
 
   recordRound(hasNewFinding: boolean): void {
     if (hasNewFinding) {
@@ -68,7 +73,7 @@ export class LoopDetector {
     const count = (this.failedTargets.get(hostname) || 0) + 1
     this.failedTargets.set(hostname, count)
 
-    if (count >= 3) {
+    if (count >= this.maxFailedTarget) {
       this.blockedTargets.add(hostname)
       return hostname
     }

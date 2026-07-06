@@ -9,6 +9,8 @@ export interface WorkerConfig {
   skillId: string
   task: string
   tier?: 'fast' | 'balanced' | 'powerful'
+  modelId?: string
+  tokenBudget?: number
   context?: any
   browser?: StagehandBrowser
 }

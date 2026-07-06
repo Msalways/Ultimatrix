@@ -47,7 +47,7 @@ describe('Model Factory', () => {
 
   it('resolves tier-specific model', () => {
     const config = baseConfig({
-      modelTiers: { fast: 'llama3-8b-8192', powerful: 'llama3-70b-8192' },
+      modelTiers: { fast: { provider: 'groq', model: 'llama3-8b-8192' }, powerful: { provider: 'groq', model: 'llama3-70b-8192' } },
     })
     const fast = resolveModel(config, 'fast')
     expect((fast as any).modelId).toBe('llama3-8b-8192')
@@ -64,14 +64,14 @@ describe('Model Factory', () => {
 
   it('cross-provider tier preserves exact model IDs', () => {
     const config = baseConfig({
-      modelTiers: { powerful: 'anthropic/claude-sonnet-4' },
+      modelTiers: { powerful: { provider: 'anthropic', model: 'claude-sonnet-4' } },
       creds: {
         groq: { apiKey: 'gsk_test' },
         anthropic: { apiKey: 'sk-ant-test' },
       },
     })
     const model = resolveModel(config, 'powerful')
-    expect((model as any).modelId).toBe('anthropic/claude-sonnet-4')
+    expect((model as any).modelId).toBe('claude-sonnet-4')
   })
 
   it('handles Azure provider', () => {
@@ -117,9 +117,9 @@ describe('Model Factory', () => {
   it('provides all three tiers', () => {
     const config = baseConfig({
       modelTiers: {
-        fast: 'llama3-8b-8192',
-        balanced: 'llama3-70b-8192',
-        powerful: 'llama3-70b-8192',
+        fast: { provider: 'groq', model: 'llama3-8b-8192' },
+        balanced: { provider: 'groq', model: 'llama3-70b-8192' },
+        powerful: { provider: 'groq', model: 'llama3-70b-8192' },
       },
     })
 

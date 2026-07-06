@@ -2,7 +2,9 @@
 name: web-security-advanced
 description: "Advanced web attacks including CSP bypass, CORS misconfig, subdomain takeover, and DNS rebinding"
 category: specialized
+tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, checkWaf, omitHeader, findEndpointsInResponse, updateGraph, writeFinding]
+triggers: ["advanced web attacks", "csp bypass", "cors misconfig", "subdomain takeover", "dns rebinding", "advanced web security", "web advanced testing", "sophisticated attacks", "complex vulnerabilities", "advanced exploitation"]
 ---
 
 # Advanced Web Security

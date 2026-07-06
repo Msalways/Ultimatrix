@@ -137,7 +137,10 @@ export function createSpawnSwarmTool(
         }
       }
 
-      return { swarmId, mode: parallel ? 'parallel' : 'sequential', workers: results }
+      return {
+        ok: true,
+        value: { swarmId, mode: parallel ? 'parallel' : 'sequential', workers: results }
+      }
     },
   })
 }

@@ -4,7 +4,7 @@ import type { SkillRegistry } from '../../skills/registry'
 
 export function createSkillSearchTool(skillRegistry: SkillRegistry) {
   return createTool({
-    id: 'skill-search',
+    id: 'searchSkills',
     description: 'Search for available skills by name, tag, or capability',
     inputSchema: z.object({
       query: z.string().describe('Search query (name, tag, or capability description)'),
@@ -15,7 +15,7 @@ export function createSkillSearchTool(skillRegistry: SkillRegistry) {
         id: z.string(),
         name: z.string(),
         description: z.string(),
-        tags: z.array(z.string()),
+        toolRefs: z.array(z.string()),
       })),
     }),
     execute: async ({ query, tag }) => {
@@ -23,14 +23,14 @@ export function createSkillSearchTool(skillRegistry: SkillRegistry) {
       if (tag) {
         const q = tag.toLowerCase()
         const filtered = skillRegistry.list().filter(s =>
-          s.tags.some(t => t.toLowerCase().includes(q))
+          s.toolRefs.some(t => t.toLowerCase().includes(q))
         )
         return {
           skills: filtered.map(s => ({
             id: s.id,
             name: s.name,
             description: s.description,
-            tags: s.tags,
+            toolRefs: s.toolRefs,
           })),
         }
       }
@@ -42,7 +42,7 @@ export function createSkillSearchTool(skillRegistry: SkillRegistry) {
             id: s.id,
             name: s.name,
             description: s.description,
-            tags: s.tags,
+            toolRefs: s.toolRefs,
           })),
         }
       }
@@ -52,7 +52,7 @@ export function createSkillSearchTool(skillRegistry: SkillRegistry) {
           id: s.id,
           name: s.name,
           description: s.description,
-          tags: s.tags,
+          toolRefs: s.toolRefs,
         })),
       }
     },

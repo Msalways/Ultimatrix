@@ -1,18 +1,16 @@
+engine: multi-model
 provider: nvidia
-model: nvidia/nemotron-3-ultra-550b-a55b
-engine: solver
-solver:
-  maxToolCalls: 50
-  maxTokens: 100000
-  maxDurationMs: 300000
-  maxParallel: 1
-antiLoop:
-  staleThreshold: 3
-rateLimit:
-  requestsPerMinute: 25
-  maxConcurrent: 3
-  retryOnLimit: true
-  maxRetries: 3
+model: nvidia/nemotron-3-super-120b-a12b
+modelTiers:
+  fast:
+    provider: nvidia
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+  balanced:
+    provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b
+  powerful:
+    provider: nvidia
+    model: nvidia/nemotron-3-ultra-550b-a55b
 browser:
   headless: false
   viewport:
@@ -27,5 +25,5 @@ memory:
   semanticRecall: false
   workingMemory: true
 agent:
-  maxSteps: 50
+  maxSteps: 25
   scansDir: ./scans

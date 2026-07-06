@@ -2,7 +2,7 @@ import type { StagehandBrowser } from '@mastra/stagehand'
 import { Agent } from '@mastra/core/agent'
 import { getOrCreateBrowser, closeBrowser } from '../browser/manager'
 import { createSupervisor } from '../manager/agent'
-import { loadConfig } from '../config'
+import { loadConfig, DEFAULTS } from '../config'
 import type { UltimatrixConfig } from '../config'
 import { startOastServer, stopOastServer } from '../oast/server'
 import { getGlobalGraphStore } from '../graph/store'
@@ -196,7 +196,7 @@ export class AgentManager {
 
     const result = await this.supervisor.stream(messages, {
       memory,
-      maxSteps: this.config?.agent.maxSteps ?? 50,
+      maxSteps: this.config?.agent.maxSteps ?? DEFAULTS.agent.maxSteps,
       onChunk: (chunk: any) => {
         if (chunk.type === 'tool-call') {
           events.push({

@@ -2,7 +2,9 @@
 name: ctf-web
 description: "CTF web challenge patterns: source review, input manipulation, and exploitation chain building"
 category: specialized
+tier: fast
 toolRefs: [httpRequest, parseResponse, evaluateRendered, encodeDecode, updateGraph, writeFinding]
+triggers: ["ctf challenges", "capture the flag", "web challenges", "ctf web", "competition testing", "pentest challenges", "web puzzles", "security challenges", "ctf competition", "vulnerability challenges"]
 ---
 
 # CTF Web Challenges

@@ -2,7 +2,9 @@
 name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
+tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+triggers: ["authorization testing", "access control", "broken access control", "idor", "privilege escalation", "session management", "authorization flaws", "access control testing", "privilege testing", "security testing"]
 ---
 
 # Authorization Testing

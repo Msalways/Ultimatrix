@@ -7,6 +7,10 @@ import { verifyCommand } from './verify'
 import { interactCommand } from './interact'
 import { webCommand } from './web'
 import { solveCommand } from './solve'
+import { modelsCommand } from './models'
+import { budgetCommand } from './budget'
+import { ratelimitCommand } from './ratelimit'
+import { toolsCommand } from './tools'
 import { log, setPinoLogger } from '../utils/logger'
 import { initLogger, initObservability } from '../observability'
 import { Ultimatrix } from '../sdk'
@@ -215,6 +219,30 @@ function getOutputDir(cliArgs: string[]): string {
     case 'web':
       await webCommand()
       break
+
+    case 'models': {
+      const modelArgs = args.slice(1)
+      await modelsCommand(modelArgs)
+      break
+    }
+
+    case 'budget': {
+      const budgetArgs = args.slice(1)
+      await budgetCommand(budgetArgs)
+      break
+    }
+
+    case 'ratelimit': {
+      const rlArgs = args.slice(1)
+      await ratelimitCommand(rlArgs)
+      break
+    }
+
+    case 'tools': {
+      const toolArgs = args.slice(1)
+      await toolsCommand(toolArgs)
+      break
+    }
 
     default: {
       const target = getTarget(args)

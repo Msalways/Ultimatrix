@@ -1,6 +1,7 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   GraphNodeData,
   GraphEdgeData,
@@ -59,6 +60,10 @@ export class GraphStore {
   constructor(savePath?: string, useLibSQL: boolean = false) {
     this.savePath = savePath || resolve('output', 'graph.json')
     this.useLibSQL = useLibSQL
+  }
+
+  private contentHash(str: string): string {
+    return createHash('sha256').update(str).digest('hex').slice(0, 12)
   }
 
   private async getLibSQLStore(): Promise<LibSQLGraphStore> {
@@ -215,12 +220,19 @@ export class GraphStore {
     rbacRoles: number
     untestedActions: number
     totalCapturedHeaders: number
+    totalPages: number
+    totalActions: number
+    totalInputs: number
+    lastUpdated: number
   } {
     const endpoints = this.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
     const findings = this.queryNodes(NodeType.FINDING) as FindingNode[]
     const tests = this.queryNodes(NodeType.TEST) as TestNode[]
     const authFlows = this.queryNodes(NodeType.AUTH_FLOW) as AuthFlowNode[]
     const rbacRoles = this.queryNodes(NodeType.RBAC_ROLE) as RBACRoleNode[]
+    const pages = this.queryNodes(NodeType.PAGE) as PageNode[]
+    const actions = this.queryNodes(NodeType.ACTION) as ActionNode[]
+    const inputs = this.queryNodes(NodeType.INPUT) as InputNode[]
     const untested = this.getUntestedActions()
 
     const findingsBySeverity: Record<string, number> = {}
@@ -231,21 +243,23 @@ export class GraphStore {
 
     let totalCapturedHeaders = 0
     for (const e of endpoints) {
-      totalCapturedHeaders += (e.properties.headers || []).length
+      const h = e.properties.headers || {}
+      totalCapturedHeaders += Array.isArray(h) ? h.length : Object.keys(h).length
     }
 
     return {
       totalEndpoints: endpoints.length,
       endpoints: endpoints.map(e => {
-        const h = e.properties.headers || []
+        const h = e.properties.headers || {}
+        const headerKeys = Array.isArray(h) ? h : Object.keys(h)
         return {
           id: e.id,
           url: e.properties.url,
           method: e.properties.method,
           params: (e.properties.params || []).length,
           authRequired: e.properties.authRequired,
-          hasHeaders: h.length > 0,
-          headerCount: h.length,
+          hasHeaders: headerKeys.length > 0,
+          headerCount: headerKeys.length,
         }
       }),
       totalFindings: findings.length,
@@ -255,6 +269,10 @@ export class GraphStore {
       rbacRoles: rbacRoles.length,
       untestedActions: untested.length,
       totalCapturedHeaders,
+      totalPages: pages.length,
+      totalActions: actions.length,
+      totalInputs: inputs.length,
+      lastUpdated: Date.now(),
     }
   }
 
@@ -269,7 +287,14 @@ export class GraphStore {
       return this.libSQLStore.addFinding(data)
     }
 
-    const id = `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}:${Date.now()}`
+    const id = `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as FindingNode
+    }
+
     const node: FindingNode = {
       id,
       type: NodeType.FINDING,
@@ -294,7 +319,14 @@ export class GraphStore {
       return this.libSQLStore.addAuthFlow(data)
     }
 
-    const id = `authflow:${data.flowType || 'login'}:${Date.now()}`
+    const id = `authflow:${data.flowType || 'login'}:${data.startUrl || 'unknown'}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as AuthFlowNode
+    }
+
     const node: AuthFlowNode = {
       id,
       type: NodeType.AUTH_FLOW,
@@ -347,7 +379,15 @@ export class GraphStore {
       return this.libSQLStore.addAttack(data)
     }
 
-    const id = `attack:${data.technique || 'unknown'}:${Date.now()}`
+    const payloadHash = this.contentHash(data.payload || 'empty')
+    const id = `attack:${data.technique || 'unknown'}:${payloadHash}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as AttackNode
+    }
+
     const node: AttackNode = {
       id,
       type: NodeType.ATTACK,
@@ -368,7 +408,14 @@ export class GraphStore {
   }
 
   addFact(data: { description: string; source: string; confidence?: number; relatedIntents?: string[] }): FactNode {
-    const id = `fact:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const id = `fact:${this.contentHash(data.description)}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as FactNode
+    }
+
     const node: FactNode = {
       id,
       type: NodeType.FACT,
@@ -387,7 +434,14 @@ export class GraphStore {
   }
 
   addIntent(data: { description: string; fromFacts?: string[]; attackPath?: string }): IntentNode {
-    const id = `intent:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const id = `intent:${this.contentHash(data.description)}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as IntentNode
+    }
+
     const node: IntentNode = {
       id,
       type: NodeType.INTENT,
@@ -406,7 +460,14 @@ export class GraphStore {
   }
 
   addReflexion(data: { workerId: string; vulnType: string; failureCategory: string; escalationLevel?: number; failedPaths?: string[]; hints?: string[]; targetOrigin?: string }): ReflexionNode {
-    const id = `reflexion:${data.workerId}:${Date.now()}`
+    const id = `reflexion:${data.workerId}:${data.vulnType}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as ReflexionNode
+    }
+
     const node: ReflexionNode = {
       id,
       type: NodeType.REFLEXION,
@@ -488,6 +549,7 @@ export class GraphStore {
 
     if (filters) {
       for (const [key, value] of Object.entries(filters)) {
+        if (value === undefined || value === null || value === '') continue
         if (key === 'url') {
           result = result.filter(n =>
             typeof n.properties.url === 'string' &&
@@ -513,8 +575,11 @@ export class GraphStore {
       return this.libSQLStore.getTestCoverage(endpointId)
     }
 
+    const endpoint = this.nodes.get(endpointId)
+    const endpointUrl = (endpoint?.properties as Record<string, unknown>)?.url
     return this.queryNodes(NodeType.TEST).filter(t => 
-      (t.properties as Record<string, unknown>).endpoint === endpointId
+      (t.properties as Record<string, unknown>).endpoint === endpointId ||
+      (endpointUrl && (t.properties as Record<string, unknown>).endpoint === endpointUrl)
     )
   }
 
@@ -602,7 +667,23 @@ export class GraphStore {
       nodes: Array.from(this.nodes.values()),
       edges: this.edges,
     }
-    await writeFile(targetPath, JSON.stringify(data, null, 2), 'utf-8')
+    const json = JSON.stringify(data, null, 2)
+    const tmpPath = `${targetPath}.tmp`
+    const backupPath = `${targetPath}.bak`
+
+    await writeFile(tmpPath, json, 'utf-8')
+    // Backup current if exists
+    if (existsSync(targetPath)) {
+      try {
+        await rename(targetPath, backupPath)
+      } catch { /* first save, no backup yet */ }
+    }
+
+    // Ensure directory exists before rename (race condition fix)
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true })
+    }
+    await rename(tmpPath, targetPath)
   }
 
   async load(filePath?: string): Promise<void> {
@@ -614,6 +695,7 @@ export class GraphStore {
     }
 
     if (!existsSync(targetPath)) return
+
     try {
       const raw = await readFile(targetPath, 'utf-8')
       const data = JSON.parse(raw) as SerializedGraph
@@ -624,8 +706,27 @@ export class GraphStore {
         }
       }
       if (data.edges) this.edges = data.edges
-    } catch {
-      console.warn(`[graph] Corrupt or invalid graph.json at ${targetPath} — starting fresh`)
+    } catch (err) {
+      console.warn(`[graph] Primary graph corrupt at ${targetPath}, trying backup...`)
+      const backupPath = `${targetPath}.bak`
+      if (existsSync(backupPath)) {
+        try {
+          const raw = await readFile(backupPath, 'utf-8')
+          const data = JSON.parse(raw) as SerializedGraph
+          if (data.nodes) {
+            this.nodes.clear()
+            for (const n of data.nodes) {
+              this.nodes.set(n.id, n)
+            }
+          }
+          if (data.edges) this.edges = data.edges
+          console.info(`[graph] Restored from backup: ${backupPath}`)
+        } catch {
+          console.warn(`[graph] Backup also corrupt, starting fresh`)
+        }
+      } else {
+        console.warn(`[graph] No backup available, starting fresh`)
+      }
     }
   }
 
@@ -652,6 +753,19 @@ export class GraphStore {
       return
     }
 
+    this.nodes.clear()
+    for (const node of data.nodes) {
+      this.nodes.set(node.id, node)
+    }
+    this.edges = data.edges
+  }
+
+  snapshot(): string {
+    return JSON.stringify(this.exportToJson())
+  }
+
+  restoreFromSnapshot(snapshot: string): void {
+    const data = JSON.parse(snapshot) as SerializedGraph
     this.nodes.clear()
     for (const node of data.nodes) {
       this.nodes.set(node.id, node)

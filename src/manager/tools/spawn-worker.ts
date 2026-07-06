@@ -20,6 +20,8 @@ export function createSpawnWorkerTool(
       task: z.string().describe('Specific task description for the worker'),
       endpointId: z.string().optional().describe('Graph endpoint node ID — worker will receive full endpoint details'),
       tier: z.enum(['fast', 'balanced', 'powerful']).default('balanced').describe('Model tier to use'),
+      modelId: z.string().optional().describe('Explicit model ID override (e.g., "groq/llama3-8b-8192")'),
+      tokenBudget: z.number().optional().describe('Token budget for this worker'),
     }),
     outputSchema: z.object({
       workerId: z.string(),
@@ -35,7 +37,7 @@ export function createSpawnWorkerTool(
         findingsAdded: z.number(),
       }).optional(),
     }),
-    execute: async ({ skillId, task, endpointId, tier }) => {
+    execute: async ({ skillId, task, endpointId, tier, modelId, tokenBudget }) => {
 
       // SUPERVISOR-1: Snapshot graph before spawning
       const store = getGlobalGraphStore()
@@ -72,7 +74,7 @@ export function createSpawnWorkerTool(
       }
 
       try {
-        const worker = workerPool.spawn({ skillId, task: informedTask, tier, browser: getActiveBrowser() || undefined })
+        const worker = workerPool.spawn({ skillId, task: informedTask, tier, modelId, tokenBudget, browser: getActiveBrowser() || undefined })
         const result = await worker.generate(informedTask)
 
         // SUPERVISOR-1: Snapshot graph after worker completes
@@ -80,16 +82,19 @@ export function createSpawnWorkerTool(
         const findingsAfter = store.queryNodes(undefined, { type: 'Finding' } as any).length
 
         return {
-          workerId: worker.id,
-          status: 'spawned',
-          result,
-          graphDiff: {
-            nodesBefore,
-            nodesAfter,
-            nodesAdded: nodesAfter - nodesBefore,
-            findingsBefore,
-            findingsAfter,
-            findingsAdded: findingsAfter - findingsBefore,
+          ok: true,
+          value: {
+            workerId: worker.id,
+            status: 'spawned',
+            result,
+            graphDiff: {
+              nodesBefore,
+              nodesAfter,
+              nodesAdded: nodesAfter - nodesBefore,
+              findingsBefore,
+              findingsAfter,
+              findingsAdded: findingsAfter - findingsBefore,
+            },
           },
         }
       } catch (error) {
@@ -97,16 +102,19 @@ export function createSpawnWorkerTool(
         const findingsAfter = store.queryNodes(undefined, { type: 'Finding' } as any).length
 
         return {
-          workerId: '',
-          status: 'failed',
-          error: error instanceof Error ? error.message : String(error),
-          graphDiff: {
-            nodesBefore,
-            nodesAfter,
-            nodesAdded: nodesAfter - nodesBefore,
-            findingsBefore,
-            findingsAfter,
-            findingsAdded: findingsAfter - findingsBefore,
+          ok: false,
+          value: {
+            workerId: '',
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+            graphDiff: {
+              nodesBefore,
+              nodesAfter,
+              nodesAdded: nodesAfter - nodesBefore,
+              findingsBefore,
+              findingsAfter,
+              findingsAdded: findingsAfter - findingsBefore,
+            },
           },
         }
       }

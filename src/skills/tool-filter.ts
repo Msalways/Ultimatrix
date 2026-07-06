@@ -1,4 +1,4 @@
-import { loadSkill, getAllSkills, type Skill } from './loader'
+import { loadSkill, getAllSkills, type Skill, type SkillTier } from './loader'
 
 const CORE_TOOLS = [
   'updateGraph',
@@ -15,6 +15,23 @@ const CORE_TOOLS = [
   'compareResponses',
   'measureTiming',
   'recordEvidence',
+  'detectReactions',
+  'getDialogEvidence',
+  'getRecentChanges',
+  'getTargetSummary',
+  'getEndpointsWithParams',
+  'getTestCoverage',
+  'upsertPage',
+  'addAction',
+  'addInput',
+  'addEndpoint',
+  'addFinding',
+  'addAuthFlow',
+  'addAttack',
+  'saveSession',
+  'restoreSession',
+  'getCapturedHeaders',
+  'storeSession',
 ]
 
 export function resolveToolsForSkills(skillIds: string[]): string[] {
@@ -38,14 +55,48 @@ export function resolveSkillsForInput(userInput: string): Skill[] {
 
   const scored = all.map(skill => {
     let score = 0
-    const id = skill.id.toLowerCase()
-    const desc = skill.description.toLowerCase()
-    const name = skill.name.toLowerCase()
+    
+    // Natural language matching on triggers field (highest priority)
+    if (skill.triggers.length > 0) {
+      const triggerMatches = skill.triggers.filter(trigger => 
+        input.includes(trigger.toLowerCase())
+      )
+      score += triggerMatches.length * 8
+      
+      // Partial trigger matching
+      skill.triggers.forEach(trigger => {
+        const triggerWords = trigger.toLowerCase().split(' ')
+        const inputWords = input.split(' ')
+        
+        // Check if any trigger word is in input
+        triggerWords.forEach(triggerWord => {
+          if (triggerWord.length > 3 && inputWords.includes(triggerWord)) {
+            score += 2
+          }
+        })
+      })
+    }
 
-    if (input.includes(id)) score += 10
-    if (id.split('-').some(part => input.includes(part))) score += 6
-    if (desc.split(' ').some(w => w.length > 3 && input.includes(w))) score += 3
-    if (name.split(' ').some(w => w.length > 3 && input.includes(w))) score += 2
+    // Exact skill ID match (high priority)
+    if (input.includes(skill.id.toLowerCase())) {
+      score += 10
+    }
+
+    // Description relevance (medium priority)
+    const descWords = skill.description.toLowerCase().split(' ')
+    descWords.forEach(word => {
+      if (word.length > 3 && input.includes(word)) {
+        score += 3
+      }
+    })
+
+    // Skill name relevance (medium priority)
+    const nameWords = skill.name.toLowerCase().split(' ')
+    nameWords.forEach(word => {
+      if (word.length > 3 && input.includes(word)) {
+        score += 2
+      }
+    })
 
     return { skill, score }
   })

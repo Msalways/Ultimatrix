@@ -53,7 +53,7 @@ export const saveSession = createTool({
       } catch {}
     }
 
-    const authFlow = store.addNode(NodeType.AUTH_FLOW, {
+    const authFlow = store.addAuthFlow({
       flowType: 'login',
       steps: flowSteps || [],
       reusable: true,
@@ -75,7 +75,7 @@ export const saveSession = createTool({
       savedAt: new Date().toISOString(),
     })
 
-    store.addNode(NodeType.FACT, {
+    store.addFact({
       description: `Session "${name}" saved for ${target || 'unknown target'}. Use restoreSession('${name}') to restore.`,
       source: 'human-demonstration',
       confidence: 1.0,
@@ -170,6 +170,12 @@ export const observeHumanActions = createTool({
 
     if (flowOnly) {
       const flows = observer.getFlowGroups()
+      if (flows.length === 0) {
+        return {
+          ok: false,
+          error: 'No human action flows recorded yet. The user has not performed any complete action sequences.',
+        }
+      }
       return {
         ok: true,
         value: {
@@ -193,6 +199,13 @@ export const observeHumanActions = createTool({
 
     const sinceMs = sinceSeconds ? sinceSeconds * 1000 : undefined
     const actions = sinceMs ? observer.getRecentActions(sinceMs) : observer.getActions()
+
+    if (actions.length === 0) {
+      return {
+        ok: false,
+        error: 'No human actions recorded yet. The user has not interacted with the browser.',
+      }
+    }
 
     return {
       ok: true,
@@ -231,8 +244,12 @@ export const saveLearnedFlow = createTool({
     const target = workspace.getCurrentTarget()
 
     const actionNodes: ActionNode[] = []
+    // Create a placeholder page for the actions
+    const pageUrl = startUrl || endUrl || 'unknown-page'
+    const page = store.upsertPage(pageUrl)
+    
     for (const action of actions) {
-      const node = store.addNode(NodeType.ACTION, {
+      const node = store.addAction(page.id, {
         actionType: action.type,
         selector: action.selector,
         value: action.value,
@@ -242,7 +259,7 @@ export const saveLearnedFlow = createTool({
       actionNodes.push(node)
     }
 
-    const authFlow = store.addNode(NodeType.AUTH_FLOW, {
+    const authFlow = store.addAuthFlow({
       flowType,
       steps: actions.map(a => ({
         action: a.type,

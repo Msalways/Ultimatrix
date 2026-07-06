@@ -79,7 +79,9 @@ describe('Test Generator', () => {
     it('should generate info disclosure assertion', () => {
       const infoFinding = { ...mockFinding, category: 'information-disclosure' }
       const code = generateAssertionCode(infoFinding)
-      expect(code).toContain('stack trace')
+      expect(code).toContain('Sensitive information should not be leaked')
+      expect(code).toContain('expect(response.status()).toBe(404)')
+      expect(code).toContain('password')
     })
   })
 })

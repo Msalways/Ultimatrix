@@ -48,9 +48,9 @@ describe('Vercel AI SDK Integration via Model Factory', () => {
   it('cross-provider tier preserves exact model IDs', () => {
     const config = baseConfig({
       modelTiers: {
-        fast: 'groq/llama3-8b-8192',
-        balanced: 'openai/gpt-4o',
-        powerful: 'anthropic/claude-sonnet-4',
+        fast: { provider: 'groq', model: 'llama3-8b-8192' },
+        balanced: { provider: 'openai', model: 'gpt-4o' },
+        powerful: { provider: 'anthropic', model: 'claude-sonnet-4' },
       },
       creds: {
         groq: { apiKey: 'gsk_test' },
@@ -60,13 +60,13 @@ describe('Vercel AI SDK Integration via Model Factory', () => {
     })
 
     const fast = resolveModel(config, 'fast')
-    expect((fast as any).modelId).toBe('groq/llama3-8b-8192')
+    expect((fast as any).modelId).toBe('llama3-8b-8192')
 
     const balanced = resolveModel(config, 'balanced')
-    expect((balanced as any).modelId).toBe('openai/gpt-4o')
+    expect((balanced as any).modelId).toBe('gpt-4o')
 
     const powerful = resolveModel(config, 'powerful')
-    expect((powerful as any).modelId).toBe('anthropic/claude-sonnet-4')
+    expect((powerful as any).modelId).toBe('claude-sonnet-4')
   })
 
   it('default tier falls back to primary config', () => {

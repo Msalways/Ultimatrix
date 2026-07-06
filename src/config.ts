@@ -75,15 +75,33 @@ export interface AgentConfig {
 
 export interface RateLimitConfig {
   requestsPerMinute: number
+  tokensPerMinute?: number
   maxConcurrent: number
   retryOnLimit: boolean
   maxRetries: number
+  backoffStrategy?: 'exponential' | 'stepped' | 'fixed'
+  backoffSteps?: number[]
+  baseBackoffMs?: number
+  maxBackoffMs?: number
+  useHeaders?: boolean
+  headerMapping?: {
+    remaining?: string
+    reset?: string
+    retryAfter?: string
+    tokensRemaining?: string
+    tokensReset?: string
+  }
+}
+
+export interface TierConfig {
+  provider: string
+  model: string
 }
 
 export interface ModelTiers {
-  fast?: string
-  balanced?: string
-  powerful?: string
+  fast?: TierConfig
+  balanced?: TierConfig
+  powerful?: TierConfig
 }
 
 export interface AuthorizationConfig {
@@ -99,6 +117,12 @@ export interface SolverConfig {
   maxTokens?: number
   maxDurationMs?: number
   maxParallel?: number
+  maxRounds?: number
+}
+
+export interface SpiderConfig {
+  maxSteps?: number
+  maxDurationMs?: number
 }
 
 export interface AntiLoopConfig {
@@ -113,7 +137,147 @@ export interface ReflexionConfig {
   escalationMaxLevel?: number
 }
 
-export type EngineType = 'legacy' | 'solver'
+export interface VerifierConfig {
+  enabled?: boolean
+  /** Max pending findings to re-verify per round */
+  maxPerRound?: number
+  /** Timeout in ms for a single verification attempt */
+  timeoutMs?: number
+}
+
+export type EngineType = 'legacy' | 'solver' | 'multi-model'
+
+// ─── Model capability metadata ────────────────────────────────────
+
+export interface ModelCapability {
+  contextWindow: number
+  maxOutputTokens: number
+  maxTokensPerMinute?: number
+  strengths: string[]
+  supportsStreaming: boolean
+  supportsStructuredOutput: boolean
+  supportsVision?: boolean
+}
+
+export type ModelCapabilities = Record<string, ModelCapability>
+
+// ─── Compression configuration ─────────────────────────────────────
+
+export interface CompressionConfig {
+  headroom?: {
+    enabled?: boolean
+    tokenBudget?: number
+    fallbackToTruncation?: boolean
+    maxResponseSize?: number
+    model?: string
+  }
+}
+
+export interface TruncationConfig {
+  maxResponseSize?: number
+  fallbackEnabled?: boolean
+}
+
+// ─── Budget policy ────────────────────────────────────────────────
+
+export interface BudgetPolicy {
+  enforcement: 'hard' | 'soft' | 'warn'
+  scope: 'turn' | 'session'
+  resetOn: 'turn' | 'never'
+  allocation: {
+    brain: number
+    workers: number
+    spider: number
+  }
+  maxModelCallsPerTask: number
+  maxTokensPerSession?: number
+  trackTokens: boolean
+}
+
+export interface ToolTokenProfile {
+  toolId: string
+  avgModelCalls: number
+  avgInputTokens: number
+  avgOutputTokens: number
+  externalApiCalls?: Array<{ service: string; avgCallsPerExecution: number }>
+  lastUpdated: string
+  sampleCount: number
+  estimated?: boolean
+}
+
+export type ProviderRateLimits = Record<string, RateLimitConfig>
+
+// ─── Single source of truth for defaults ───────────────────────────
+
+export const DEFAULTS = {
+  solver: {
+    maxToolCalls: 50,
+    maxDurationMs: 300_000,
+    maxParallel: 1,
+    maxRounds: 5,
+  },
+  antiLoop: {
+    staleThreshold: 3,
+    maxFailedTarget: 3,
+  },
+  agent: {
+    maxSteps: 25,
+    scansDir: './scans',
+  },
+  rateLimit: {
+    requestsPerMinute: 15,
+    maxConcurrent: 2,
+    retryOnLimit: true,
+    maxRetries: 3,
+    backoffStrategy: 'stepped',
+    backoffSteps: [5000, 15000, 30000],
+    baseBackoffMs: 2000,
+    maxBackoffMs: 30000,
+    useHeaders: true,
+  },
+  memory: {
+    lastMessages: 10,
+    semanticRecall: false,
+    workingMemory: true,
+  },
+  browser: {
+    headless: true,
+    viewport: { width: 1280, height: 720 },
+    domSettleTimeout: 5000,
+    env: 'LOCAL',
+    selfHeal: true,
+    verbose: 0,
+  },
+  engine: 'solver' as EngineType,
+  depth: 2,
+  timeout: 60_000,
+  verifier: {
+    enabled: true,
+    maxPerRound: 5,
+    timeoutMs: 30_000,
+  },
+  budgetPolicy: {
+    enforcement: 'soft',
+    scope: 'session',
+    resetOn: 'never',
+    allocation: { brain: 0.3, workers: 0.6, spider: 0.1 },
+    maxModelCallsPerTask: 15,
+    trackTokens: false,
+  },
+  compression: {
+    headroom: {
+      enabled: true,
+      tokenBudget: 100000,
+      fallbackToTruncation: true,
+      maxResponseSize: 200000,
+      model: 'gpt-4o',
+    },
+  },
+  truncation: {
+    maxResponseSize: 50000,
+    fallbackEnabled: true,
+  },
+} as const
 
 export interface UltimatrixConfig {
   provider: string
@@ -130,8 +294,16 @@ export interface UltimatrixConfig {
   authorization?: AuthorizationConfig
   engine?: EngineType
   solver?: SolverConfig
+  spider?: SpiderConfig
   antiLoop?: AntiLoopConfig
   reflexion?: ReflexionConfig
+  verifier?: VerifierConfig
+  modelCapabilities?: ModelCapabilities
+  budgetPolicy?: BudgetPolicy
+  providerRateLimits?: ProviderRateLimits
+  providerKeys?: Record<string, ApiKeyCreds>
+  compression?: CompressionConfig
+  truncation?: TruncationConfig
 }
 
 // ─── Dynamic memory sizing based on model context window ─────────────
@@ -265,6 +437,21 @@ export const PROVIDER_INFO: Record<string, ProviderInfo> = {
   },
 }
 
+/**
+ * Resolve a provider alias to its base provider name.
+ * e.g., "groq-free" → "groq", "openai-preview" → "openai"
+ * If the name is already a known provider, returns it as-is.
+ */
+export function resolveProviderAlias(provider: string): string {
+  if (PROVIDER_INFO[provider]) return provider
+  const dashIdx = provider.indexOf('-')
+  if (dashIdx > 0) {
+    const base = provider.slice(0, dashIdx)
+    if (PROVIDER_INFO[base]) return base
+  }
+  return provider
+}
+
 // ─── Config errors ──────────────────────────────────────────────────
 
 export class ConfigError extends Error {
@@ -327,8 +514,8 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
 
   // Validate engine
   const engine = raw.engine as EngineType | undefined
-  if (engine !== undefined && engine !== 'legacy' && engine !== 'solver') {
-    errors.push(`engine must be "legacy" or "solver", got "${engine}"`)
+  if (engine !== undefined && engine !== 'legacy' && engine !== 'solver' && engine !== 'multi-model') {
+    errors.push(`engine must be "legacy", "solver", or "multi-model", got "${engine}"`)
   }
 
   // Validate solver config
@@ -368,16 +555,129 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
   }
 
   // Validate modelTiers provider creds if specified
-  const modelTiers = raw.modelTiers as ModelTiers | undefined
+  const modelTiers = raw.modelTiers as Record<string, unknown> | undefined
   if (modelTiers) {
     for (const tier of ['fast', 'balanced', 'powerful'] as const) {
-      const tierModel = modelTiers[tier]
-      if (tierModel && typeof tierModel === 'string') {
-        const tierProvider = tierModel.includes('/') ? tierModel.split('/')[0] : provider
+      const tierVal = modelTiers[tier]
+      if (tierVal && typeof tierVal === 'string') {
+        // Backward compat: "provider/model" string
+        const tierProvider = tierVal.includes('/') ? tierVal.split('/')[0] : provider
         if (tierProvider && !creds[tierProvider]) {
-          errors.push(`creds.${tierProvider} is required for modelTiers.${tier} = "${tierModel}"`)
+          errors.push(`creds.${tierProvider} is required for modelTiers.${tier} = "${tierVal}"`)
+        }
+      } else if (tierVal && typeof tierVal === 'object' && 'provider' in tierVal && 'model' in tierVal) {
+        const tierCfg = tierVal as { provider: string; model: string }
+        if (tierCfg.provider && !creds[tierCfg.provider]) {
+          errors.push(`creds.${tierCfg.provider} is required for modelTiers.${tier}`)
         }
       }
+    }
+  }
+
+  // Validate budgetPolicy
+  const budgetRaw = raw.budgetPolicy as Record<string, unknown> | undefined
+  if (budgetRaw) {
+    const alloc = budgetRaw.allocation as Record<string, unknown> | undefined
+    if (alloc) {
+      const sum = Number(alloc.brain ?? 0.3) + Number(alloc.workers ?? 0.6) + Number(alloc.spider ?? 0.1)
+      if (sum > 1.0) {
+        errors.push(`budgetPolicy.allocation sums to ${sum} (must be <= 1.0)`)
+      }
+    }
+    if (budgetRaw.maxModelCallsPerTask !== undefined) {
+      const v = Number(budgetRaw.maxModelCallsPerTask)
+      if (!Number.isFinite(v) || v < 1) errors.push(`budgetPolicy.maxModelCallsPerTask must be positive`)
+    }
+    if (budgetRaw.maxTokensPerSession !== undefined) {
+      const v = Number(budgetRaw.maxTokensPerSession)
+      if (!Number.isFinite(v) || v < 1) errors.push(`budgetPolicy.maxTokensPerSession must be positive`)
+    }
+    if (budgetRaw.scope !== undefined && budgetRaw.scope !== 'turn' && budgetRaw.scope !== 'session') {
+      errors.push(`budgetPolicy.scope must be "turn" or "session"`)
+    }
+    if (budgetRaw.resetOn !== undefined && budgetRaw.resetOn !== 'turn' && budgetRaw.resetOn !== 'never') {
+      errors.push(`budgetPolicy.resetOn must be "turn" or "never"`)
+    }
+    if (budgetRaw.enforcement !== undefined && !['hard', 'soft', 'warn'].includes(budgetRaw.enforcement as string)) {
+      errors.push(`budgetPolicy.enforcement must be "hard", "soft", or "warn"`)
+    }
+  }
+
+  // Validate providerRateLimits
+  const providerRlRaw = raw.providerRateLimits as Record<string, unknown> | undefined
+  if (providerRlRaw) {
+    for (const [prov, rlEntry] of Object.entries(providerRlRaw)) {
+      const rl = rlEntry as Record<string, unknown>
+      if (rl.requestsPerMinute !== undefined && Number(rl.requestsPerMinute) <= 0) {
+        errors.push(`providerRateLimits.${prov}.requestsPerMinute must be positive`)
+      }
+      if (rl.tokensPerMinute !== undefined && Number(rl.tokensPerMinute) <= 0) {
+        errors.push(`providerRateLimits.${prov}.tokensPerMinute must be positive`)
+      }
+    }
+  }
+
+  // Parse modelTiers — normalize string format to TierConfig objects
+  let parsedTiers: ModelTiers | undefined
+  if (modelTiers) {
+    parsedTiers = {}
+    for (const tier of ['fast', 'balanced', 'powerful'] as const) {
+      const val = modelTiers[tier]
+      if (val && typeof val === 'string') {
+        // Backward compat: "provider/model" string → TierConfig
+        const slashIdx = val.indexOf('/')
+        parsedTiers[tier] = {
+          provider: slashIdx !== -1 ? val.slice(0, slashIdx) : provider,
+          model: slashIdx !== -1 ? val.slice(slashIdx + 1) : val,
+        }
+      } else if (val && typeof val === 'object' && 'provider' in val && 'model' in val) {
+        parsedTiers[tier] = val as TierConfig
+      }
+    }
+    // Only set if at least one tier exists
+    if (Object.keys(parsedTiers).length === 0) parsedTiers = undefined
+  }
+
+  // Validate modelCapabilities
+  const modelCapsRaw = raw.modelCapabilities as Record<string, unknown> | undefined
+  if (modelCapsRaw) {
+    for (const [modelId, capRaw] of Object.entries(modelCapsRaw)) {
+      const cap = capRaw as Record<string, unknown>
+      if (!cap || typeof cap !== 'object') {
+        errors.push(`modelCapabilities.${modelId} must be an object`)
+        continue
+      }
+      if (typeof cap.contextWindow !== 'number' || !Number.isFinite(cap.contextWindow) || cap.contextWindow <= 0) {
+        errors.push(`modelCapabilities.${modelId}.contextWindow must be a positive number`)
+      }
+      if (typeof cap.maxOutputTokens !== 'number' || !Number.isFinite(cap.maxOutputTokens) || cap.maxOutputTokens < 0) {
+        errors.push(`modelCapabilities.${modelId}.maxOutputTokens must be a non-negative number`)
+      }
+    }
+  }
+
+  // Validate spider
+  const spiderRaw = raw.spider as Record<string, unknown> | undefined
+  if (spiderRaw) {
+    if (spiderRaw.maxSteps !== undefined && (typeof spiderRaw.maxSteps !== 'number' || spiderRaw.maxSteps < 1)) {
+      errors.push('spider.maxSteps must be a positive number')
+    }
+    if (spiderRaw.maxDurationMs !== undefined && (typeof spiderRaw.maxDurationMs !== 'number' || spiderRaw.maxDurationMs < 1)) {
+      errors.push('spider.maxDurationMs must be a positive number')
+    }
+  }
+
+  // Validate verifier
+  const verifierRaw = raw.verifier as Record<string, unknown> | undefined
+  if (verifierRaw) {
+    if (verifierRaw.enabled !== undefined && typeof verifierRaw.enabled !== 'boolean') {
+      errors.push('verifier.enabled must be a boolean')
+    }
+    if (verifierRaw.maxPerRound !== undefined && (typeof verifierRaw.maxPerRound !== 'number' || verifierRaw.maxPerRound < 1)) {
+      errors.push('verifier.maxPerRound must be a positive number')
+    }
+    if (verifierRaw.timeoutMs !== undefined && (typeof verifierRaw.timeoutMs !== 'number' || verifierRaw.timeoutMs < 1)) {
+      errors.push('verifier.timeoutMs must be a positive number')
     }
   }
 
@@ -385,23 +685,9 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     throw new ConfigError(`Config validation failed:\n${errors.map(e => `  - ${e}`).join('\n')}`)
   }
 
-  // Store modelTiers as-is — no parsing, no stripping
-  let parsedTiers: ModelTiers | undefined
-  if (modelTiers) {
-    parsedTiers = {}
-    for (const tier of ['fast', 'balanced', 'powerful'] as const) {
-      const val = modelTiers[tier]
-      if (val && typeof val === 'string') {
-        parsedTiers[tier] = val
-      }
-    }
-    // Only set if at least one tier exists
-    if (Object.keys(parsedTiers).length === 0) parsedTiers = undefined
-  }
-
   // Build config with user-provided or sensible values for non-LLM fields
-  const depth = raw.depth != null ? Number(raw.depth) : 2
-  const timeout = raw.timeout != null ? Number(raw.timeout) : 60000
+  const depth = raw.depth != null ? Number(raw.depth) : DEFAULTS.depth
+  const timeout = raw.timeout != null ? Number(raw.timeout) : DEFAULTS.timeout
   const browserRaw = (raw.browser ?? {}) as Record<string, unknown>
   const memoryRaw = (raw.memory ?? {}) as Record<string, unknown>
   const agentRaw = (raw.agent ?? {}) as Record<string, unknown>
@@ -416,34 +702,39 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     creds,
     modelTiers: parsedTiers,
     browser: {
-      headless: browserRaw.headless != null ? Boolean(browserRaw.headless) : true,
+      headless: browserRaw.headless != null ? Boolean(browserRaw.headless) : DEFAULTS.browser.headless,
       viewport: {
         width: Number(browserRaw.viewport && typeof browserRaw.viewport === 'object'
-          ? (browserRaw.viewport as Record<string, unknown>).width ?? 1280 : 1280),
+          ? (browserRaw.viewport as Record<string, unknown>).width ?? DEFAULTS.browser.viewport.width : DEFAULTS.browser.viewport.width),
         height: Number(browserRaw.viewport && typeof browserRaw.viewport === 'object'
-          ? (browserRaw.viewport as Record<string, unknown>).height ?? 720 : 720),
+          ? (browserRaw.viewport as Record<string, unknown>).height ?? DEFAULTS.browser.viewport.height : DEFAULTS.browser.viewport.height),
       },
-      domSettleTimeout: Number(browserRaw.domSettleTimeout ?? 5000),
-      env: String(browserRaw.env ?? 'LOCAL'),
-      selfHeal: browserRaw.selfHeal != null ? Boolean(browserRaw.selfHeal) : true,
-      verbose: Number(browserRaw.verbose ?? 0),
+      domSettleTimeout: Number(browserRaw.domSettleTimeout ?? DEFAULTS.browser.domSettleTimeout),
+      env: String(browserRaw.env ?? DEFAULTS.browser.env),
+      selfHeal: browserRaw.selfHeal != null ? Boolean(browserRaw.selfHeal) : DEFAULTS.browser.selfHeal,
+      verbose: Number(browserRaw.verbose ?? DEFAULTS.browser.verbose),
     },
     memory: {
-      lastMessages: Number(memoryRaw.lastMessages ?? 10),
-      semanticRecall: Boolean(memoryRaw.semanticRecall ?? false),
-      workingMemory: Boolean(memoryRaw.workingMemory ?? true),
+      lastMessages: Number(memoryRaw.lastMessages ?? DEFAULTS.memory.lastMessages),
+      semanticRecall: Boolean(memoryRaw.semanticRecall ?? DEFAULTS.memory.semanticRecall),
+      workingMemory: Boolean(memoryRaw.workingMemory ?? DEFAULTS.memory.workingMemory),
     },
     agent: {
-      maxSteps: Number(agentRaw.maxSteps ?? 25),
-      scansDir: String(agentRaw.scansDir ?? './scans'),
+      maxSteps: Number(agentRaw.maxSteps ?? DEFAULTS.agent.maxSteps),
+      scansDir: String(agentRaw.scansDir ?? DEFAULTS.agent.scansDir),
     },
     rateLimit: {
-      requestsPerMinute: Number(rateLimitRaw.requestsPerMinute ?? 25),
-      maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? 2),
-      retryOnLimit: rateLimitRaw.retryOnLimit != null ? Boolean(rateLimitRaw.retryOnLimit) : true,
-      maxRetries: Number(rateLimitRaw.maxRetries ?? 3),
+      requestsPerMinute: Number(rateLimitRaw.requestsPerMinute ?? DEFAULTS.rateLimit.requestsPerMinute),
+      maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? DEFAULTS.rateLimit.maxConcurrent),
+      retryOnLimit: rateLimitRaw.retryOnLimit != null ? Boolean(rateLimitRaw.retryOnLimit) : DEFAULTS.rateLimit.retryOnLimit,
+      maxRetries: Number(rateLimitRaw.maxRetries ?? DEFAULTS.rateLimit.maxRetries),
+      backoffStrategy: String(rateLimitRaw.backoffStrategy ?? DEFAULTS.rateLimit.backoffStrategy),
+      backoffSteps: Array.isArray(rateLimitRaw.backoffSteps) ? rateLimitRaw.backoffSteps.map(Number) : [...DEFAULTS.rateLimit.backoffSteps],
+      baseBackoffMs: Number(rateLimitRaw.baseBackoffMs ?? DEFAULTS.rateLimit.baseBackoffMs),
+      maxBackoffMs: Number(rateLimitRaw.maxBackoffMs ?? DEFAULTS.rateLimit.maxBackoffMs),
+      useHeaders: rateLimitRaw.useHeaders != null ? Boolean(rateLimitRaw.useHeaders) : DEFAULTS.rateLimit.useHeaders,
     },
-    engine: (engine as EngineType) || 'solver',
+    engine: (engine as EngineType) || DEFAULTS.engine,
     ...(solverRaw ? {
       solver: {
         ...(solverRaw.maxToolCalls != null ? { maxToolCalls: Number(solverRaw.maxToolCalls) } : {}),
@@ -466,6 +757,39 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
         ...(reflexionRaw.escalationMaxLevel != null ? { escalationMaxLevel: Number(reflexionRaw.escalationMaxLevel) } : {}),
       },
     } : {}),
+    // v8 multi-model fields
+    ...(budgetRaw ? {
+      budgetPolicy: {
+        enforcement: (budgetRaw.enforcement as BudgetPolicy['enforcement']) || DEFAULTS.budgetPolicy.enforcement,
+        scope: (budgetRaw.scope as BudgetPolicy['scope']) || DEFAULTS.budgetPolicy.scope,
+        resetOn: (budgetRaw.resetOn as BudgetPolicy['resetOn']) || DEFAULTS.budgetPolicy.resetOn,
+        allocation: {
+          brain: Number((budgetRaw.allocation as Record<string, unknown>)?.brain ?? DEFAULTS.budgetPolicy.allocation.brain),
+          workers: Number((budgetRaw.allocation as Record<string, unknown>)?.workers ?? DEFAULTS.budgetPolicy.allocation.workers),
+          spider: Number((budgetRaw.allocation as Record<string, unknown>)?.spider ?? DEFAULTS.budgetPolicy.allocation.spider),
+        },
+        maxModelCallsPerTask: Number(budgetRaw.maxModelCallsPerTask ?? DEFAULTS.budgetPolicy.maxModelCallsPerTask),
+        ...(budgetRaw.maxTokensPerSession != null ? { maxTokensPerSession: Number(budgetRaw.maxTokensPerSession) } : {}),
+        trackTokens: budgetRaw.trackTokens != null ? Boolean(budgetRaw.trackTokens) : DEFAULTS.budgetPolicy.trackTokens,
+      } as BudgetPolicy,
+    } : { budgetPolicy: DEFAULTS.budgetPolicy }),
+    ...(modelCapsRaw ? { modelCapabilities: modelCapsRaw as ModelCapabilities } : {}),
+    ...(providerRlRaw && Object.keys(providerRlRaw).length > 0 ? { providerRateLimits: providerRlRaw as ProviderRateLimits } : {}),
+    // Optional config blocks
+    ...(spiderRaw ? {
+      spider: {
+        ...(spiderRaw.maxSteps != null ? { maxSteps: Number(spiderRaw.maxSteps) } : {}),
+        ...(spiderRaw.maxDurationMs != null ? { maxDurationMs: Number(spiderRaw.maxDurationMs) } : {}),
+      },
+    } : {}),
+    ...(verifierRaw ? {
+      verifier: {
+        ...(verifierRaw.enabled != null ? { enabled: Boolean(verifierRaw.enabled) } : {}),
+        ...(verifierRaw.maxPerRound != null ? { maxPerRound: Number(verifierRaw.maxPerRound) } : {}),
+        ...(verifierRaw.timeoutMs != null ? { timeoutMs: Number(verifierRaw.timeoutMs) } : {}),
+      },
+    } : DEFAULTS.verifier ? { verifier: DEFAULTS.verifier } : {}),
+    ...(raw.authorization ? { authorization: raw.authorization as AuthorizationConfig } : {}),
   }
 }
 
@@ -568,6 +892,16 @@ export function loadConfig(): UltimatrixConfig {
     }
   }
 
+  // Merge providerKeys (same-provider different API keys) into creds
+  const providerKeysRaw = yamlConfig.providerKeys as Record<string, { apiKey?: string; baseUrl?: string }> | undefined
+  if (providerKeysRaw) {
+    for (const [alias, entry] of Object.entries(providerKeysRaw)) {
+      if (entry && typeof entry === 'object' && entry.apiKey) {
+        creds[alias] = { apiKey: entry.apiKey, ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}) }
+      }
+    }
+  }
+
   // Apply env var overrides
   const providerFromEnv = process.env.LLM_PROVIDER
   const modelFromEnv = process.env.LLM_MODEL
@@ -628,10 +962,9 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   }
 
   if (config.modelTiers && Object.keys(config.modelTiers).length > 0) {
-    // Write tiers with provider prefix for clarity
-    const tiers: Record<string, string> = {}
-    for (const [tier, modelId] of Object.entries(config.modelTiers)) {
-      if (modelId) tiers[tier] = modelId
+    const tiers: Record<string, { provider: string; model: string }> = {}
+    for (const [tier, tierCfg] of Object.entries(config.modelTiers)) {
+      if (tierCfg) tiers[tier] = { provider: tierCfg.provider, model: tierCfg.model }
     }
     output.modelTiers = tiers
   }
@@ -662,7 +995,7 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
 
   // Write non-default agent config
   const a = config.agent
-  if (a.maxSteps !== 50 || a.scansDir !== './scans') {
+  if (a.maxSteps !== DEFAULTS.agent.maxSteps || a.scansDir !== DEFAULTS.agent.scansDir) {
     output.agent = {
       maxSteps: a.maxSteps,
       scansDir: a.scansDir,
@@ -671,13 +1004,41 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
 
   // Write non-default rate limit config
   const rl = config.rateLimit
-  if (rl.requestsPerMinute !== 25 || rl.maxConcurrent !== 2 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
+  if (rl.requestsPerMinute !== 15 || rl.maxConcurrent !== 2 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
     output.rateLimit = {
       requestsPerMinute: rl.requestsPerMinute,
       maxConcurrent: rl.maxConcurrent,
       retryOnLimit: rl.retryOnLimit,
       maxRetries: rl.maxRetries,
     }
+  }
+
+  // Write budgetPolicy if non-default
+  if (config.budgetPolicy) {
+    const bp = config.budgetPolicy
+    if (bp.enforcement !== 'soft' || bp.scope !== 'session' || bp.resetOn !== 'never' ||
+        bp.allocation.brain !== 0.3 || bp.allocation.workers !== 0.6 || bp.allocation.spider !== 0.1 ||
+        bp.maxModelCallsPerTask !== 15 || bp.trackTokens !== false) {
+      output.budgetPolicy = {
+        enforcement: bp.enforcement,
+        scope: bp.scope,
+        resetOn: bp.resetOn,
+        allocation: bp.allocation,
+        maxModelCallsPerTask: bp.maxModelCallsPerTask,
+        ...(bp.maxTokensPerSession ? { maxTokensPerSession: bp.maxTokensPerSession } : {}),
+        trackTokens: bp.trackTokens,
+      }
+    }
+  }
+
+  // Write providerRateLimits if set
+  if (config.providerRateLimits && Object.keys(config.providerRateLimits).length > 0) {
+    output.providerRateLimits = config.providerRateLimits
+  }
+
+  // Write modelCapabilities if set
+  if (config.modelCapabilities && Object.keys(config.modelCapabilities).length > 0) {
+    output.modelCapabilities = config.modelCapabilities
   }
 
   writeFileSync(path, dump(output), 'utf-8')

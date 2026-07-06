@@ -24,6 +24,9 @@ export interface Finding {
   firstSeen: Date
   lastSeen: Date
   status: 'open' | 'fixed' | 'false-positive'
+  payload?: Record<string, any>
+  param?: Record<string, any>
+  evidenceMarkers?: string[]
 }
 
 export interface Evidence {
@@ -95,8 +98,9 @@ function generateTestCode(finding: Finding): string {
   }
 
   lines.push('')
-  lines.push(`  // Verify: should NOT be vulnerable`)
-  lines.push(`  // TODO: Add assertion based on expected secure behavior`)
+  
+  // Generate category-specific assertions
+  lines.push(...generateAssertionCode(finding))
 
   lines.push(`})`)
 
@@ -128,6 +132,94 @@ function generateEvidenceSteps(evidence: Evidence): string[] {
   // Check response
   if (evidence.response) {
     lines.push(`${indent}expect(response.status()).toBe(${evidence.response.status})`)
+  }
+
+  return lines
+}
+
+function generateCategoryAssertions(finding: Finding): string[] {
+  const lines: string[] = []
+  const indent = '  '
+
+  switch (finding.category.toLowerCase()) {
+    case 'injection':
+    case 'sqli':
+    case 'command injection':
+    case 'code injection':
+      lines.push(`${indent}// Verify: Injection should be blocked or sanitized`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 200 if properly sanitized`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('error') // or specific error patterns`)
+      break
+
+    case 'xss':
+    case 'cross-site scripting':
+      lines.push(`${indent}// Verify: XSS scripts should be escaped or blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 200 if properly escaped`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('<script>')`)
+      lines.push(`${indent}expect(responseText).not.toContain('javascript:')`)
+      break
+
+    case 'ssrf':
+    case 'server-side request forgery':
+      lines.push(`${indent}// Verify: SSRF should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('internal') // or internal IPs`)
+      break
+
+    case 'idor':
+    case 'insecure direct object references':
+      lines.push(`${indent}// Verify: IDOR should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 404 if resource not found`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('unauthorized') // or specific error`)
+      break
+
+    case 'auth':
+    case 'authentication':
+    case 'authorization':
+      lines.push(`${indent}// Verify: Auth bypass should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(401) // or 403`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).toContain('unauthorized') // or 'forbidden'`)
+      break
+
+    case 'csrf':
+      lines.push(`${indent}// Verify: CSRF should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).toContain('csrf') // or 'invalid token'`)
+      break
+
+    case 'file upload':
+      lines.push(`${indent}// Verify: Malicious file upload should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('executed') // or 'shell'`)
+      break
+
+    case 'information disclosure':
+      lines.push(`${indent}// Verify: Sensitive information should not be leaked`)
+      lines.push(`${indent}expect(response.status()).toBe(404) // or 200 with sanitized data`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('password') // or 'key', 'secret'`)
+      break
+
+    case 'redirect':
+    case 'open redirect':
+      lines.push(`${indent}// Verify: Open redirect should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(404) // or 403`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('redirect') // or 'location' header check`)
+      break
+
+    default:
+      lines.push(`${indent}// Verify: should NOT be vulnerable`)
+      lines.push(`${indent}expect(response.status()).toBe(200) // or appropriate status`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('error') // or vulnerability indicators`)
   }
 
   return lines
@@ -171,25 +263,96 @@ export function generateSetupCode(_credentials: Record<string, { email: string; 
 
 export function generateAssertionCode(finding: Finding): string {
   const lines: string[] = []
+  const indent = '  '
 
-  switch (finding.category) {
+  switch (finding.category.toLowerCase()) {
+    case 'injection':
+    case 'sqli':
+    case 'command injection':
+    case 'code injection':
+      lines.push(`${indent}// Verify: Injection should be blocked or sanitized`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 200 if properly sanitized`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('error') // or specific error patterns`)
+      break
+
+    case 'xss':
+    case 'cross-site scripting':
+      lines.push(`${indent}// Verify: XSS scripts should be escaped or blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 200 if properly escaped`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('<script>')`)
+      lines.push(`${indent}expect(responseText).not.toContain('javascript:')`)
+      break
+
+    case 'ssrf':
+    case 'server-side request forgery':
+      lines.push(`${indent}// Verify: SSRF should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('internal') // or internal IPs`)
+      break
+
+    case 'idor':
+    case 'insecure direct object references':
+      lines.push(`${indent}// Verify: IDOR should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403) // or 404 if resource not found`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('unauthorized') // or specific error`)
+      break
+
+    case 'auth':
+    case 'authentication':
     case 'authorization':
-      lines.push(`  // Should deny access (403 or redirect to login)`)
-      lines.push(`  expect([401, 403]).toContain(response.status())`)
+      lines.push(`${indent}// Verify: Auth bypass should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(401) // or 403`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).toContain('unauthorized') // or 'forbidden'`)
       break
+
+    case 'csrf':
+      lines.push(`${indent}// Verify: CSRF should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).toContain('csrf') // or 'invalid token'`)
+      break
+
+    case 'file upload':
+      lines.push(`${indent}// Verify: Malicious file upload should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(403)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('executed') // or 'shell'`)
+      break
+
+    case 'information disclosure':
     case 'information-disclosure':
-      lines.push(`  // Should not expose sensitive information`)
-      lines.push(`  const body = await response.text()`)
-      lines.push(`  expect(body).not.toContain('stack trace')`)
-      lines.push(`  expect(body).not.toContain('internal server error')`)
+      lines.push(`${indent}// Verify: Sensitive information should not be leaked`)
+      lines.push(`${indent}expect(response.status()).toBe(404) // or 200 with sanitized data`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('password') // or 'key', 'secret'`)
       break
+
+    case 'redirect':
+    case 'open redirect':
+      lines.push(`${indent}// Verify: Open redirect should be blocked`)
+      lines.push(`${indent}expect(response.status()).toBe(404) // or 403`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('redirect') // or 'location' header check`)
+      break
+
+    case 'business logic':
     case 'business-logic':
-      lines.push(`  // Should maintain data integrity`)
-      lines.push(`  expect(response.status()).toBeLessThan(500)`)
+      lines.push(`${indent}// Verify: Business logic should maintain integrity`)
+      lines.push(`${indent}expect(response.status()).toBeLessThan(500)`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('error') // or business rule violations`)
       break
+
     default:
-      lines.push(`  // Should not be vulnerable`)
-      lines.push(`  expect(response.status()).toBeLessThan(500)`)
+      lines.push(`${indent}// Verify: should NOT be vulnerable`)
+      lines.push(`${indent}expect(response.status()).toBe(200) // or appropriate status`)
+      lines.push(`${indent}const responseText = await response.text()`)
+      lines.push(`${indent}expect(responseText).not.toContain('error') // or vulnerability indicators`)
   }
 
   return lines.join('\n')

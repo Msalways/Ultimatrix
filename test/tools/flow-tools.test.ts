@@ -10,6 +10,26 @@ const mockStore = {
     type,
     properties: props,
   })),
+  addAuthFlow: vi.fn().mockImplementation((props: any) => ({
+    id: `authflow-${Date.now()}`,
+    type: 'AUTH_FLOW',
+    properties: props,
+  })),
+  addFact: vi.fn().mockImplementation((props: any) => ({
+    id: `fact-${Date.now()}`,
+    type: 'FACT',
+    properties: props,
+  })),
+  addAction: vi.fn().mockImplementation((pageId: string, props: any) => ({
+    id: `action-${pageId}-${Date.now()}`,
+    type: 'ACTION',
+    properties: { ...props, pageId },
+  })),
+  upsertPage: vi.fn().mockImplementation((url: string, data?: any) => ({
+    id: `page:${url}`,
+    type: 'PAGE',
+    properties: { url, ...data },
+  })),
   queryNodes: vi.fn().mockReturnValue([]),
   save: vi.fn().mockResolvedValue(undefined),
 }
@@ -110,8 +130,7 @@ describe('flow-tools', () => {
       expect(result.value.name).toBe('admin-login')
       expect(result.value.cookieCount).toBe(1)
       expect(result.value.localStorageKeys).toBe(1) // { token: 'abc' }
-      expect(mockStore.addNode).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'admin-login',
           cookies: expect.arrayContaining([
@@ -127,8 +146,7 @@ describe('flow-tools', () => {
       const { saveSession } = await import('../../src/tools/flow-tools')
       await callTool(saveSession, { name: 'test-session' })
 
-      expect(mockStore.addNode).toHaveBeenCalledWith(
-        'Fact',
+      expect(mockStore.addFact).toHaveBeenCalledWith(
         expect.objectContaining({
           description: expect.stringContaining('test-session'),
           source: 'human-demonstration',
@@ -210,7 +228,7 @@ describe('flow-tools', () => {
       expect(result.value.actionCount).toBe(2)
 
       // Should create individual ActionNodes
-      const actionCalls = mockStore.addNode.mock.calls.filter(c => c[0] === 'Action')
+      const actionCalls = mockStore.addAction.mock.calls
       expect(actionCalls).toHaveLength(2)
     })
 
@@ -222,8 +240,7 @@ describe('flow-tools', () => {
         actions: [{ type: 'navigate', url: 'https://example.com' }],
       })
 
-      expect(mockStore.addNode).toHaveBeenCalledWith(
-        'AuthFlow',
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith(
         expect.objectContaining({
           actionNodeIds: expect.any(Array),
           flowType: 'navigation',

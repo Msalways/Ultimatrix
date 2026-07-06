@@ -2,13 +2,7 @@
 import { z } from 'zod'
 import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
-
-const MAX_BODY_CHARS = 50_000
-
-function truncateBody(body: string): string {
-  if (body.length <= MAX_BODY_CHARS) return body
-  return body.slice(0, MAX_BODY_CHARS) + `\n\n[truncated — showing first ${MAX_BODY_CHARS} of ${body.length} chars total]`
-}
+import { CompressionService } from '../compression/headroom-service'
 
 export const httpRequest = createTool({
   id: 'httpRequest',
@@ -36,11 +30,13 @@ export const httpRequest = createTool({
         fetchOpts.body = body
       }
       const raw = await fetch(url, fetchOpts)
-      const responseBody = truncateBody(await raw.text())
+      const rawBody = await raw.text()
+      const compressionResult = await new CompressionService().compressResponse(rawBody)
+      const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
-      log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
-      // LOG-3: Record HTTP request/response before truncation
+      log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
+      // LOG-3: Record HTTP request/response with compression info
       getForensicLog()?.log({
         type: 'http-request',
         agent: 'worker',
@@ -95,7 +91,7 @@ export const multipartUpload = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(15_000),
       })
-      const responseBody = truncateBody(await raw.text())
+      const responseBody = (await new CompressionService().compressResponse(await raw.text())).compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       log.info(`multipartUpload POST ${url} (file=${filename}) → ${raw.status}`, { method: 'POST', url, filename, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
@@ -143,7 +139,9 @@ export const followRedirects = createTool({
         const isRedirect = raw.status >= 300 && raw.status < 400
         const location = raw.headers.get('location')
         if (!isRedirect || !location) {
-          const body = truncateBody(await raw.text())
+          const rawBody = await raw.text()
+          const compressionResult = await new CompressionService().compressResponse(rawBody)
+          const body = compressionResult.compressed
           const resHeaders: Record<string, string> = {}
           raw.headers.forEach((v, k) => { resHeaders[k] = v })
           log.info(`followRedirects ${url} → ${raw.status} (${hops} hops)`, { url, status: raw.status, hops, durationMs: performance.now() - start, bodySize: body.length })
@@ -203,7 +201,9 @@ export const omitHeader = createTool({
         fetchOpts.body = body
       }
       const raw = await fetch(url, fetchOpts)
-      const responseBody = truncateBody(await raw.text())
+      const rawBody = await raw.text()
+      const compressionResult = await new CompressionService().compressResponse(rawBody)
+      const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       log.info(`omitHeader ${method} ${url} (omit=${headerToOmit}) → ${raw.status}`, { method, url, omittedHeader: headerToOmit, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })

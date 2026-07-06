@@ -2,7 +2,9 @@
 name: waf-bypass
 description: "WAF detection, characterization, and systematic bypass techniques for filtered inputs"
 category: core
+tier: balanced
 toolRefs: [httpRequest, parseResponse, checkWaf, encodeDecode, findEndpointsInResponse, updateGraph]
+triggers: ["bypass waf", "waf bypass", "waf detection", "web application firewall", "filter bypass", "input filtering", "waf testing", "security bypass", "filter evasion", "waf techniques"]
 ---
 
 # WAF Detection and Bypass

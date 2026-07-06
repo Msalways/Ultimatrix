@@ -1,36 +1,50 @@
 import { log } from '../utils/logger'
 
-interface UsageEntry {
+export interface UsageEntry {
   provider: string
   model: string
-  tokens: number
-  cost: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
   timestamp: number
+  /** @deprecated Use inputTokens/outputTokens instead */
+  cost?: number
 }
 
-class UsageTracker {
+export class UsageTracker {
   private entries: UsageEntry[] = []
 
-  record(provider: string, model: string, tokens: number, cost: number): void {
-    this.entries.push({ provider, model, tokens, cost, timestamp: Date.now() })
+  record(provider: string, model: string, inputTokens: number, outputTokens: number, cost?: number): void {
+    this.entries.push({
+      provider,
+      model,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cost,
+      timestamp: Date.now(),
+    })
   }
 
-  getTotal(): { tokens: number; cost: number; calls: number } {
-    let tokens = 0
-    let cost = 0
+  getTotal(): { inputTokens: number; outputTokens: number; totalTokens: number; calls: number } {
+    let inputTokens = 0
+    let outputTokens = 0
+    let totalTokens = 0
     for (const e of this.entries) {
-      tokens += e.tokens
-      cost += e.cost
+      inputTokens += e.inputTokens
+      outputTokens += e.outputTokens
+      totalTokens += e.totalTokens
     }
-    return { tokens, cost, calls: this.entries.length }
+    return { inputTokens, outputTokens, totalTokens, calls: this.entries.length }
   }
 
-  getByProvider(): Record<string, { tokens: number; cost: number; calls: number }> {
-    const byProvider: Record<string, { tokens: number; cost: number; calls: number }> = {}
+  getByProvider(): Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; calls: number }> {
+    const byProvider: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; calls: number }> = {}
     for (const e of this.entries) {
-      if (!byProvider[e.provider]) byProvider[e.provider] = { tokens: 0, cost: 0, calls: 0 }
-      byProvider[e.provider].tokens += e.tokens
-      byProvider[e.provider].cost += e.cost
+      if (!byProvider[e.provider]) byProvider[e.provider] = { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0 }
+      byProvider[e.provider].inputTokens += e.inputTokens
+      byProvider[e.provider].outputTokens += e.outputTokens
+      byProvider[e.provider].totalTokens += e.totalTokens
       byProvider[e.provider].calls++
     }
     return byProvider
@@ -39,10 +53,10 @@ class UsageTracker {
   printSummary(): void {
     const total = this.getTotal()
     if (total.calls === 0) return
-    log.info(`Usage: ${total.calls} calls, ${total.tokens.toLocaleString()} tokens, $${total.cost.toFixed(4)}`)
+    log.info(`Usage: ${total.calls} calls, ${total.inputTokens.toLocaleString()} in / ${total.outputTokens.toLocaleString()} out (${total.totalTokens.toLocaleString()} total)`)
     const byProvider = this.getByProvider()
     for (const [provider, stats] of Object.entries(byProvider)) {
-      log.dim(`  ${provider}: ${stats.calls} calls, ${stats.tokens.toLocaleString()} tokens, $${stats.cost.toFixed(4)}`)
+      log.dim(`  ${provider}: ${stats.calls} calls, ${stats.inputTokens.toLocaleString()} in / ${stats.outputTokens.toLocaleString()} out`)
     }
   }
 

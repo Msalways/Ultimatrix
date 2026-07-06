@@ -2,7 +2,9 @@
 name: ctf-misc
 description: "CTF miscellaneous challenges: steganography, encoding chains, forensics, and OSINT"
 category: specialized
+tier: fast
 toolRefs: [httpRequest, parseResponse, encodeDecode, updateGraph, writeFinding]
+triggers: ["ctf misc", "misc challenges", "steganography", "forensics", "osint", "encoding chains", "ctf puzzles", "miscellaneous", "challenge solving", "security puzzles"]
 ---
 
 # CTF Miscellaneous

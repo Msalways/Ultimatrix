@@ -1,12 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-
-const MAX_BODY_CHARS = 50_000
-
-function truncateBody(body: string): string {
-  if (body.length <= MAX_BODY_CHARS) return body
-  return body.slice(0, MAX_BODY_CHARS) + `\n\n[truncated — showing first ${MAX_BODY_CHARS} of ${body.length} chars total]`
-}
+import { CompressionService } from '../compression/headroom-service'
 
 // ── WAF vendor patterns ──
 
@@ -45,10 +39,10 @@ export const parseResponse = createTool({
     }),
   }),
   execute: async (ctx) => {
-    const truncatedBody = truncateBody(ctx.body)
+    const compressionResult = await new CompressionService().compressResponse(ctx.body)
     let json: unknown = null
     try {
-      json = JSON.parse(truncatedBody)
+      json = JSON.parse(compressionResult.compressed)
     } catch {
       json = null
     }
@@ -139,7 +133,7 @@ export const evaluateRendered = createTool({
       }
 
       const res = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
-      const body = truncateBody(await res.text())
+      const body = (await new CompressionService().compressResponse(await res.text())).compressed
       const lower = body.toLowerCase()
       const lowerPayload = ctx.payload.toLowerCase()
 

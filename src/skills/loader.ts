@@ -8,14 +8,18 @@ export interface Reference {
   content: string
 }
 
+export type SkillTier = 'fast' | 'balanced' | 'powerful'
+
 export interface Skill {
   id: string
   name: string
   category: 'core' | 'specialized'
+  tier: SkillTier
   description: string
   instructions: string
   references: Reference[]
   toolRefs: string[]
+  triggers: string[]
 }
 
 // ESM: import.meta.dirname (Node 21.2+). CJS: tsup shims import.meta, falls back to __dirname.
@@ -23,8 +27,11 @@ const _dir = import.meta.dirname || __dirname
 
 // After build: _dir = dist/ → ../skills reaches package root
 // During dev (tsx): _dir = src/skills/ → ../../skills reaches package root
-const _root = existsSync(join(_dir, '..', 'skills', 'core'))
-  ? join(_dir, '..')
+// The check verifies the directory actually contains .md skill files, not just an empty dir.
+const _candidate = join(_dir, '..')
+const _root = existsSync(join(_candidate, 'skills', 'core'))
+  && readdirSync(join(_candidate, 'skills', 'core')).some(f => f.endsWith('.md'))
+  ? _candidate
   : join(_dir, '..', '..')
 const SKILLS_DIR = join(_root, 'skills')
 const ANALYSIS_SKILLS_DIR = join(_root, 'skills', 'analysis')
@@ -56,15 +63,21 @@ function parseSkillFile(filePath: string, category: 'core' | 'specialized'): Ski
       || name
 
     const toolRefs = Array.isArray(meta.toolRefs) ? meta.toolRefs.filter((t): t is string => typeof t === 'string') : []
+    const triggers = Array.isArray(meta.triggers) ? meta.triggers.filter((t): t is string => typeof t === 'string') : []
+
+    const rawTier = typeof meta.tier === 'string' ? meta.tier.toLowerCase() : 'balanced'
+    const tier: SkillTier = (['fast', 'balanced', 'powerful'] as string[]).includes(rawTier) ? rawTier as SkillTier : 'balanced'
 
     return {
       id,
       name,
       category,
+      tier,
       description,
       instructions: body,
       references: [],
       toolRefs,
+      triggers,
     }
   } catch {
     return null
@@ -142,6 +155,7 @@ export function searchSkills(query: string): Skill[] {
     if (skill.description.toLowerCase().includes(q)) score += 5
     if (skill.instructions.toLowerCase().includes(q)) score += 2
     if (skill.toolRefs.some(t => t.toLowerCase().includes(q))) score += 3
+    if (skill.triggers.some(t => t.toLowerCase().includes(q))) score += 6
     return { skill, score }
   })
 

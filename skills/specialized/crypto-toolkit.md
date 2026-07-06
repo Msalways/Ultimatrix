@@ -2,7 +2,9 @@
 name: crypto-toolkit
 description: "Cryptographic weakness assessment including weak algorithms, padding oracles, and TLS misconfiguration"
 category: specialized
+tier: balanced
 toolRefs: [httpRequest, parseResponse, encodeDecode, jwtDecode, updateGraph, writeFinding]
+triggers: ["crypto testing", "cryptographic assessment", "weak algorithms", "jwt vulnerabilities", "tls issues", "crypto analysis", "encryption testing", "cryptography", "crypto flaws", "security assessment"]
 ---
 
 # Cryptographic Issues

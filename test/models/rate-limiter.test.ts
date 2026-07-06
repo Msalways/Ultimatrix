@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { TokenBucket, Semaphore, getSharedBucket, getSharedSemaphore, resetSharedInstances } from '../../src/models/rate-limiter'
+import { SlidingWindowLimiter, Semaphore, getSharedLimiter, getSharedSemaphore, resetSharedInstances } from '../../src/models/rate-limiter'
 
-describe('TokenBucket', () => {
+describe('SlidingWindowLimiter', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -10,52 +10,139 @@ describe('TokenBucket', () => {
     vi.useRealTimers()
   })
 
-  it('allows immediate acquisition when tokens available', async () => {
-    const bucket = new TokenBucket(10)
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(9)
+  it('allows immediate acquisition when under limit', async () => {
+    const limiter = new SlidingWindowLimiter(10)
+    await limiter.acquire()
+    expect(limiter.getUsed()).toBe(1)
+    expect(limiter.getAvailable()).toBe(9)
   })
 
-  it('consumes tokens sequentially', async () => {
-    const bucket = new TokenBucket(5)
-    await bucket.acquire()
-    await bucket.acquire()
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(2)
+  it('tracks multiple acquisitions', async () => {
+    const limiter = new SlidingWindowLimiter(5)
+    await limiter.acquire()
+    await limiter.acquire()
+    await limiter.acquire()
+    expect(limiter.getUsed()).toBe(3)
+    expect(limiter.getAvailable()).toBe(2)
   })
 
-  it('blocks when tokens exhausted', async () => {
-    const bucket = new TokenBucket(2)
-    await bucket.acquire()
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(0)
+  it('blocks when window capacity reached', async () => {
+    const limiter = new SlidingWindowLimiter(2)
+    await limiter.acquire()
+    await limiter.acquire()
+    expect(limiter.getUsed()).toBe(2)
+    expect(limiter.getAvailable()).toBe(0)
 
     let resolved = false
-    const promise = bucket.acquire().then(() => { resolved = true })
+    const promise = limiter.acquire().then(() => { resolved = true })
 
+    // Should NOT resolve immediately — window is full
     await vi.advanceTimersByTimeAsync(50)
     expect(resolved).toBe(false)
 
+    // After 60s the oldest call expires, freeing a slot
     await vi.advanceTimersByTimeAsync(60_000)
     await promise
     expect(resolved).toBe(true)
   })
 
-  it('refills tokens over time', async () => {
-    const bucket = new TokenBucket(60)
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(59)
+  it('evicts old timestamps as window slides', async () => {
+    const limiter = new SlidingWindowLimiter(2)
+    await limiter.acquire()
 
-    vi.advanceTimersByTime(1000)
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(59)
+    // Advance 30s — still in window
+    vi.advanceTimersByTime(30_000)
+    await limiter.acquire()
+    expect(limiter.getUsed()).toBe(2)
+
+    // Advance another 31s — first call (61s ago) falls outside window
+    vi.advanceTimersByTime(31_000)
+    expect(limiter.getUsed()).toBe(1) // only the second call remains
+    expect(limiter.getAvailable()).toBe(1)
+
+    // Third call should succeed without blocking
+    let resolved = false
+    const p = limiter.acquire().then(() => { resolved = true })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(resolved).toBe(true)
+    await p
   })
 
-  it('never exceeds max tokens', async () => {
-    const bucket = new TokenBucket(5)
-    vi.advanceTimersByTime(60_000)
-    await bucket.acquire()
-    expect(bucket.getAvailable()).toBe(4)
+  it('never exceeds max requests per window', async () => {
+    const limiter = new SlidingWindowLimiter(3)
+    await limiter.acquire()
+    await limiter.acquire()
+    await limiter.acquire()
+
+    // All slots used
+    expect(limiter.getUsed()).toBe(3)
+    expect(limiter.getAvailable()).toBe(0)
+
+    // Even after a short wait, still blocked
+    let resolved = false
+    const p = limiter.acquire().then(() => { resolved = true })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(resolved).toBe(false)
+  })
+
+  it('cooldown pauses all callers for specified duration', async () => {
+    const limiter = new SlidingWindowLimiter(60)
+
+    limiter.cooldown(5_000)
+
+    let resolved = false
+    const p = limiter.acquire().then(() => { resolved = true })
+
+    // Should NOT resolve during cooldown
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(resolved).toBe(false)
+
+    // Should resolve after cooldown
+    await vi.advanceTimersByTimeAsync(1_001)
+    await p
+    expect(resolved).toBe(true)
+  })
+
+  it('acquire respects both window limit and cooldown', async () => {
+    const limiter = new SlidingWindowLimiter(2)
+    await limiter.acquire()
+    await limiter.acquire()
+
+    // Window full AND cooldown active — cooldown takes precedence
+    limiter.cooldown(60_000)
+
+    let resolved = false
+    const p = limiter.acquire().then(() => { resolved = true })
+
+    // Even after window would slide, cooldown blocks
+    await vi.advanceTimersByTimeAsync(61_000)
+    await p
+    expect(resolved).toBe(true)
+  })
+
+  it('concurrent acquire calls are queued properly', async () => {
+    const limiter = new SlidingWindowLimiter(1)
+    await limiter.acquire()
+
+    let p1Resolved = false
+    let p2Resolved = false
+    const p1 = limiter.acquire().then(() => { p1Resolved = true })
+    const p2 = limiter.acquire().then(() => { p2Resolved = true })
+
+    // Both should be blocked initially
+    await vi.advanceTimersByTimeAsync(100)
+    expect(p1Resolved).toBe(false)
+    expect(p2Resolved).toBe(false)
+
+    // After 60s, first slot frees up
+    await vi.advanceTimersByTimeAsync(60_000)
+    await p1
+    expect(p1Resolved).toBe(true)
+
+    // Second one still needs to wait for the first acquired slot to expire
+    await vi.advanceTimersByTimeAsync(60_000)
+    await p2
+    expect(p2Resolved).toBe(true)
   })
 })
 
@@ -110,10 +197,10 @@ describe('Shared instances', () => {
     resetSharedInstances()
   })
 
-  it('returns same bucket instance', () => {
-    const b1 = getSharedBucket(30)
-    const b2 = getSharedBucket(30)
-    expect(b1).toBe(b2)
+  it('returns same limiter instance', () => {
+    const l1 = getSharedLimiter(30)
+    const l2 = getSharedLimiter(30)
+    expect(l1).toBe(l2)
   })
 
   it('returns same semaphore instance', () => {
@@ -123,9 +210,9 @@ describe('Shared instances', () => {
   })
 
   it('resetSharedInstances creates new instances', () => {
-    const b1 = getSharedBucket(30)
+    const l1 = getSharedLimiter(30)
     resetSharedInstances()
-    const b2 = getSharedBucket(30)
-    expect(b1).not.toBe(b2)
+    const l2 = getSharedLimiter(30)
+    expect(l1).not.toBe(l2)
   })
 })

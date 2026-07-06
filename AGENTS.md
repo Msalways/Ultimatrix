@@ -1,11 +1,12 @@
 ## Ultimatrix v8 — Intelligence-Augmented Security Researcher
 
 ### Status
-- **809 tests (54 files), clean tsup build (ESM 1.19MB + CJS 1.21MB + DTS)**
+- **1050 tests (77 files), clean tsup build (ESM 1.24MB + CJS 1.25MB + DTS)**
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **21 skills** (7 core + 14 specialized), knowledge-based, not payload lists
 - **Skill-driven tool filtering**: Skills declare toolRefs in YAML frontmatter, tools filtered per-agent
 - **Human-in-the-Loop**: Browser visibility, action capture, session storage, flow reproduction
+- **FIX-PLAN v8.1 COMPLETED**: All 8 root-cause fixes implemented and verified (2026-07-06)
 - `@mastra/core` ^1.42.0, `playwright` ^1.52.0, `zod` ^4.0.0, `next` ^15.5.19
 
 ### Architecture — Dual Engine + Skill-Tool Wiring

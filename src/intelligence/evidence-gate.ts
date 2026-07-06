@@ -126,33 +126,27 @@ export class EvidenceGate {
     return [...this.evidenceBuffer]
   }
 
+  clear(): void {
+    this.evidenceBuffer = []
+    this.unsupportedClaims = []
+  }
+
   getBufferSummary(maxChars = 6000): string {
     const joined = this.evidenceBuffer.join('\n')
     if (joined.length <= maxChars) return joined
     return joined.slice(-maxChars)
   }
 
-  clear(): void {
-    this.evidenceBuffer = []
+  private isBoilerplate(sentence: string): boolean {
+    const s = sentence.toLowerCase()
+    return (
+      s.includes('the request') ||
+      s.includes('the response') ||
+      s.includes('the following') ||
+      s.includes('as shown') ||
+      s.includes('see above') ||
+      s.includes('note that') ||
+      s.length < 30
+    )
   }
-
-  private isBoilerplate(text: string): boolean {
-    const boilerplate = [
-      'the endpoint', 'the application', 'the server', 'the response',
-      'this is', 'it appears', 'based on', 'in general',
-    ]
-    const lower = text.toLowerCase()
-    return boilerplate.some(p => lower.startsWith(p))
-  }
-}
-
-let globalGate: EvidenceGate | null = null
-
-export function getGlobalEvidenceGate(): EvidenceGate {
-  if (!globalGate) globalGate = new EvidenceGate()
-  return globalGate
-}
-
-export function resetGlobalEvidenceGate(): void {
-  globalGate = null
 }

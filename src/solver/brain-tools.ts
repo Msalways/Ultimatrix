@@ -6,27 +6,32 @@
  *
  * Tool set is intentionally small (~30 tools) to minimize token overhead.
  * Workers get their own skill-filtered tool sets per-task.
+ * When engine is 'multi-model', brain gets selectModel tool for model-aware delegation.
  */
 
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
 import { Agent } from '@mastra/core/agent'
+import { createTool } from '@mastra/core/tools'
+import { z } from 'zod'
 import { resolveModel } from '../models/factory'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { getBrainInstructions } from './brain-instructions'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
 import { createSpawnSwarmTool } from '../manager/tools/spawn-swarm'
 import { createExecuteDirectTool } from '../manager/tools/execute-direct'
-import { createStagehandTools } from '@mastra/stagehand'
+import { wrapStagehandTools } from '../browser/dialog-inject'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+import { ModelSelector } from '../models/selector'
 
 // ─── Focused tool imports ───────────────────────────────────────────
 import { httpRequest, followRedirects } from '../tools/http-tools'
 import { recordEvidence, writeFinding } from '../tools/control-tools'
 import { askUser } from '../tools/interaction-tools'
+import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import {
   queryGraph, upsertPage, addAction, addInput,
   addEndpoint, addFinding, getTargetSummary, getEndpointsWithParams,
@@ -34,7 +39,7 @@ import {
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getOastUrlTool } from '../oast/tools'
-import { saveSession } from '../tools/flow-tools'
+import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
@@ -42,6 +47,7 @@ export interface SolverBrainOptions {
   browser?: StagehandBrowser
   memory?: MastraMemory
   extraContext?: string
+  modelSelector?: ModelSelector
 }
 
 function sanitizeTool(tool: any, provider?: string): any {
@@ -102,6 +108,7 @@ export function createSolverBrain(
     getCapturedHeaders: sanitizeTool(getCapturedHeaders, p),
     storeSession: sanitizeTool(storeSession, p),
     saveSession: sanitizeTool(saveSession, p),
+    restoreSession: sanitizeTool(restoreSession, p),
   }
 
   // ─── Orchestration tools (delegate to workers) ─────────────────
@@ -111,10 +118,43 @@ export function createSolverBrain(
     executeDirect: sanitizeTool(createExecuteDirectTool(config, options.skillRegistry), p),
   }
 
-  // ─── Interaction + OAST ────────────────────────────────────────
+  // ─── Interaction + OAST + Reactions ──────────────────────────────
   const miscTools: Record<string, any> = {
     askUser: sanitizeTool(askUser, p),
+    observeHumanActions: sanitizeTool(observeHumanActions, p),
     getOastUrl: sanitizeTool(getOastUrlTool, p),
+    detectReactions: sanitizeTool(detectReactions, p),
+    getDialogEvidence: sanitizeTool(getDialogEvidence, p),
+    getRecentChanges: sanitizeTool(getRecentChanges, p),
+  }
+
+  // ─── Model selection tool (multi-model engine only) ──────────────
+  const modelSelectionTools: Record<string, any> = {}
+  if (options.modelSelector || config.engine === 'multi-model') {
+    const selector = options.modelSelector ?? new ModelSelector(
+      config.modelCapabilities ?? {},
+      config.budgetPolicy ?? { enforcement: 'soft', scope: 'session', resetOn: 'never', allocation: { brain: 0.3, workers: 0.6, spider: 0.1 }, maxModelCallsPerTask: 15, trackTokens: false },
+      config,
+    )
+    modelSelectionTools.selectModel = sanitizeTool(createTool({
+      id: 'selectModel',
+      description: 'Select the optimal model for a worker task based on capabilities, budget, and rate limits',
+      inputSchema: z.object({
+        skillId: z.string().describe('ID of the skill'),
+        taskDescription: z.string().describe('Task description'),
+        complexity: z.enum(['low', 'medium', 'high', 'critical']).describe('Task complexity'),
+        requiredCapabilities: z.array(z.string()).optional().describe('Required model capabilities'),
+      }),
+      execute: async ({ skillId, taskDescription, complexity, requiredCapabilities }) => {
+        const selection = selector.selectForTask({
+          skillId,
+          taskDescription,
+          complexity,
+          requiredCapabilities,
+        }, 'worker')
+        return { ok: true, selection, explanation: selector.explainSelection(selection, { skillId, taskDescription, complexity }) }
+      },
+    }), p)
   }
 
   // ─── Merge all focused tools ───────────────────────────────────
@@ -125,11 +165,12 @@ export function createSolverBrain(
     ...sessionTools,
     ...orchestrationTools,
     ...miscTools,
+    ...modelSelectionTools,
   }
 
-  // ─── Browser tools ─────────────────────────────────────────────
+  // ─── Browser tools (wrapped with dialog evidence injection) ─────
   if (options.browser) {
-    Object.assign(allTools, createStagehandTools(options.browser))
+    Object.assign(allTools, wrapStagehandTools(options.browser))
   }
 
   // ─── Build agent ───────────────────────────────────────────────

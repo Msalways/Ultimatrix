@@ -2,7 +2,9 @@
 name: race-conditions
 description: "Race condition testing for TOCTOU, double-spend, and concurrent state manipulation"
 category: specialized
+tier: powerful
 toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding]
+triggers: ["race conditions", "toctou", "double spend", "concurrent state", "timing attacks", "race condition", "concurrent testing", "timing vulnerabilities", "thread safety", "race condition testing"]
 ---
 
 # Race Condition Testing

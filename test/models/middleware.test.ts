@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { wrapModel } from '../../src/models/middleware'
-import { resetSharedInstances } from '../../src/models/rate-limiter'
+import { resetAllProviderLimiters } from '../../src/models/limiter-factory'
+import { resetGlobalQuotaTracker } from '../../src/models/quota-tracker'
+import { getGlobalUsageTracker } from '../../src/usage/tracker'
 import type { UltimatrixConfig } from '../../src/config'
 
 function createMockModel() {
@@ -16,7 +18,7 @@ function createMockModel() {
     }),
     specificationVersion: 'v2' as const,
     provider: 'mock',
-    modelId: 'mock-model',
+    modelId: 'mock/mock-model',
     defaultObjectGenerationMode: undefined,
   }
 }
@@ -43,11 +45,13 @@ function makeConfig(overrides?: Partial<UltimatrixConfig['rateLimit']>): Ultimat
 
 describe('wrapModel', () => {
   beforeEach(() => {
-    resetSharedInstances()
+    resetAllProviderLimiters()
+    resetGlobalQuotaTracker()
   })
 
   afterEach(() => {
-    resetSharedInstances()
+    resetAllProviderLimiters()
+    resetGlobalQuotaTracker()
   })
 
   it('passes through when rate limiting disabled (requestsPerMinute: 0)', async () => {
@@ -84,7 +88,7 @@ describe('wrapModel', () => {
     const wrapped = wrapModel(model as any, config)
 
     expect((wrapped as any).provider).toBe('mock')
-    expect((wrapped as any).modelId).toBe('mock-model')
+    expect((wrapped as any).modelId).toBe('mock/mock-model')
   })
 
   it('retries on rate limit error', async () => {
@@ -104,7 +108,7 @@ describe('wrapModel', () => {
     const result = await (wrapped as any).doStream({ prompt: 'test' })
     expect(result.success).toBe(true)
     expect(attempts).toBe(3)
-  }, 15000)
+  }, 45000)
 
   it('throws after max retries exhausted', async () => {
     const model = createMockModel()
@@ -114,7 +118,7 @@ describe('wrapModel', () => {
     const wrapped = wrapModel(model as any, config)
 
     await expect((wrapped as any).doStream({ prompt: 'test' })).rejects.toThrow('ResourceExhausted')
-  }, 15000)
+  }, 45000)
 
   it('does not retry on non-rate-limit errors', async () => {
     const model = createMockModel()
@@ -170,4 +174,60 @@ describe('wrapModel', () => {
 
     expect(maxConcurrent).toBeLessThanOrEqual(2)
   }, 15000)
+
+  it('captures token usage from doGenerate responses', async () => {
+    const model = createMockModel()
+    model.doGenerate.mockImplementation(async () => {
+      return {
+        type: 'generate',
+        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+        text: 'result',
+      }
+    })
+
+    const tracker = getGlobalUsageTracker()
+    const before = tracker.getTotal().totalTokens
+
+    const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+    const wrapped = wrapModel(model as any, config)
+
+    const result = await (wrapped as any).doGenerate({ prompt: 'test', model: 'groq/llama3-8b-8192' })
+    expect(result.usage.inputTokens).toBe(100)
+
+    const after = tracker.getTotal()
+    expect(after.totalTokens).toBe(before + 150)
+    expect(after.inputTokens).toBeGreaterThanOrEqual(100)
+    expect(after.outputTokens).toBeGreaterThanOrEqual(50)
+  })
+
+  it('does not capture usage from doStream (only doGenerate)', async () => {
+    const model = createMockModel()
+    model.doStream.mockImplementation(async () => {
+      return { type: 'stream', usage: { inputTokens: 100, outputTokens: 50 } }
+    })
+
+    const tracker = getGlobalUsageTracker()
+    const before = tracker.getTotal().totalTokens
+
+    const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+    const wrapped = wrapModel(model as any, config)
+
+    await (wrapped as any).doStream({ prompt: 'test' })
+
+    const after = tracker.getTotal()
+    expect(after.totalTokens).toBe(before)
+  })
+
+  it('handles doGenerate with undefined usage gracefully', async () => {
+    const model = createMockModel()
+    model.doGenerate.mockImplementation(async () => {
+      return { type: 'generate', text: 'result' }
+    })
+
+    const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+    const wrapped = wrapModel(model as any, config)
+
+    const result = await (wrapped as any).doGenerate({ prompt: 'test' })
+    expect(result.type).toBe('generate')
+  })
 })

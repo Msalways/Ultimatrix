@@ -25,19 +25,22 @@ export function createSkillLoadTool(skillRegistry: SkillRegistry) {
       const skill = skillRegistry.get(skillId)
       
       if (!skill) {
-        return { skill: null }
+        return { ok: true, value: { skill: null } }
       }
       
       return {
-        skill: {
-          id: skill.id,
-          name: skill.name,
-          description: skill.description,
-          category: skill.category,
-          tier: skill.tier,
-          instructions: skill.instructions,
-          inputSchema: skill.inputSchema,
-          outputSchema: skill.outputSchema,
+        ok: true,
+        value: {
+          skill: {
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+            category: skill.category,
+            tier: skill.tier,
+            instructions: skill.instructions,
+            inputSchema: skill.inputSchema,
+            outputSchema: skill.outputSchema,
+          },
         },
       }
     },

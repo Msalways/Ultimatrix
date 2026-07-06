@@ -59,10 +59,11 @@
     "open-redirect",
     "security-headers"
   ],
-  "author": "Ultimatrix Team",
+  "author": "Shanthosh",
   "license": "MIT",
   "dependencies": {
     "@ai-sdk/react": "^1.2.12",
+    "@inquirer/prompts": "^8.5.2",
     "@mastra/ai-sdk": "^1.4.5",
     "@mastra/core": "^1.42.0",
     "@mastra/libsql": "^1.13.0",
@@ -87,6 +88,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "headroom-ai": "^0.22.4",
     "js-yaml": "^4.1.1",
     "lucide-react": "^0.400.0",
     "marked": "^15.0.12",

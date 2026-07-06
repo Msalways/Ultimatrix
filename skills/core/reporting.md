@@ -2,7 +2,9 @@
 name: reporting
 description: "Transforming technical findings into actionable reports with severity classification and remediation"
 category: core
+tier: fast
 toolRefs: [readReport, queryGraph, detectChains, updateGraph, writeFinding]
+triggers: ["generate report", "create report", "write report", "findings report", "assessment report", "security report", "vulnerability report", "remediation report", "risk assessment", "report findings"]
 ---
 
 # Reporting

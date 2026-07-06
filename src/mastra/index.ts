@@ -2,7 +2,8 @@ import { Agent } from '@mastra/core/agent'
 import { createToolRegistry, ToolRegistry } from './tools.js'
 import { SkillRegistry } from '../skills/registry.js'
 import { WorkerPool } from '../workers/pool.js'
-import { StagehandBrowser, createStagehandTools } from '@mastra/stagehand'
+import { StagehandBrowser } from '@mastra/stagehand'
+import { wrapStagehandTools } from '../browser/dialog-inject'
 import { UltimatrixConfig } from '../config.js'
 import { resolveModel } from '../models/factory.js'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer.js'
@@ -67,7 +68,7 @@ export function createAgent(
   }
 
   if (options?.browser) {
-    Object.assign(allTools, createStagehandTools(options.browser))
+    Object.assign(allTools, wrapStagehandTools(options.browser))
   }
 
   const skillInstructions = options?.skills
@@ -118,11 +119,11 @@ Attack Protocol:
 6. If you need to test many endpoints in parallel, spawn workers
 
 Human-in-the-Loop (Mutual Attack):
-- If you need the human to log in, solve a CAPTCHA, or perform a manual action:
-  call askUser({ waitForBrowserAction: true, question: "..." })
+- If the client says they will handle something (log in, solve CAPTCHA, do an action), navigate to the target and let them — do NOT call askUser
+- askUser is the LAST RESORT, not the first option — only when YOU are stuck and cannot proceed
+- When you DO need askUser: call askUser({ waitForBrowserAction: true, question: "..." })
 - The human acts in the browser window, you capture what they did
 - After they act: observeHumanActions() → saveSession() → continue testing
-- If you're stuck on authentication: ask the human to demonstrate, then reproduce
 
 Safety:
 - Only test the authorized target
@@ -159,10 +160,27 @@ export function createReconAgent(
     cloudMetadataProbe: toolRegistry.cloudMetadataProbe,
     httpRequest: toolRegistry.httpRequest,
     findEndpointsInResponse: toolRegistry.findEndpointsInResponse,
+    getCapturedHeaders: toolRegistry.getCapturedHeaders,
+    storeSession: toolRegistry.storeSession,
+    evaluateRendered: toolRegistry.evaluateRendered,
+    recordEvidence: toolRegistry.recordEvidence,
+    recordTestCase: toolRegistry.recordTestCase,
+    updateGraph: toolRegistry.updateGraph,
+    queryGraph: toolRegistry.queryGraph,
+    upsertPage: toolRegistry.upsertPage,
+    addAction: toolRegistry.addAction,
+    addEndpoint: toolRegistry.addEndpoint,
+    askUser: toolRegistry.askUser,
+    detectReactions: toolRegistry.detectReactions,
+    getDialogEvidence: toolRegistry.getDialogEvidence,
+    getRecentChanges: toolRegistry.getRecentChanges,
+    saveSession: toolRegistry.saveSession,
+    restoreSession: toolRegistry.restoreSession,
+    observeHumanActions: toolRegistry.observeHumanActions,
   }
 
   if (browser) {
-    Object.assign(reconTools, createStagehandTools(browser))
+    Object.assign(reconTools, wrapStagehandTools(browser))
   }
 
   const agentConfig: any = {
@@ -170,25 +188,6 @@ export function createReconAgent(
     name: 'Recon Worker',
     model: resolveModel(config),
     tools: sanitizeToolRecord(reconTools, config.provider),
-    instructions: `
-You are a reconnaissance specialist focused on mapping the attack surface of web applications.
-
-Your mission:
-1. Discover all accessible endpoints and functionality
-2. Identify technologies and frameworks in use
-3. Map authentication flows and session management
-4. Find potential entry points for further testing
-5. Document findings for other agents to use
-
-Focus on:
-- Endpoint discovery and mapping
-- Technology fingerprinting
-- Authentication flow analysis
-- Metadata and configuration exposure
-- API introspection
-
-Be thorough and systematic in your approach.
-`,
   }
 
   if (memory) agentConfig.memory = memory
@@ -221,10 +220,22 @@ export function createInjectionAgent(
     writeFinding: toolRegistry.writeFinding,
     queryGraph: toolRegistry.queryGraph,
     updateGraph: toolRegistry.updateGraph,
+    getCapturedHeaders: toolRegistry.getCapturedHeaders,
+    storeSession: toolRegistry.storeSession,
+    findEndpointsInResponse: toolRegistry.findEndpointsInResponse,
+    measureTiming: toolRegistry.measureTiming,
+    compareResponses: toolRegistry.compareResponses,
+    omitHeader: toolRegistry.omitHeader,
+    getOastUrlTool: toolRegistry.getOastUrlTool,
+    checkOastCallbacks: toolRegistry.checkOastCallbacks,
+    recordTestCase: toolRegistry.recordTestCase,
+    detectReactions: toolRegistry.detectReactions,
+    getDialogEvidence: toolRegistry.getDialogEvidence,
+    getRecentChanges: toolRegistry.getRecentChanges,
   }
 
   if (browser) {
-    Object.assign(injectionTools, createStagehandTools(browser))
+    Object.assign(injectionTools, wrapStagehandTools(browser))
   }
 
   const agentConfig: any = {
@@ -232,26 +243,6 @@ export function createInjectionAgent(
     name: 'Injection Worker',
     model: resolveModel(config),
     tools: sanitizeToolRecord(injectionTools, config.provider),
-    instructions: `
-You are an injection testing specialist focused on finding and exploiting injection vulnerabilities.
-
-Your mission:
-1. Test for SQL injection, XSS, command injection, and other injection types
-2. Bypass security controls and filters
-3. Document injection points and their impact
-4. Generate proof-of-concept payloads
-5. Chain injection findings with other vulnerabilities
-
-Focus on:
-- Parameter testing and manipulation
-- Filter bypass techniques
-- Error-based and blind injection
-- Stored vs reflected XSS
-- Command injection and RCE
-- XML and template injection
-
-Be methodical and document all findings thoroughly.
-`,
   }
 
   if (memory) agentConfig.memory = memory
@@ -284,10 +275,20 @@ export function createAuthControlAgent(
     queryGraph: toolRegistry.queryGraph,
     updateGraph: toolRegistry.updateGraph,
     getAuthFlows: toolRegistry.getAuthFlows,
+    getCapturedHeaders: toolRegistry.getCapturedHeaders,
+    storeSession: toolRegistry.storeSession,
+    findEndpointsInResponse: toolRegistry.findEndpointsInResponse,
+    evaluateRendered: toolRegistry.evaluateRendered,
+    omitHeader: toolRegistry.omitHeader,
+    recordTestCase: toolRegistry.recordTestCase,
+    askUser: toolRegistry.askUser,
+    detectReactions: toolRegistry.detectReactions,
+    getDialogEvidence: toolRegistry.getDialogEvidence,
+    getRecentChanges: toolRegistry.getRecentChanges,
   }
 
   if (browser) {
-    Object.assign(authTools, createStagehandTools(browser))
+    Object.assign(authTools, wrapStagehandTools(browser))
   }
 
   const agentConfig: any = {
@@ -295,26 +296,6 @@ export function createAuthControlAgent(
     name: 'Auth Control Worker',
     model: resolveModel(config),
     tools: sanitizeToolRecord(authTools, config.provider),
-    instructions: `
-You are an authentication testing specialist focused on finding and exploiting authentication vulnerabilities.
-
-Your mission:
-1. Test authentication flows for weaknesses
-2. Identify session management issues
-3. Test for privilege escalation and broken access control
-4. Document authentication bypass techniques
-5. Analyze RBAC and permission systems
-
-Focus on:
-- Login form testing
-- Session fixation and hijacking
-- Access control testing
-- Privilege escalation
-- Token manipulation
-- OAuth and SAML testing
-
-Be systematic and respect authentication boundaries.
-`,
   }
 
   if (memory) agentConfig.memory = memory
@@ -353,10 +334,18 @@ export function createAdvancedAgent(
     getUntestedActions: toolRegistry.getUntestedActions,
     frameworkFingerprint: toolRegistry.frameworkFingerprint,
     cloudMetadataProbe: toolRegistry.cloudMetadataProbe,
+    getCapturedHeaders: toolRegistry.getCapturedHeaders,
+    storeSession: toolRegistry.storeSession,
+    findEndpointsInResponse: toolRegistry.findEndpointsInResponse,
+    omitHeader: toolRegistry.omitHeader,
+    recordTestCase: toolRegistry.recordTestCase,
+    detectReactions: toolRegistry.detectReactions,
+    getDialogEvidence: toolRegistry.getDialogEvidence,
+    getRecentChanges: toolRegistry.getRecentChanges,
   }
 
   if (browser) {
-    Object.assign(advancedTools, createStagehandTools(browser))
+    Object.assign(advancedTools, wrapStagehandTools(browser))
   }
 
   const agentConfig: any = {
@@ -364,26 +353,6 @@ export function createAdvancedAgent(
     name: 'Advanced Worker',
     model: resolveModel(config),
     tools: sanitizeToolRecord(advancedTools, config.provider),
-    instructions: `
-You are an advanced security testing specialist focused on complex vulnerabilities and attack chains.
-
-Your mission:
-1. Test for advanced vulnerabilities like SSRF, XXE, deserialization
-2. Identify complex attack chains and multi-step exploits
-3. Analyze business logic flaws and design issues
-4. Test for race conditions and time-based vulnerabilities
-5. Document comprehensive attack scenarios
-
-Focus on:
-- Server-side request forgery
-- XML external entity attacks
-- Deserialization vulnerabilities
-- Business logic flaws
-- Race conditions and timing attacks
-- Complex multi-step exploits
-
-Be thorough and creative in your approach.
-`,
   }
 
   if (memory) agentConfig.memory = memory

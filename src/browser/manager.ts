@@ -4,12 +4,25 @@ import { PROVIDER_INFO } from '../config'
 import { log } from '../utils/logger'
 import { mkdirSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
+import { stopDialogWatcher } from './dialog-watcher'
+import { getGlobalReactionObserver } from './reaction-observer'
 
 let browser: StagehandBrowser | null = null
 let activeBrowserRef: StagehandBrowser | null = null
+let creating = false
 
 const STAGEHAND_FAST_PROVIDER = 'groq'
 const STAGEHAND_FAST_MODEL = 'llama-3.1-8b-instant'
+
+const STAGEHAND_NATIVE_PROVIDERS = new Set([
+  'openai', 'anthropic', 'groq', 'google', 'cerebras', 'xai', 'azure',
+  'togetherai', 'together', 'mistral', 'deepseek', 'perplexity', 'ollama',
+  'vertex', 'bedrock', 'openrouter',
+])
+
+function stagehandProvider(raw: string): string {
+  return STAGEHAND_NATIVE_PROVIDERS.has(raw) ? raw : 'openai'
+}
 
 function deriveStagehandModel(config: UltimatrixConfig) {
   if (config.provider === STAGEHAND_FAST_PROVIDER) {
@@ -20,38 +33,36 @@ function deriveStagehandModel(config: UltimatrixConfig) {
   }
 
   if (config.modelTiers?.fast) {
-    const fastModel = config.modelTiers.fast
-    const slashIdx = fastModel.indexOf('/')
-    const fastProvider = slashIdx !== -1 ? fastModel.slice(0, slashIdx) : STAGEHAND_FAST_PROVIDER
-    const fastModelId = slashIdx !== -1 ? fastModel.slice(slashIdx + 1) : fastModel
+    const fastTier = config.modelTiers.fast
+    const fastProvider = fastTier.provider
+    const fastModelId = fastTier.model
 
     const creds = config.creds?.[fastProvider] as { apiKey?: string; baseUrl?: string } | undefined
     const apiKey = creds?.apiKey || process.env[PROVIDER_INFO[fastProvider]?.envVar] || ''
     const baseURL = creds?.baseUrl || PROVIDER_INFO[fastProvider]?.defaultBaseUrl
-    return { modelName: `${fastProvider}/${fastModelId}`, apiKey, baseURL }
+    return { modelName: `${stagehandProvider(fastProvider)}/${fastModelId}`, apiKey, baseURL }
   }
-
-  const stagehandNativeProviders = new Set([
-    'openai', 'anthropic', 'groq', 'google', 'cerebras', 'xai', 'azure',
-    'togetherai', 'together', 'mistral', 'deepseek', 'perplexity', 'ollama',
-    'vertex', 'bedrock', 'openrouter',
-  ])
 
   const provider = config.provider
   const model = config.model
   const creds = config.creds?.[provider] as { apiKey?: string; baseUrl?: string } | undefined
   const apiKey = creds?.apiKey || process.env[PROVIDER_INFO[provider]?.envVar] || ''
   const baseURL = creds?.baseUrl || PROVIDER_INFO[provider]?.defaultBaseUrl
-
-  if (stagehandNativeProviders.has(provider)) {
-    return { modelName: `${provider}/${model}`, apiKey, baseURL }
-  }
-
-  return { modelName: `openai/${model}`, apiKey, baseURL }
+  return { modelName: `${stagehandProvider(provider)}/${model}`, apiKey, baseURL }
 }
 
 export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
-  if (!browser) {
+  if (browser) return browser
+  if (creating) {
+    // Wait for the other creation to finish
+    const start = Date.now()
+    while (creating && Date.now() - start < 30_000) {
+      // busy wait — creation is fast
+    }
+    if (browser) return browser!
+  }
+  creating = true
+  try {
     const stagehandModel = deriveStagehandModel(config)
     browser = new StagehandBrowser({
       headless: config.browser.headless,
@@ -67,13 +78,17 @@ export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
     })
     activeBrowserRef = browser
 
-    // Log Stagehand model for debugging
-    log.dim(`🤖 Stagehand browser initialized with model: ${stagehandModel.modelName}`)
+    log.dim(`Stagehand browser initialized with model: ${stagehandModel.modelName}`)
+  } finally {
+    creating = false
   }
-  return browser
+  return browser!
 }
 
 export function setActiveBrowser(b: StagehandBrowser): void {
+  if (activeBrowserRef && activeBrowserRef !== b && browser !== b) {
+    activeBrowserRef.close().catch(() => {})
+  }
   activeBrowserRef = b
 }
 
@@ -83,7 +98,13 @@ export function getActiveBrowser(): StagehandBrowser | null {
 
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    await browser.close()
+    try {
+      stopDialogWatcher()
+      getGlobalReactionObserver().detach()
+      await browser.close()
+    } catch (err) {
+      log.dim(`Browser close error: ${err instanceof Error ? err.message : String(err)}`)
+    }
     browser = null
     activeBrowserRef = null
   }

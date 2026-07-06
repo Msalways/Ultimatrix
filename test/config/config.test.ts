@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { validateConfig } from '../../src/config'
 import { resolveModel } from '../../src/models/factory'
 import type { UltimatrixConfig } from '../../src/config'
+import { DEFAULTS } from '../../src/config'
 
 function baseConfig(overrides: Partial<UltimatrixConfig> = {}): UltimatrixConfig {
   return {
@@ -46,7 +47,7 @@ describe('validateConfig', () => {
       model: 'llama3-8b-8192',
       target: 'https://example.com',
       creds: { groq: { apiKey: 'gsk_xxx' } },
-      modelTiers: { powerful: 'anthropic/claude-sonnet-4' },
+      modelTiers: { powerful: { provider: 'anthropic', model: 'claude-sonnet-4' } },
     })).toThrow('creds.anthropic is required')
   })
 
@@ -75,7 +76,7 @@ describe('validateConfig', () => {
     expect(config.browser.viewport).toEqual({ width: 1280, height: 720 })
     expect(config.memory.lastMessages).toBe(10)
     expect(config.agent.maxSteps).toBe(25)
-    expect(config.rateLimit.requestsPerMinute).toBe(25)
+    expect(config.rateLimit.requestsPerMinute).toBe(15)
     expect(config.rateLimit.maxConcurrent).toBe(2)
     expect(config.rateLimit.retryOnLimit).toBe(true)
     expect(config.rateLimit.maxRetries).toBe(3)
@@ -158,7 +159,7 @@ describe('engine config', () => {
       model: 'llama3-8b-8192',
       creds: { groq: { apiKey: 'gsk_xxx' } },
       engine: 'hybrid',
-    })).toThrow('engine must be "legacy" or "solver"')
+    })).toThrow('engine must be "legacy", "solver", or "multi-model"')
   })
 
   it('accepts solver config block', () => {
@@ -295,14 +296,14 @@ describe('resolveModel', () => {
 
   it('returns tier-specific model with exact model ID', () => {
     const config = baseConfig({
-      modelTiers: { fast: 'groq/llama3-8b-8192' },
+      modelTiers: { fast: { provider: 'groq', model: 'llama3-8b-8192' } },
       creds: {
         openai: { apiKey: 'test-key' },
         groq: { apiKey: 'gsk_xxx' },
       },
     })
     const model = resolveModel(config, 'fast')
-    expect((model as any).modelId).toBe('groq/llama3-8b-8192')
+    expect((model as any).modelId).toBe('llama3-8b-8192')
   })
 
   it('falls back to default when tier not configured', () => {
@@ -356,9 +357,9 @@ describe('resolveModel', () => {
       provider: 'groq',
       model: 'llama3-8b-8192',
       modelTiers: {
-        fast: 'groq/llama3-8b-8192',
-        balanced: 'openai/gpt-4o',
-        powerful: 'anthropic/claude-sonnet-4',
+        fast: { provider: 'groq', model: 'llama3-8b-8192' },
+        balanced: { provider: 'openai', model: 'gpt-4o' },
+        powerful: { provider: 'anthropic', model: 'claude-sonnet-4' },
       },
       creds: {
         groq: { apiKey: 'gsk_xxx' },
@@ -368,12 +369,157 @@ describe('resolveModel', () => {
     })
 
     const fast = resolveModel(config, 'fast')
-    expect((fast as any).modelId).toBe('groq/llama3-8b-8192')
+    expect((fast as any).modelId).toBe('llama3-8b-8192')
 
     const balanced = resolveModel(config, 'balanced')
-    expect((balanced as any).modelId).toBe('openai/gpt-4o')
+    expect((balanced as any).modelId).toBe('gpt-4o')
 
     const powerful = resolveModel(config, 'powerful')
-    expect((powerful as any).modelId).toBe('anthropic/claude-sonnet-4')
+    expect((powerful as any).modelId).toBe('claude-sonnet-4')
+  })
+})
+
+describe('budgetPolicy validation', () => {
+  it('accepts valid budget policy', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      budgetPolicy: {
+        enforcement: 'hard',
+        scope: 'turn',
+        resetOn: 'turn',
+        allocation: { brain: 0.4, workers: 0.5, spider: 0.1 },
+        maxModelCallsPerTask: 20,
+        trackTokens: true,
+      },
+    })).not.toThrow()
+  })
+
+  it('rejects allocation sum > 1.0', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      budgetPolicy: {
+        enforcement: 'soft',
+        scope: 'session',
+        resetOn: 'never',
+        allocation: { brain: 0.5, workers: 0.5, spider: 0.5 },
+        maxModelCallsPerTask: 10,
+        trackTokens: false,
+      },
+    })).toThrow('allocation sums')
+  })
+
+  it('rejects invalid enforcement value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      budgetPolicy: {
+        enforcement: 'strict',
+        scope: 'session',
+        resetOn: 'never',
+        allocation: { brain: 0.3, workers: 0.6, spider: 0.1 },
+        maxModelCallsPerTask: 10,
+        trackTokens: false,
+      },
+    })).toThrow('enforcement')
+  })
+
+  it('rejects invalid scope value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      budgetPolicy: {
+        enforcement: 'soft',
+        scope: 'global',
+        resetOn: 'never',
+        allocation: { brain: 0.3, workers: 0.6, spider: 0.1 },
+        maxModelCallsPerTask: 10,
+        trackTokens: false,
+      },
+    })).toThrow('scope')
+  })
+
+  it('rejects negative maxModelCallsPerTask', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      budgetPolicy: {
+        enforcement: 'soft',
+        scope: 'session',
+        resetOn: 'never',
+        allocation: { brain: 0.3, workers: 0.6, spider: 0.1 },
+        maxModelCallsPerTask: -5,
+        trackTokens: false,
+      },
+    })).toThrow('maxModelCallsPerTask')
+  })
+})
+
+describe('providerRateLimits validation', () => {
+  it('accepts valid provider rate limits', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      providerRateLimits: {
+        groq: { requestsPerMinute: 30, tokensPerMinute: 100000, maxConcurrent: 3, retryOnLimit: true, maxRetries: 5 },
+      },
+    })).not.toThrow()
+  })
+
+  it('rejects negative requestsPerMinute', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      providerRateLimits: {
+        groq: { requestsPerMinute: -10, maxConcurrent: 3, retryOnLimit: true, maxRetries: 3 },
+      },
+    })).toThrow('requestsPerMinute must be positive')
+  })
+
+  it('rejects negative tokensPerMinute', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      providerRateLimits: {
+        groq: { requestsPerMinute: 30, tokensPerMinute: -1, maxConcurrent: 3, retryOnLimit: true, maxRetries: 3 },
+      },
+    })).toThrow('tokensPerMinute must be positive')
+  })
+})
+
+describe('multi-model engine', () => {
+  it('accepts multi-model engine', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'multi-model',
+    })).not.toThrow()
+  })
+})
+
+describe('DEFAULTS extended fields', () => {
+  it('has rateLimit defaults with new fields', () => {
+    expect(DEFAULTS.rateLimit.backoffStrategy).toBe('stepped')
+    expect(DEFAULTS.rateLimit.baseBackoffMs).toBe(2000)
+    expect(DEFAULTS.rateLimit.maxBackoffMs).toBe(30000)
+  })
+
+  it('has budgetPolicy defaults', () => {
+    expect(DEFAULTS.budgetPolicy.enforcement).toBe('soft')
+    expect(DEFAULTS.budgetPolicy.scope).toBe('session')
+    expect(DEFAULTS.budgetPolicy.resetOn).toBe('never')
+    expect(DEFAULTS.budgetPolicy.allocation).toEqual({ brain: 0.3, workers: 0.6, spider: 0.1 })
+    expect(DEFAULTS.budgetPolicy.maxModelCallsPerTask).toBe(15)
+    expect(DEFAULTS.budgetPolicy.trackTokens).toBe(false)
   })
 })

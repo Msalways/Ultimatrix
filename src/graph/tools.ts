@@ -20,7 +20,11 @@ export const queryGraph = createTool({
   execute: async ({ type, url, method, tags, limit }) => {
     try {
       const store = getGlobalGraphStore()
-      const result = store.queryNodes(type, { url, method, tags } as any)
+      const filters: Record<string, unknown> = {}
+      if (url !== undefined) filters.url = url
+      if (method !== undefined) filters.method = method
+      if (tags !== undefined) filters.tags = tags
+      const result = store.queryNodes(type, Object.keys(filters).length > 0 ? filters : undefined)
       return { ok: true, value: result.slice(0, limit || 50) }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -250,7 +254,7 @@ export const addAuthFlow = createTool({
   description: 'Record an authentication flow (login, logout, token refresh, OAuth).',
   inputSchema: z.object({
     flowType: z.string().describe('Flow type: login, logout, token_refresh, oauth, registration'),
-    steps: z.array(z.string()).optional().describe('Flow steps description'),
+    steps: z.array(z.union([z.string(), z.object({ action: z.string(), url: z.string().optional(), selector: z.string().optional(), value: z.string().optional() })])).optional().describe('Flow steps — strings or structured step objects'),
     reusable: z.boolean().optional().describe('Whether this flow is reusable'),
     startUrl: z.string().optional().describe('Starting URL'),
     endUrl: z.string().optional().describe('Ending URL after flow'),

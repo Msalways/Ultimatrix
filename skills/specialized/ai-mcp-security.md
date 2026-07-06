@@ -2,7 +2,9 @@
 name: ai-mcp-security
 description: "AI and MCP security testing: prompt injection, data leakage, tool abuse, and guardrail bypass"
 category: specialized
+tier: balanced
 toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding]
+triggers: ["ai security", "mcp security", "prompt injection", "data leakage", "tool abuse", "guardrail bypass", "ai testing", "machine learning security", "llm security", "ai vulnerabilities"]
 ---
 
 # AI and MCP Security

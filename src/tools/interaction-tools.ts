@@ -40,7 +40,7 @@ function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS): Promise<string> {
 
 export const askUser = createTool({
   id: 'askUser',
-  description: 'Ask the user a question and wait for their response. Optionally wait for them to perform an action in the browser.',
+  description: 'Ask the user a question and wait for their response. LAST RESORT — only use when YOU are stuck and cannot proceed without human help (CAPTCHA, specific credentials needed, decision between attack paths). If the client says they will handle something, navigate to the target and let them do it instead.',
   inputSchema: z.object({
     question: z.string().describe('The question or request to show the user'),
     options: z.array(z.string()).optional().describe('Multiple choice options'),

@@ -10,11 +10,12 @@ import { readAppModelSection, writeAppModelSection } from '../tools/app-model-to
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from '../tools/recon-tools'
 import { askUser } from '../tools/interaction-tools'
 import { getOastUrlTool, checkOastCallbacks, clearOastCallbacks } from '../oast/tools'
-import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
+import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getFullContext } from '../manager/tools/get-full-context'
 import { addDiscovery } from '../tools/user-discovery'
 import { detectChainsTool } from '../tools/detect-chains-tool'
+import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import { readReportTool, setForensicLog, getForensicLog } from '../tools/report-tools'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
@@ -55,6 +56,8 @@ export type ToolRegistry = {
   getAttackPath: typeof getAttackPath
   getUntestedActions: typeof getUntestedActions
   getAuthFlows: typeof getAuthFlows
+  getTargetSummary: typeof getTargetSummary
+  getEndpointsWithParams: typeof getEndpointsWithParams
   upsertPage: typeof upsertPage
   addAction: typeof addAction
   addInput: typeof addInput
@@ -113,6 +116,11 @@ export type ToolRegistry = {
   observeHumanActions: typeof observeHumanActions
   saveLearnedFlow: typeof saveLearnedFlow
   reproduceFlow: typeof reproduceFlow
+
+  // Reaction Tools (UI feedback detection)
+  detectReactions: typeof detectReactions
+  getDialogEvidence: typeof getDialogEvidence
+  getRecentChanges: typeof getRecentChanges
 }
 
 // Centralized tool registry with consistent IDs
@@ -155,6 +163,8 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     getAttackPath,
     getUntestedActions,
     getAuthFlows,
+    getTargetSummary,
+    getEndpointsWithParams,
     upsertPage,
     addAction,
     addInput,
@@ -213,6 +223,11 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     observeHumanActions,
     saveLearnedFlow,
     reproduceFlow,
+
+    // Reaction Tools (UI feedback detection)
+    detectReactions,
+    getDialogEvidence,
+    getRecentChanges,
   }
 }
 
@@ -1281,6 +1296,27 @@ export const TOOL_METADATA: Record<ToolId, {
     inputSchema: z.object({ flowName: z.string() }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
   },
+  detectReactions: {
+    id: 'detectReactions',
+    description: 'Detect UI reactions after a browser action (modals, toasts, errors, dialogs).',
+    category: 'observation' as const,
+    inputSchema: z.object({ sinceSeconds: z.number().optional() }),
+    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
+  },
+  getDialogEvidence: {
+    id: 'getDialogEvidence',
+    description: 'Check for native dialog evidence (alert/confirm/prompt) — useful for XSS proof.',
+    category: 'observation' as const,
+    inputSchema: z.object({ sinceSeconds: z.number().optional() }),
+    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
+  },
+  getRecentChanges: {
+    id: 'getRecentChanges',
+    description: 'Get recent DOM changes — what changed on the page in the last N seconds.',
+    category: 'observation' as const,
+    inputSchema: z.object({ sinceSeconds: z.number().optional() }),
+    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
+  },
 }
 
 // Tool validation function
@@ -1334,4 +1370,5 @@ export {
   getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
   loadSkillReference, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
+  detectReactions, getDialogEvidence, getRecentChanges,
 }

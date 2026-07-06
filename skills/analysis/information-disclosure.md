@@ -2,7 +2,9 @@
 name: information-disclosure
 description: "Information disclosure testing for verbose errors, sensitive data exposure, debug leaks, and exposed secrets"
 category: specialized
+tier: balanced
 toolRefs: [httpRequest, parseResponse, findEndpointsInResponse, evaluateRendered, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+triggers: ["information disclosure", "data exposure", "verbose errors", "sensitive data", "debug leaks", "exposed secrets", "info disclosure", "data leaks", "security leaks", "sensitive information"]
 ---
 
 # Information Disclosure Testing

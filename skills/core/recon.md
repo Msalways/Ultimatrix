@@ -2,7 +2,9 @@
 name: recon
 description: "Reconnaissance and attack surface mapping through passive and active intelligence gathering"
 category: core
+tier: fast
 toolRefs: [httpRequest, runRecon, frameworkFingerprint, findEndpointsInResponse, queryGraph, updateGraph, evaluateRendered, followRedirects, recordEvidence, writeFinding, getCapturedHeaders]
+triggers: ["find all endpoints", "map the attack surface", "reconnaissance", "discovery", "enumerate", "fingerprint technology", "find api endpoints", "passive scanning", "attack surface mapping", "endpoint discovery"]
 ---
 
 # Reconnaissance

@@ -2,7 +2,9 @@
 name: ctf-crypto
 description: "CTF cryptographic challenges: RSA attacks, padding oracles, hash extension, and encoding chains"
 category: specialized
+tier: balanced
 toolRefs: [httpRequest, parseResponse, encodeDecode, jwtDecode, updateGraph, writeFinding]
+triggers: ["ctf crypto", "cryptographic challenges", "rsa attacks", "padding oracles", "hash extension", "crypto puzzles", "ctf challenges", "cryptography", "crypto competition", "encryption challenges"]
 ---
 
 # CTF Cryptographic Challenges

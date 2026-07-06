@@ -2,7 +2,9 @@
 name: business-logic
 description: "Business logic flaw testing: workflow bypass, data manipulation, race conditions, and state integrity"
 category: specialized
+tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+triggers: ["business logic", "workflow bypass", "data manipulation", "race conditions", "state integrity", "logic flaws", "business testing", "workflow testing", "business vulnerabilities", "application logic"]
 ---
 
 # Business Logic Testing
