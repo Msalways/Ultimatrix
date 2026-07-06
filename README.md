@@ -20,8 +20,9 @@ It finds vulnerabilities that pattern-based scanners miss, because it understand
 - [Why Ultimatrix?](#why-ultimatrix)
 - [How It Works](#how-it-works)
 - [Architecture Overview](#architecture-overview)
+- [Three Engine Architecture](#three-engine-architecture)
 - [The Intelligence Layer](#the-intelligence-layer)
-- [Dual Engine Architecture](#dual-engine-architecture)
+- [Multi-Model Routing](#multi-model-routing)
 - [21 Knowledge-Based Skills](#21-knowledge-based-skills)
 - [Human-in-the-Loop](#human-in-the-loop)
 - [Graph-Powered Reasoning](#graph-powered-reasoning)
@@ -49,8 +50,9 @@ Security tools fall into two camps: **signature scanners** that match known patt
 | Self-correction | None | Human | Reflexion engine |
 | Browser interaction | No | Yes | Yes (Stagehand) |
 | Session persistence | No | Manual | Automatic |
-| Multi-model support | No | N/A | 15 providers |
+| Multi-model support | No | N/A | 16 providers, 3 tiers |
 | Response compression | No | N/A | Headroom AI |
+| Model routing | No | N/A | Dynamic per-task |
 
 **The key insight:** Observation is the foundation of security testing. Before Ultimatrix attacks anything, it maps your entire attack surface — endpoints, authentication flows, role-based access, technology stack, exposed secrets, JavaScript bundles. It builds a **knowledge graph**. Then it reasons over that graph to decide what's worth testing and how.
 
@@ -120,60 +122,72 @@ That's not a toy. That's a security consultant that works 24/7.
                               │  scan | learn | replay    │
                               └────────────┬─────────────┘
                                            │
-                              ┌────────────▼─────────────┐
-                              │    Engine Selector        │
-                              │  config.engine:           │
-                              │  'legacy' | 'solver'      │
-                              └─────┬──────────────┬─────┘
-                                    │              │
-               ┌────────────────────▼──┐    ┌──────▼──────────────────┐
-               │  Legacy Supervisor    │    │  Solver Engine (OODA)   │
-               │  ─────────────────    │    │  ────────────────────   │
-               │  Observe → Learn →    │    │  REASON → EXPLORE →     │
-               │  Attack → Loop        │    │  CONCLUDE → loop        │
-               │                       │    │                         │
-               │  4 Specialist Workers │    │  Blackboard state-space │
-               │  • injection          │    │  (Fact/Intent tracking) │
-               │  • authControl        │    │                         │
-               │  • advanced           │    │                         │
-               │  • recon              │    │                         │
-               └───────────┬───────────┘    └────────────┬───────────┘
-                           │                             │
-               ┌───────────▼─────────────────────────────▼───────────┐
-               │              Shared Intelligence Layer              │
-               │  ─────────────────────────────────────────          │
-               │  • Evidence Gate (anti-hallucination)               │
-               │  • Reflexion Engine (failure classification)        │
-               │  • Anti-Loop Detector (stale/dead-end detection)    │
-               │  • Knowledge Graph (11 node types, 12 edge types)  │
-               │  • Skill Library (21 knowledge-based skills)        │
-               │  • Headroom Compression (response headroom)         │
-               │  • Session Manager (cookie expiry validation)       │
-               └───────────────────────┬─────────────────────────────┘
-                                       │
-               ┌───────────────────────▼─────────────────────────────┐
-               │                    Tool Layer                       │
-               │  ──────────────────────────────────                 │
-               │  24 specialized tools:                              │
-               │  httpRequest, browser automation, graph queries,    │
-               │  session restore, skill loading, encode/decode,    │
-               │  finding generation, delegation, OAST callbacks...  │
-               │                                                     │
-               │  Response Flow:                                      │
-               │  HTTP Response → Headroom Compression → LLM         │
-               │  (structured CompressionResult with                 │
-               │   wasCompressed/wasTruncated booleans)              │
-               └───────────────────────┬─────────────────────────────┘
-                                       │
-               ┌───────────────────────▼─────────────────────────────┐
-               │                  Browser Layer                      │
-               │  ─────────────────────────────────                  │
-               │  • Playwright + Stagehand hybrid                    │
-               │  • Dialog watcher (auto-dismiss JS alerts)          │
-               │  • Human observer (action capture)                  │
-               │  • State bridge (CDP session persistence)           │
-               │  • Reaction observer (DOM mutation tracking)        │
-               └─────────────────────────────────────────────────────┘
+                    ┌──────────────────────▼──────────────────────┐
+                    │            Engine Selector                  │
+                    │     config.engine: 'legacy' | 'solver'      │
+                    │                | 'multi-model'              │
+                    └──────┬──────────────┬──────────────┬───────┘
+                           │              │              │
+          ┌────────────────▼──┐  ┌────────▼────────┐  ┌─▼──────────────────┐
+          │  Legacy           │  │  Solver Engine   │  │  Multi-Model       │
+          │  Supervisor       │  │  (OODA Loop)     │  │  Engine            │
+          │  ─────────────    │  │  ────────────    │  │  ──────────────    │
+          │  Observe → Learn  │  │  REASON →        │  │  Solver + Dynamic  │
+          │  → Attack → Loop  │  │  EXPLORE →       │  │  Model Selection   │
+          │                   │  │  CONCLUDE        │  │                    │
+          │  4 Specialist     │  │  Blackboard      │  │  ModelSelector     │
+          │  Workers          │  │  State-Space     │  │  Scores optimal    │
+          │                   │  │                  │  │  model per task    │
+          └──────────┬────────┘  └────────┬─────────┘  └──────────┬─────────┘
+                     │                    │                        │
+          ┌──────────▼────────────────────▼────────────────────────▼─────────┐
+          │              Shared Intelligence Layer                          │
+          │  ─────────────────────────────────────────────                  │
+          │  • Evidence Gate (anti-hallucination, zero leniency)           │
+          │  • Reflexion Engine (L0-L4 failure classification)             │
+          │  • Anti-Loop Detector (stale/dead-end detection)               │
+          │  • Knowledge Graph (11 node types, 12 edge types)             │
+          │  • Skill Library (21 knowledge-based skills)                   │
+          │  • Headroom Compression (intelligent response compression)     │
+          │  • Session Manager (cookie expiry validation)                  │
+          └──────────────────────────┬──────────────────────────────────────┘
+                                     │
+          ┌──────────────────────────▼──────────────────────────────────────┐
+          │                    Multi-Model Layer                           │
+          │  ────────────────────────────────────────                      │
+          │  ModelSelector: scoring engine for per-task model routing      │
+          │  ModelTiers: fast | balanced | powerful                        │
+          │  ProviderAwareLimiter: per-provider rate limiting              │
+          │  ContextBudgetManager: pre-flight context validation           │
+          │  SchemaSanitizer: provider-specific JSON schema compat         │
+          │  TokenBudgetTracker: per-task budget enforcement               │
+          │  QuotaTracker: per-provider quota + cooldown management        │
+          │  UsageTracker: token usage aggregation                         │
+          └──────────────────────────┬──────────────────────────────────────┘
+                                     │
+          ┌──────────────────────────▼──────────────────────────────────────┐
+          │                      Tool Layer                                │
+          │  ──────────────────────────────────                            │
+          │  24 specialized tools:                                         │
+          │  httpRequest, browser automation, graph queries,               │
+          │  session restore, skill loading, encode/decode,               │
+          │  finding generation, delegation, OAST callbacks...             │
+          │                                                                │
+          │  Response Flow:                                                 │
+          │  HTTP Response → Headroom Compression → LLM                    │
+          │  (structured CompressionResult with                            │
+          │   wasCompressed/wasTruncated booleans)                         │
+          └──────────────────────────┬──────────────────────────────────────┘
+                                     │
+          ┌──────────────────────────▼──────────────────────────────────────┐
+          │                    Browser Layer                               │
+          │  ──────────────────────────────────                            │
+          │  • Playwright + Stagehand hybrid                               │
+          │  • Dialog watcher (auto-dismiss JS alerts)                     │
+          │  • Human observer (action capture)                             │
+          │  • State bridge (CDP session persistence)                      │
+          │  • Reaction observer (DOM mutation tracking)                   │
+          └────────────────────────────────────────────────────────────────┘
 ```
 
 ### Source Layout (166 TypeScript files)
@@ -192,7 +206,7 @@ src/
 ├── http/              # HTTP client with compression, rate limiting
 ├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining
 ├── logging/           # Forensic event logger, system metrics
-├── manager/           # Agent manager (legacy)
+├── manager/           # Agent manager (legacy supervisor)
 ├── mastra/            # Mastra agent wiring, tool registry
 ├── memory/            # Memory schemas, store
 ├── models/            # Model factory, selector, rate limiter, quota tracker
@@ -211,6 +225,175 @@ src/
 ├── utils/             # Logger, helpers
 └── workers/           # 4 specialist worker agents
 ```
+
+---
+
+## Three Engine Architecture
+
+Ultimatrix has three engines, because different situations call for different approaches:
+
+### Engine 1: Legacy Supervisor
+
+The battle-tested engine. **Observe → Learn → Attack → Report** in a structured 5-phase loop.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Legacy Supervisor                       │
+│  ─────────────────────────────────                      │
+│  Phase 1: OBSERVE — getTargetSummary, queryGraph,       │
+│           getEndpointsWithParams, getAuthFlows           │
+│  Phase 2: LEARN  — Analyze endpoints, plan strategy,    │
+│           search skill library                           │
+│  Phase 3: ATTACK — Delegate via spawn_worker,           │
+│           spawn_swarm, or execute_direct                 │
+│  Phase 4: RECORD — recordEvidence + writeFinding        │
+│  Phase 5: LOOP   — Re-observe, check for chains         │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+  ┌──────────┐   ┌──────────┐   ┌──────────┐
+  │injection │   │authCtrl  │   │advanced  │
+  │ Worker   │   │ Worker   │   │ Worker   │
+  └──────────┘   └──────────┘   └──────────┘
+       +              +              +
+  ┌──────────┐
+  │  recon   │
+  │  Worker  │
+  └──────────┘
+```
+
+**Key characteristics:**
+- **Reactive**: waits for user input each turn, executes, returns results
+- **Stream-based**: uses `agent.stream()` with `maxSteps` for tool-call loops
+- **Worker delegation**: includes graph diff snapshots (nodes/findings before/after)
+- **Workers receive informed context**: endpoint details, captured headers/cookies, auth types
+- **Sub-agent architecture**: supervisor + 4 specialist workers via Mastra `Agent`
+
+**Best for:**
+- Structured scans with clear phases
+- Environments where you want predictable, linear progression
+- Compatibility with older configurations
+
+### Engine 2: Solver (OODA Loop) — Default
+
+The primary engine. **R**eason → **E**xplore → **C**onclude, in a tight loop with passive intelligence layers.
+
+```
+    ┌────────────────────────────────────┐
+    │           REASON                    │
+    │  Analyze blackboard state.          │
+    │  Select next hypothesis to test.    │
+    │  Choose tools and approach.         │
+    └──────────────┬─────────────────────┘
+                   ▼
+    ┌────────────────────────────────────┐
+    │           EXPLORE                   │
+    │  Execute tool calls.                │
+    │  Make HTTP requests.                │
+    │  Automate browser interactions.     │
+    │  Capture evidence.                  │
+    │  Intelligence layers observe:       │
+    │  • EvidenceGate.recordToolOutput()  │
+    │  • LoopDetector.recordRound()       │
+    │  • ReflexionEngine.recordAttempt()  │
+    └──────────────┬─────────────────────┘
+                   ▼
+    ┌────────────────────────────────────┐
+    │           CONCLUDE                  │
+    │  Validate evidence (Evidence Gate). │
+    │  Classify failures (Reflexion).     │
+    │  Update blackboard.                 │
+    │  Check termination conditions.      │
+    │  • goal_achieved                    │
+    │  • frontier_exhausted               │
+    │  • stale                            │
+    └──────────────┬─────────────────────┘
+                   │
+                   └──────── loop ────────
+```
+
+**Key characteristics:**
+- **Agent-driven**: the LLM decides what tools to call and when to stop
+- **Blackboard persists** across REPL turns (accumulated knowledge)
+- **Intelligence layers observe passively** — they do NOT gate or interrupt
+- **No rigid phase ordering** — the LLM follows its own reasoning
+- **Goal-enriched messages** give the agent full context each turn (graph state, blackboard knowledge, reflexion hints, skill methodology)
+- **~30 focused tools** organized by domain (graph, HTTP, skills, session, orchestration, interaction)
+
+**Best for:**
+- Autonomous goal-driven testing ("find all privilege escalation vectors")
+- Interactive sessions where you guide the research
+- Targets where you need deep, iterative reasoning
+
+### Engine 3: Multi-Model (Dynamic Routing)
+
+**Solver engine + dynamic model selection per task.** Uses the same OODA loop, with one critical addition: the `selectModel` tool.
+
+```
+    ┌────────────────────────────────────┐
+    │           REASON                    │
+    │  analyzeTask()                      │
+    │         │                           │
+    │         ▼                           │
+    │  ┌──────────────────────┐          │
+    │  │    selectModel       │          │
+    │  │  ──────────────      │          │
+    │  │  Score each model:   │          │
+    │  │  • Capability match  │          │
+    │  │  • Context headroom  │          │
+    │  │  • Rate limit state  │          │
+    │  │  • Success history   │          │
+    │  │  • Budget remaining  │          │
+    │  └──────────┬───────────┘          │
+    │             │                      │
+    │             ▼                      │
+    │  best_model = argmax(scores)       │
+    └──────────────┬─────────────────────┘
+                   ▼
+    ┌────────────────────────────────────┐
+    │           EXPLORE                   │
+    │  Delegate to worker with optimal   │
+    │  model for this specific task.     │
+    └──────────────┬─────────────────────┘
+                   ▼
+    ┌────────────────────────────────────┐
+    │           CONCLUDE                  │
+    │  Record success/failure for model  │
+    │  scoring feedback loop.            │
+    └────────────────────────────────────┘
+```
+
+**How it differs from plain Solver:**
+
+| Feature | Solver | Multi-Model |
+|---------|--------|-------------|
+| Model selection | Single model for all tasks | Dynamic per-task routing |
+| `selectModel` tool | No | Yes — scores and selects optimal model |
+| Budget allocation | Single model budget | Role-based: brain 30%, workers 60%, spider 10% |
+| Rate limit handling | Per-provider | Per-provider + model switching on exhaustion |
+| Success tracking | N/A | Empirical success rate per model feeds scoring |
+| Provider diversity | N/A | Prefers different provider than brain for workers |
+
+**Best for:**
+- Large targets requiring many model calls (budget efficiency)
+- Mixed-complexity tasks (quick recon + deep exploitation)
+- Cost optimization (use cheap models for simple tasks, powerful for complex)
+- Provider redundancy (switch on rate limit exhaustion)
+
+### Engine Selection
+
+```yaml
+# ultimatrix.yaml
+engine: solver       # 'legacy' | 'solver' | 'multi-model'
+```
+
+| CLI Command | Default Engine | Notes |
+|-------------|---------------|-------|
+| `ultimatrix solve` | `solver` (hardcoded) | Always uses OODA loop |
+| `ultimatrix interact` | From config | Respects `config.engine` |
+| `ultimatrix scan` | From config | Respects `config.engine` |
+| `ultimatrix assess` | `legacy` (hardcoded) | Legacy supervisor |
 
 ---
 
@@ -251,59 +434,170 @@ Result: IDOR confirmed — swapped to /api/users/456, got different profile
 
 ---
 
-## Dual Engine Architecture
+## Multi-Model Routing
 
-Ultimatrix has two engines, because different situations call for different approaches:
+Ultimatrix's multi-model layer is a complete model orchestration system — not just "pick a provider." It dynamically selects the optimal model for each task based on capabilities, budget, rate limits, and success history.
 
-### Solver Engine (OODA Loop)
-The primary engine. **R**eason → **E**xplore → **C**onclude, in a tight loop.
+### Model Selection Flow
 
 ```
-    ┌────────────────────────────────────┐
-    │           REASON                    │
-    │  Analyze blackboard state.          │
-    │  Select next hypothesis to test.    │
-    │  Choose tools and approach.         │
-    └──────────────┬─────────────────────┘
-                   ▼
-    ┌────────────────────────────────────┐
-    │           EXPLORE                   │
-    │  Execute tool calls.                │
-    │  Make HTTP requests.                │
-    │  Automate browser interactions.     │
-    │  Capture evidence.                  │
-    └──────────────┬─────────────────────┘
-                   ▼
-    ┌────────────────────────────────────┐
-    │           CONCLUDE                  │
-    │  Validate evidence (Evidence Gate). │
-    │  Classify failures (Reflexion).     │
-    │  Update blackboard.                 │
-    │  Check termination conditions.      │
-    └──────────────┬─────────────────────┘
-                   │
-                   └──────── loop ────────
+Task arrives (WorkerTask with complexity + requiredCapabilities)
+          │
+          ▼
+  ModelSelector.selectForTask(task, role)
+          │
+          ├──► calculateBudget(task, role)
+          │     Uses BudgetPolicy.allocation[role] fraction
+          │     brain=30%, workers=60%, spider=10%
+          │
+          ├──► getAvailableModels()
+          │     Scans ModelCapabilities, checks creds exist
+          │
+          ├──► scoreModel(candidate, task, budget)  [for each]
+          │     ┌─────────────────────────────────────────┐
+          │     │ Capability match      +20 per match     │
+          │     │ Context headroom      +10 or +5         │
+          │     │ Rate limit headroom   +10 or +5         │
+          │     │ Exhaustion penalty    -30               │
+          │     │ Complexity alignment  +15               │
+          │     │ Provider diversity    +5                │
+          │     │ Success history       +0 to +20         │
+          │     └─────────────────────────────────────────┘
+          │
+          ├──► Sort by score, return best
+          │
+          ▼
+  resolveModel(config, { selector, tier })
+          │
+          ▼
+  buildModel(config, provider, modelId)
+          │  - Alias resolution (groq-free → groq)
+          │  - Credential lookup (config.creds → config.providerKeys)
+          │  - Provider-specific client (Azure/Bedrock/standard)
+          │  - Schema sanitization as transformRequestBody
+          │
+          ▼
+  wrapModel(model, config)
+          │  - Proxy wrapping doStream/doGenerate
+          │  - Per-provider rate limiting (ProviderAwareLimiter)
+          │  - Retry with backoff on 429/quota errors
+          │  - Header sync from API responses
+          │  - Quota tracking + Usage tracking
+          │
+          ▼
+  LanguageModelV2 (ready for Mastra Agent)
 ```
 
-Best for:
-- Autonomous goal-driven testing ("find all privilege escalation vectors")
-- Interactive sessions where you guide the research
-- Targets where you need deep, iterative reasoning
+### Three-Tier Model System
 
-### Legacy Supervisor
-The battle-tested engine. Observe → Learn → Attack → Report. Uses 4 specialist workers for parallel exploration:
+```typescript
+interface ModelTiers {
+  fast?: TierConfig       // Low-latency, small models (recon, simple checks)
+  balanced?: TierConfig   // Mid-range (general testing)
+  powerful?: TierConfig   // Large, capable models (deep reasoning, exploitation)
+}
+```
 
-- **injection** — SQL/NoSQL/XPath injection, command injection
-- **authControl** — Authentication bypass, session management
-- **advanced** — SSRF, deserialization, prototype pollution
-- **recon** — Technology fingerprinting, exposed files, info disclosure
+**Complexity-to-tier mapping:**
 
-Best for:
-- Structured scans with clear phases
-- Environments where you want predictable, linear progression
-- Compatibility with older configurations
+| Task Complexity | Tier | Token Estimates | Example Models |
+|----------------|------|-----------------|----------------|
+| `low` | fast | 500 in / 500 out | groq/llama3-8b-8192, cerebras/llama3-70b |
+| `medium` | balanced | 2000 in / 1500 out | openai/gpt-4o-mini, groq/llama-3.3-70b |
+| `high` | powerful | 5000 in / 3000 out | openai/gpt-4o, anthropic/claude-3.5-sonnet |
+| `critical` | powerful | 8000 in / 5000 out | anthropic/claude-3-opus, google/gemini-2.5-pro |
 
-Both engines share the same intelligence layer, the same 21 skills, and the same tool set. The engine selector just changes *how* they're orchestrated.
+### Budget Enforcement
+
+```typescript
+interface BudgetPolicy {
+  enforcement: 'hard' | 'soft' | 'warn'
+  scope: 'turn' | 'session'
+  allocation: { brain: number; workers: number; spider: number }
+  maxModelCallsPerTask: number
+}
+```
+
+| Mode | Behavior |
+|------|----------|
+| `hard` | Throws error on budget overrun |
+| `soft` | Returns `false` (graceful stop, caller decides) |
+| `warn` | Logs warning only |
+
+### Three-Layer Rate Limiting
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: SlidingWindowLimiter                          │
+│  ─────────────────────────────                          │
+│  Rolling window of API call timestamps.                 │
+│  acquire() blocks until a window slot is available.     │
+│  cooldown() triggers global pause on exhaustion.        │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│  Layer 2: Semaphore                                     │
+│  ──────────────────                                     │
+│  Limits concurrent in-flight operations.                │
+│  Prevents resource waste when many callers compete.     │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│  Layer 3: ProviderAwareLimiter                          │
+│  ─────────────────────────────                          │
+│  Per-provider instance combining window + semaphore.    │
+│  • Header sync: reads x-ratelimit-remaining,           │
+│    x-ratelimit-reset, retry-after from API responses   │
+│  • Mismatch detection: tracks divergence between        │
+│    local and server-side state                         │
+│  • Exhaustion backoff: stepped / exponential / fixed    │
+│  • Retry-After support: auto-cooldown from 429         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Default configuration:**
+
+```yaml
+rateLimit:
+  requestsPerMinute: 15
+  maxConcurrent: 2
+  maxRetries: 3
+  backoffStrategy: stepped        # 'exponential' | 'stepped' | 'fixed'
+  backoffSteps: [5000, 15000, 30000]
+  baseBackoffMs: 2000
+  maxBackoffMs: 30000
+  useHeaders: true
+```
+
+### Context Budget Manager
+
+Before sending a request, Ultimatrix validates that it fits within the model's context window:
+
+```typescript
+interface ContextValidation {
+  fits: boolean
+  totalInputTokens: number
+  availableForOutput: number
+  breakdown: { system: number; tools: number; history: number; goal: number }
+  suggestions: string[]
+  severity: 'ok' | 'warning' | 'critical'
+}
+```
+
+- **Token estimation**: Words × 1.3 + code character overhead (no tokenizer dependency)
+- **Thresholds**: Warning at 85% full, critical at 97% full
+- **Auto-truncation**: Splits remaining budget 60% goal / 40% history
+- **Suggestions engine**: Prioritized reduction recommendations (biggest contributor first)
+
+### Provider-Aware Schema Sanitization
+
+Different LLM providers have different JSON Schema compatibility. The `SchemaSanitizer` handles this automatically:
+
+| Level | Providers | What's Stripped |
+|-------|-----------|----------------|
+| `strict` | NVIDIA | `propertyNames`, `patternProperties`, `$ref`, `$defs`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `exclusiveMinimum/Maximum`, `if/then/else`, `const`, `format`, object-form `additionalProperties: false` |
+| `moderate` | Google, Bedrock | `propertyNames`, `patternProperties`, `$ref`, `$defs` |
+| `none` | All others | Nothing stripped |
 
 ---
 
@@ -578,7 +872,7 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `ultimatrix init` | Interactive setup wizard — provider, model, credentials | `npx ultimatrix init` |
+| `ultimatrix init` | Interactive setup wizard — provider, model, credentials, engine | `npx ultimatrix init` |
 | `ultimatrix solve -t <url>` | Autonomous OODA solver — give it a goal, it works | `npx ultimatrix solve -t https://target.com` |
 | `ultimatrix interact -t <url>` | REPL chat — talk to the agent like a colleague | `npx ultimatrix interact -t https://target.com` |
 | `ultimatrix scan -t <url>` | Full pipeline: capture → analyze → generate → report | `npx ultimatrix scan -t https://target.com` |
@@ -593,11 +887,11 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 ### CLI Flags
 
 ```bash
---provider <name>      # Override config provider
---model <name>         # Override config model
---key <api-key>        # Override config API key
---non-interactive      # Skip prompts, use defaults
---engine <legacy|solver>  # Override engine selection
+--provider <name>         # Override config provider
+--model <name>            # Override config model
+--key <api-key>           # Override config API key
+--non-interactive         # Skip prompts, use defaults
+--engine <legacy|solver|multi-model>  # Override engine selection
 ```
 
 ---
@@ -609,7 +903,13 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 provider: groq
 model: llama3-8b-8192
 target: https://your-app.com
-engine: solver                # 'legacy' | 'solver'
+engine: solver                # 'legacy' | 'solver' | 'multi-model'
+
+# Multi-tier model configuration
+modelTiers:
+  fast: groq/llama3-8b-8192              # Recon, simple checks
+  balanced: openai/gpt-4o-mini           # General testing
+  powerful: anthropic/claude-3.5-sonnet  # Deep reasoning, exploitation
 
 solver:
   maxToolCalls: 50            # Max tool-call rounds per turn
@@ -618,26 +918,37 @@ solver:
   maxParallel: 1
 
 rateLimit:
-  requestsPerMinute: 15       # Conservative default
+  requestsPerMinute: 15
   maxConcurrent: 2
   maxRetries: 3
+  backoffStrategy: stepped
+  backoffSteps: [5000, 15000, 30000]
+
+budget:
+  enforcement: soft           # 'hard' | 'soft' | 'warn'
+  scope: session
+  allocation:
+    brain: 0.30
+    workers: 0.60
+    spider: 0.10
+  maxModelCallsPerTask: 15
 
 antiLoop:
-  staleThreshold: 3           # Force direction change after N repeats
+  staleThreshold: 3
 
 reflexion:
-  persistToGraph: true        # Learn across sessions
+  persistToGraph: true
 
 compression:
   headroom:
     enabled: true
-    budgetTokens: 100000      # Max tokens for compressed content
+    budgetTokens: 100000
   truncation:
     enabled: true
-    maxResponseChars: 50000   # Fallback truncation limit
+    maxResponseChars: 50000
 
 browser:
-  headless: false             # Watch the agent work
+  headless: false
 
 credentials:
   your-app:
@@ -654,48 +965,56 @@ export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export GOOGLE_GENERATIVE_AI_API_KEY=...
 export NVIDIA_API_KEY=nvapi-...
+export TOGETHER_API_KEY=...
+export DEEPSEEK_API_KEY=...
+export MISTRAL_API_KEY=...
+export XAI_API_KEY=...
+export PERPLEXITY_API_KEY=...
+export CEREBRAS_API_KEY=...
+export DEEPINFRA_API_KEY=...
+export OPENROUTER_API_KEY=...
+export AZURE_API_KEY=...
+export AWS_ACCESS_KEY_ID=...
 
 # Debug
-export ULTIMATRIX_LLM_DEBUG=1    # Verbose LLM logging
-export ULTIMATRIX_LLM_STREAM=1   # Stream LLM responses
+export ULTIMATRIX_LLM_DEBUG=1
+export ULTIMATRIX_LLM_STREAM=1
 ```
 
 ---
 
 ## Supported Providers
 
-| Provider | Models | Free Tier |
-|----------|--------|-----------|
-| `groq` | llama3-8b-8192, mixtral-8x7b-32768 | Yes |
-| `openai` | gpt-4o, gpt-4o-mini, gpt-4-turbo | No |
-| `anthropic` | claude-3.5-sonnet, claude-3-opus | No |
-| `google` | gemini-1.5-pro, gemini-1.5-flash | Yes |
-| `nvidia` | nemotron-3-super-120b, nemotron-3-ultra-550b | Yes |
-| `together` | llama3-70b, mixtral-8x22b | Yes |
-| `deepseek` | deepseek-chat, deepseek-coder | Yes |
-| `mistral` | mistral-large, mistral-medium | No |
-| `xai` | grok-2, grok-beta | No |
-| `perplexity` | llama-3.1-sonar-large | Yes |
-| `cerebras` | llama3-70b | Yes |
-| `deepinfra` | Various open-source models | Yes |
-| `openrouter` | 100+ models | Varies |
-| `azure` | Azure OpenAI deployments | No |
-| `bedrock` | AWS Bedrock models | No |
+| Provider | Free Tier | Context Window | Notes |
+|----------|-----------|----------------|-------|
+| `groq` | Yes | 8K - 131K | Fastest inference |
+| `openai` | No | 128K | GPT-4o, GPT-4o-mini |
+| `anthropic` | No | 200K | Claude 3.5 Sonnet, Claude 3 Opus |
+| `google` | Yes | 1M | Gemini 2.0 Flash, Gemini 2.5 Pro |
+| `nvidia` | Yes | 131K | Nemotron 3 Super/Ultra |
+| `together` | Yes | 131K | Open-source models |
+| `deepseek` | Yes | 128K | DeepSeek Chat/Coder |
+| `mistral` | No | 32K - 128K | Mistral Large/Medium |
+| `xai` | No | 128K | Grok-2 |
+| `perplexity` | Yes | 128K | Sonar models |
+| `cerebras` | Yes | 131K | Fast inference |
+| `deepinfra` | Yes | 128K | Open-source models |
+| `openrouter` | Varies | Varies | 100+ models |
+| `azure` | No | Varies | Azure OpenAI deployments |
+| `bedrock` | No | Varies | AWS Bedrock (IAM or API key) |
 
-### Multi-Provider Support
+### Multi-Provider Configuration
 
 ```yaml
-# Use different models for different tasks
-modelTiers:
-  fast: groq/llama3-8b-8192          # Quick recon, simple checks
-  powerful: nvidia/nemotron-3-ultra   # Deep reasoning, exploitation
-
-# Same provider, different API keys
+# Same provider, different API keys (Scenario D)
 creds:
   groq:
-    apiKey: gsk_key1                  # For fast model
+    apiKey: gsk_key1                    # For fast model
   nvidia:
-    apiKey: nvapi_key2                # For powerful model
+    apiKey: nvapi_key2                  # For powerful model
+
+# Provider alias resolution
+# groq-free → groq, openai-preview → openai (automatic)
 ```
 
 ---
@@ -753,10 +1072,12 @@ npm run build:cli    # ESM + CJS + DTS
 | Tests passing | 983 |
 | Skills | 21 (7 core + 14 specialized) |
 | Tools | 24 specialized tools |
+| Engines | 3 (legacy, solver, multi-model) |
 | Node types | 11 (graph schema) |
 | Edge types | 12 (graph schema) |
-| Providers | 15 supported |
-| Engine modes | 2 (legacy + OODA solver) |
+| Providers | 16 supported |
+| Model tiers | 3 (fast, balanced, powerful) |
+| Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
 
 ---
 
