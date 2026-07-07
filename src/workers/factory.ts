@@ -1,8 +1,8 @@
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { UltimatrixConfig } from '../config'
-import type { SkillRegistry } from '../skills/registry'
+import type { SkillRegistry } from '../solver/skills/registry'
 import { createAgent } from '../mastra/index.js'
-import { loadSkill } from '../skills/loader'
+import { loadSkill } from '../solver/skills/loader'
 import { CORE_CONTRACT } from '../prompts/core-contract'
 
 export interface WorkerConfig {

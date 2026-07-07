@@ -1,6 +1,6 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { SkillRegistry } from '../../skills/registry'
+import type { SkillRegistry } from '../../solver/skills/registry'
 import type { WorkerPool } from '../../workers/pool'
 import type { UltimatrixConfig } from '../../config'
 import { getGlobalGraphStore } from '../../graph/store'

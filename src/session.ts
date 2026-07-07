@@ -2,7 +2,8 @@
 import { DEFAULTS } from './config'
 import { detectChains } from './intelligence/chaining'
 import type { FindingNode } from './graph/schema'
-import { resolveSkillsForInput } from './skills/tool-filter'
+import { resolveSkillsForInput } from './solver/skills/tool-filter'
+import { loadSkill } from './solver/skills/loader'
 import { getGlobalReactionObserver } from './browser/reaction-observer'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
@@ -33,6 +34,11 @@ export async function main(targetUrl?: string) {
       log.dim(`Skills: ${matchedSkills.map(s => s.name).join(', ')}`)
     }
 
+    // Load full skill bodies for matched skills (progressive disclosure — only load what's needed)
+    const matchedWithInstructions = matchedSkills
+      .map(s => loadSkill(s.id))
+      .filter((s): s is NonNullable<typeof s> => s !== null)
+
     const { config, target, threadId, resourceId } = resources
     const useSolver = config.engine === 'solver' || config.engine === 'multi-model'
 
@@ -42,7 +48,7 @@ export async function main(targetUrl?: string) {
         goal: line,
         model: config.model,
         memory: { thread: threadId, resource: resourceId },
-        matchedSkills: matchedSkills.length > 0 ? matchedSkills : undefined,
+        matchedSkills: matchedWithInstructions.length > 0 ? matchedWithInstructions : undefined,
         blackboard: resources.sessionBlackboard,
         evidence: resources.sessionEvidence,
         loopDetector: resources.sessionLoopDetector,
@@ -53,11 +59,8 @@ export async function main(targetUrl?: string) {
           staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
           maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
         },
-        onToolComplete: (_toolName: string, result?: unknown) => {
-          if (result && resources.sessionEvidence) {
-            const output = typeof result === 'string' ? result : JSON.stringify(result)
-            resources.sessionEvidence.recordToolOutput(output)
-          }
+        onToolComplete: (_toolName: string, _result?: unknown) => {
+          // Graph auto-save only — evidence recording already handled by solver.ts
           getGlobalWorkspace().getGraphStore()?.save().catch(err =>
             log.error('Graph save failed during solver: ' + String(err))
           )
@@ -82,6 +85,12 @@ export async function main(targetUrl?: string) {
         log.success(`Solver completed: ${result.reason}`)
       } else {
         log.warn(`Solver stopped: ${result.reason}`)
+      }
+      if (result.error) {
+        log.error(`Error: ${result.error}`)
+      }
+      if (result.text) {
+        process.stdout.write(result.text)
       }
       log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)
       if (result.planSummary) {

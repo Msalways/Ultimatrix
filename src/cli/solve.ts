@@ -11,7 +11,7 @@ import { mkdir } from 'node:fs/promises'
 import { verifyPendingFindings } from '../tools/control-tools'
 import { startOastServer, stopOastServer } from '../oast/server'
 import { getOrCreateBrowser, closeBrowser } from '../browser/manager'
-import { SkillRegistry } from '../skills/registry'
+import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
 import { Blackboard } from '../solver/blackboard'
 import { EvidenceGate } from '../intelligence/evidence-gate'
@@ -137,6 +137,12 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
     log.success(`Solver completed: ${result.reason}`)
   } else {
     log.warn(`Solver stopped: ${result.reason}`)
+  }
+  if (result.error) {
+    log.error(`Error: ${result.error}`)
+  }
+  if (result.text) {
+    process.stdout.write(result.text)
   }
   log.info(`Tool calls: ${result.toolCalls} | Facts: ${result.facts} | Intents: ${result.intents} | Duration: ${result.durationMs}ms`)
 

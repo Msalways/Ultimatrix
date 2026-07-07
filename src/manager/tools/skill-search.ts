@@ -1,6 +1,6 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { SkillRegistry } from '../../skills/registry'
+import type { SkillRegistry } from '../../solver/skills/registry'
 
 export function createSkillSearchTool(skillRegistry: SkillRegistry) {
   return createTool({

@@ -68,10 +68,10 @@ export const parseResponse = createTool({
       ok: true,
       value: {
         status: ctx.status,
-        body: truncatedBody,
+        body: compressionResult.compressed,
         headers: ctx.headers,
         json,
-        dom: truncatedBody,
+        dom: compressionResult.compressed,
         textSnippets,
       },
     }

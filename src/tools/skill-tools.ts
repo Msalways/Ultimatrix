@@ -1,6 +1,51 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { loadSkill, listReferences, loadReference } from '../skills/loader'
+import { loadSkill, listReferences, loadReference, getAllSkills } from '../solver/skills/loader'
+
+export const listSkills = createTool({
+  id: 'listSkills',
+  description: 'List all available skills. Optional filters: by domain, category, or tier. Returns compact catalog with id, name, domain, description, tier, and composition rules.',
+  inputSchema: z.object({
+    domain: z.string().optional().describe('Filter by domain (e.g. "injection", "web-attacks", "auth-security")'),
+    category: z.string().optional().describe('Filter by category (alias for domain)'),
+    tier: z.enum(['fast', 'balanced', 'powerful']).optional().describe('Filter by tier'),
+  }),
+  execute: async ({ domain, category, tier }) => {
+    let skills = getAllSkills()
+    const filter = domain || category
+    if (filter) {
+      const f = filter.toLowerCase()
+      skills = skills.filter(s => s.domain.toLowerCase() === f || s.category.toLowerCase() === f)
+    }
+    if (tier) {
+      skills = skills.filter(s => s.tier === tier)
+    }
+
+    // Group by domain for compact display
+    const grouped: Record<string, Array<{ id: string; name: string; description: string; tier: string; mitreAttack: string[]; owaspRefs: string[] }>> = {}
+    for (const s of skills) {
+      const d = s.domain || 'uncategorized'
+      if (!grouped[d]) grouped[d] = []
+      grouped[d].push({
+        id: s.id,
+        name: s.name,
+        description: s.description.slice(0, 120),
+        tier: s.tier,
+        mitreAttack: s.mitreAttack,
+        owaspRefs: s.owaspRefs,
+      })
+    }
+
+    return {
+      ok: true,
+      value: {
+        total: skills.length,
+        domains: Object.keys(grouped).length,
+        skills: grouped,
+      },
+    }
+  },
+})
 
 export const loadSkillReference = createTool({
   id: 'loadSkillReference',
@@ -34,12 +79,12 @@ export const loadSkillReference = createTool({
 
 export const searchSkillTool = createTool({
   id: 'searchSkills',
-  description: 'Search available skills by keyword to find relevant methodology guidance.',
+  description: 'Search skills by keyword when you know what attack type you need (e.g. "SQL injection", "race condition"). For browsing all available skills, use listSkills instead.',
   inputSchema: z.object({
     query: z.string().describe('Search query (e.g. "SQL injection", "race condition")'),
   }),
   execute: async ({ query }) => {
-    const { searchSkills } = await import('../skills/loader')
+    const { searchSkills } = await import('../solver/skills/loader')
     const results = searchSkills(query)
     return {
       ok: true,
@@ -50,7 +95,6 @@ export const searchSkillTool = createTool({
           name: s.name,
           category: s.category,
           description: s.description,
-          referenceCount: s.references.length,
         })),
       },
     }

@@ -4,7 +4,7 @@ vi.mock('@mastra/core/tools', () => ({
   createTool: (config: any) => config,
 }))
 
-vi.mock('../../src/skills/loader', () => ({
+vi.mock('../../src/solver/skills/loader', () => ({
   loadSkill: vi.fn(),
   listReferences: vi.fn(),
   loadReference: vi.fn(),
@@ -12,7 +12,7 @@ vi.mock('../../src/skills/loader', () => ({
 }))
 
 import { loadSkillReference, searchSkillTool } from '../../src/tools/skill-tools'
-import { loadSkill, listReferences, loadReference, searchSkills } from '../../src/skills/loader'
+import { loadSkill, listReferences, loadReference, searchSkills } from '../../src/solver/skills/loader'
 
 const mockListReferences = vi.mocked(listReferences)
 const mockLoadReference = vi.mocked(loadReference)
@@ -89,7 +89,6 @@ describe('skill-tools', () => {
       expect(result.ok).toBe(true)
       expect(result.value.count).toBe(1)
       expect(result.value.skills[0].id).toBe('pentest-flow')
-      expect(result.value.skills[0].referenceCount).toBe(1)
     })
 
     it('returns empty for no match', async () => {

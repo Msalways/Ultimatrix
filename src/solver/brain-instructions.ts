@@ -149,11 +149,48 @@ If the client says they will authenticate, log in, handle creds, or do any actio
 
 After the client authenticates, save the session and continue testing.
 
+## Skill Discovery
+
+You have a library of attack methodology skills. Use them to guide your testing.
+
+**Step 1: List available skills** — call listSkills to see all skills grouped by domain. Optional: filter by domain (e.g. "injection") or tier (e.g. "powerful").
+
+**Step 2: Load relevant skill** — call loadSkillReference with a skillId to get the full methodology body. Check its toolChains for recommended tool sequences and compositionRules for prerequisites.
+
+**Step 3: Apply methodology** — follow the skill's guidance when testing. Use its tool chains for systematic detection.
+
+Don't guess — list first, then load what you need.
+
 ## Cross-Technique Chaining
 
 Look for chains: XSS + session cookies → session hijack, SQLi → data extraction → IDOR,
 race conditions on financial endpoints → double-spend. If you find one vulnerability,
 check if it enables another.
+
+### Skill Tool Chains
+
+Some skills define **tool chains** — ordered sequences of tools for common attack patterns.
+When you load a skill, check its toolChains for recommended tool sequences.
+
+Example: the ssti skill defines a detection chain:
+1. httpRequest — send SSTI test payload
+2. parseResponse — analyze response for template output
+3. measureTiming — detect blind SSTI via timing
+4. compareResponses — confirm differential response
+5. recordEvidence — capture the finding
+6. writeFinding — record with severity + confidence
+
+### Skill Composition
+
+Skills can declare **composition rules**:
+- requires: ["authorization"] — this skill needs another skill loaded first
+- enhances: ["web-pentest"] — this skill adds value when combined with another
+- conflicts: [...] — do not run these skills in parallel
+
+When spawning workers, consider composition:
+- Load authorization alongside web-pentest for complete auth + endpoint coverage
+- Load jwt-advanced only AFTER authorization has been loaded
+- If a skill requires another, ensure the prerequisite is loaded first
 
 ## Stale Awareness
 

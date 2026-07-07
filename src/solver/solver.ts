@@ -152,6 +152,8 @@ export interface SolveResult {
   facts: number;
   intents: number;
   planSummary?: string;
+  text?: string;
+  error?: string;
 }
 
 export interface SolveParams {
@@ -163,6 +165,8 @@ export interface SolveParams {
     name: string;
     description: string;
     instructions?: string;
+    toolChains?: Array<{ name: string; description: string; steps: string[] }>;
+    compositionRules?: { requires?: string[]; enhances?: string[]; conflicts?: string[] };
   }>;
   model?: string;
   config?: SolverConfig;
@@ -367,11 +371,32 @@ export async function solve(
   // Inject matched skill methodology (from per-message skill matching)
   if (params.matchedSkills && params.matchedSkills.length > 0) {
     const skillBlock = params.matchedSkills
-      .map((s) =>
-        s.instructions
+      .map((s) => {
+        let block = s.instructions
           ? `### ${s.name}\n${s.instructions}`
-          : `### ${s.name}\n${s.description}`,
-      )
+          : `### ${s.name}\n${s.description}`;
+
+        // Inject tool chain guidance if available
+        if (s.toolChains && s.toolChains.length > 0) {
+          const chainBlock = s.toolChains
+            .map(c => `#### ${c.name}: ${c.description}\nSteps: ${c.steps.join(' → ')}`)
+            .join('\n');
+          block += `\n\n**Recommended Tool Chains:**\n${chainBlock}`;
+        }
+
+        // Inject composition hints if available
+        if (s.compositionRules) {
+          const comp = s.compositionRules;
+          if (comp.requires?.length) {
+            block += `\n**Prerequisites:** Load ${comp.requires.join(', ')} first`;
+          }
+          if (comp.enhances?.length) {
+            block += `\n**Enhances:** Combine with ${comp.enhances.join(', ')} for complete coverage`;
+          }
+        }
+
+        return block;
+      })
       .join("\n\n");
     enrichedGoal += `\n\n## Relevant Methodology\n\n${skillBlock}`;
   }
@@ -470,10 +495,22 @@ export async function solve(
 
   let fullText = "";
   let toolCallCount = 0;
-  let textBeforeToolCall = ""; // Buffer text before each tool call for claim verification
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalTokens = 0;
+  let lastError: string | undefined;
+
+  // Snapshot graph state for stale detection (compare before/after tool calls)
+  const graphStateSnapshot = { findings: 0, endpoints: 0, tests: 0 };
+  try {
+    const graphStore = getGlobalGraphStore();
+    const initialSummary = graphStore.getTargetSummary();
+    graphStateSnapshot.findings = initialSummary.totalFindings;
+    graphStateSnapshot.endpoints = initialSummary.totalEndpoints;
+    graphStateSnapshot.tests = initialSummary.totalTests;
+  } catch {
+    // Graph store not available
+  }
 
   try {
     // Single stream call — Mastra handles tool loops internally (like v7)
@@ -497,7 +534,6 @@ export async function solve(
       switch (chunk.type) {
         case "text-delta":
           fullText += chunk.payload.text;
-          textBeforeToolCall += chunk.payload.text;
           emit({
             phase: "reason",
             step: toolCallCount,
@@ -508,7 +544,6 @@ export async function solve(
         case "reasoning-delta":
           if (chunk.payload.text) {
             fullText += chunk.payload.text;
-            textBeforeToolCall += chunk.payload.text;
           }
           break;
 
@@ -535,29 +570,29 @@ export async function solve(
             // Record tool output in evidence gate
             evidence.recordToolOutput(output);
 
-            // Verify claims the LLM made before this tool call
-            if (textBeforeToolCall.length > 50) {
-              const verification = evidence.verifyClaim(textBeforeToolCall);
-              if (!verification.verified) {
-                log.dim(
-                  `[evidence] Claim ungrounded: ${verification.missing.slice(0, 2).join("; ")}`,
-                );
-              }
-            }
-            textBeforeToolCall = ""; // Reset buffer after verification
-
             // Track attack paths
             const detectedPath = extractAttackPath(output);
             if (detectedPath) {
               loopDetector.recordAttackPath(detectedPath);
             }
 
-            // Determine if this tool call produced a new finding
-            const toolName = chunk.payload.toolName.toLowerCase();
-            const hasNewFinding =
-              toolName.includes("finding") ||
-              toolName.includes("writefinding") ||
-              (typeof output === "string" && output.includes("finding"));
+            // Determine if this tool call produced graph changes (not just tool name substring)
+            let hasNewFinding = false;
+            try {
+              const graphAfter = getGlobalGraphStore();
+              const summaryAfter = graphAfter.getTargetSummary();
+              if (summaryAfter.totalFindings > graphStateSnapshot.findings ||
+                  summaryAfter.totalEndpoints > graphStateSnapshot.endpoints ||
+                  summaryAfter.totalTests > graphStateSnapshot.tests) {
+                hasNewFinding = true;
+              }
+              // Update snapshot for next iteration
+              graphStateSnapshot.findings = summaryAfter.totalFindings;
+              graphStateSnapshot.endpoints = summaryAfter.totalEndpoints;
+              graphStateSnapshot.tests = summaryAfter.totalTests;
+            } catch {
+              // Graph store not available — treat as no finding
+            }
 
             // Update loop detector (stale tracking)
             loopDetector.recordRound(hasNewFinding);
@@ -626,13 +661,20 @@ export async function solve(
       }
     }
   } catch (err) {
-    log.error(
-      `Solver error: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Provide actionable error messages for common failures
+    if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('Rate limited') || errMsg.includes('Quota exhausted')) {
+      lastError = `Model rate limited or quota exhausted: ${errMsg}. Try switching provider/model in config.`;
+    } else if (errMsg.includes('timeout') || errMsg.includes('Solver timeout')) {
+      lastError = `Solver timed out: ${errMsg}. Increase solver.maxDurationMs in config.`;
+    } else {
+      lastError = `Solver error: ${errMsg}`;
+    }
+    log.error(lastError);
     forensicLog?.log({
       type: "error",
       agent: "solver-brain",
-      error: String(err),
+      error: lastError,
     });
   }
 
@@ -675,6 +717,8 @@ export async function solve(
     facts: board.facts?.length || 0,
     intents: board.intents?.length || 0,
     planSummary: board.planSummary?.() || "",
+    text: fullText || undefined,
+    error: lastError || undefined,
   };
 }
 

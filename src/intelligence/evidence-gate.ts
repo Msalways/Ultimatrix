@@ -63,27 +63,65 @@ export class EvidenceGate {
     const fullEvidence = this.evidenceBuffer.join('\n')
     const flagsInEvidence = this.extractFlags(fullEvidence)
 
+    // Flag verification: all flags mentioned in claim must appear in evidence
     const missing = flagsInClaim.filter(f => !flagsInEvidence.includes(f))
 
+    // Semantic fact extraction: check if key facts from the claim appear in evidence
+    // Instead of substring matching (which fails for natural language vs JSON),
+    // extract specific facts (URLs, status codes, header names, finding types)
+    // and verify those appear in the evidence.
+    const claimFacts = this.extractFacts(claim)
     const evidenceLower = fullEvidence.toLowerCase()
+    const missingFacts = claimFacts.filter(f => !evidenceLower.includes(f.toLowerCase()))
 
-    const sentences = claim.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 15)
-    const missingSentences = sentences.filter(s => {
-      const sLower = s.toLowerCase()
-      return !evidenceLower.includes(sLower) && !this.isBoilerplate(s)
-    })
-
-    const verified = missing.length === 0 && missingSentences.length === 0
+    const verified = missing.length === 0 && missingFacts.length === 0
     if (!verified) {
       this.recordUnsupportedClaim(claim.slice(0, 200))
     }
 
     return {
       verified,
-      missing: [...missing, ...missingSentences],
+      missing: [...missing, ...missingFacts],
       flagsInClaim,
       flagsInEvidence,
     }
+  }
+
+  /**
+   * Extract verifiable facts from a claim sentence.
+   * Returns lowercase fact strings that should appear in tool output evidence.
+   */
+  private extractFacts(claim: string): string[] {
+    const facts: string[] = []
+
+    // HTTP status codes: "200", "401", "403", "500"
+    const statusMatches = claim.match(/\b[1-5]\d{2}\b/g)
+    if (statusMatches) facts.push(...statusMatches)
+
+    // URLs: "https://...", "http://..."
+    const urlMatches = claim.match(/https?:\/\/[^\s"')]+/g)
+    if (urlMatches) facts.push(...urlMatches)
+
+    // HTTP methods: "GET", "POST", "PUT", "DELETE"
+    const methodMatches = claim.match(/\b(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\b/gi)
+    if (methodMatches) facts.push(...methodMatches.map(m => m.toUpperCase()))
+
+    // Common HTTP header names
+    const headerNames = ['cookie', 'authorization', 'x-csrf-token', 'x-frame-options',
+      'content-security-policy', 'set-cookie', 'x-xss-protection', 'strict-transport-security']
+    const claimLower = claim.toLowerCase()
+    for (const h of headerNames) {
+      if (claimLower.includes(h)) facts.push(h)
+    }
+
+    // Finding types
+    const findingTypes = ['xss', 'sqli', 'sql injection', 'ssrf', 'xxe', 'idor', 'csrf',
+      'open redirect', 'ssrf', 'command injection', 'ssti', 'authentication bypass']
+    for (const ft of findingTypes) {
+      if (claimLower.includes(ft)) facts.push(ft)
+    }
+
+    return facts
   }
 
   extractFlags(text: string): string[] {

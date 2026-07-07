@@ -668,7 +668,7 @@ export class GraphStore {
       edges: this.edges,
     }
     const json = JSON.stringify(data, null, 2)
-    const tmpPath = `${targetPath}.tmp`
+    const tmpPath = `${targetPath}.${Date.now()}.${process.pid}.tmp`
     const backupPath = `${targetPath}.bak`
 
     await writeFile(tmpPath, json, 'utf-8')

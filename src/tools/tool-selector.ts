@@ -1,7 +1,7 @@
 import { BudgetAwarePruner, getUniversalTools } from './budget-pruner'
 import { TokenProfiler } from './token-profiler'
 import type { TaskBudget } from '../models/selector'
-import { loadSkill, getAllSkills } from '../skills/loader'
+import { loadSkill, getAllSkills } from '../solver/skills/loader'
 
 interface ToolInferenceRule {
   keywords: string[]

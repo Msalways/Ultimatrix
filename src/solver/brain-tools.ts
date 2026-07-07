@@ -22,7 +22,7 @@ import { createSpawnSwarmTool } from '../manager/tools/spawn-swarm'
 import { createExecuteDirectTool } from '../manager/tools/execute-direct'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import type { UltimatrixConfig } from '../config'
-import type { SkillRegistry } from '../skills/registry'
+import type { SkillRegistry } from './skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
@@ -37,6 +37,7 @@ import {
   addEndpoint, addFinding, getTargetSummary, getEndpointsWithParams,
 } from '../graph/tools'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
+import { listSkills } from '../tools/skill-tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getOastUrlTool } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
@@ -99,6 +100,7 @@ export function createSolverBrain(
 
   // ─── Skill tools (methodology search) ──────────────────────────
   const skillTools: Record<string, any> = {
+    listSkills: sanitizeTool(listSkills, p),
     searchSkills: sanitizeTool(searchSkillTool, p),
     loadSkillReference: sanitizeTool(loadSkillReference, p),
   }

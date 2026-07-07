@@ -5,7 +5,7 @@
  * This module provides a compatible layer that falls back to SkillRegistry.
  */
 
-import { SkillRegistry } from '../skills/registry'
+import { SkillRegistry } from '../solver/skills/registry'
 
 export interface WorkspaceConfig {
   filesystem: { basePath: string }

@@ -12,6 +12,46 @@ function hashCredential(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16)
 }
 
+const LOGIN_URL_PATTERNS = [
+  /\/login/i, /\/signin/i, /\/auth/i, /\/sso/i,
+  /\/session\/new/i, /\/account\/login/i,
+]
+
+function isCookieExpired(cookie: any): boolean {
+  if (!cookie.expires || cookie.expires === -1) return false
+  return cookie.expires < Math.floor(Date.now() / 1000)
+}
+
+function filterValidCookies(cookies: any[]): { valid: any[]; expired: number } {
+  const valid: any[] = []
+  let expired = 0
+  for (const c of cookies) {
+    if (isCookieExpired(c)) {
+      expired++
+    } else {
+      valid.push(c)
+    }
+  }
+  return { valid, expired }
+}
+
+async function verifySessionAfterRestore(page: any, targetUrl: string): Promise<{ authenticated: boolean; reason?: string }> {
+  try {
+    const finalUrl = page.url()
+    const isLoginPage = LOGIN_URL_PATTERNS.some(p => p.test(finalUrl))
+    if (isLoginPage) {
+      return { authenticated: false, reason: `Redirected to login page: ${finalUrl}` }
+    }
+    const hasLoginForm = await page.$('input[type="password"]').catch(() => null)
+    if (hasLoginForm) {
+      return { authenticated: false, reason: 'Page contains a login form — session may be expired' }
+    }
+    return { authenticated: true }
+  } catch {
+    return { authenticated: true }
+  }
+}
+
 export const saveSession = createTool({
   id: 'saveSession',
   description: 'Save the current browser session (cookies, localStorage) to the knowledge graph for reuse across sessions.',
@@ -122,7 +162,18 @@ export const restoreSession = createTool({
     const stagehand = (browser as any).requireStagehand?.()
     if (!stagehand?.context) return { ok: false, error: 'Stagehand context not available' }
 
-    const cookies = flow.properties.cookies as any[] || []
+    const allCookies = flow.properties.cookies as any[] || []
+    const { valid: cookies, expired: expiredCount } = filterValidCookies(allCookies)
+
+    if (cookies.length === 0 && allCookies.length > 0) {
+      return {
+        ok: false,
+        error: `Session "${name}" has ${expiredCount} expired cookies and no valid ones. The user must re-login.`,
+        sessionExpired: true,
+        savedAt: flow.properties.savedAt,
+      }
+    }
+
     if (cookies.length > 0) {
       await stagehand.context.addCookies(cookies.map((c: any) => ({
         name: c.name,
@@ -144,15 +195,20 @@ export const restoreSession = createTool({
       }
     }
 
-    log.dim(`🔑 Session "${name}" restored: ${cookies.length} cookies, ${Object.keys(localStorage).length} localStorage items`)
+    const sessionCheck = page ? await verifySessionAfterRestore(page, '') : { authenticated: true }
+
+    log.dim(`🔑 Session "${name}" restored: ${cookies.length} cookies, ${Object.keys(localStorage).length} localStorage items${expiredCount > 0 ? ` (${expiredCount} expired, skipped)` : ''}`)
 
     return {
       ok: true,
       value: {
         name,
         cookieCount: cookies.length,
+        expiredSkipped: expiredCount,
         localStorageKeys: Object.keys(localStorage).length,
         savedAt: flow.properties.savedAt,
+        sessionValid: sessionCheck.authenticated,
+        sessionWarning: sessionCheck.reason,
       },
     }
   },
@@ -318,7 +374,17 @@ export const reproduceFlow = createTool({
       if (browser) {
         const stagehand = (browser as any).requireStagehand?.()
         if (stagehand?.context) {
-          const cookies = flow.properties.cookies as any[]
+          const allCookies = flow.properties.cookies as any[]
+          const { valid: cookies, expired: expiredCount } = filterValidCookies(allCookies)
+
+          if (cookies.length === 0) {
+            return {
+              ok: false,
+              error: `Flow "${flowName}" session has ${expiredCount} expired cookies. The user must re-login.`,
+              sessionExpired: true,
+            }
+          }
+
           await stagehand.context.addCookies(cookies.map((c: any) => ({
             name: c.name,
             value: c.value,
@@ -335,12 +401,30 @@ export const reproduceFlow = createTool({
             await page.goto(firstStep.url, { waitUntil: 'domcontentloaded', timeout: 15000 })
           }
 
+          const sessionCheck = await verifySessionAfterRestore(page, '')
+
+          if (!sessionCheck.authenticated) {
+            return {
+              ok: false,
+              error: `Session expired after restore: ${sessionCheck.reason}. The user must re-login.`,
+              sessionExpired: true,
+              value: {
+                flowName,
+                method: 'session-restore',
+                cookiesSet: cookies.length,
+                expiredSkipped: expiredCount,
+                finalUrl: page.url(),
+              },
+            }
+          }
+
           return {
             ok: true,
             value: {
               flowName,
               method: 'session-restore',
               cookiesSet: cookies.length,
+              expiredSkipped: expiredCount,
               finalUrl: page.url(),
             },
           }

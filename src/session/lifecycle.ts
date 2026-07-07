@@ -33,9 +33,8 @@ import { Blackboard } from '../solver/blackboard'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { ReflexionEngine } from '../intelligence/reflexion'
-import { resolveSkillsForInput } from '../skills/tool-filter'
 import { getGlobalObserver } from '../capture/human-observer'
-import { SkillRegistry } from '../skills/registry'
+import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
 import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
@@ -194,7 +193,7 @@ export class SessionLifecycle {
 
   private async launchBrowser(): Promise<void> {
     this.assertPhase('config')
-    const { config } = this._resources as { config: UltimatrixConfig }
+    const { config, target } = this._resources as { config: UltimatrixConfig; target: string }
 
     const [browser, oastPort] = await Promise.all([
       (async () => {
@@ -210,6 +209,25 @@ export class SessionLifecycle {
 
     // NOW start dialog watcher — browser is fully ready
     startDialogWatcher(browser)
+
+    // Programmatic navigation — establish initial state before spider LLM runs
+    // The entire downstream system (human observer, spider, dialog watcher) assumes
+    // the browser is at the target URL. This ensures that precondition is always true.
+    if (target) {
+      const page = getActivePage()
+      if (page) {
+        try {
+          log.info(`Navigating to ${target}...`)
+          const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 })
+          const status = response?.status() || 'unknown'
+          const title = await page.title().catch(() => '')
+          log.info(`Loaded ${target} — status: ${status}, title: "${title}"`)
+        } catch (err) {
+          log.warn(`Initial navigation failed: ${err instanceof Error ? err.message : String(err)}`)
+          log.info('Spider will attempt navigation via browser tools.')
+        }
+      }
+    }
 
     this._resources.browser = browser
     this._resources.oastPort = oastPort

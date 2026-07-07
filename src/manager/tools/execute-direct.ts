@@ -1,6 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { SkillRegistry } from '../../skills/registry'
+import type { SkillRegistry } from '../../solver/skills/registry'
+import { loadSkill } from '../../solver/skills/loader'
 import type { UltimatrixConfig } from '../../config'
 
 export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry: SkillRegistry) {
@@ -20,9 +21,9 @@ export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry:
       try {
         let skillContext = ''
         if (skillId) {
-          const skill = skillRegistry.get(skillId)
-          if (skill) {
-            skillContext = `\n\n## Skill Reference: ${skill.name}\n${skill.instructions}`
+          const fullSkill = loadSkill(skillId)
+          if (fullSkill) {
+            skillContext = `\n\n## Skill Reference: ${fullSkill.name}\n${fullSkill.instructions}`
           }
         }
 

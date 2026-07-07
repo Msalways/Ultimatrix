@@ -1,6 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { SkillRegistry } from '../../skills/registry'
+import type { SkillRegistry } from '../../solver/skills/registry'
+import { loadSkill } from '../../solver/skills/loader'
 
 export function createSkillLoadTool(skillRegistry: SkillRegistry) {
   return createTool({
@@ -17,29 +18,27 @@ export function createSkillLoadTool(skillRegistry: SkillRegistry) {
         category: z.string(),
         tier: z.string(),
         instructions: z.string(),
-        inputSchema: z.unknown(),
-        outputSchema: z.unknown(),
       }).nullable(),
     }),
     execute: async ({ skillId }) => {
-      const skill = skillRegistry.get(skillId)
-      
-      if (!skill) {
+      const meta = skillRegistry.get(skillId)
+      if (!meta) {
         return { ok: true, value: { skill: null } }
       }
-      
+
+      // Load full body on demand (progressive disclosure)
+      const fullSkill = loadSkill(skillId)
+
       return {
         ok: true,
         value: {
           skill: {
-            id: skill.id,
-            name: skill.name,
-            description: skill.description,
-            category: skill.category,
-            tier: skill.tier,
-            instructions: skill.instructions,
-            inputSchema: skill.inputSchema,
-            outputSchema: skill.outputSchema,
+            id: meta.id,
+            name: meta.name,
+            description: meta.description,
+            category: meta.category,
+            tier: meta.tier,
+            instructions: fullSkill?.instructions ?? '',
           },
         },
       }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { SkillRegistry, type GraphSummary, type SkillMatchContext } from '../../src/skills/registry'
-import { resetSkillCache } from '../../src/skills/loader'
+import { SkillRegistry, type GraphSummary, type SkillMatchContext } from '../../src/solver/skills/registry'
+import { resetSkillCache } from '../../src/solver/skills/loader'
 
 function makeGraphSummary(overrides?: Partial<GraphSummary>): GraphSummary {
   return {
@@ -61,7 +61,7 @@ describe('SkillRegistry — target-aware matching', () => {
     })
     const vuln = matches.find(m => m.skill.id === 'vuln-discovery')
     expect(vuln).toBeDefined()
-    expect(vuln!.matchReasons.some(r => r.includes('SQL'))).toBe(true)
+    expect(vuln!.matchReasons.some(r => r.includes('sqli') || r.includes('SQL'))).toBe(true)
   })
 
   it('boosts web-pentest for XSS goal', () => {

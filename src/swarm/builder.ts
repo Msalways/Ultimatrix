@@ -1,5 +1,5 @@
 import type { Agent } from '@mastra/core/agent'
-import type { SkillRegistry } from '../skills/registry'
+import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import { detectCrossWorkerChains } from './chains'
 import { formatSwarmResult } from './formatter'
