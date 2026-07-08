@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
+import { SKILLS_DIR } from '../lib/project-root'
 
 export interface Skill {
   name: string
@@ -15,7 +16,7 @@ export interface SkillCategory {
   skills: Skill[]
 }
 
-const DEFAULT_SKILLS_DIR = resolve(process.cwd(), 'skills')
+const DEFAULT_SKILLS_DIR = SKILLS_DIR
 
 export async function loadSkill(name: string, skillsDir: string = DEFAULT_SKILLS_DIR): Promise<Skill | null> {
   const entries = await readdir(skillsDir).catch(() => [])

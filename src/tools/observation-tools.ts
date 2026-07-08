@@ -1,21 +1,16 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { CompressionService } from '../compression/headroom-service'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 
-// ── WAF vendor patterns ──
+// ── WAF vendor patterns (from registry) ──
 
-const WAF_SIGNATURES: Array<{ vendor: string; patterns: RegExp[] }> = [
-  { vendor: 'cloudflare', patterns: [/cloudflare/i, /cf-ray/i, /__cfduid/i, /cf-cache-status/i] },
-  { vendor: 'akamai', patterns: [/akamai/i, /akamai-ghost/i, /x-akamai/i] },
-  { vendor: 'aws-waf', patterns: [/awselb/i, /x-amz-cf-id/i, /aws-waf/i] },
-  { vendor: 'imperva', patterns: [/imperva/i, /incapsula/i, /x-iinfo/i] },
-  { vendor: 'modsecurity', patterns: [/mod_security/i, /modsecurity/i, /x-mod-security/i] },
-  { vendor: 'fastly', patterns: [/fastly/i, /x-fastly/i, /x-served-by:\s*fastly/i] },
-  { vendor: 'barracuda', patterns: [/barracuda/i, /barra/i] },
-  { vendor: 'f5-bigip', patterns: [/f5-bigip/i, /bigip/i, /x-wa-info/i] },
-  { vendor: 'sucuri', patterns: [/sucuri/i, /x-sucuri/i, /cloudproxy/i] },
-  { vendor: 'wordfence', patterns: [/wordfence/i] },
-]
+function getWafSignatures() {
+  return getTechniqueRegistry().getWafSignatures().map(sig => ({
+    vendor: sig.vendor,
+    patterns: sig.patterns.map(p => new RegExp(p, 'i')),
+  }))
+}
 
 // ── 1. parseResponse ──
 
@@ -242,7 +237,7 @@ export const compareResponses = createTool({
   inputSchema: z.object({
     baseline: z.object({ body: z.string(), status: z.number() }),
     target: z.object({ body: z.string(), status: z.number() }),
-    ignoreKeys: z.array(z.string()).optional().default(['timestamp', 'request_id', 'traceId', 'trace_id', 'nonce']),
+    ignoreKeys: z.array(z.string()).optional().describe('Keys to ignore in comparison'),
   }),
   outputSchema: z.object({
     ok: z.boolean(),
@@ -254,7 +249,7 @@ export const compareResponses = createTool({
     }),
   }),
   execute: async (ctx) => {
-    const ignore = ctx.ignoreKeys ?? ['timestamp', 'request_id', 'traceId', 'trace_id', 'nonce']
+    const ignore = ctx.ignoreKeys ?? getTechniqueRegistry().getIgnoreKeys()
     const baseJson = tryParseJsonSafe(ctx.baseline.body)
     const targetJson = tryParseJsonSafe(ctx.target.body)
     let divergence: number
@@ -307,7 +302,7 @@ export const checkWaf = createTool({
     const body = ctx.responseBody.slice(0, 4000)
 
     let best: { vendor: string; matches: number } = { vendor: 'unknown', matches: 0 }
-    for (const sig of WAF_SIGNATURES) {
+    for (const sig of getWafSignatures()) {
       let matches = 0
       for (const pat of sig.patterns) {
         if (pat.test(allHeaderText) || pat.test(body)) matches++

@@ -1,9 +1,10 @@
 import type { TestResult } from './test-runner'
+import type { RegressionSeverity } from '../types/shared'
 
 export interface Regression {
   testName: string
   type: 'new-failure' | 'status-change' | 'performance-regression'
-  severity: 'high' | 'medium' | 'low'
+  severity: RegressionSeverity
   description: string
   baseline: TestResult
   current: TestResult

@@ -544,6 +544,11 @@ export async function solve(
         case "reasoning-delta":
           if (chunk.payload.text) {
             fullText += chunk.payload.text;
+            emit({
+              phase: "reason",
+              step: toolCallCount,
+              text: chunk.payload.text,
+            });
           }
           break;
 

@@ -12,6 +12,7 @@ import { getCapturedHeaders, storeSession } from './har-tools'
 import { loadSkillReference, searchSkillTool } from './skill-tools'
 import { encodeDecode } from './encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from './flow-tools'
+import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
 
 export {
   httpRequest, multipartUpload, followRedirects, omitHeader,
@@ -28,6 +29,7 @@ export {
   getCapturedHeaders, storeSession,
   loadSkillReference, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
+  buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
 }
 
 export function registerAllTools() {
@@ -46,5 +48,6 @@ export function registerAllTools() {
     getCapturedHeaders, storeSession,
     loadSkillReference, searchSkills: searchSkillTool, encodeDecode,
     saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
+    buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
   }
 }

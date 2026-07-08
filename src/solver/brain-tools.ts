@@ -41,6 +41,14 @@ import { listSkills } from '../tools/skill-tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getOastUrlTool } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
+import {
+  buildResearchMap,
+  planResearchExperiments,
+  compareResearchResponses,
+  recordFindingCandidate,
+  assessCandidateReportability,
+  getResearchStatus,
+} from '../tools/research-tools'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
@@ -105,6 +113,16 @@ export function createSolverBrain(
     loadSkillReference: sanitizeTool(loadSkillReference, p),
   }
 
+  // Research tools (v9 bug-bounty brain): workflows -> hypotheses -> experiments -> candidates.
+  const researchTools: Record<string, any> = {
+    buildResearchMap: sanitizeTool(buildResearchMap, p),
+    planResearchExperiments: sanitizeTool(planResearchExperiments, p),
+    compareResearchResponses: sanitizeTool(compareResearchResponses, p),
+    recordFindingCandidate: sanitizeTool(recordFindingCandidate, p),
+    assessCandidateReportability: sanitizeTool(assessCandidateReportability, p),
+    getResearchStatus: sanitizeTool(getResearchStatus, p),
+  }
+
   // ─── Session tools (auth context) ──────────────────────────────
   const sessionTools: Record<string, any> = {
     getCapturedHeaders: sanitizeTool(getCapturedHeaders, p),
@@ -164,6 +182,7 @@ export function createSolverBrain(
     ...coreTools,
     ...httpTools,
     ...skillTools,
+    ...researchTools,
     ...sessionTools,
     ...orchestrationTools,
     ...miscTools,

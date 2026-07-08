@@ -32,6 +32,12 @@ const CORE_TOOLS = [
   'restoreSession',
   'getCapturedHeaders',
   'storeSession',
+  'buildResearchMap',
+  'planResearchExperiments',
+  'compareResearchResponses',
+  'recordFindingCandidate',
+  'assessCandidateReportability',
+  'getResearchStatus',
 ]
 
 export function resolveToolsForSkills(skillIds: string[]): string[] {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { DynamicToolSelector, DEFAULT_INFERENCE_RULES } from '../../src/tools/tool-selector'
+import { DynamicToolSelector } from '../../src/tools/tool-selector'
 import type { TaskBudget } from '../../src/models/selector'
 
 function makeBudget(overrides?: Partial<TaskBudget>): TaskBudget {
@@ -77,7 +77,7 @@ describe('DynamicToolSelector', () => {
 
   it('getInferenceRules returns configured rules', () => {
     const rules = selector.getInferenceRules()
-    expect(rules.length).toBe(DEFAULT_INFERENCE_RULES.length)
+    expect(rules.length).toBeGreaterThan(0)
     expect(rules.some(r => r.keywords.includes('sqli'))).toBe(true)
   })
 

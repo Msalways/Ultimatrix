@@ -1,4 +1,5 @@
 import type { Page } from 'playwright'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 
 export type HumanActionType = 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
 
@@ -21,12 +22,16 @@ export interface FlowGroup {
   duration: number
 }
 
-const SENSITIVE_SELECTORS = /pass|password|secret|token|auth|credential|ssn|credit|card/i
+function getSensitiveRegex(): RegExp {
+  const fields = getTechniqueRegistry().getSensitiveFields()
+  return new RegExp(fields.join('|'), 'i')
+}
+
 const SENSITIVE_INPUT_TYPES = /password|hidden/
 
 export function maskValue(value: string, selector?: string, inputType?: string): string {
   if (inputType && SENSITIVE_INPUT_TYPES.test(inputType)) return '***'
-  if (selector && SENSITIVE_SELECTORS.test(selector)) return '***'
+  if (selector && getSensitiveRegex().test(selector)) return '***'
   if (value.length > 200) return value.slice(0, 200) + '...'
   return value
 }
@@ -34,8 +39,10 @@ export function maskValue(value: string, selector?: string, inputType?: string):
 function detectFlowType(actions: HumanAction[]): FlowGroup['type'] {
   const urls = actions.filter(a => a.type === 'navigate').map(a => a.url)
   const lastUrl = urls[urls.length - 1] || ''
+  const loginPatterns = getTechniqueRegistry().getLoginUrlPatterns()
+  const loginRegex = new RegExp(loginPatterns.join('|'), 'i')
 
-  if (/login|auth|signin|oauth|sso/i.test(lastUrl) || /login|auth|signin/i.test(actions[0]?.url || '')) {
+  if (loginRegex.test(lastUrl) || loginRegex.test(actions[0]?.url || '')) {
     return 'login'
   }
 

@@ -19,6 +19,7 @@ import { log } from '../utils/logger'
 import { parseHar, getEndpointsWithHeaders, getSecrets, getDataFlows } from '../capture/har-parser'
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
 import { detectChains } from '../intelligence/chaining'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 import type { HarArchive } from '../capture/har-parser'
 
 export interface BridgeResult {
@@ -217,12 +218,8 @@ function extractXHRBodies(entries: ReturnType<typeof parseHar>['log']['entries']
     const validationGaps: string[] = []
 
     // Detect fields that exist in response but are unlikely displayed in UI
-    const suspiciousFields = [
-      'admin', 'role', 'isAdmin', 'is_admin', 'permissions', 'privilege',
-      'internal', 'debug', 'trace', 'stack', 'password', 'secret',
-      'token', 'session', 'csrf', 'api_key', 'apiKey',
-      'user_id', 'userId', 'account_id', 'accountId',
-    ]
+    const registry = getTechniqueRegistry()
+    const suspiciousFields = registry.getSuspiciousFields()
 
     for (const key of Object.keys(parsed)) {
       const lower = key.toLowerCase()
@@ -232,11 +229,13 @@ function extractXHRBodies(entries: ReturnType<typeof parseHar>['log']['entries']
     }
 
     // Detect validation gaps: response contains data types that could be manipulated
+    const boolFields = registry.getValidationGapBooleans()
+    const numFields = registry.getValidationGapNumerics()
     for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === 'boolean' && ['admin', 'role', 'verified', 'active', 'premium'].some(s => key.toLowerCase().includes(s))) {
+      if (typeof value === 'boolean' && boolFields.some(s => key.toLowerCase().includes(s))) {
         validationGaps.push(`${key}=${value} (boolean, could be toggled)`)
       }
-      if (typeof value === 'number' && ['balance', 'amount', 'price', 'quantity', 'credit', 'points'].some(s => key.toLowerCase().includes(s))) {
+      if (typeof value === 'number' && numFields.some(s => key.toLowerCase().includes(s))) {
         validationGaps.push(`${key}=${value} (numeric, could be manipulated)`)
       }
     }

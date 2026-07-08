@@ -9,6 +9,7 @@
  */
 
 import { FLAG_RE } from './constants'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 
 export interface ClaimVerification {
   verified: boolean
@@ -114,9 +115,8 @@ export class EvidenceGate {
       if (claimLower.includes(h)) facts.push(h)
     }
 
-    // Finding types
-    const findingTypes = ['xss', 'sqli', 'sql injection', 'ssrf', 'xxe', 'idor', 'csrf',
-      'open redirect', 'ssrf', 'command injection', 'ssti', 'authentication bypass']
+    // Finding types (from registry)
+    const findingTypes = getTechniqueRegistry().getAttackPaths()
     for (const ft of findingTypes) {
       if (claimLower.includes(ft)) facts.push(ft)
     }

@@ -1,24 +1,10 @@
 import { BudgetAwarePruner, getUniversalTools } from './budget-pruner'
 import { TokenProfiler } from './token-profiler'
 import type { TaskBudget } from '../models/selector'
-import { loadSkill, getAllSkills } from '../solver/skills/loader'
+import { loadSkill } from '../solver/skills/loader'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 
-interface ToolInferenceRule {
-  keywords: string[]
-  tools: string[]
-  priority: 'high' | 'medium' | 'low'
-}
-
-const DEFAULT_INFERENCE_RULES: ToolInferenceRule[] = [
-  { keywords: ['sqli', 'sql injection', 'blind'], tools: ['checkWaf', 'measureTiming'], priority: 'high' },
-  { keywords: ['xss', 'cross-site'], tools: ['evaluateRendered', 'getDialogEvidence'], priority: 'high' },
-  { keywords: ['idor', 'access control', 'authorization'], tools: ['findEndpointsInResponse', 'evaluateRendered'], priority: 'high' },
-  { keywords: ['ssrf', 'server-side'], tools: ['httpRequest', 'evaluateRendered'], priority: 'medium' },
-  { keywords: ['race', 'concurrent'], tools: ['measureTiming', 'compareResponses'], priority: 'medium' },
-  { keywords: ['recon', 'reconnaissance', 'enumerate'], tools: ['queryGraph', 'getTargetSummary', 'getEndpointsWithParams'], priority: 'medium' },
-  { keywords: ['jwt', 'token', 'auth'], tools: ['getCapturedHeaders', 'encodeDecode'], priority: 'low' },
-  { keywords: ['graphql', 'introspection'], tools: ['httpRequest', 'queryGraph'], priority: 'low' },
-]
+export type { ToolInferenceRule } from '../skills/technique-registry'
 
 /**
  * Dynamically selects tools based on task context, skill matching,
@@ -27,12 +13,10 @@ const DEFAULT_INFERENCE_RULES: ToolInferenceRule[] = [
 export class DynamicToolSelector {
   private profiler: TokenProfiler
   private pruner: BudgetAwarePruner
-  private inferenceRules: ToolInferenceRule[]
 
   constructor(profiler?: TokenProfiler) {
     this.profiler = profiler ?? new TokenProfiler()
     this.pruner = new BudgetAwarePruner(this.profiler)
-    this.inferenceRules = DEFAULT_INFERENCE_RULES
   }
 
   /**
@@ -55,7 +39,7 @@ export class DynamicToolSelector {
       }
     }
 
-    // Add inferred tools from task description
+    // Add inferred tools from task description (via registry)
     const inferred = this.inferToolsFromTask(taskDescription)
     for (const t of inferred) {
       tools.add(t)
@@ -76,38 +60,18 @@ export class DynamicToolSelector {
   }
 
   inferToolsFromTask(taskDescription: string): string[] {
-    const input = taskDescription.toLowerCase()
-    const tools = new Set<string>()
-
-    // Sort rules: high priority first
-    const sorted = [...this.inferenceRules].sort((a, b) => {
-      const priorityOrder = { high: 0, medium: 1, low: 2 }
-      return priorityOrder[a.priority] - priorityOrder[b.priority]
-    })
-
-    for (const rule of sorted) {
-      const matched = rule.keywords.some(kw => input.includes(kw))
-      if (matched) {
-        for (const tool of rule.tools) {
-          tools.add(tool)
-        }
-      }
-    }
-
-    return [...tools]
+    return getTechniqueRegistry().inferToolsFromTask(taskDescription)
   }
 
   getUniversalTools(): string[] {
     return getUniversalTools()
   }
 
-  getInferenceRules(): ToolInferenceRule[] {
-    return [...this.inferenceRules]
+  getInferenceRules() {
+    return getTechniqueRegistry().getConfig().toolInferenceRules
   }
 
   getProfiler(): TokenProfiler {
     return this.profiler
   }
 }
-
-export { DEFAULT_INFERENCE_RULES, type ToolInferenceRule }

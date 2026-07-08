@@ -276,7 +276,30 @@ export class LibSQLGraphStore {
     ])
   }
 
-  private updateNode(node: GraphNodeData): void {
+  upsertNode(node: AnyNodeData): AnyNodeData {
+    const existing = this.getNode(node.id)
+    if (existing) {
+      const updated = {
+        ...existing,
+        ...node,
+        properties: { ...existing.properties, ...node.properties },
+        createdAt: existing.createdAt,
+        updatedAt: Date.now(),
+      } as AnyNodeData
+      this.updateNode(updated)
+      return updated
+    }
+
+    const created = {
+      ...node,
+      createdAt: node.createdAt || Date.now(),
+      updatedAt: node.updatedAt || Date.now(),
+    } as AnyNodeData
+    this.insertNode(created)
+    return created
+  }
+
+  updateNode(node: GraphNodeData): void {
     this.db.execute(`
       UPDATE nodes 
       SET type = ?, label = ?, properties = ?, updated_at = ?
@@ -290,14 +313,14 @@ export class LibSQLGraphStore {
     ])
   }
 
-  private getNode(id: string): GraphNodeData | null {
+  getNode(id: string): AnyNodeData | undefined {
     const result = this.db.execute(`
       SELECT id, type, label, properties, created_at, updated_at
       FROM nodes
       WHERE id = ?
     `, [id])
 
-    if (result.rows.length === 0) return null
+    if (result.rows.length === 0) return undefined
 
     const row = result.rows[0]
     return {
@@ -307,7 +330,15 @@ export class LibSQLGraphStore {
       properties: JSON.parse(row.properties),
       createdAt: row.created_at,
       updatedAt: row.updated_at
-    }
+    } as AnyNodeData
+  }
+
+  deleteNode(id: string): boolean {
+    const existing = this.getNode(id)
+    if (!existing) return false
+    this.db.execute('DELETE FROM edges WHERE from_id = ? OR to_id = ?', [id, id])
+    this.db.execute('DELETE FROM nodes WHERE id = ?', [id])
+    return true
   }
 
   private addEdge(edgeData: { fromId: string; toId: string; type: EdgeType }): GraphEdgeData {

@@ -8,6 +8,7 @@ import { TestStorage } from '../generation/test-storage'
 import { log } from '../utils/logger'
 import { captureScreenshot } from '../browser/manager'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
+import type { EvidenceLevel } from '../types/shared'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string }>>()
 
@@ -59,7 +60,7 @@ export const flushEvidence = (findingKey?: string): Array<{ type: string; data: 
   return all
 }
 
-function determineEvidenceLevel(items: Array<{ type: string }>): 'L1' | 'L2' | 'L3' | 'L4' {
+function determineEvidenceLevel(items: Array<{ type: string }>): EvidenceLevel {
   if (items.length === 0) return 'L1'
   const hasHarOrRaw = items.some(e => e.type === 'har_entry' || e.type === 'raw_request' || e.type === 'raw_response')
   if (hasHarOrRaw) return 'L4'
@@ -187,8 +188,6 @@ export const writeFinding = createTool({
     }
 
     autoGenerateTest(finding).catch(() => {})
-
-    store.save().catch(err => log.error('Graph save failed after writeFinding: ' + String(err)))
 
     return { ok: true, value: finding }
   },

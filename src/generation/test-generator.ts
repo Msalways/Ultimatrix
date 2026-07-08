@@ -1,7 +1,9 @@
+import type { Severity } from '../types/shared'
+
 export interface Finding {
   id: string
   title: string
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
+  severity: Severity
   category: string
   description: string
   evidence: Evidence[]

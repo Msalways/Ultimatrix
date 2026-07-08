@@ -60,13 +60,17 @@ export async function main(targetUrl?: string) {
           maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
         },
         onToolComplete: (_toolName: string, _result?: unknown) => {
-          // Graph auto-save only — evidence recording already handled by solver.ts
-          getGlobalWorkspace().getGraphStore()?.save().catch(err =>
-            log.error('Graph save failed during solver: ' + String(err))
-          )
+          // Debounced graph save — coalesces rapid tool calls into 1-2 writes
+          getGlobalWorkspace().getGraphStore()?.scheduleSave()
         },
         onPhase: (event) => {
-          if (event.text) process.stdout.write(event.text)
+          if (event.text) {
+            if (event.phase === 'reason') {
+              log.dim(event.text)
+            } else {
+              process.stdout.write(event.text)
+            }
+          }
           if (event.toolName) log.dim(`  → ${event.toolName}`)
 
           resources.forensicLog.log({
@@ -225,7 +229,7 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
         break
       case 'step-finish':
         flushText(true)
-        getGlobalWorkspace().getGraphStore()?.save().catch(err => log.error('Graph save failed: ' + String(err)))
+        getGlobalWorkspace().getGraphStore()?.scheduleSave()
         break
       case 'background-task-started':
         flushText(false)

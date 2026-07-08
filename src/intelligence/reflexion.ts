@@ -67,6 +67,7 @@ const DEFAULT_CONFIG: ReflexionConfig = {
 }
 
 import { FAILED_ACCESS_PATTERNS, ESCALATION_HINTS } from './constants'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 
 export class ReflexionEngine {
   private attempts: Attempt[] = []
@@ -272,18 +273,13 @@ export class ReflexionEngine {
       return FailureCategory.ENV_CONSTRAINT
     }
 
-    const envPatterns = ['waf', '403', 'forbidden', 'blocked', 'filtered', 'rate limit', 'timeout', 'unauthorized']
-    if (envPatterns.some(p => text.includes(p))) return FailureCategory.ENV_CONSTRAINT
-
-    const pathPatterns = ['not vulnerable', 'no injection', 'dead end', 'does not exist', 'not injectable', 'false positive']
-    if (pathPatterns.some(p => text.includes(p))) return FailureCategory.PATH_ERROR
-
-    const paramPatterns = ['invalid payload', 'syntax error', 'bad parameter', 'encoding error', 'malformed']
-    if (paramPatterns.some(p => text.includes(p))) return FailureCategory.PARAM_ERROR
-
-    const infoPatterns = ['need more information', 'insufficient', 'unknown parameter', 'fingerprint first', 'enumerate first']
-    if (infoPatterns.some(p => text.includes(p))) return FailureCategory.INFO_NEEDED
-
-    return FailureCategory.UNKNOWN
+    const category = getTechniqueRegistry().classifyFailure(text, responseText)
+    switch (category) {
+      case 'envConstraint': return FailureCategory.ENV_CONSTRAINT
+      case 'pathError': return FailureCategory.PATH_ERROR
+      case 'paramError': return FailureCategory.PARAM_ERROR
+      case 'infoNeeded': return FailureCategory.INFO_NEEDED
+      default: return FailureCategory.UNKNOWN
+    }
   }
 }

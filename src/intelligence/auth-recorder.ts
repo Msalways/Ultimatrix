@@ -1,6 +1,7 @@
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
 import type { AuthFlowNode } from '../graph/schema'
+import type { AuthFlowType } from '../types/shared'
 
 export interface LoginFormDetection {
   emailField: string
@@ -112,7 +113,7 @@ export function detectLoginForm(pageSnapshot: string): LoginFormDetection | null
 }
 
 export function createAuthFlow(
-  flowType: 'login' | 'logout' | 'refresh',
+  flowType: AuthFlowType,
   steps: Array<{ action: string; url?: string; selector?: string; value?: string }>,
   credentialHash?: string
 ): AuthFlowNode {

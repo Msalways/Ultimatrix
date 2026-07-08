@@ -20,6 +20,7 @@ import { readReportTool, setForensicLog, getForensicLog } from '../tools/report-
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from '../tools/flow-tools'
+import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
 import { Logger } from '../utils/logger'
 
 export type ToolRegistry = {
@@ -121,6 +122,14 @@ export type ToolRegistry = {
   detectReactions: typeof detectReactions
   getDialogEvidence: typeof getDialogEvidence
   getRecentChanges: typeof getRecentChanges
+
+  // Research Tools (v9 bug-bounty brain)
+  buildResearchMap: typeof buildResearchMap
+  planResearchExperiments: typeof planResearchExperiments
+  compareResearchResponses: typeof compareResearchResponses
+  recordFindingCandidate: typeof recordFindingCandidate
+  assessCandidateReportability: typeof assessCandidateReportability
+  getResearchStatus: typeof getResearchStatus
 }
 
 // Centralized tool registry with consistent IDs
@@ -228,6 +237,14 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     detectReactions,
     getDialogEvidence,
     getRecentChanges,
+
+    // Research Tools (v9 bug-bounty brain)
+    buildResearchMap,
+    planResearchExperiments,
+    compareResearchResponses,
+    recordFindingCandidate,
+    assessCandidateReportability,
+    getResearchStatus,
   }
 }
 
@@ -289,18 +306,24 @@ export const TOOL_IDS = [
   'observeHumanActions',
   'saveLearnedFlow',
   'reproduceFlow',
+  'buildResearchMap',
+  'planResearchExperiments',
+  'compareResearchResponses',
+  'recordFindingCandidate',
+  'assessCandidateReportability',
+  'getResearchStatus',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]
 
 // Tool metadata for documentation and validation
-export const TOOL_METADATA: Record<ToolId, {
+export const TOOL_METADATA: Partial<Record<ToolId, {
   id: string
   description: string
-  category: 'http' | 'observation' | 'session' | 'control' | 'graph' | 'app-model' | 'recon' | 'interaction' | 'oast'
+  category: 'http' | 'observation' | 'session' | 'control' | 'graph' | 'app-model' | 'recon' | 'interaction' | 'oast' | 'research'
   inputSchema: any
   outputSchema: any
-}> = {
+}>> = {
   httpRequest: {
     id: 'httpRequest',
     description: 'Send an HTTP request with method/headers/body/cookies. Does NOT follow redirects.',

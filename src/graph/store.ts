@@ -56,10 +56,24 @@ export class GraphStore {
   private readonly savePath: string
   private useLibSQL: boolean
   private libSQLStore?: LibSQLGraphStore
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly SAVE_DEBOUNCE_MS = 500
 
   constructor(savePath?: string, useLibSQL: boolean = false) {
     this.savePath = savePath || resolve('output', 'graph.json')
     this.useLibSQL = useLibSQL
+  }
+
+  scheduleSave(): void {
+    if (this.useLibSQL && this.libSQLStore) {
+      this.libSQLStore.save().catch(() => {})
+      return
+    }
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      this.save().catch(() => {})
+    }, GraphStore.SAVE_DEBOUNCE_MS)
   }
 
   private contentHash(str: string): string {
@@ -486,6 +500,59 @@ export class GraphStore {
     }
     this.nodes.set(id, node)
     return node
+  }
+
+  upsertNode(node: AnyNodeData): AnyNodeData {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.upsertNode(node)
+    }
+
+    const existing = this.nodes.get(node.id)
+    const now = Date.now()
+    if (existing) {
+      const updated: AnyNodeData = {
+        ...existing,
+        ...node,
+        properties: {
+          ...existing.properties,
+          ...node.properties,
+        },
+        createdAt: existing.createdAt,
+        updatedAt: now,
+      } as AnyNodeData
+      this.nodes.set(node.id, updated)
+      return updated
+    }
+
+    const created: AnyNodeData = {
+      ...node,
+      createdAt: node.createdAt || now,
+      updatedAt: node.updatedAt || now,
+    } as AnyNodeData
+    this.nodes.set(created.id, created)
+    return created
+  }
+
+  updateNode(node: AnyNodeData): void {
+    if (this.useLibSQL && this.libSQLStore) {
+      this.libSQLStore.updateNode(node)
+      return
+    }
+    this.nodes.set(node.id, { ...node, updatedAt: Date.now() })
+  }
+
+  getNode(id: string): AnyNodeData | undefined {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.getNode(id)
+    }
+    return this.nodes.get(id) as AnyNodeData | undefined
+  }
+
+  deleteNode(id: string): boolean {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.deleteNode(id)
+    }
+    return this.nodes.delete(id)
   }
 
   chainFindings(fromId: string, toId: string): void {

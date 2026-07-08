@@ -23,7 +23,7 @@ It finds vulnerabilities that pattern-based scanners miss, because it understand
 - [Three Engine Architecture](#three-engine-architecture)
 - [The Intelligence Layer](#the-intelligence-layer)
 - [Multi-Model Routing](#multi-model-routing)
-- [21 Knowledge-Based Skills](#21-knowledge-based-skills)
+- [47 Knowledge-Based Skills](#47-knowledge-based-skills)
 - [Human-in-the-Loop](#human-in-the-loop)
 - [Graph-Powered Reasoning](#graph-powered-reasoning)
 - [Response Compression (Headroom)](#response-compression-headroom)
@@ -147,7 +147,7 @@ That's not a toy. That's a security consultant that works 24/7.
           │  • Reflexion Engine (L0-L4 failure classification)             │
           │  • Anti-Loop Detector (stale/dead-end detection)               │
           │  • Knowledge Graph (11 node types, 12 edge types)             │
-          │  • Skill Library (21 knowledge-based skills)                   │
+          │  • Skill Library (47 knowledge-based skills)                   │
           │  • Headroom Compression (intelligent response compression)     │
           │  • Session Manager (cookie expiry validation)                  │
           └──────────────────────────┬──────────────────────────────────────┘
@@ -190,7 +190,7 @@ That's not a toy. That's a security consultant that works 24/7.
           └────────────────────────────────────────────────────────────────┘
 ```
 
-### Source Layout (166 TypeScript files)
+### Source Layout (166 TypeScript files, 24K LOC)
 
 ```
 src/
@@ -601,53 +601,119 @@ Different LLM providers have different JSON Schema compatibility. The `SchemaSan
 
 ---
 
-## 21 Knowledge-Based Skills
+## 47 Knowledge-Based Skills
 
 Not payload lists. Not regex patterns. **Knowledge.**
 
-Each skill is a markdown file containing security expertise — reasoning patterns, testing methodologies, what to look for and why. The LLM reads these skills and applies the knowledge using its own reasoning capabilities.
+Each skill is a markdown file containing security expertise — reasoning patterns, testing methodologies, what to look for and why. The LLM reads these skills and applies the knowledge using its own reasoning capabilities. Skills are organized across **8 domain directories** with MITRE ATT&CK and OWASP Top 10 references.
 
-### Core Skills (7)
+### Skills by Domain
 
-| Skill | What It Knows |
-|-------|---------------|
-| **Recon** | Deep page analysis, JavaScript bundle secrets, exposed files, technology fingerprinting, subdomain enumeration |
-| **Vuln Discovery** | Dynamic payload crafting, input type analysis, WAF adaptation, context-aware encoding, parameter pollution |
-| **Exploitation** | Proof-of-concept development, impact assessment, chaining vectors, severity scoring |
-| **Post-Exploitation** | Lateral movement, privilege escalation, persistence mechanisms, data exfiltration |
-| **Reporting** | Finding documentation, risk quantification (CVSS), remediation guidance, executive summaries |
-| **WAF Bypass** | Encoding tricks, fragmentation, timing attacks, case variation, chunked transfer |
-| **Pentest Flow** | Structured methodology, scope management, documentation standards, reporting cadence |
+#### Injection (7 skills)
 
-### Specialized Skills (14)
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **vuln-discovery** | balanced | Dynamic payload crafting, input type analysis, WAF adaptation, context-aware encoding |
+| **exploitation** | powerful | Proof-of-concept development, impact assessment, chaining vectors, severity scoring |
+| **ssti** | powerful | Server-Side Template Injection — Jinja2, Twig, Freemarker, Velocity, Handlebars RCE chains |
+| **command-injection-advanced** | powerful | Filter bypass, encoding, blind exfil, polyglot payloads |
+| **nosql-injection** | balanced | MongoDB operators, JS injection, ReDoS, CouchDB |
+| **xxe** | powerful | Classic, blind, SVG, SOAP, filter bypass, billion laughs |
+| **email-injection** | balanced | SMTP header injection, CRLF, spoofing |
 
-| Skill | What It Knows |
-|-------|---------------|
-| **Web Pentest** | OWASP Top 10, API testing, authentication bypass, session fixation |
-| **Web Security Advanced** | CSP bypass, CORS misconfiguration, cache poisoning, request smuggling |
-| **Authorization** | Multi-role testing, IDOR, JWT attacks (alg confusion, key confusion), OAuth bypass, session hijacking |
-| **Business Logic** | Workflow bypass, price manipulation, race conditions, coupon abuse, quantity tampering |
-| **Info Disclosure** | JS bundle analysis, .env exposure, error message leakage, stack traces, version disclosure |
-| **Race Conditions** | Concurrent request testing, TOCTOU, mass assignment, double-spend |
-| **Crypto Toolkit** | Hash analysis, key extraction, algorithm weaknesses, padding oracle, timing attacks |
-| **AI/MCP Security** | Prompt injection, model manipulation, tool poisoning, data exfiltration via AI |
-| **OSINT Recon** | Subdomain enumeration, certificate transparency, DNS records, technology detection |
-| **Intranet Pentest** | Internal network testing, SMB shares, LDAP injection, Kerberoasting |
-| **Pentest Tools** | Nmap, Burp Suite, SQLMap, Nikto integration and interpretation |
-| **CTF Web** | Web challenge methodologies, exploitation chains, flag extraction |
-| **CTF Crypto** | Cryptanalysis, frequency analysis, known-plaintext attacks |
-| **CTF Misc** | Steganography, encoding challenges, forensics, reverse engineering |
+#### Web Attacks (16 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **web-pentest** | balanced | OWASP Top 10, API testing, authentication bypass, session fixation |
+| **web-security-advanced** | powerful | CSP bypass, CORS misconfiguration, cache poisoning, request smuggling |
+| **modern-xss** | powerful | Polyglot payloads, CSP bypass, DOM clobbering, mutation XSS |
+| **open-redirect** | balanced | Filter bypass, JavaScript URI, tabnabbing, OAuth token theft |
+| **cache-poisoning** | powerful | Unkeyed headers, param cloaking, fat GET, CDN-specific |
+| **http-smuggling** | powerful | CL.TE, TE.CL, TE.TE, H2.CL, 20+ TE obfuscation techniques |
+| **cors-misconfig** | balanced | Null origin, subdomain matching, wildcard bypass |
+| **host-header-injection** | balanced | Password reset poisoning, cache poisoning, SSRF via Host |
+| **file-upload-attacks** | balanced | Double extension, null byte, polyglot files, SVG XSS, webshell upload |
+| **deserialization** | powerful | Java, PHP, Python, .NET gadget chains, object injection |
+| **prototype-pollution** | balanced | Deep merge exploits, Angular/Jinja2 sandbox escape |
+| **type-juggling** | balanced | PHP loose comparison, magic hashes, strcmp bypass |
+| **clickjacking** | fast | X-Frame-Options bypass, CSP frame-ancestors, cookie forcing |
+| **css-injection** | balanced | Attribute selectors, data exfil, CSS keylogger |
+| **business-logic** | powerful | Workflow bypass, price manipulation, race conditions, coupon abuse |
+| **race-conditions-advanced** | powerful | Turbowlence, single-packet, TOCTOU chains |
+
+#### API Security (4 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **api-security** | balanced | BOLA, mass assignment, rate limit bypass, API versioning attacks |
+| **graphql-attacks** | powerful | Introspection abuse, batching, alias brute force, nested query DoS |
+| **websocket-attacks** | balanced | Cross-site WebSocket hijacking, message injection, CSWSH |
+| **ai-mcp-security** | balanced | Prompt injection, model manipulation, tool poisoning, data exfiltration via AI |
+
+#### Auth Security (2 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **authorization** | powerful | Multi-role testing, IDOR, JWT attacks, OAuth bypass, session hijacking |
+| **jwt-advanced** | powerful | Alg:none, key confusion, jku/x5u injection, token injection, null byte attacks |
+
+#### Crypto (2 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **crypto-toolkit** | balanced | Hash analysis, key extraction, algorithm weaknesses, padding oracle, timing attacks |
+| **ctf-crypto** | balanced | Cryptanalysis, frequency analysis, known-plaintext attacks |
+
+#### Recon (9 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **recon** | fast | Deep page analysis, JavaScript bundle secrets, exposed files, technology fingerprinting |
+| **post-exploitation** | balanced | Lateral movement, privilege escalation, persistence mechanisms, data exfiltration |
+| **osint-recon** | fast | Subdomain enumeration, certificate transparency, DNS records, technology detection |
+| **information-disclosure** | balanced | JS bundle analysis, .env exposure, error message leakage, stack traces |
+| **intranet-pentest** | balanced | Internal network testing, SMB shares, LDAP injection, Kerberoasting |
+| **ctf-misc** | fast | Steganography, encoding challenges, forensics, reverse engineering |
+| **subdomain-takeover** | balanced | Dangling CNAME, S3/Azure/GitHub Pages takeover |
+| **hsts-bypass** | fast | Subdomain stripping, preloading gaps, SSL stripping |
+| **ssl-stripping** | balanced | HTTPS downgrade, HSTS bypass, cert pinning bypass |
+
+#### Cloud Security (6 skills)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **kubernetes-security** | powerful | K8s API exploitation, RBAC bypass, container escape, etcd access |
+| **docker-escape** | powerful | Container breakout, privileged mode, namespace escape |
+| **aws-iam-exploitation** | powerful | IAM privilege escalation, role assumption, S3 bucket enumeration |
+| **azure-exploitation** | powerful | Azure AD attacks, managed identity abuse, Key Vault access |
+| **gcp-exploitation** | powerful | GCP IAM bypass, metadata service attacks, service account impersonation |
+| **serverless-attacks** | balanced | Lambda cold start exploitation, environment variable extraction, event injection |
+
+#### Reports (1 skill)
+
+| Skill | Tier | Description |
+|-------|------|-------------|
+| **reporting** | fast | Finding documentation, risk quantification (CVSS), remediation guidance |
 
 ### Skill Matching
 
-Skills are matched to tasks using natural-language **triggers** — not keyword/substring matching. The `resolveSkillsForInput()` function scores skills based on semantic relevance to the current context:
+Skills are matched to tasks using natural-language **triggers** — not keyword/substring matching. The `SkillMatcher` class scores skills based on semantic relevance to the current context, with `contextBoosts` that respond to graph state (e.g., detected auth flows boost authorization skills):
 
 ```
 Input: "Testing JWT token validity and expiration"
   → Authorization skill (trigger: "jwt, token validation, expiry")
+  → JWT Advanced skill (trigger: "alg:none, key confusion")
   → Web Pentest skill (trigger: "authentication, session")
-  → Recon skill (trigger: "token analysis, header inspection")
 ```
+
+### Progressive Disclosure
+
+Skills use a two-phase loading system for efficiency:
+1. **Index phase** — Only YAML frontmatter is loaded (fast init, ~80 lines of metadata)
+2. **Body phase** — Full skill content loaded on demand when matched
+
+This keeps init fast even with 47 skills and 15K+ lines of skill content.
 
 ---
 
@@ -1022,7 +1088,7 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (983 passing)
+# Run all tests (1060 passing)
 npm test
 
 # Run specific test suite
@@ -1041,15 +1107,16 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| Intelligence (evidence-gate, reflexion, anti-loop) | 110 | Core logic |
-| Graph (store, tools, schema) | 96 | Full CRUD |
-| Tools (24 tools) | 120+ | All tool interfaces |
-| Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration |
-| Config (validation, multi-provider) | 42 | All scenarios |
-| Solver (OODA, blackboard, plan) | 60 | Full loop |
-| Models (rate-limiter, quota, selector) | 80 | All providers |
-| Session (lifecycle, engine routing) | 15 | Both engines |
-| Recorder (code gen, interaction) | 57 | Full pipeline |
+| Intelligence (evidence-gate, reflexion, anti-loop) | 110+ | Core logic, L0-L4 escalation, zero leniency |
+| Graph (store, tools, schema) | 96 | Full CRUD, 11 node types, 12 edge types |
+| Tools (24 tools) | 120+ | All tool interfaces, flow tools, skill tools |
+| Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid |
+| Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
+| Solver (OODA, blackboard, plan) | 60+ | Full loop, tool chains, composition |
+| Models (rate-limiter, quota, selector, middleware) | 80+ | All providers, 3-layer rate limiting |
+| Session (lifecycle, engine routing) | 15 | Both engines, 6-phase lifecycle |
+| Recorder (code gen, interaction) | 57 | Full pipeline, action capture |
+| Skills (loader, matcher, registry, tool-filter) | 60+ | 47 skills, progressive disclosure, domain matching |
 
 ---
 
@@ -1068,9 +1135,11 @@ npm run build:cli    # ESM + CJS + DTS
 | Metric | Value |
 |--------|-------|
 | Source files | 166 TypeScript files |
+| Source lines | 24,434 |
 | Test files | 77 files |
-| Tests passing | 983 |
-| Skills | 21 (7 core + 14 specialized) |
+| Tests passing | 1060 |
+| Skills | 47 (across 8 domains) |
+| Skill lines | 15,277 |
 | Tools | 24 specialized tools |
 | Engines | 3 (legacy, solver, multi-model) |
 | Node types | 11 (graph schema) |
@@ -1078,6 +1147,21 @@ npm run build:cli    # ESM + CJS + DTS
 | Providers | 16 supported |
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
+| Intelligence modules | 4 (evidence-gate, reflexion, anti-loop, blackboard) |
+
+### Skill Domain Breakdown
+
+| Domain | Skills | Total Lines | Avg Lines |
+|--------|--------|-------------|-----------|
+| web-attacks | 16 | 6,228 | 389 |
+| recon | 9 | 1,609 | 179 |
+| injection | 7 | 3,578 | 511 |
+| cloud-security | 6 | ~2,400 | ~400 |
+| api-security | 4 | 2,260 | 565 |
+| auth-security | 2 | 878 | 439 |
+| crypto | 2 | 676 | 338 |
+| reports | 1 | 48 | 48 |
+| **Total** | **47** | **15,277** | **325** |
 
 ---
 

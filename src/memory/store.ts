@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { WorkingMemoryStateSchema, buildDedupKey } from './schemas'
 import type { z } from 'zod'
+import type { Severity } from '../types/shared'
 
 function memoryDir(): string {
   return resolve(process.cwd(), 'output', 'memory')
@@ -79,7 +80,7 @@ export async function addFinding(
     type: string
     endpoint: string
     param?: string
-    severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
+    severity: Severity
     confidence: number
     confirmed: boolean
     description?: string

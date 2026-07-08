@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { load as yamlLoad } from 'js-yaml'
+import { SKILLS_DIR } from '../../lib/project-root'
 
 export interface Reference {
   id: string
@@ -49,23 +50,6 @@ export interface Skill extends SkillMeta {
   instructions: string
   references: Reference[]
 }
-
-// ESM: import.meta.dirname (Node 21.2+). CJS: tsup shims import.meta, falls back to __dirname.
-const _dir = import.meta.dirname || __dirname
-
-// After build: _dir = dist/ → ../skills reaches package root
-// During dev (tsx): _dir = src/solver/skills/ → ../../skills reaches package root
-// Verify by checking for any .md files in any subdirectory of skills/
-const _candidate = join(_dir, '..', '..')
-const _root = existsSync(join(_candidate, 'skills'))
-  && readdirSync(join(_candidate, 'skills')).some(entry => {
-    const entryPath = join(_candidate, 'skills', entry)
-    return statSync(entryPath).isDirectory()
-      && readdirSync(entryPath).some(f => f.endsWith('.md'))
-  })
-  ? _candidate
-  : join(_dir, '..', '..', '..')
-const SKILLS_DIR = join(_root, 'skills')
 
 let metaCache: Map<string, SkillMeta> | null = null
 let fullCache: Map<string, Skill> | null = null

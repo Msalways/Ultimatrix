@@ -1,0 +1,160 @@
+{
+  "chainRules": [
+    { "name": "xss-to-session-hijack", "source": "xss", "target": "session-hijack", "description": "XSS + session cookies exposed allows session hijacking", "severity": "critical" },
+    { "name": "session-hijack-to-idor", "source": "session-hijack", "target": "idor", "description": "Session hijack + admin panel access enables IDOR", "severity": "critical" },
+    { "name": "idor-to-privilege-escalation", "source": "idor", "target": "privilege-escalation", "description": "IDOR + user data access leads to privilege escalation", "severity": "high" },
+    { "name": "open-redirect-to-token-theft", "source": "open-redirect", "target": "token-theft", "description": "Open redirect + auth callback enables token theft", "severity": "high" },
+    { "name": "sqli-to-data-exfiltration", "source": "sqli", "target": "data-exfiltration", "description": "SQL injection allows data extraction", "severity": "critical" },
+    { "name": "ssrf-to-internal-scan", "source": "ssrf", "target": "internal-scan", "description": "SSRF enables internal network scanning", "severity": "high" },
+    { "name": "idor-to-mass-assignment", "source": "idor", "target": "mass-assignment", "description": "IDOR may enable mass assignment attacks", "severity": "medium" },
+    { "name": "jwt-to-session-hijack", "source": "jwt", "target": "session-hijack", "description": "Weak JWT tokens enable session hijacking", "severity": "high" }
+  ],
+
+  "entityFields": {
+    "owner": ["owner", "ownerId", "userId", "accountId", "orgId", "organizationId", "tenantId", "createdBy", "author", "sub"],
+    "role": ["role", "permission", "permissions", "scope", "isAdmin", "admin", "group", "groups", "accessLevel", "privilege"],
+    "sensitive": ["email", "token", "password", "secret", "key", "address", "phone", "billing", "ssn", "dob", "credit_card", "passport", "national_id", "tax_id"],
+    "states": ["draft", "published", "deleted", "archived", "pending", "accepted", "rejected", "active", "disabled", "suspended", "verified", "locked", "banned"]
+  },
+
+  "workflowKeywords": [
+    { "pattern": "login|signin|session|oauth|sso|passkey|mfa|2fa|magic-link|callback", "name": "login", "stateChange": "authentication state changes" },
+    { "pattern": "signup|register|join|create-account", "name": "signup", "stateChange": "new account may be created" },
+    { "pattern": "password.*reset|reset.*password|forgot|recover", "name": "password reset", "stateChange": "credential recovery state changes" },
+    { "pattern": "profile|account|settings|preferences", "name": "profile update", "stateChange": "user profile may change" },
+    { "pattern": "upload|file|attachment|import", "name": "file upload", "stateChange": "file object may be created" },
+    { "pattern": "invite|member|team|collaborator", "name": "team invitation", "stateChange": "membership may change" },
+    { "pattern": "billing|checkout|payment|invoice|subscribe|subscription|plan", "name": "billing flow", "stateChange": "billing state may change" },
+    { "pattern": "admin|role|permission|manage|dashboard", "name": "administration", "stateChange": "authorization state may change" },
+    { "pattern": "delete|remove|archive|deactivate|disable", "name": "delete/archive", "stateChange": "object lifecycle may change" },
+    { "pattern": "consent|authorize|grant|approve", "name": "consent flow", "stateChange": "consent state may change" }
+  ],
+
+  "techStackFingerprints": [
+    { "name": "Next.js", "pattern": "__NEXT_DATA__|next\\.js", "evidence": "__NEXT_DATA__ script found" },
+    { "name": "Angular", "pattern": "ng-version|ng-app|ng-controller|ng-model|angular", "evidence": "Angular directives found" },
+    { "name": "React", "pattern": "data-reactroot|data-reactid|react-root|react-container|__REACT_DEVTOOLS", "evidence": "React root found" },
+    { "name": "Vue.js", "pattern": "vue-app|__VUE_DEVTOOLS|v-bind|v-model|v-for|v-if", "evidence": "Vue directives found" },
+    { "name": "jQuery", "pattern": "jquery", "evidence": "jQuery reference found" },
+    { "name": "WordPress", "pattern": "wp-content|wp-includes|wp-json|wordpress", "evidence": "WordPress paths found" },
+    { "name": "Laravel", "pattern": "laravel|livewire|csrf-token.*livewire", "evidence": "Laravel/Livewire markers found" },
+    { "name": "Django", "pattern": "django|csrfmiddlewaretoken|__admin_interface", "evidence": "Django markers found" },
+    { "name": "Express", "pattern": "express", "evidence": "Express reference found" },
+    { "name": "Nuxt", "pattern": "nuxt", "evidence": "Nuxt reference found" },
+    { "name": "Cloudflare", "pattern": "cloudflare|__cfduid|cflb|cf-ray", "evidence": "Cloudflare markers found" }
+  ],
+
+  "wafSignatures": [
+    { "vendor": "cloudflare", "patterns": ["cloudflare", "cf-ray", "__cfduid", "cf-cache-status"] },
+    { "vendor": "akamai", "patterns": ["akamai", "akamai-ghost", "x-akamai"] },
+    { "vendor": "aws-waf", "patterns": ["awselb", "x-amz-cf-id", "aws-waf"] },
+    { "vendor": "imperva", "patterns": ["imperva", "incapsula", "x-iinfo"] },
+    { "vendor": "modsecurity", "patterns": ["mod_security", "modsecurity", "x-mod-security"] },
+    { "vendor": "fastly", "patterns": ["fastly", "x-fastly"] },
+    { "vendor": "barracuda", "patterns": ["barracuda", "barra"] },
+    { "vendor": "f5-bigip", "patterns": ["f5-bigip", "bigip", "x-wa-info"] },
+    { "vendor": "sucuri", "patterns": ["sucuri", "x-sucuri", "cloudproxy"] },
+    { "vendor": "wordfence", "patterns": ["wordfence"] }
+  ],
+
+  "failurePatterns": {
+    "envConstraint": ["waf", "403", "forbidden", "blocked", "filtered", "rate limit", "timeout", "unauthorized"],
+    "pathError": ["not vulnerable", "no injection", "dead end", "does not exist", "not injectable", "false positive"],
+    "paramError": ["invalid payload", "syntax error", "bad parameter", "encoding error", "malformed"],
+    "infoNeeded": ["need more information", "insufficient", "unknown parameter", "fingerprint first", "enumerate first"]
+  },
+
+  "failedAccessPatterns": [
+    "SSLError", "ReadTimeout", "ConnectionError", "TimeoutError",
+    "connection_timeout", "502 Bad Gateway", "503", "504",
+    "Connection refused", "Name or service not known", "No route to host"
+  ],
+
+  "deadEndMarkers": [
+    "does_not_exist", "does not exist", "cannot_access", "cannot access",
+    "failed", "blocked", "no_injection", "no injection", "not_vulnerable",
+    "not vulnerable", "eliminated", "not_found", "not found",
+    "dead_end", "dead end", "walked_here", "no route"
+  ],
+
+  "meaningfulProgress": [
+    "discovered", "found", "confirmed", "vulnerability", "endpoint",
+    "port", "service", "flag", "success", "bypass", "leak",
+    "injection", "xss", "sqli", "rce", "ssrf", "csrf",
+    "accessible", "open", "authorized", "leaked", "exposed"
+  ],
+
+  "meaningfulFailures": [
+    "SSLError", "ReadTimeout", "ConnectionError", "TimeoutError",
+    "connection_timeout", "502 Bad Gateway", "503", "Connection refused"
+  ],
+
+  "escalationHints": {
+    "0": ["Try raw payload without encoding first."],
+    "1": ["URL-encode special characters.", "Swap keyword case (SeLeCt, UnIoN).", "Try whitespace variants: /**/, newline, tab, %20."],
+    "2": ["Try double URL-encoding (%25xx).", "Insert inline comments: /**/.", "Use HTML entity encoding for browser contexts."],
+    "3": ["Try Unicode escapes: \\u0027.", "Try hex encoding: 0x27.", "String concatenation: con||cat, UN/**/ION.", "Equivalent function substitution."],
+    "4": ["Combine multi-layer encoding.", "Switch to alternative syntax entirely.", "Try time-based blind or out-of-band channel.", "Switch to a completely different vulnerability class or attack surface."]
+  },
+
+  "sensitiveFields": ["pass", "password", "secret", "token", "auth", "credential", "ssn", "credit", "card", "jwt", "api_key", "pin"],
+
+  "loginUrlPatterns": ["login", "signin", "auth", "sso", "session/new", "account/login", "oauth", "mfa", "2fa", "magic-link", "passkey", "callback"],
+
+  "suspiciousFields": [
+    "admin", "role", "isAdmin", "is_admin", "permissions", "privilege",
+    "internal", "debug", "trace", "stack", "password", "secret",
+    "token", "session", "csrf", "api_key", "apiKey",
+    "user_id", "userId", "account_id", "accountId"
+  ],
+
+  "validationGapBooleans": ["admin", "role", "verified", "active", "premium", "is_admin", "is_superuser"],
+  "validationGapNumerics": ["balance", "amount", "price", "quantity", "credit", "points", "discount", "quota"],
+
+  "rateLimitPatterns": ["429", "ResourceExhausted", "rate_limit", "rate limit", "request limit", "Too Many Requests", "quota exceeded", "credits exhausted", "tokens per day"],
+
+  "ignoreKeys": ["timestamp", "request_id", "traceId", "trace_id", "nonce", "correlationId", "spanId", "requestId", "session_id"],
+
+  "conversationalGoals": ["hi", "hello", "hey", "help", "ping", "who", "what", "how"],
+
+  "attackPathKeywords": {
+    "sqli": ["sqli", "sql injection", "blind", "union", "database"],
+    "xss": ["xss", "cross-site scripting", "reflected", "stored"],
+    "ssrf": ["ssrf", "server-side request forgery", "internal"],
+    "rce": ["rce", "remote code execution", "command injection"],
+    "ssti": ["ssti", "template injection", "jinja2", "twig"],
+    "idor": ["idor", "insecure direct object", "access control"],
+    "auth_bypass": ["auth bypass", "authentication bypass", "jwt", "session"],
+    "info_leak": ["info leak", "information disclosure", "exposed"],
+    "race_condition": ["race", "concurrent", "double spend"],
+    "file_upload": ["file upload", "unrestricted upload"],
+    "xxe": ["xxe", "xml external entity"],
+    "deserialization": ["deserialization", "unsafe deserialize"],
+    "business_logic": ["business logic", "workflow bypass"],
+    "crypto": ["crypto", "cryptographic", "cipher", "encryption"],
+    "config": ["config", "misconfiguration", "default config", "exposed config"],
+    "open_redirect": ["open redirect", "url redirect"],
+    "csrf": ["csrf", "cross-site request forgery"],
+    "cors": ["cors", "cross-origin"]
+  },
+
+  "toolInferenceRules": [
+    { "keywords": ["sqli", "sql injection", "blind", "union", "database"], "tools": ["checkWaf", "measureTiming"], "priority": "high" },
+    { "keywords": ["xss", "cross-site", "reflected", "stored"], "tools": ["evaluateRendered", "getDialogEvidence"], "priority": "high" },
+    { "keywords": ["idor", "access control", "authorization", "privilege"], "tools": ["findEndpointsInResponse", "evaluateRendered"], "priority": "high" },
+    { "keywords": ["ssrf", "server-side", "internal"], "tools": ["httpRequest", "evaluateRendered"], "priority": "medium" },
+    { "keywords": ["race", "concurrent", "double"], "tools": ["measureTiming", "compareResponses"], "priority": "medium" },
+    { "keywords": ["recon", "reconnaissance", "enumerate", "discover"], "tools": ["queryGraph", "getTargetSummary", "getEndpointsWithParams"], "priority": "medium" },
+    { "keywords": ["jwt", "token", "auth", "session"], "tools": ["getCapturedHeaders", "encodeDecode"], "priority": "low" },
+    { "keywords": ["graphql", "introspection"], "tools": ["httpRequest", "queryGraph"], "priority": "low" },
+    { "keywords": ["template", "ssti", "jinja"], "tools": ["httpRequest", "parseResponse", "measureTiming"], "priority": "medium" },
+    { "keywords": ["upload", "file", "multipart"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
+    { "keywords": ["redirect", "open redirect", "url redirect"], "tools": ["httpRequest", "followRedirects"], "priority": "medium" },
+    { "keywords": ["cors", "cross-origin"], "tools": ["httpRequest"], "priority": "low" },
+    { "keywords": ["xxe", "xml"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
+    { "keywords": ["deserializ", "unsafe"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
+    { "keywords": ["smuggl", "http request smuggling"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
+    { "keywords": ["clickjack", "frame"], "tools": ["httpRequest", "evaluateRendered"], "priority": "low" },
+    { "keywords": ["cache", "poison"], "tools": ["httpRequest", "parseResponse"], "priority": "low" }
+  ]
+}

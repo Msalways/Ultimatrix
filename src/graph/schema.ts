@@ -1,3 +1,13 @@
+import type {
+  Severity,
+  EvidenceLevel,
+  FindingLifecycleStatus,
+  AuthFlowType,
+  HypothesisStatus,
+  ExperimentStatus,
+  CandidateFindingStatus,
+} from '../types/shared'
+
 export enum NodeType {
   PAGE = 'Page',
   ACTION = 'Action',
@@ -11,6 +21,11 @@ export enum NodeType {
   FACT = 'Fact',
   INTENT = 'Intent',
   REFLEXION = 'Reflexion',
+  WORKFLOW = 'Workflow',
+  ENTITY = 'Entity',
+  HYPOTHESIS = 'Hypothesis',
+  EXPERIMENT = 'Experiment',
+  CANDIDATE_FINDING = 'CandidateFinding',
 }
 
 export enum EdgeType {
@@ -101,7 +116,7 @@ export interface EndpointNode extends GraphNodeData {
 export interface FindingNode extends GraphNodeData {
   type: NodeType.FINDING
   properties: {
-    severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
+    severity: Severity
     technique: string
     endpoint: string
     evidence: string[]
@@ -110,8 +125,8 @@ export interface FindingNode extends GraphNodeData {
     cwe?: string
     impact?: string
     confidence: number
-    lifecycleStatus: 'candidate' | 'pending_verification' | 'verified' | 'rejected' | 'needs_review'
-    evidenceLevel: 'L1' | 'L2' | 'L3' | 'L4'
+    lifecycleStatus: FindingLifecycleStatus
+    evidenceLevel: EvidenceLevel
     findingId: string
     verifiedAt?: string
     verificationNote?: string
@@ -121,7 +136,7 @@ export interface FindingNode extends GraphNodeData {
 export interface AuthFlowNode extends GraphNodeData {
   type: NodeType.AUTH_FLOW
   properties: {
-    flowType: 'login' | 'logout' | 'refresh'
+    flowType: AuthFlowType
     steps: Array<{ action: string; url?: string; selector?: string; value?: string }>
     reusable: boolean
     credentialHash?: string
@@ -198,7 +213,86 @@ export interface ReflexionNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode
+export interface WorkflowNode extends GraphNodeData {
+  type: NodeType.WORKFLOW
+  properties: {
+    name: string
+    entryUrl?: string
+    steps: Array<{ action: string; url?: string; endpointId?: string; method?: string }>
+    relatedEndpoints: string[]
+    requiredAuth?: boolean
+    inputFields: string[]
+    stateChanges: string[]
+    observedRoles: string[]
+    confidence: number
+  }
+}
+
+export interface EntityNode extends GraphNodeData {
+  type: NodeType.ENTITY
+  properties: {
+    name: string
+    ids: string[]
+    endpoints: string[]
+    ownerFields: string[]
+    roleFields: string[]
+    sensitiveFields: string[]
+    lifecycleStates: string[]
+    confidence: number
+  }
+}
+
+export interface HypothesisNode extends GraphNodeData {
+  type: NodeType.HYPOTHESIS
+  properties: {
+    title: string
+    kind: string
+    reason: string
+    targetEndpoints: string[]
+    relatedWorkflowIds: string[]
+    relatedEntityIds: string[]
+    requiredSetup: string[]
+    risk: Severity
+    confidence: number
+    status: HypothesisStatus
+  }
+}
+
+export interface ExperimentNode extends GraphNodeData {
+  type: NodeType.EXPERIMENT
+  properties: {
+    hypothesisId: string
+    title: string
+    setup: string[]
+    baselineRequest?: Record<string, unknown>
+    mutation: string
+    expectedSecureBehavior: string
+    insecureSignal: string
+    requiredActors: string[]
+    tools: string[]
+    status: ExperimentStatus
+    resultSummary?: string
+    differential?: Record<string, unknown>
+  }
+}
+
+export interface CandidateFindingNode extends GraphNodeData {
+  type: NodeType.CANDIDATE_FINDING
+  properties: {
+    title: string
+    signalType: string
+    endpoint: string
+    evidence: string[]
+    experimentIds: string[]
+    confidence: number
+    nextVerificationSteps: string[]
+    blockers: string[]
+    status: CandidateFindingStatus
+    severity: Severity
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -213,4 +307,9 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.FACT]: ['description', 'source', 'confidence', 'relatedIntents'],
   [NodeType.INTENT]: ['description', 'status', 'fromFacts', 'resultFact', 'attackPath', 'note'],
   [NodeType.REFLEXION]: ['workerId', 'vulnType', 'failureCategory', 'escalationLevel', 'failedPaths', 'hints', 'targetOrigin'],
+  [NodeType.WORKFLOW]: ['name', 'entryUrl', 'steps', 'relatedEndpoints', 'requiredAuth', 'inputFields', 'stateChanges', 'observedRoles', 'confidence'],
+  [NodeType.ENTITY]: ['name', 'ids', 'endpoints', 'ownerFields', 'roleFields', 'sensitiveFields', 'lifecycleStates', 'confidence'],
+  [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status'],
+  [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential'],
+  [NodeType.CANDIDATE_FINDING]: ['title', 'signalType', 'endpoint', 'evidence', 'experimentIds', 'confidence', 'nextVerificationSteps', 'blockers', 'status', 'severity'],
 }
