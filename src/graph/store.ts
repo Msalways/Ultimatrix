@@ -19,6 +19,7 @@ import {
   FactNode,
   IntentNode,
   ReflexionNode,
+  OutcomeFeedbackNode,
   AnyNodeData,
 } from './schema'
 
@@ -30,24 +31,33 @@ interface SerializedGraph {
 interface LibSQLGraphStore {
   initializeDatabase(): Promise<void>
   upsertPage(url: string, data?: Partial<PageNode['properties']>): PageNode
-  upsertAction(url: string, data?: Partial<ActionNode['properties']>): ActionNode
-  upsertInput(url: string, data?: Partial<InputNode['properties']>): InputNode
-  addAuthFlow(data: AuthFlowNode['properties']): AuthFlowNode
-  addRBACRole(data: RBACRoleNode['properties']): RBACRoleNode
-  addAttack(data: AttackNode['properties']): AttackNode
-  addTest(data: TestNode['properties']): TestNode
+  addAction(pageId: string, actionData: Partial<ActionNode['properties']>): ActionNode
+  addInput(actionId: string, inputData: Partial<InputNode['properties']>): InputNode
+  addTest(actionId: string, testData: Partial<{ testType: string; status: string; endpoint: string; technique: string; payload: string; tags: string[]; expectedResult: string; actualResult: string }>): TestNode
+  addFinding(data: Partial<FindingNode['properties']>): FindingNode
+  addAuthFlow(data: Partial<AuthFlowNode['properties']>): AuthFlowNode
+  addRBACRole(data: Partial<RBACRoleNode['properties']>): RBACRoleNode
+  addAttack(data: Partial<AttackNode['properties']>): AttackNode
+  addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode
   upsertNode(node: AnyNodeData): AnyNodeData
-  updateNode(node: AnyNodeData): void
+  updateNode(node: GraphNodeData): void
   getNode(id: string): AnyNodeData | undefined
   deleteNode(id: string): boolean
-  queryNodes(filters?: { type?: NodeType; label?: string; properties?: Record<string, unknown> }): AnyNodeData[]
-  addEdge(edge: GraphEdgeData): GraphEdgeData
+  chainFindings(fromId: string, toId: string): void
+  addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData
+  queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[]
   queryEdges(filters?: { fromId?: string; toId?: string; type?: EdgeType }): GraphEdgeData[]
+  getAllEdges(): GraphEdgeData[]
+  getTestCoverage(endpointId: string): TestNode[]
+  getUntestedActions(): ActionNode[]
+  getAuthFlows(): AuthFlowNode[]
+  getRBACMatrix(): { role: string; endpoints: string[] }[]
+  getAttackPath(findingId: string): AnyNodeData[]
   save(): Promise<void>
   load(): Promise<void>
   close(): Promise<void>
-  exportToJson(): unknown
-  importFromJson(data: unknown): void
+  exportToJson(): SerializedGraph
+  importFromJson(data: SerializedGraph): void
 }
 
 export class GraphStore {
@@ -502,6 +512,42 @@ export class GraphStore {
     return node
   }
 
+  addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addOutcome(data)
+    }
+
+    const id = `outcome:${data.findingId}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      Object.assign(existing.properties, data)
+      existing.updatedAt = Date.now()
+      return existing as OutcomeFeedbackNode
+    }
+
+    const now = data.timestamp || new Date().toISOString()
+    const node: OutcomeFeedbackNode = {
+      id,
+      type: NodeType.OUTCOME_FEEDBACK,
+      label: `Outcome: ${data.findingId} (${data.techniqueId})`,
+      properties: {
+        findingId: data.findingId,
+        techniqueId: data.techniqueId,
+        accepted: data.accepted,
+        fixed: data.fixed,
+        retestHeld: data.retestHeld,
+        severityAdjusted: data.severityAdjusted,
+        note: data.note,
+        targetOrigin: data.targetOrigin,
+        timestamp: now,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
   upsertNode(node: AnyNodeData): AnyNodeData {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.upsertNode(node)
@@ -564,7 +610,7 @@ export class GraphStore {
     this.addEdge({ fromId, toId, type: EdgeType.CHAINED_FROM })
   }
 
-  private addEdge(edgeData: { fromId: string; toId: string; type: EdgeType }): GraphEdgeData {
+  addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.addEdge(edgeData)
     }
@@ -578,7 +624,7 @@ export class GraphStore {
       fromId: edgeData.fromId,
       toId: edgeData.toId,
       type: edgeData.type,
-      properties: {},
+      properties: edgeData.properties ?? {},
       createdAt: Date.now(),
     }
     this.edges.push(edge)
@@ -601,6 +647,10 @@ export class GraphStore {
       result = result.filter(e => e.type === filters.type)
     }
     return result
+  }
+
+  getAllEdges(): GraphEdgeData[] {
+    return this.queryEdges()
   }
 
   queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[] {

@@ -13,6 +13,7 @@ import {
   RBACRoleNode,
   AttackNode,
   TestNode,
+  OutcomeFeedbackNode,
   AnyNodeData,
 } from './schema'
 
@@ -258,6 +259,31 @@ export class LibSQLGraphStore {
     return node
   }
 
+  addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode {
+    const id = `outcome:${data.findingId}`
+    const now = data.timestamp || new Date().toISOString()
+    const node: OutcomeFeedbackNode = {
+      id,
+      type: NodeType.OUTCOME_FEEDBACK,
+      label: `Outcome: ${data.findingId} (${data.techniqueId})`,
+      properties: {
+        findingId: data.findingId,
+        techniqueId: data.techniqueId,
+        accepted: data.accepted,
+        fixed: data.fixed,
+        retestHeld: data.retestHeld,
+        severityAdjusted: data.severityAdjusted,
+        note: data.note,
+        targetOrigin: data.targetOrigin,
+        timestamp: now,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.upsertNode(node)
+    return node
+  }
+
   chainFindings(fromId: string, toId: string): void {
     this.addEdge({ fromId, toId, type: EdgeType.CHAINED_FROM })
   }
@@ -341,7 +367,7 @@ export class LibSQLGraphStore {
     return true
   }
 
-  private addEdge(edgeData: { fromId: string; toId: string; type: EdgeType }): GraphEdgeData {
+  addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData {
     const id = `edge:${edgeData.fromId}:${edgeData.toId}:${edgeData.type}`
     
     // Check if edge already exists
@@ -358,7 +384,7 @@ export class LibSQLGraphStore {
       fromId: edgeData.fromId,
       toId: edgeData.toId,
       type: edgeData.type,
-      properties: {},
+      properties: edgeData.properties ?? {},
       createdAt: Date.now(),
     }
 

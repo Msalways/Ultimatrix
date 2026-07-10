@@ -26,6 +26,9 @@ export enum NodeType {
   HYPOTHESIS = 'Hypothesis',
   EXPERIMENT = 'Experiment',
   CANDIDATE_FINDING = 'CandidateFinding',
+  HEADER_SEMANTIC = 'HeaderSemantic',
+  AUTH_SCHEME = 'AuthScheme',
+  OUTCOME_FEEDBACK = 'OutcomeFeedback',
 }
 
 export enum EdgeType {
@@ -41,6 +44,9 @@ export enum EdgeType {
   PERMISSION = 'PERMISSION',
   BUILT_ON = 'BUILT_ON',
   PRODUCED_BY = 'PRODUCED_BY',
+  VALUE_ORIGIN = 'VALUE_ORIGIN',
+  REQUIRES_ROLE = 'REQUIRES_ROLE',
+  CHAINS_TO = 'CHAINS_TO',
 }
 
 export interface GraphNodeData {
@@ -110,6 +116,8 @@ export interface EndpointNode extends GraphNodeData {
     authType?: string
     tags?: string[]
     source?: string
+    useCase?: string
+    preconditions?: string[]
   }
 }
 
@@ -255,6 +263,7 @@ export interface HypothesisNode extends GraphNodeData {
     risk: Severity
     confidence: number
     status: HypothesisStatus
+    origin?: 'human' | 'llm'
   }
 }
 
@@ -292,7 +301,51 @@ export interface CandidateFindingNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode
+export type AuthScheme =
+  | 'basic'
+  | 'base64'
+  | 'jwt'
+  | 'bearer'
+  | 'api-key'
+  | 'custom'
+  | 'cookie'
+
+export interface HeaderSemanticNode extends GraphNodeData {
+  type: NodeType.HEADER_SEMANTIC
+  properties: {
+    header: string
+    role: 'identity' | 'required' | 'static' | 'anti-bot' | 'correlation'
+    endpoint?: string
+    confidence?: number
+  }
+}
+
+export interface OutcomeFeedbackNode extends GraphNodeData {
+  type: NodeType.OUTCOME_FEEDBACK
+  properties: {
+    findingId: string
+    techniqueId: string
+    accepted?: boolean
+    fixed?: boolean
+    retestHeld?: boolean
+    severityAdjusted?: string
+    note?: string
+    targetOrigin?: string
+    timestamp: string
+  }
+}
+
+export interface AuthSchemeNode extends GraphNodeData {
+  type: NodeType.AUTH_SCHEME
+  properties: {
+    scheme: 'basic' | 'base64' | 'jwt' | 'bearer' | 'api-key' | 'custom' | 'cookie'
+    decoded?: boolean
+    reusedAcross?: string[]
+    maskedCredential?: string
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -312,4 +365,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status'],
   [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential'],
   [NodeType.CANDIDATE_FINDING]: ['title', 'signalType', 'endpoint', 'evidence', 'experimentIds', 'confidence', 'nextVerificationSteps', 'blockers', 'status', 'severity'],
+  [NodeType.HEADER_SEMANTIC]: ['header', 'role', 'endpoint', 'confidence'],
+  [NodeType.AUTH_SCHEME]: ['scheme', 'decoded', 'reusedAcross', 'maskedCredential'],
+  [NodeType.OUTCOME_FEEDBACK]: ['findingId', 'techniqueId', 'accepted', 'fixed', 'retestHeld', 'severityAdjusted', 'note', 'targetOrigin', 'timestamp'],
 }

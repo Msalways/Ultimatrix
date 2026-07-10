@@ -5,7 +5,44 @@ import { WorkerFactory, type WorkerConfig } from './factory'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { ContextBudgetManager, type ContextFitParams } from '../models/context-manager'
+import type { ModelSelector, WorkerTask } from '../models/selector'
+import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
+
+/**
+ * A unit of fan-out work for `dispatchSlices`. Each slice is routed to a model
+ * via the `ModelSelector` (slice-level multi-model fan-out) and executed as a
+ * specialized worker.
+ */
+export interface DispatchSlice {
+  id: string
+  skillId: string
+  task: string
+  complexity: 'low' | 'medium' | 'high' | 'critical'
+  requiredCapabilities?: string[]
+  tenant?: string
+  sandboxId?: string
+  context?: any
+  tokenBudget?: number
+}
+
+export interface DispatchOptions {
+  /** When provided, each slice is routed to a model via selectForTask(). */
+  modelSelector?: ModelSelector
+  /** Role passed to ModelSelector.selectForTask for every slice. */
+  perSliceRole?: 'brain' | 'worker' | 'spider'
+}
+
+export interface DispatchResult {
+  sliceId: string
+  modelId?: string
+  provider?: string
+  tier?: string
+  tenant?: string
+  sandboxId?: string
+  result?: any
+  error?: string
+}
 
 export class WorkerPool {
   private workers: Map<string, Agent> = new Map()
@@ -14,10 +51,21 @@ export class WorkerPool {
   private running = 0
   private maxConcurrency: number
   private contextManager: ContextBudgetManager | null = null
+  /** Optional workspace used for logical tenant/sandbox isolation. */
+  private workspace: WorkspaceManager | null = null
+  /** Pool-level tenant/sandbox association (logical isolation namespace). */
+  private tenant: string | null = null
+  private sandboxId: string | null = null
 
-  constructor(config: UltimatrixConfig, skillRegistry: SkillRegistry, browser?: StagehandBrowser) {
+  constructor(
+    config: UltimatrixConfig,
+    skillRegistry: SkillRegistry,
+    browser?: StagehandBrowser,
+    workspace?: WorkspaceManager,
+  ) {
     this.factory = new WorkerFactory(config, skillRegistry)
     this.browser = browser || null
+    this.workspace = workspace || null
     this.maxConcurrency = config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel
 
     if (config.modelCapabilities) {
@@ -28,6 +76,39 @@ export class WorkerPool {
   setBrowser(browser: StagehandBrowser): void {
     this.browser = browser
   }
+
+  /** Attach a workspace to enable logical tenant/sandbox isolation. */
+  setWorkspace(workspace: WorkspaceManager): void {
+    this.workspace = workspace
+  }
+
+  /**
+   * Associate this pool (and subsequently spawned workers) with a tenant/sandbox.
+   * Logical isolation only — scopes graph store / logs / evidence under the
+   * tenant namespace via WorkspaceManager.switchTenant.
+   */
+  setTenant(tenant: string | null, sandboxId?: string): void {
+    this.tenant = tenant
+    this.sandboxId = sandboxId ?? null
+  }
+
+  /**
+   * Scope the pool's state namespace under an isolated tenant. Delegates to the
+   * WorkspaceManager so the global graph/oast stores point at the tenant path.
+   * NOTE: tenant switching mutates the pool-global state namespace; callers
+   * dispatching a cross-tenant batch should group slices by tenant (the iterator
+   * in dispatchSlices switches once per tenant grouping).
+   */
+  async switchTenant(tenantId: string, sandboxId?: string): Promise<void> {
+    this.tenant = tenantId
+    this.sandboxId = sandboxId ?? null
+    if (this.workspace) {
+      await this.workspace.switchTenant(tenantId)
+    } else {
+      log.warn('[pool] switchTenant called but no WorkspaceManager attached; tenant isolated logically only via worker bookkeeping')
+    }
+  }
+
 
   /**
    * Validate context fit before spawning a worker.
@@ -46,7 +127,12 @@ export class WorkerPool {
   }
 
   spawn(config: WorkerConfig): Agent {
-    const workerConfig = { ...config, browser: config.browser || this.browser || undefined }
+    const workerConfig = {
+      ...config,
+      browser: config.browser || this.browser || undefined,
+      tenant: config.tenant ?? this.tenant ?? undefined,
+      sandboxId: config.sandboxId ?? this.sandboxId ?? undefined,
+    }
     const worker = this.factory.create(workerConfig)
     this.workers.set(worker.id, worker)
     return worker
@@ -68,12 +154,23 @@ export class WorkerPool {
     this.workers.clear()
   }
 
+  /**
+   * Execute a single worker with concurrency gating.
+   * Optional `tenant`/`sandboxId` on the config (or pool-level via setTenant)
+   * are threaded into the spawned worker for logical isolation bookkeeping.
+   * Signature preserved (config only) — new fields are optional.
+   */
   async execute(config: WorkerConfig): Promise<any> {
     while (this.running >= this.maxConcurrency) {
       await new Promise(r => setTimeout(r, 100))
     }
     this.running++
-    const workerConfig = { ...config, browser: config.browser || this.browser || undefined }
+    const workerConfig: WorkerConfig = {
+      ...config,
+      browser: config.browser || this.browser || undefined,
+      tenant: config.tenant ?? this.tenant ?? undefined,
+      sandboxId: config.sandboxId ?? this.sandboxId ?? undefined,
+    }
     const worker = this.spawn(workerConfig)
     try {
       const result = await worker.generate(workerConfig.task)
@@ -82,5 +179,87 @@ export class WorkerPool {
       this.kill(worker.id)
       this.running--
     }
+  }
+
+  /**
+   * Slice-level multi-model fan-out.
+   *
+   * For each slice this:
+   *   1. Routes the slice to a model via `ModelSelector.selectForTask({ complexity, requiredCapabilities })`
+   *      (skipped when no selector is supplied — falls back to config/tier model).
+   *   2. Spawns the appropriate specialized worker for `skillId` with the chosen `modelId`/`tier`.
+   *   3. Respect the pool's `maxConcurrency` gate (execute() serializes admission).
+   *
+   * Each slice may carry its own `tenant`/`sandboxId`; when present and a workspace
+   * is attached, the pool switches its state namespace to that tenant before the
+   * slice runs (logical multi-tenant isolation). Slices are dispatched concurrently
+   * up to `maxConcurrency`; results are returned in input order.
+   */
+  async dispatchSlices(
+    slices: DispatchSlice[],
+    options: DispatchOptions = {},
+  ): Promise<DispatchResult[]> {
+    const role = options.perSliceRole ?? 'worker'
+
+    const runOne = async (slice: DispatchSlice): Promise<DispatchResult> => {
+      let modelId: string | undefined
+      let tier: string | undefined
+      let provider: string | undefined
+
+      if (options.modelSelector) {
+        const task: WorkerTask = {
+          skillId: slice.skillId,
+          taskDescription: slice.task,
+          complexity: slice.complexity,
+          requiredCapabilities: slice.requiredCapabilities,
+        }
+        const selection = options.modelSelector.selectForTask(task, role)
+        modelId = selection.modelId
+        tier = selection.tier
+        provider = selection.provider
+        log.info(`[pool] slice ${slice.id} → ${modelId} (${tier}) [${role}]`)
+      }
+
+      // Scope state namespace to the slice's tenant if it differs from the pool tenant.
+      if (slice.tenant && slice.tenant !== this.tenant && this.workspace) {
+        await this.switchTenant(slice.tenant, slice.sandboxId)
+      }
+
+      const config: WorkerConfig = {
+        skillId: slice.skillId,
+        task: slice.task,
+        tier: tier as WorkerConfig['tier'],
+        modelId,
+        context: slice.context,
+        tokenBudget: slice.tokenBudget,
+        tenant: slice.tenant ?? this.tenant ?? undefined,
+        sandboxId: slice.sandboxId ?? this.sandboxId ?? undefined,
+      }
+
+      try {
+        const result = await this.execute(config)
+        return {
+          sliceId: slice.id,
+          modelId,
+          provider,
+          tier,
+          tenant: config.tenant,
+          sandboxId: config.sandboxId,
+          result,
+        }
+      } catch (err) {
+        return {
+          sliceId: slice.id,
+          modelId,
+          provider,
+          tier,
+          tenant: config.tenant,
+          sandboxId: config.sandboxId,
+          error: (err as Error).message,
+        }
+      }
+    }
+
+    return Promise.all(slices.map(runOne))
   }
 }

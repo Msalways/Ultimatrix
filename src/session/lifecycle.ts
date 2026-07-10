@@ -24,6 +24,7 @@ import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
+import { setScopeConfig } from '../safety/scope-guard'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
@@ -168,6 +169,9 @@ export class SessionLifecycle {
     this._resources.threadId = threadId
     this._resources.resourceId = resourceId
     this._resources.forensicLog = forensicLog
+
+    // Activate scope guard from config
+    setScopeConfig(config.scope ?? null)
 
     this.registerCleanup(async () => {
       log.dim('Saving graph and OAST state...')
@@ -376,29 +380,43 @@ export class SessionLifecycle {
       let findingsBefore = workspace.getGraphStore()?.queryNodes?.(NodeType.FINDING)?.length || 0
       
       for await (const chunk of result.fullStream) {
-        if (chunk.type === 'tool-result') {
-          const endpointsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
-          const pagesNow = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
-          const findingsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.FINDING)?.length || 0
-          
-          const newEndpoints = endpointsNow - endpointsBefore
-          const newPages = pagesNow - pagesBefore
-          const newFindings = findingsNow - findingsBefore
-          
-          // Stream rendering - show progress
-          if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
-            log.dim(`[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings`)
-          }
-          
-          spiderLoopDetector.recordRound(newEndpoints > 0)
-          endpointsBefore = endpointsNow
-          pagesBefore = pagesNow
-          findingsBefore = findingsNow
+        switch (chunk.type) {
+          case 'text-delta':
+          case 'reasoning-delta':
+            process.stdout.write(chunk.payload.text)
+            break
+          case 'tool-call':
+            if (chunk.payload.toolName !== 'askUser') {
+              log.dim(`  \u2192 ${chunk.payload.toolName}`)
+            }
+            break
+          case 'tool-result': {
+            const endpointsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
+            const pagesNow = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
+            const findingsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.FINDING)?.length || 0
+            
+            const newEndpoints = endpointsNow - endpointsBefore
+            const newPages = pagesNow - pagesBefore
+            const newFindings = findingsNow - findingsBefore
+            
+            if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
+              process.stdout.write(`\n[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings\n`)
+            }
+            
+            spiderLoopDetector.recordRound(newEndpoints > 0)
+            endpointsBefore = endpointsNow
+            pagesBefore = pagesNow
+            findingsBefore = findingsNow
 
-          if (spiderLoopDetector.isStale(staleThreshold)) {
-            log.warn('Spider stale — no new endpoints for several rounds, stopping crawl')
+            if (spiderLoopDetector.isStale(staleThreshold)) {
+              log.warn('Spider stale — no new endpoints for several rounds, stopping crawl')
+              break
+            }
             break
           }
+          case 'tool-error':
+            log.error(`  Spider: ${chunk.payload.toolName}: ${chunk.payload.error}`)
+            break
         }
       }
       
@@ -497,6 +515,19 @@ export class SessionLifecycle {
     }
 
     log.info(useSolver ? 'Solver engine ready with orchestration tools' : 'Legacy engine ready')
+
+    if (config.modelTiers) {
+      const tierMap = config.modelTiers
+      const tierLines = ['fast', 'balanced', 'powerful']
+        .filter(t => tierMap[t as keyof typeof tierMap])
+        .map(t => {
+          const cfg = tierMap[t as keyof typeof tierMap]!
+          return `  ${t}: ${cfg.provider}/${cfg.model}`
+        })
+        .join('\n')
+      if (tierLines) log.info(`Model tiers:\n${tierLines}`)
+    }
+
     this.phase = 'engine'
   }
 

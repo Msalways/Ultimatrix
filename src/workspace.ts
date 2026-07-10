@@ -17,6 +17,7 @@ function slugify(target: string): string {
 export class WorkspaceManager {
   private baseDir: string
   private currentTarget: string | null = null
+  private currentTenant: string | null = null
   private graphStore: GraphStore | null = null
   private oastStore: OastStore | null = null
 
@@ -30,6 +31,15 @@ export class WorkspaceManager {
 
   getScansDir(target: string): string {
     return resolve(this.getTargetDir(target), 'scans')
+  }
+
+  /**
+   * Tenant-isolated state root: <baseDir>/tenants/<tenantId>/.
+   * Logical isolation — each tenant gets its own graph/oast/log/evidence namespace.
+   * (NOT OS-level container sandboxing; see dispatchSlices/WorkerPool for usage.)
+   */
+  getTenantDir(tenantId: string): string {
+    return resolve(this.baseDir, 'tenants', slugify(tenantId))
   }
 
   async ensureTarget(target: string): Promise<void> {
@@ -68,6 +78,43 @@ export class WorkspaceManager {
     return { graphStore: this.graphStore, oastStore: this.oastStore }
   }
 
+  /**
+   * Scope the workspace's state namespace under an isolated tenant.
+   * Mirrors switchTarget but writes graph/oast/log/evidence under
+   * <baseDir>/tenants/<tenantId>/ — logical multi-tenant isolation that
+   * keeps each tenant's state separate from the per-target and global stores.
+   *
+   * OS-level container sandboxing is intentionally OUT OF SCOPE; this provides
+   * logical (filesystem + in-memory store) isolation only.
+   */
+  async switchTenant(tenantId: string): Promise<{ graphStore: GraphStore; oastStore: OastStore }> {
+    if (this.currentTenant === tenantId && this.graphStore && this.oastStore) {
+      return { graphStore: this.graphStore, oastStore: this.oastStore }
+    }
+
+    const tenantDir = this.getTenantDir(tenantId)
+    if (!existsSync(tenantDir)) {
+      await mkdir(tenantDir, { recursive: true })
+    }
+
+    const graphPath = resolve(tenantDir, 'graph.json')
+    const oastPath = resolve(tenantDir, 'oast-callbacks.json')
+
+    this.graphStore = new GraphStore(graphPath)
+    this.oastStore = new OastStore(1000, oastPath)
+    this.currentTenant = tenantId
+
+    await this.graphStore.load()
+    await this.oastStore.load()
+
+    setGlobalGraphStore(this.graphStore)
+    setGlobalOastStore(this.oastStore)
+
+    log.info(`Workspace tenant: ${tenantDir}`)
+
+    return { graphStore: this.graphStore, oastStore: this.oastStore }
+  }
+
   async createScan(target: string, scanId: string): Promise<string> {
     const scansDir = this.getScansDir(target)
     const scanDir = resolve(scansDir, scanId)
@@ -87,6 +134,24 @@ export class WorkspaceManager {
 
   getCurrentTarget(): string | null {
     return this.currentTarget
+  }
+
+  /**
+   * Global, cross-engagement storage dir — SEPARATE from per-target dirs
+   * (which are slugified under baseDir and fully reset per target).
+   * The cross-engagement memory persists anonymized priors across engagements
+   * and must never contain per-target identity.
+   */
+  getGlobalMemoryDir(): string {
+    return resolve(this.baseDir, 'global')
+  }
+
+  getCrossEngagementPath(): string {
+    return resolve(this.getGlobalMemoryDir(), 'cross-engagement-memory.json')
+  }
+
+  getCurrentTenant(): string | null {
+    return this.currentTenant
   }
 }
 

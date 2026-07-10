@@ -22,7 +22,7 @@ import { setForensicLog } from "../tools/report-tools";
 import { saveReflexionState } from "../intelligence/reflexion-store";
 import { getGlobalGraphStore } from "../graph/store";
 import { NodeType } from "../graph/schema";
-import { DEFAULTS } from "../config";
+import { DEFAULTS, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
 
@@ -170,6 +170,7 @@ export interface SolveParams {
   }>;
   model?: string;
   config?: SolverConfig;
+  ultimatrixConfig?: UltimatrixConfig;
   blackboard?: Blackboard;
   evidence?: EvidenceGate;
   loopDetector?: LoopDetector;
@@ -317,8 +318,77 @@ export async function solve(
     }
   }
 
+  // ─── Auto campaign (Phase 2 / T2.6) ──────────────────────────────────
+  // When config.engine === 'solver' AND config.campaign.auto is set, plan + run
+  // a coverage campaign before the OODA loop, feeding confirmed findings into
+  // the blackboard so the loop reasons over them. The loop still runs after.
+  let autoCampaignFindings = 0;
+  let previousCampaignPlan: import("../campaign/types").CampaignPlan | null = null;
+  if (
+    params.ultimatrixConfig?.engine === "solver" &&
+    params.ultimatrixConfig.campaign?.auto
+  ) {
+    emit({ phase: "observe", step: 0, text: "[campaign] auto-planning coverage campaign..." });
+    try {
+      const { planCampaign } = await import("../campaign/planner");
+      const { runCampaign } = await import("../campaign/executor");
+      const { createPrimitiveRunner } = await import("../campaign/runner");
+      const { listPrimitives } = await import("../primitives");
+      const gate = new EvidenceGate();
+      const { setEvidenceGateForFindings: setGate } = await import("../tools/control-tools");
+      setGate(gate);
+      const autoConfig = params.ultimatrixConfig;
+      const executor = createPrimitiveRunner(
+        getGlobalGraphStore(),
+        autoConfig,
+        gate,
+      );
+      const autoPlan = planCampaign(getGlobalGraphStore(), {
+        primitives: listPrimitives().map((p) => ({
+          id: p.id,
+          description: p.description,
+          tags: [],
+        })),
+        maxSlices: autoConfig.campaign?.maxSlices,
+      });
+      previousCampaignPlan = autoPlan;
+      const autoResult = await runCampaign(autoPlan, {
+        graphStore: getGlobalGraphStore(),
+        config: autoConfig,
+        executor,
+        evidenceGate: gate,
+        maxConcurrency: autoConfig.campaign?.maxConcurrency,
+      });
+      // Feed confirmed findings into the blackboard for the OODA loop to use.
+      for (const f of autoResult.findings) {
+        board.addFact(
+          `Campaign confirmed: ${f.type} on ${f.endpoint} (${f.severity})`,
+          "finding",
+        );
+      }
+      autoCampaignFindings = autoResult.findings.length;
+      log.dim(
+        `[campaign] auto-run: ${autoResult.slicesRun} slices, ${autoResult.findings.length} findings`,
+      );
+    } catch (err) {
+      log.warn(`[campaign] auto-run failed: ${(err as Error).message}`);
+    }
+  }
+
   // Auto-inject graph context + blackboard state into the goal message
   let enrichedGoal = params.goal;
+
+  // Surface pre-confirmed campaign findings to the LLM strategist.
+  if (autoCampaignFindings > 0) {
+    const existing = getGlobalGraphStore().queryNodes?.(NodeType.FINDING) || [];
+    const lines = existing
+      .slice(-autoCampaignFindings)
+      .map((n: any) => `- ${n.properties.type} on ${n.properties.endpoint} [${n.properties.severity}]`);
+    if (lines.length > 0) {
+      enrichedGoal +=
+        `\n\n## Pre-confirmed Findings (Auto Campaign)\n` + lines.join("\n");
+    }
+  }
 
   try {
     const store = getGlobalGraphStore();
@@ -366,6 +436,19 @@ export async function solve(
     }
   } catch {
     // Reflexion store not available
+  }
+
+  // Inject cross-engagement priors (anonymized patterns from past engagements)
+  try {
+    const { CrossEngagementMemory } = await import('../intelligence/cross-engagement')
+    const mem = new CrossEngagementMemory()
+    await mem.load()
+    const priors = mem.getPriorPatterns()
+    if (priors.engagementCount > 0) {
+      enrichedGoal += `\n\n${priors.promptBlock}`
+    }
+  } catch {
+    // Cross-engagement memory not available
   }
 
   // Inject matched skill methodology (from per-message skill matching)
@@ -494,6 +577,7 @@ export async function solve(
   emit({ phase: "observe", step: 0, text: "" });
 
   let fullText = "";
+  let hasReasoningChunks = false;
   let toolCallCount = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -534,16 +618,22 @@ export async function solve(
       switch (chunk.type) {
         case "text-delta":
           fullText += chunk.payload.text;
-          emit({
-            phase: "reason",
-            step: toolCallCount,
-            text: chunk.payload.text,
-          });
+          // For reasoning models, text-delta is raw tool output — don't display
+          // For non-reasoning models, text-delta IS the response — display it
+          if (!hasReasoningChunks) {
+            emit({
+              phase: "reason",
+              step: toolCallCount,
+              text: chunk.payload.text,
+            });
+          }
           break;
 
         case "reasoning-delta":
           if (chunk.payload.text) {
+            hasReasoningChunks = true;
             fullText += chunk.payload.text;
+            // Emit reasoning as the response — this IS the analysis for reasoning models
             emit({
               phase: "reason",
               step: toolCallCount,
@@ -583,6 +673,7 @@ export async function solve(
 
             // Determine if this tool call produced graph changes (not just tool name substring)
             let hasNewFinding = false;
+            let hasNewEndpoints = false;
             try {
               const graphAfter = getGlobalGraphStore();
               const summaryAfter = graphAfter.getTargetSummary();
@@ -590,6 +681,9 @@ export async function solve(
                   summaryAfter.totalEndpoints > graphStateSnapshot.endpoints ||
                   summaryAfter.totalTests > graphStateSnapshot.tests) {
                 hasNewFinding = true;
+              }
+              if (summaryAfter.totalEndpoints > graphStateSnapshot.endpoints) {
+                hasNewEndpoints = true;
               }
               // Update snapshot for next iteration
               graphStateSnapshot.findings = summaryAfter.totalFindings;
@@ -601,6 +695,29 @@ export async function solve(
 
             // Update loop detector (stale tracking)
             loopDetector.recordRound(hasNewFinding);
+
+            // Re-plan campaign when new endpoints discovered mid-loop
+            if (hasNewEndpoints && params.ultimatrixConfig?.campaign?.auto && previousCampaignPlan) {
+              try {
+                const { replanCampaign } = await import("../campaign/planner");
+                const { listPrimitives } = await import("../primitives");
+                const freshPlan = replanCampaign(
+                  getGlobalGraphStore(),
+                  previousCampaignPlan,
+                  {
+                    primitives: listPrimitives().map(p => ({ id: p.id, description: p.description, tags: [] })),
+                    maxSlices: params.ultimatrixConfig.campaign?.maxSlices,
+                  },
+                );
+                if (freshPlan.slices.length > 0) {
+                  board.addFact(`Campaign re-planned: ${freshPlan.slices.length} new slices for newly discovered endpoints`, "campaign");
+                  emit({ phase: "observe", step: toolCallCount, text: `[campaign] re-planned: ${freshPlan.slices.length} new slices for ${freshPlan.slices.length} new endpoints` });
+                  previousCampaignPlan = { slices: [...previousCampaignPlan.slices, ...freshPlan.slices], coverage: freshPlan.coverage, generatedAt: Date.now(), options: freshPlan.options };
+                }
+              } catch (err) {
+                log.warn(`[campaign] re-plan failed: ${(err as Error).message}`);
+              }
+            }
 
             // Record failures in reflexion engine
             if (
@@ -689,6 +806,21 @@ export async function solve(
     toolCallCount,
     fullText,
   );
+
+  // Find attack paths (CONCLUDE phase)
+  try {
+    const { findAttackPaths } = await import("./attack-path");
+    const attackPaths = findAttackPaths(getGlobalGraphStore());
+    if (attackPaths.length > 0) {
+      board.addFact(`Found ${attackPaths.length} attack path(s) from unauthenticated entry points to sensitive assets`, "finding");
+      for (const ap of attackPaths.slice(0, 3)) {
+        board.addFact(`Attack path: ${ap.entryPoint} → ${ap.targetAsset} (${ap.totalSeverity}, ${ap.chainLength} hops)`, "finding");
+      }
+      emit({ phase: "complete", step: toolCallCount, text: `\n[attack-paths] ${attackPaths.length} path(s) found (highest: ${attackPaths[0].totalSeverity})` });
+    }
+  } catch {
+    // Attack path analysis is best-effort
+  }
 
   // Persist reflexion state for future sessions
   if (params.reflexion && params.reflexion.getAttemptCount() > 0) {

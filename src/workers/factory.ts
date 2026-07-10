@@ -13,6 +13,13 @@ export interface WorkerConfig {
   tokenBudget?: number
   context?: any
   browser?: StagehandBrowser
+  /**
+   * Logical tenant/sandbox association. When set, the worker's graph store,
+   * logs and evidence are scoped under the tenant namespace (see WorkspaceManager.switchTenant).
+   * This is LOGICAL isolation (filesystem namespace + state scope), not OS-level container sandboxing.
+   */
+  tenant?: string
+  sandboxId?: string
 }
 
 export class WorkerFactory {
@@ -27,6 +34,7 @@ export class WorkerFactory {
     const agent = createAgent(this.config, {
       browser: workerConfig.browser,
       tier: workerConfig.tier,
+      modelId: workerConfig.modelId,
       skillIds: [workerConfig.skillId],
       skills: skill ? [skill] : undefined,
     })

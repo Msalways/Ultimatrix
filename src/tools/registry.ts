@@ -3,6 +3,7 @@ import { recordTestCase } from './record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from './observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from './session-tools'
 import { recordEvidence, writeFinding } from './control-tools'
+import { verifyChainsTool } from './detect-chains-tool'
 import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
 import { readAppModelSection, writeAppModelSection } from './app-model-tools'
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from './recon-tools'
@@ -13,6 +14,9 @@ import { loadSkillReference, searchSkillTool } from './skill-tools'
 import { encodeDecode } from './encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from './flow-tools'
 import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
+import { runPrimitiveTool } from '../primitives'
+import { runCampaignTool } from '../campaign/campaign-tool'
+import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 
 export {
   httpRequest, multipartUpload, followRedirects, omitHeader,
@@ -20,6 +24,7 @@ export {
   parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
   extractSessionCookie, extractCsrfToken, useSession,
   recordEvidence, writeFinding,
+  verifyChainsTool,
   queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
   upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings,
   readAppModelSection, writeAppModelSection,
@@ -30,6 +35,9 @@ export {
   loadSkillReference, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
   buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
+  runPrimitiveTool,
+  runCampaignTool,
+  recordOutcomeTool,
 }
 
 export function registerAllTools() {
@@ -39,6 +47,7 @@ export function registerAllTools() {
     parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
     extractSessionCookie, extractCsrfToken, useSession,
     recordEvidence, writeFinding,
+    verifyChainsTool,
     queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
     upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings,
     readAppModelSection, writeAppModelSection,
@@ -49,5 +58,8 @@ export function registerAllTools() {
     loadSkillReference, searchSkills: searchSkillTool, encodeDecode,
     saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
     buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
+    runPrimitiveTool,
+    runCampaignTool,
+    recordOutcomeTool,
   }
 }

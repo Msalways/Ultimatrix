@@ -1,4 +1,4 @@
-# Ultimatrix v8.2
+# Ultimatrix v8.3
 
 **An autonomous security researcher that reasons, learns, and adapts — not another pattern-matching scanner.**
 
@@ -26,6 +26,10 @@ It finds vulnerabilities that pattern-based scanners miss, because it understand
 - [47 Knowledge-Based Skills](#47-knowledge-based-skills)
 - [Human-in-the-Loop](#human-in-the-loop)
 - [Graph-Powered Reasoning](#graph-powered-reasoning)
+- [Scope Guard](#scope-guard)
+- [Campaign Autonomy](#campaign-autonomy)
+- [Attack-Path Solver](#attack-path-solver)
+- [Cross-Engagement Memory](#cross-engagement-memory)
 - [Response Compression (Headroom)](#response-compression-headroom)
 - [Session & Cookie Management](#session--cookie-management)
 - [Quick Start](#quick-start)
@@ -53,6 +57,10 @@ Security tools fall into two camps: **signature scanners** that match known patt
 | Multi-model support | No | N/A | 16 providers, 3 tiers |
 | Response compression | No | N/A | Headroom AI |
 | Model routing | No | N/A | Dynamic per-task |
+| Scope enforcement | No | Manual | Automatic (scope guard) |
+| Attack path discovery | No | Manual | BFS graph traversal |
+| Cross-session learning | No | Manual | Anonymized pattern memory |
+| Campaign coverage | N/A | Manual | Systematic test planning |
 
 **The key insight:** Observation is the foundation of security testing. Before Ultimatrix attacks anything, it maps your entire attack surface — endpoints, authentication flows, role-based access, technology stack, exposed secrets, JavaScript bundles. It builds a **knowledge graph**. Then it reasons over that graph to decide what's worth testing and how.
 
@@ -141,15 +149,19 @@ That's not a toy. That's a security consultant that works 24/7.
           └──────────┬────────┘  └────────┬─────────┘  └──────────┬─────────┘
                      │                    │                        │
           ┌──────────▼────────────────────▼────────────────────────▼─────────┐
-          │              Shared Intelligence Layer                          │
-          │  ─────────────────────────────────────────────                  │
-          │  • Evidence Gate (anti-hallucination, zero leniency)           │
-          │  • Reflexion Engine (L0-L4 failure classification)             │
-          │  • Anti-Loop Detector (stale/dead-end detection)               │
-          │  • Knowledge Graph (11 node types, 12 edge types)             │
-          │  • Skill Library (47 knowledge-based skills)                   │
-          │  • Headroom Compression (intelligent response compression)     │
-          │  • Session Manager (cookie expiry validation)                  │
+           │  Shared Intelligence Layer                          │
+           │  ─────────────────────────────────────────────                  │
+           │  • Evidence Gate (anti-hallucination, zero leniency)           │
+           │  • Reflexion Engine (L0-L4 failure classification)             │
+           │  • Anti-Loop Detector (stale/dead-end detection)               │
+           │  • Knowledge Graph (17 node types, 12 edge types)             │
+           │  • Skill Library (47 knowledge-based skills)                   │
+           │  • Scope Guard (URL validation, domain/path enforcement)       │
+           │  • Headroom Compression (intelligent response compression)     │
+           │  • Session Manager (cookie expiry validation)                  │
+           │  • Cross-Engagement Memory (anonymized pattern learning)       │
+           │  • Attack-Path Solver (BFS traversal of vulnerability chains)  │
+           │  • Campaign Autonomy (systematic test coverage planning)       │
           └──────────────────────────┬──────────────────────────────────────┘
                                      │
           ┌──────────────────────────▼──────────────────────────────────────┐
@@ -166,12 +178,14 @@ That's not a toy. That's a security consultant that works 24/7.
           └──────────────────────────┬──────────────────────────────────────┘
                                      │
           ┌──────────────────────────▼──────────────────────────────────────┐
-          │                      Tool Layer                                │
-          │  ──────────────────────────────────                            │
-          │  24 specialized tools:                                         │
-          │  httpRequest, browser automation, graph queries,               │
-          │  session restore, skill loading, encode/decode,               │
-          │  finding generation, delegation, OAST callbacks...             │
+           │  Tool Layer                                │
+           │  ──────────────────────────────────                            │
+           │  28+ specialized tools:                                         │
+           │  httpRequest, browser automation, graph queries,               │
+           │  session restore, skill loading, encode/decode,               │
+           │  finding generation, delegation, OAST callbacks,              │
+           │  scope enforcement, browser auth extraction,                  │
+           │  attack-path analysis, case file export...                    │
           │                                                                │
           │  Response Flow:                                                 │
           │  HTTP Response → Headroom Compression → LLM                    │
@@ -190,12 +204,13 @@ That's not a toy. That's a security consultant that works 24/7.
           └────────────────────────────────────────────────────────────────┘
 ```
 
-### Source Layout (166 TypeScript files, 24K LOC)
+### Source Layout (180+ TypeScript files, 26K+ LOC)
 
 ```
 src/
-├── analysis/          # Skill loader, HAR analyzer, instruction builder
+├── analysis/          # HAR analyzer, instruction builder, skill loader
 ├── browser/           # Playwright/Stagehand, dialog watcher, state bridge
+├── campaign/          # Campaign planning, execution, continuity
 ├── capture/           # Human observer, HAR parser, network capture
 ├── cli/               # CLI entry point, command handlers
 ├── compression/       # Headroom compression service
@@ -204,25 +219,27 @@ src/
 ├── generation/        # Test generator, parameterizer, storage
 ├── graph/             # Knowledge graph (TypeGraph), store, tools
 ├── http/              # HTTP client with compression, rate limiting
-├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining
+├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining, cross-engagement
 ├── logging/           # Forensic event logger, system metrics
 ├── manager/           # Agent manager (legacy supervisor)
 ├── mastra/            # Mastra agent wiring, tool registry
 ├── memory/            # Memory schemas, store
 ├── models/            # Model factory, selector, rate limiter, quota tracker
 ├── oast/              # Out-of-band attack server (blind callback detection)
+├── primitives/        # Security primitives (IDOR, auth bypass, race conditions)
 ├── prompts/           # Core contract, system prompts
 ├── recorder/          # Action recorder, code generator
 ├── replay/            # Test case replayer
-├── report/            # JSON/HTML/Markdown report generator
+├── report/            # JSON/HTML/Markdown report generator, case file export
+├── safety/            # Scope guard, URL validation
 ├── session/           # Session lifecycle, engine routing
-├── solver/            # OODA solver engine, brain, blackboard
+├── solver/            # OODA solver engine, brain, blackboard, attack-path
 ├── spider/            # Stagehand-based hybrid crawler
 ├── supervisor/        # Legacy supervisor agent
-├── tools/             # 24 specialized tools
+├── tools/             # 28+ specialized tools
 ├── types/             # Shared TypeScript types
 ├── usage/             # Token/usage tracker
-├── utils/             # Logger, helpers
+├── utils/             # Logger, helpers, output guard
 └── workers/           # 4 specialist worker agents
 ```
 
@@ -770,7 +787,7 @@ Every finding includes visual proof — screenshots of the vulnerable page, resp
 
 ## Graph-Powered Reasoning
 
-Under the hood, Ultimatrix maintains a knowledge graph with 11 node types and 12 edge types:
+Under the hood, Ultimatrix maintains a knowledge graph with 17 node types and 12 edge types:
 
 ```
                     ┌──────────┐
@@ -799,6 +816,19 @@ Under the hood, Ultimatrix maintains a knowledge graph with 11 node types and 12
 │  Fact    │────────▶│ Intent   │────────▶│Reflexion │
 └──────────┘         └──────────┘         └──────────┘
   (what we know)     (what we plan)        (what we learned)
+
+┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐
+│  Header   │  │   Auth    │  │ Hypothesis│  │ Invariant │
+│ Semantic  │  │  Scheme   │  │           │  │           │
+└───────────┘  └───────────┘  └───────────┘  └───────────┘
+
+┌───────────────────┐  ┌───────────────────┐
+│ OutcomeFeedback   │  │ CandidateFinding  │
+│                   │  │                   │
+└───────────────────┘  └───────────────────┘
+```
+└──────────┘         └──────────┘         └──────────┘
+  (what we know)     (what we plan)        (what we learned)
 ```
 
 This isn't just data storage. The agent *queries* the graph to make decisions:
@@ -807,6 +837,172 @@ This isn't just data storage. The agent *queries* the graph to make decisions:
 - "What authentication flows protect this admin endpoint?"
 - "Have I seen this pattern before in a different context?"
 - "What facts have I established about this target?"
+
+---
+
+## Scope Guard
+
+Every network request — HTTP tools, browser navigation, recon probes — passes through a scope guard before execution. This prevents the agent from accidentally testing out-of-scope targets.
+
+```
+URL → isUrlInScope(url) → { allowed: boolean, reason?: string }
+         │
+         ├── domain match (exact + wildcard *.example.com)
+         ├── protocol check (https:// only?)
+         └── path prefix (/app/ only?)
+```
+
+### Enforcement Modes
+
+| Mode | Behavior |
+|------|----------|
+| `hard` | Blocks out-of-scope requests immediately, returns error to agent |
+| `warn` | Logs warning but allows the request |
+
+### Where Scope Guard Is Applied
+
+- **HTTP tools**: `httpRequest`, `multipartUpload`, `followRedirects`, `omitHeader`
+- **Browser navigation**: `stagehand_navigate` (Playwright-based)
+- **Observation tools**: `evaluateRendered`, `measureTiming`
+- **Recon tools**: `techStack`, `graphqlIntrospect`, `frameworkFingerprint`
+- **Flow tools**: `reproduceFlow` (page.goto)
+- **Control tools**: `verifyPendingFindings`
+
+### Configuration
+
+```yaml
+scope:
+  allowedDomains:
+    - target.com
+    - *.target.com       # Wildcard support
+  allowedPaths:
+    - /app/               # Only test under /app/
+  allowedProtocols:
+    - https               # HTTP-only by default
+  enforcement: hard       # 'hard' | 'warn'
+```
+
+When no scope is configured, all requests are allowed (permissive default).
+
+---
+
+## Campaign Autonomy
+
+The campaign system plans and executes systematic test coverage across your entire attack surface. Instead of testing one endpoint at a time, it builds a comprehensive campaign plan and executes slices in parallel.
+
+### How It Works
+
+```
+Knowledge Graph (endpoints, params, roles)
+          │
+          ▼
+    planCampaign()
+    ─────────────
+    Generates CampaignSlices:
+    • Each slice = one endpoint × one parameter × one role × one technique
+    • Priority scoring: data-flow-aware (VALUE_ORIGIN edges get +2 boost)
+    • Auth-aware: maps roles to endpoints via RBACMatrix
+          │
+          ▼
+    runCampaign()
+    ─────────────
+    • Executes slices via PrimitiveRunner
+    • Each primitive is a real HTTP request or browser action
+    • Confirmed findings pass through EvidenceGate
+    • Outcomes recorded for technique effectiveness feedback
+```
+
+### Campaign Features
+
+- **Auto-replan**: When new endpoints are discovered mid-session, the campaign re-plans to cover them
+- **Outcome feedback**: Confirmed findings feed back to technique effectiveness scoring
+- **Parallel execution**: Multiple slices can run concurrently with configurable budget
+- **Auth-aware**: Automatically tests each endpoint with all discovered roles
+
+### Configuration
+
+```yaml
+campaign:
+  auto: true               # Enable auto-campaign in solver
+  maxSlices: 20            # Max slices per campaign
+  maxConcurrency: 3        # Parallel slice execution
+```
+
+---
+
+## Attack-Path Solver
+
+After the solver completes, Ultimatrix traverses the knowledge graph to find attack paths — chains of endpoints that lead from unauthenticated entry points to sensitive data.
+
+```
+Unauthenticated Endpoint
+    │
+    ├── CHAINS_TO ──► Admin API
+    │                    │
+    │                    ├── EXPLOITS ──► Finding (IDOR)
+    │                    │                    │
+    │                    │                    └── PRODUCES ──► Sensitive Data
+    │                    │
+    └── PRODUCES ──► Finding (Info Disclosure)
+                         │
+                         └── BUILT_ON ──► AttackStep
+```
+
+### What It Finds
+
+- **Privilege escalation paths**: Unauthenticated → admin → sensitive data
+- **IDOR chains**: Entry point → parameter manipulation → data access
+- **Auth bypass sequences**: Multiple bypass steps leading to full compromise
+
+### Case File Export
+
+After each solve session, a structured case file is generated containing:
+
+- **Findings**: All discovered vulnerabilities with severity, evidence, CWE
+- **Decision log**: What the agent tried, what worked, what failed
+- **Endpoints**: Complete attack surface map
+
+```json
+{
+  "target": "https://example.com",
+  "findings": [...],
+  "decisionLog": [...],
+  "endpoints": [...],
+  "attackPaths": [...]
+}
+```
+
+---
+
+## Cross-Engagement Memory
+
+Ultimatrix learns across sessions. After each engagement, anonymized patterns are saved and automatically injected into future sessions.
+
+### What's Captured
+
+- **Vulnerability patterns**: Which vulnerability types were found (e.g., "IDOR on sequential IDs")
+- **Technique effectiveness**: Which attack techniques worked vs. failed
+- **Target characteristics**: What technology stacks are vulnerable to what
+
+### Privacy by Design
+
+- **No raw URLs stored**: Only anonymized patterns
+- **No credentials**: Session data is never persisted in cross-engagement memory
+- **Structural privacy**: Patterns are aggregated, not individualized
+
+### How It Works
+
+1. **Session end**: `finalizeEngagementMemory()` records anonymized patterns
+2. **Next session start**: Priors automatically injected into solver context
+3. **During session**: Agent can call `getPriorPatterns` tool for on-demand access
+
+```
+Session 1: Found IDOR on sequential user IDs → pattern recorded
+Session 2: New target, similar tech stack → prior pattern injected
+Agent: "Based on past experience, this target likely has sequential IDs.
+        Testing IDOR on /api/users/{id}..."
+Result: IDOR confirmed — pattern validated
+```
 
 ---
 
@@ -945,7 +1141,7 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 | `ultimatrix learn -t <url>` | Capture traffic, parse HAR, analyze patterns | `npx ultimatrix learn -t https://target.com` |
 | `ultimatrix generate -t <url>` | Generate Playwright test cases from captured traffic | `npx ultimatrix generate -t https://target.com` |
 | `ultimatrix replay` | Re-run previously generated tests | `npx ultimatrix replay` |
-| `ultimatrix report` | Generate JSON/HTML/Markdown report | `npx ultimatrix report` |
+| `ultimatrix report` | Generate JSON/HTML/Markdown report + case file | `npx ultimatrix report` |
 | `ultimatrix web` | Next.js web UI at localhost:3000 | `npx ultimatrix web` |
 | `ultimatrix assess -t <url>` | Full assessment (legacy engine) | `npx ultimatrix assess -t https://target.com` |
 | `ultimatrix verify -a <model> -t <url>` | Re-run findings against new deployment | `npx ultimatrix verify -a ./model.json -t https://new.com` |
@@ -1012,6 +1208,21 @@ compression:
   truncation:
     enabled: true
     maxResponseChars: 50000
+
+scope:
+  allowedDomains:
+    - your-app.com
+    - *.your-app.com
+  allowedPaths:
+    - /app/
+  allowedProtocols:
+    - https
+  enforcement: hard
+
+campaign:
+  auto: true
+  maxSlices: 20
+  maxConcurrency: 3
 
 browser:
   headless: false
@@ -1088,13 +1299,14 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (1060 passing)
+# Run all tests (1128 passing)
 npm test
 
 # Run specific test suite
 npx vitest run test/intelligence/evidence-gate.test.ts
 npx vitest run test/tools/flow-tools.test.ts
 npx vitest run test/solver/solver.test.ts
+npx vitest run test/safety/scope-guard.test.ts
 
 # Watch mode
 npm run test:watch
@@ -1108,15 +1320,17 @@ npm run build:cli    # ESM + CJS + DTS
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | Intelligence (evidence-gate, reflexion, anti-loop) | 110+ | Core logic, L0-L4 escalation, zero leniency |
-| Graph (store, tools, schema) | 96 | Full CRUD, 11 node types, 12 edge types |
-| Tools (24 tools) | 120+ | All tool interfaces, flow tools, skill tools |
-| Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid |
+| Graph (store, tools, schema) | 96 | Full CRUD, 17 node types, 12 edge types |
+| Tools (28+ tools) | 130+ | All tool interfaces, flow tools, skill tools, scope guard |
+| Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid, scope enforcement |
 | Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
-| Solver (OODA, blackboard, plan) | 60+ | Full loop, tool chains, composition |
+| Solver (OODA, blackboard, plan) | 60+ | Full loop, tool chains, composition, attack-path |
 | Models (rate-limiter, quota, selector, middleware) | 80+ | All providers, 3-layer rate limiting |
 | Session (lifecycle, engine routing) | 15 | Both engines, 6-phase lifecycle |
 | Recorder (code gen, interaction) | 57 | Full pipeline, action capture |
 | Skills (loader, matcher, registry, tool-filter) | 60+ | 47 skills, progressive disclosure, domain matching |
+| Safety (scope guard) | 15 | Domain matching, wildcard, path prefix, protocol |
+| Campaign (planner, executor, continuity) | 40+ | Coverage planning, auto-replan, outcome feedback |
 
 ---
 
@@ -1134,20 +1348,20 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Metric | Value |
 |--------|-------|
-| Source files | 166 TypeScript files |
-| Source lines | 24,434 |
-| Test files | 77 files |
-| Tests passing | 1060 |
+| Source files | 180+ TypeScript files |
+| Source lines | 26,000+ |
+| Test files | 81 files |
+| Tests passing | 1128 |
 | Skills | 47 (across 8 domains) |
 | Skill lines | 15,277 |
-| Tools | 24 specialized tools |
+| Tools | 28+ specialized tools |
 | Engines | 3 (legacy, solver, multi-model) |
-| Node types | 11 (graph schema) |
+| Node types | 17 (graph schema) |
 | Edge types | 12 (graph schema) |
 | Providers | 16 supported |
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
-| Intelligence modules | 4 (evidence-gate, reflexion, anti-loop, blackboard) |
+| Intelligence modules | 8 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard) |
 
 ### Skill Domain Breakdown
 

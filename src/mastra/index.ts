@@ -37,6 +37,7 @@ export interface AgentOptions {
   logger?: Logger
   memory?: MastraMemory
   tier?: 'fast' | 'balanced' | 'powerful' | 'default'
+  modelId?: string
   skillIds?: string[]
   skills?: Skill[]
   extraTools?: Record<string, any>
@@ -78,7 +79,7 @@ export function createAgent(
 
   const agentConfig: any = {
     name: 'ultimatrix-agent',
-    model: resolveModel(config, options?.tier),
+    model: resolveModel(config, options?.modelId ? { modelId: options.modelId, tier: options?.tier } : options?.tier),
     target: config.target,
     tools: sanitizeToolRecord(allTools, config.provider),
     instructions: getAgentInstructions(config, skillInstructions),

@@ -10,6 +10,7 @@ const CORE_TOOLS = [
   'encodeDecode',
   'queryGraph',
   'detectChains',
+  'verifyChains',
   'evaluateRendered',
   'findEndpointsInResponse',
   'compareResponses',

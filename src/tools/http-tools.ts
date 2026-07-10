@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
 import { CompressionService } from '../compression/headroom-service'
+import { isUrlInScope, getScopeConfig } from '../safety/scope-guard'
 
 export const httpRequest = createTool({
   id: 'httpRequest',
@@ -20,6 +21,10 @@ export const httpRequest = createTool({
   execute: async ({  method, url, headers, body, timeoutMs  }) => {
     const start = performance.now()
     try {
+      const scopeCheck = isUrlInScope(url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
       const fetchOpts: RequestInit = {
         method,
         headers: headers ?? {},
@@ -78,6 +83,10 @@ export const multipartUpload = createTool({
   execute: async ({  url, filename, contentType, content, headers  }) => {
     const start = performance.now()
     try {
+      const scopeCheck = isUrlInScope(url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
       const formData = new FormData()
       const blob = new Blob([content], { type: contentType })
       formData.append('file', blob, filename)
@@ -128,6 +137,10 @@ export const followRedirects = createTool({
     let currentUrl = url
     let hops = 0
     try {
+      const initialCheck = isUrlInScope(url)
+      if (!initialCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${initialCheck.reason}` }
+      }
       while (hops < (maxHops ?? 5)) {
         const fetchOpts: RequestInit = {
           method: 'GET',
@@ -157,6 +170,10 @@ export const followRedirects = createTool({
           }
         }
         currentUrl = new URL(location, currentUrl).toString()
+        const redirectCheck = isUrlInScope(currentUrl)
+        if (!redirectCheck.allowed) {
+          return { ok: false, error: `Scope violation on redirect: ${redirectCheck.reason}` }
+        }
         hops++
       }
       return {
@@ -189,6 +206,10 @@ export const omitHeader = createTool({
   execute: async ({  url, method, headers, headerToOmit, body  }) => {
     const start = performance.now()
     try {
+      const scopeCheck = isUrlInScope(url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
       const stripped = { ...headers }
       delete stripped[headerToOmit]
       const fetchOpts: RequestInit = {

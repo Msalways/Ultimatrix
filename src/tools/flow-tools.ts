@@ -7,6 +7,7 @@ import { getGlobalObserver, type HumanAction } from '../capture/human-observer'
 import { getActiveBrowser, getActivePage, captureScreenshot } from '../browser/manager'
 import { log } from '../utils/logger'
 import { createHash } from 'node:crypto'
+import { isUrlInScope } from '../safety/scope-guard'
 
 function hashCredential(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16)
@@ -398,6 +399,10 @@ export const reproduceFlow = createTool({
 
           const firstStep = (flow.properties.steps as any[])?.[0]
           if (firstStep?.url) {
+            const scopeCheck = isUrlInScope(firstStep.url)
+            if (!scopeCheck.allowed) {
+              return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+            }
             await page.goto(firstStep.url, { waitUntil: 'domcontentloaded', timeout: 15000 })
           }
 
@@ -439,7 +444,14 @@ export const reproduceFlow = createTool({
       try {
         switch (step.action) {
           case 'navigate':
-            if (step.url) await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+            if (step.url) {
+              const scopeCheck = isUrlInScope(step.url)
+              if (!scopeCheck.allowed) {
+                log.warn(`ScopeGuard: skipping navigate to ${step.url} — ${scopeCheck.reason}`)
+                break
+              }
+              await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+            }
             break
           case 'fill':
             if (step.selector && step.value) await page.fill(step.selector, step.value)

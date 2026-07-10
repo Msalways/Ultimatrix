@@ -145,6 +145,26 @@ export interface VerifierConfig {
   timeoutMs?: number
 }
 
+export interface ScopeConfig {
+  /** Domains allowed for outbound requests. Supports exact match and wildcard (*.example.com). */
+  allowedDomains: string[]
+  /** URL path prefixes allowed (e.g., ['/api', '/admin']). Empty = all paths. */
+  allowedPaths?: string[]
+  /** Protocols allowed. Default: ['https']. */
+  allowedProtocols?: string[]
+  /** Enforcement mode: 'hard' blocks out-of-scope requests, 'warn' logs but allows. */
+  enforcement: 'hard' | 'warn'
+}
+
+export interface CampaignConfig {
+  /** Auto plan + run a coverage campaign at the start of a solver goal. */
+  auto?: boolean
+  /** Cap on number of slices to execute (highest priority first). */
+  maxSlices?: number
+  /** Bounded concurrency for slice execution. */
+  maxConcurrency?: number
+}
+
 export type EngineType = 'legacy' | 'solver' | 'multi-model'
 
 // ─── Model capability metadata ────────────────────────────────────
@@ -292,6 +312,7 @@ export interface UltimatrixConfig {
   agent: AgentConfig
   rateLimit: RateLimitConfig
   authorization?: AuthorizationConfig
+  scope?: ScopeConfig
   engine?: EngineType
   solver?: SolverConfig
   spider?: SpiderConfig
@@ -300,6 +321,8 @@ export interface UltimatrixConfig {
   verifier?: VerifierConfig
   modelCapabilities?: ModelCapabilities
   budgetPolicy?: BudgetPolicy
+  /** Phase 2 campaign dispatch (T2.6) — coverage automation for the solver. */
+  campaign?: CampaignConfig
   providerRateLimits?: ProviderRateLimits
   providerKeys?: Record<string, ApiKeyCreds>
   compression?: CompressionConfig
@@ -509,6 +532,33 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     } else if (provider === 'custom') {
       const cu = providerCreds as CustomCreds
       if (!cu.baseUrl) errors.push('creds.custom.baseUrl is required')
+    }
+  }
+
+  // Validate scope config
+  const scopeRaw = raw.scope as Record<string, unknown> | undefined
+  if (scopeRaw) {
+    if (!Array.isArray(scopeRaw.allowedDomains) || scopeRaw.allowedDomains.length === 0) {
+      errors.push('scope.allowedDomains must be a non-empty array of domain strings')
+    } else {
+      for (const d of scopeRaw.allowedDomains) {
+        if (typeof d !== 'string' || d.length === 0) {
+          errors.push(`scope.allowedDomains contains invalid entry: ${JSON.stringify(d)}`)
+        }
+      }
+    }
+    if (scopeRaw.enforcement !== undefined && scopeRaw.enforcement !== 'hard' && scopeRaw.enforcement !== 'warn') {
+      errors.push(`scope.enforcement must be "hard" or "warn", got "${scopeRaw.enforcement}"`)
+    }
+    if (scopeRaw.allowedProtocols !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedProtocols)) {
+        errors.push('scope.allowedProtocols must be an array of protocol strings')
+      }
+    }
+    if (scopeRaw.allowedPaths !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedPaths)) {
+        errors.push('scope.allowedPaths must be an array of path strings')
+      }
     }
   }
 
@@ -790,6 +840,8 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       },
     } : DEFAULTS.verifier ? { verifier: DEFAULTS.verifier } : {}),
     ...(raw.authorization ? { authorization: raw.authorization as AuthorizationConfig } : {}),
+    ...(raw.scope ? { scope: raw.scope as ScopeConfig } : {}),
+    ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
   }
 }
 
@@ -1010,6 +1062,16 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
       maxConcurrent: rl.maxConcurrent,
       retryOnLimit: rl.retryOnLimit,
       maxRetries: rl.maxRetries,
+    }
+  }
+
+  // Write scope config if set
+  if (config.scope) {
+    output.scope = {
+      allowedDomains: config.scope.allowedDomains,
+      enforcement: config.scope.enforcement,
+      ...(config.scope.allowedPaths && config.scope.allowedPaths.length > 0 ? { allowedPaths: config.scope.allowedPaths } : {}),
+      ...(config.scope.allowedProtocols && config.scope.allowedProtocols.length > 0 ? { allowedProtocols: config.scope.allowedProtocols } : {}),
     }
   }
 

@@ -71,6 +71,7 @@
     "@mastra/memory": "^1.20.2",
     "@mastra/observability": "^1.14.1",
     "@mastra/stagehand": "^0.2.4",
+    "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@nicia-ai/typegraph": "^0.31.0",
     "@radix-ui/react-dialog": "^1.1.16",

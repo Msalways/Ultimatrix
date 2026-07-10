@@ -41,7 +41,9 @@ Before doing ANY navigation, you MUST check what's already in the graph:
 1. Look for login forms
 2. Record the form structure as an auth flow (flow type, steps, start/end URLs)
 3. Record each form field (selector, type, name, placeholder)
-4. Do NOT submit login forms without valid credentials — recording the structure is sufficient for the testing phase
+4. After navigating to an authenticated page, use extractBrowserAuth to capture tokens from localStorage, sessionStorage, and cookies
+5. Store extracted auth tokens via saveSession for later reuse by workers
+6. Do NOT submit login forms without valid credentials — recording the structure is sufficient for the testing phase
 
 ### Phase 5: Endpoint Extraction (CRITICAL)
 For every unique URL/endpoint discovered, store structured data including the full URL, HTTP method, parameters with name/type/location, auth requirements, and semantic tags.

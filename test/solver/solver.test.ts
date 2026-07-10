@@ -32,6 +32,31 @@ function createMockAgent(textChunks: string[]) {
   }
 }
 
+function createReasoningMockAgent(reasoningChunks: string[], textChunks: string[]) {
+  let callIndex = 0
+  return {
+    instructions: undefined as any,
+    tools: undefined as any,
+    stream: vi.fn().mockImplementation(async (_prompt: string) => {
+      const idx = Math.min(callIndex++, reasoningChunks.length - 1)
+      const reasoning = reasoningChunks[idx] || ''
+      const text = textChunks[idx] || ''
+      return {
+        fullStream: (async function* () {
+          if (reasoning) {
+            yield { type: 'reasoning-delta', payload: { text: reasoning } }
+          }
+          if (text) {
+            yield { type: 'text-delta', payload: { text } }
+          }
+        })(),
+        toolCalls: [],
+        text: Promise.resolve(reasoning + text),
+      }
+    }),
+  }
+}
+
 describe('solve', () => {
   it('creates plan and executes tasks sequentially', async () => {
     const agent = createMockAgent([
@@ -174,5 +199,62 @@ describe('solve', () => {
     })
     expect(result.completed).toBe(false)
     expect(result.reason).toBe('stale')
+  })
+
+  it('emits reasoning-delta as phase:reason events', async () => {
+    const agent = createReasoningMockAgent(
+      ['I found SQL injection in /api/users. Evidence: error-based response.'],
+      ['| Endpoint | Type |']
+    )
+    const events: any[] = []
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find SQL injection',
+      onPhase: (event) => events.push(event),
+    })
+    const reasonEvents = events.filter(e => e.phase === 'reason')
+    expect(reasonEvents.length).toBeGreaterThan(0)
+    expect(reasonEvents.some(e => e.text?.includes('SQL injection'))).toBe(true)
+  })
+
+  it('returns reasoningText as result.text when reasoning model', async () => {
+    const agent = createReasoningMockAgent(
+      ['I found SQL injection. Evidence confirmed via error-based response.'],
+      ['| Endpoint | Type |']
+    )
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find SQL injection',
+    })
+    expect(result.text).toBeDefined()
+    expect(result.text).toContain('SQL injection')
+  })
+
+  it('returns responseText as result.text when non-reasoning model', async () => {
+    const agent = createMockAgent(['Found SQL injection via error-based response.'])
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find SQL injection',
+    })
+    expect(result.text).toBeDefined()
+    expect(result.text).toContain('SQL injection')
+  })
+
+  it('suppresses text-delta display when reasoning chunks present', async () => {
+    const agent = createReasoningMockAgent(
+      ['Analysis: 8 endpoints found, SQL injection confirmed.'],
+      ['| # | Endpoint | Type | Severity |']
+    )
+    const events: any[] = []
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find SQL injection',
+      onPhase: (event) => events.push(event),
+    })
+    const reasonEvents = events.filter(e => e.phase === 'reason')
+    const hasAnalysis = reasonEvents.some(e => e.text?.includes('Analysis'))
+    const hasRawTable = reasonEvents.some(e => e.text?.includes('| # |'))
+    expect(hasAnalysis).toBe(true)
+    expect(hasRawTable).toBe(false)
   })
 })

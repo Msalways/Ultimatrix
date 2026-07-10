@@ -2,6 +2,7 @@
 import { z } from 'zod'
 import { CompressionService } from '../compression/headroom-service'
 import { getTechniqueRegistry } from '../skills/technique-registry'
+import { isUrlInScope } from '../safety/scope-guard'
 
 // ── WAF vendor patterns (from registry) ──
 
@@ -96,6 +97,10 @@ export const evaluateRendered = createTool({
   }),
   execute: async (ctx) => {
     try {
+      const scopeCheck = isUrlInScope(ctx.url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, value: { rendered: false, matchType: 'scope_violation', body: `Scope violation: ${scopeCheck.reason}` } }
+      }
       const u = new URL(ctx.url)
       const existingParam = u.searchParams.keys().next().value
       if (existingParam) {
@@ -171,6 +176,10 @@ export const measureTiming = createTool({
     const iters = ctx.iterations ?? 3
     const samples: number[] = []
     try {
+      const baseScopeCheck = isUrlInScope(ctx.url)
+      if (!baseScopeCheck.allowed) {
+        return { ok: false, value: { timingDeltaMs: 0, vulnerable: false, samples } }
+      }
       for (let i = 0; i < iters; i++) {
         const u = new URL(ctx.url)
         const key = ctx.paramName ?? u.searchParams.keys().next().value ?? 'q'

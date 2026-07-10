@@ -6,17 +6,20 @@
  * Don't act without agreement. Talk when they want to talk. Hunt when they want to hunt.
  */
 
-import { CORE_CONTRACT } from '../prompts/core-contract'
-import type { UltimatrixConfig } from '../config'
+import { CORE_CONTRACT } from "../prompts/core-contract";
+import type { UltimatrixConfig } from "../config";
 
-export function getBrainInstructions(config: UltimatrixConfig, extraContext?: string): string {
+export function getBrainInstructions(
+  config: UltimatrixConfig,
+  extraContext?: string,
+): string {
   const targetLine = config.target
     ? `\nTarget: ${config.target}\n`
-    : '\nNo target set. Ask the user for a URL.\n'
+    : "\nNo target set. Ask the user for a URL.\n";
 
   const harBlock = extraContext
     ? `\n## Captured Traffic Intelligence\n\n${extraContext}\n`
-    : ''
+    : "";
 
   return `${CORE_CONTRACT}
 
@@ -236,9 +239,9 @@ You have a limited token budget per task. Manage it wisely:
 - If budget is low, prefer balanced/fast tier for workers
 - If budget is critical (<20% remaining), only spawn essential workers
 - Each worker spawn costs tokens — batch related tests when possible
-`
+`;
 }
 
 // Legacy export for backward compatibility
-import type { UltimatrixConfig as _UC } from '../config'
-export const BRAIN_INSTRUCTIONS = getBrainInstructions({} as _UC)
+import type { UltimatrixConfig as _UC } from "../config";
+export const BRAIN_INSTRUCTIONS = getBrainInstructions({} as _UC);

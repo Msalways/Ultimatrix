@@ -26,6 +26,7 @@ import type { SkillRegistry } from './skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
+import { log } from '../utils/logger'
 
 // ─── Focused tool imports ───────────────────────────────────────────
 import { httpRequest, followRedirects } from '../tools/http-tools'
@@ -36,11 +37,15 @@ import {
   queryGraph, upsertPage, addAction, addInput,
   addEndpoint, addFinding, getTargetSummary, getEndpointsWithParams,
 } from '../graph/tools'
+import { verifyChainsTool } from '../tools/detect-chains-tool'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { listSkills } from '../tools/skill-tools'
+import { runPrimitiveTool } from '../primitives'
+import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getOastUrlTool } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
+import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import {
   buildResearchMap,
   planResearchExperiments,
@@ -49,6 +54,7 @@ import {
   assessCandidateReportability,
   getResearchStatus,
 } from '../tools/research-tools'
+import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
@@ -98,6 +104,7 @@ export function createSolverBrain(
     getEndpointsWithParams: sanitizeTool(getEndpointsWithParams, p),
     writeFinding: sanitizeTool(writeFinding, p),
     recordEvidence: sanitizeTool(recordEvidence, p),
+    verifyChains: sanitizeTool(verifyChainsTool, p),
   }
 
   // ─── HTTP tools (quick checks) ─────────────────────────────────
@@ -146,6 +153,7 @@ export function createSolverBrain(
     detectReactions: sanitizeTool(detectReactions, p),
     getDialogEvidence: sanitizeTool(getDialogEvidence, p),
     getRecentChanges: sanitizeTool(getRecentChanges, p),
+    recordOutcome: sanitizeTool(recordOutcomeTool, p),
   }
 
   // ─── Model selection tool (multi-model engine only) ──────────────
@@ -172,9 +180,48 @@ export function createSolverBrain(
           complexity,
           requiredCapabilities,
         }, 'worker')
+        log.info(`[model] Recommended: ${selection.modelId} (${selection.tier}) for ${complexity} task "${skillId}" — ${selection.reasoning}`)
         return { ok: true, selection, explanation: selector.explainSelection(selection, { skillId, taskDescription, complexity }) }
       },
     }), p)
+  }
+
+  // ─── Cross-engagement priors (T4.4: anonymized pattern memory) ──
+  const getPriorPatternsTool = createTool({
+    id: 'getPriorPatterns',
+    description: 'Consult anonymized cross-engagement pattern memory to prioritize techniques, vulnerable endpoint shapes, and parameter names. Stores only structural features (path-token shapes, param names, technique ids, counts) — never raw URLs, hostnames, or target identity. Optional vulnType biases results toward a vulnerability class (e.g. "idor", "sqli").',
+    inputSchema: z.object({
+      vulnType: z.string().optional().describe('Optional vulnerability class to bias priors toward (e.g. "idor", "ssrf", "sqli")'),
+    }),
+    execute: async ({ vulnType }) => {
+      const mem = new CrossEngagementMemory()
+      await mem.load()
+      const priors = mem.getPriorPatterns(vulnType)
+      return {
+        ok: true,
+        value: {
+          engagementCount: priors.engagementCount,
+          vulnType: priors.vulnType,
+          topTechniques: priors.topTechniques,
+          vulnerableShapes: priors.vulnerableShapes,
+          commonParams: priors.commonParams,
+          failurePatterns: priors.failurePatterns,
+          effectiveSequences: priors.effectiveSequences,
+          promptBlock: priors.promptBlock,
+        },
+      }
+    },
+  })
+
+  // ─── Technique primitives (Phase 2: evidence-gated security tests) ──
+  const primitiveTools: Record<string, any> = {
+    runPrimitive: sanitizeTool(runPrimitiveTool, p),
+    getPriorPatterns: sanitizeTool(getPriorPatternsTool, p),
+  }
+
+  // ─── Campaign dispatch (Phase 2 / T2.6: strategist emits campaigns) ──
+  const campaignTools: Record<string, any> = {
+    runCampaign: sanitizeTool(createCampaignTool(config), p),
   }
 
   // ─── Merge all focused tools ───────────────────────────────────
@@ -186,6 +233,8 @@ export function createSolverBrain(
     ...sessionTools,
     ...orchestrationTools,
     ...miscTools,
+    ...primitiveTools,
+    ...campaignTools,
     ...modelSelectionTools,
   }
 

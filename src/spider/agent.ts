@@ -17,6 +17,7 @@ import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { httpRequest } from '../tools/http-tools'
 import { findEndpointsInResponse } from '../tools/observation-tools'
+import { extractBrowserAuth } from '../tools/extract-browser-auth'
 import type { UltimatrixConfig } from '../config'
 
 export function createSpiderAgent(
@@ -56,6 +57,8 @@ export function createSpiderAgent(
     searchSkillTool,
     // Encode/decode
     encodeDecode,
+    // Auth extraction
+    extractBrowserAuth,
   }
 
   if (browser) {

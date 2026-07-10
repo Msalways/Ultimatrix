@@ -85,9 +85,20 @@ export interface RegistryConfig {
 
 let _instance: TechniqueRegistry | null = null
 
+export interface TechniqueRuntimeOverride {
+  acceptedCount: number
+  fixHoldCount: number
+  regressionCount: number
+  validated: boolean
+  confidenceDelta: number
+}
+
 export class TechniqueRegistry {
   private config: RegistryConfig
   private skills: Map<string, SkillMeta>
+
+  // Runtime outcome-based overrides (keyed by technique id). Static base stays intact.
+  private _runtimeOverrides: Map<string, TechniqueRuntimeOverride>
 
   // Derived from skills
   private _attackPaths: string[]
@@ -104,6 +115,95 @@ export class TechniqueRegistry {
     this._attackPathKeywords = this.deriveAttackPathKeywords()
     this._toolsByKeyword = this.deriveToolKeywordMap()
     this._toolsByPriority = this.deriveToolPriorityMap()
+    this._runtimeOverrides = new Map()
+  }
+
+  // ─── Runtime outcome-based overrides ───────────────────────────
+
+  private recomputeOverride(techniqueId: string): void {
+    const o = this._runtimeOverrides.get(techniqueId)
+    if (!o) return
+    let delta = 0
+    delta += Math.min(o.acceptedCount, 5) * 0.05
+    if (o.validated) delta += 0.2
+    delta -= Math.min(o.regressionCount, 5) * 0.1
+    o.confidenceDelta = Math.max(-0.5, Math.min(0.6, delta))
+  }
+
+  /** Record a client/retest outcome for a technique (runtime override only). */
+  recordTechniqueOutcome(
+    techniqueId: string,
+    outcome: { accepted?: boolean; fixedHeld?: boolean; regression?: boolean },
+  ): void {
+    const o = this._runtimeOverrides.get(techniqueId) || {
+      acceptedCount: 0,
+      fixHoldCount: 0,
+      regressionCount: 0,
+      validated: false,
+      confidenceDelta: 0,
+    }
+    if (outcome.accepted) o.acceptedCount++
+    if (outcome.fixedHeld) {
+      o.fixHoldCount++
+      o.validated = true
+    }
+    if (outcome.regression) {
+      o.regressionCount++
+      o.validated = false
+    }
+    this._runtimeOverrides.set(techniqueId, o)
+    this.recomputeOverride(techniqueId)
+  }
+
+  /**
+   * Set absolute outcome aggregates for a technique (used when syncing from a
+   * full outcome set, e.g. after re-ingesting persisted feedback). Replaces any
+   * existing override for this technique instead of incrementing.
+   */
+  setTechniqueOutcomeStats(
+    techniqueId: string,
+    stats: { acceptedCount: number; fixHoldCount: number; regressionCount: number },
+  ): void {
+    const validated = stats.fixHoldCount > 0
+    this._runtimeOverrides.set(techniqueId, {
+      acceptedCount: stats.acceptedCount,
+      fixHoldCount: stats.fixHoldCount,
+      regressionCount: stats.regressionCount,
+      validated,
+      confidenceDelta: 0,
+    })
+    this.recomputeOverride(techniqueId)
+  }
+
+  /** Get the current runtime override for a technique, if any. */
+  getRuntimeOverride(techniqueId: string): TechniqueRuntimeOverride | undefined {
+    return this._runtimeOverrides.get(techniqueId)
+  }
+
+  /** Effectiveness weight multiplier (1.0 = static base, untouched). */
+  getTechniqueWeight(techniqueId: string): number {
+    const o = this._runtimeOverrides.get(techniqueId)
+    if (!o) return 1.0
+    return Math.max(0.2, 1.0 + o.confidenceDelta)
+  }
+
+  /** Confidence 0..1 combining a default base (0.5) with the runtime delta. */
+  getTechniqueConfidence(techniqueId: string): number {
+    const o = this._runtimeOverrides.get(techniqueId)
+    if (!o) return 0.5
+    return Math.max(0.05, Math.min(1, 0.5 + o.confidenceDelta))
+  }
+
+  /** Techniques whose remediation held on retest (validated). */
+  getValidatedTechniques(): string[] {
+    return [...this._runtimeOverrides.entries()]
+      .filter(([, o]) => o.validated)
+      .map(([id]) => id)
+  }
+
+  /** Reset all runtime overrides (keeps static base config intact). */
+  resetRuntimeOverrides(): void {
+    this._runtimeOverrides.clear()
   }
 
   // ─── Derived data builders ──────────────────────────────────────

@@ -20,6 +20,7 @@ import { parseHar, getEndpointsWithHeaders, getSecrets, getDataFlows } from '../
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
 import { detectChains } from '../intelligence/chaining'
 import { getTechniqueRegistry } from '../skills/technique-registry'
+import { runAnalysis } from './analyser'
 import type { HarArchive } from '../capture/har-parser'
 
 export interface BridgeResult {
@@ -154,6 +155,13 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       })
       factsWritten++
     }
+  }
+
+  // ── 6.5 Business-logic analysis (use-case, invariants, header semantics, auth reuse, value origins) ──
+  try {
+    await runAnalysis(store, harJson)
+  } catch (analysisErr) {
+    log.warn(`HAR bridge: business-logic analysis skipped: ${(analysisErr as Error).message}`)
   }
 
   // ── 7. Persist ────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import { createStagehandTools } from '@mastra/stagehand'
 import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
 import { log } from '../utils/logger'
 import { upsertPage } from '../graph/tools'
+import { isUrlInScope } from '../safety/scope-guard'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -68,6 +69,14 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
     wrapped[name] = {
       ...tool,
       execute: async (input: any, context: any) => {
+        // Scope guard for browser navigation
+        if (name === 'stagehand_navigate' && input?.url) {
+          const scopeCheck = isUrlInScope(input.url)
+          if (!scopeCheck.allowed) {
+            return { success: false, error: `Scope violation: ${scopeCheck.reason}` }
+          }
+        }
+
         const watcher = getGlobalDialogWatcher()
         const before = watcher.getDialogs().length
 

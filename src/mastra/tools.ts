@@ -14,13 +14,16 @@ import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedAct
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getFullContext } from '../manager/tools/get-full-context'
 import { addDiscovery } from '../tools/user-discovery'
-import { detectChainsTool } from '../tools/detect-chains-tool'
+import { detectChainsTool, verifyChainsTool } from '../tools/detect-chains-tool'
 import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import { readReportTool, setForensicLog, getForensicLog } from '../tools/report-tools'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from '../tools/flow-tools'
 import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
+import { runPrimitiveTool } from '../primitives'
+import { runCampaignTool } from '../campaign/campaign-tool'
+import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import { Logger } from '../utils/logger'
 
 export type ToolRegistry = {
@@ -100,6 +103,7 @@ export type ToolRegistry = {
   
   // Chain Detection
   detectChains: typeof detectChainsTool
+  verifyChains: typeof verifyChainsTool
   
   // Report Tools
   readReport: typeof readReportTool
@@ -130,6 +134,13 @@ export type ToolRegistry = {
   recordFindingCandidate: typeof recordFindingCandidate
   assessCandidateReportability: typeof assessCandidateReportability
   getResearchStatus: typeof getResearchStatus
+
+  // Technique Primitives (Phase 2)
+  runPrimitive: typeof runPrimitiveTool
+  // Campaign Dispatch (Phase 2 / T2.6)
+  runCampaign: typeof runCampaignTool
+  // Outcome Feedback (Phase 4 / T4.3)
+  recordOutcome: typeof recordOutcomeTool
 }
 
 // Centralized tool registry with consistent IDs
@@ -215,6 +226,7 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     
     // Chain Detection
     detectChains: detectChainsTool,
+    verifyChains: verifyChainsTool,
     
     // Report Tools
     readReport: readReportTool,
@@ -245,6 +257,13 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     recordFindingCandidate,
     assessCandidateReportability,
     getResearchStatus,
+
+    // Technique Primitives (Phase 2)
+    runPrimitive: runPrimitiveTool,
+    // Campaign Dispatch (Phase 2 / T2.6)
+    runCampaign: runCampaignTool,
+    // Outcome Feedback (Phase 4 / T4.3)
+    recordOutcome: recordOutcomeTool,
   }
 }
 
@@ -272,6 +291,8 @@ export const TOOL_IDS = [
   'getAttackPath',
   'getUntestedActions',
   'getAuthFlows',
+  'getTargetSummary',
+  'getEndpointsWithParams',
   'upsertPage',
   'addAction',
   'addInput',
@@ -297,6 +318,7 @@ export const TOOL_IDS = [
   'getFullContext',
   'addDiscovery',
   'detectChains',
+  'verifyChains',
   'readReport',
   'loadSkillReference',
   'searchSkills',
@@ -306,12 +328,18 @@ export const TOOL_IDS = [
   'observeHumanActions',
   'saveLearnedFlow',
   'reproduceFlow',
+  'detectReactions',
+  'getDialogEvidence',
+  'getRecentChanges',
   'buildResearchMap',
   'planResearchExperiments',
   'compareResearchResponses',
   'recordFindingCandidate',
   'assessCandidateReportability',
   'getResearchStatus',
+  'runPrimitive',
+  'runCampaign',
+  'recordOutcome',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]
@@ -1233,6 +1261,20 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
       }),
     }),
   },
+  verifyChains: {
+    id: 'verifyChains',
+    description: 'Detect attack chains and PROVE each one against the EvidenceGate; returns verification per chain and severity escalation only when fully evidenced.',
+    category: 'graph',
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      value: z.object({
+        chains: z.array(z.any()),
+        verifiedCount: z.number(),
+        escalatedCount: z.number(),
+      }),
+    }),
+  },
   readReport: {
     id: 'readReport',
     description: 'Read the forensic report of all actions taken during this session.',
@@ -1340,6 +1382,52 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
     inputSchema: z.object({ sinceSeconds: z.number().optional() }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
   },
+  runPrimitive: {
+    id: 'runPrimitive',
+    description: 'Run a technique primitive against a target context; returns an evidence-gated confirmed/unconfirmed result.',
+    category: 'observation' as const,
+    inputSchema: z.object({
+      primitiveId: z.string(),
+      context: z.record(z.string(), z.any()),
+      commit: z.boolean().optional(),
+    }),
+    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
+  },
+  runCampaign: {
+    id: 'runCampaign',
+    description: 'Plan and execute a coverage campaign over discovered endpoints; runs all applicable technique primitives and persists evidence-gated confirmed findings. Returns findings + coverage.',
+    category: 'observation' as const,
+    inputSchema: z.object({
+      maxSlices: z.number().int().positive().optional(),
+      maxConcurrency: z.number().int().positive().optional(),
+      includeAnonymous: z.boolean().optional(),
+      roleFilter: z.array(z.string()).optional(),
+      techniqueFilter: z.array(z.string()).optional(),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      findings: z.array(z.any()),
+      coverage: z.any(),
+      budgetExceeded: z.boolean(),
+      slicesRun: z.number(),
+    }),
+  },
+  recordOutcome: {
+    id: 'recordOutcome',
+    description: 'Record post-engagement client feedback for a reported finding: was it accepted, and did the remediation hold on retest? Updates technique effectiveness weights.',
+    category: 'control' as const,
+    inputSchema: z.object({
+      findingId: z.string(),
+      techniqueId: z.string(),
+      accepted: z.boolean().optional(),
+      fixed: z.boolean().optional(),
+      retestHeld: z.boolean().optional(),
+      severityAdjusted: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+      note: z.string().optional(),
+      targetOrigin: z.string().optional(),
+    }),
+    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
+  },
 }
 
 // Tool validation function
@@ -1394,4 +1482,7 @@ export {
   loadSkillReference, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
   detectReactions, getDialogEvidence, getRecentChanges,
+  runPrimitive,
+  runCampaign,
+  recordOutcomeTool,
 }

@@ -1,5 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
+import { isUrlInScope } from '../safety/scope-guard'
 
 function base64urlDecode(s: string): string {
   try {
@@ -59,7 +60,12 @@ export const runRecon = createTool({
 
     try {
       if (activeProbes.includes('tech-stack') || activeProbes.includes('endpoints')) {
-        const pageRes = await fetch(`https://${target.replace(/^https?:\/\//, '')}`, {
+        const targetUrl = `https://${target.replace(/^https?:\/\//, '')}`
+        const scopeCheck = isUrlInScope(targetUrl)
+        if (!scopeCheck.allowed) {
+          result.techStack = []
+        } else {
+        const pageRes = await fetch(targetUrl, {
           signal: AbortSignal.timeout(10000),
         })
         const html = await pageRes.text()
@@ -86,6 +92,7 @@ export const runRecon = createTool({
         if (/cloudflare|__cfduid|cflb/i.test(JSON.stringify(headers))) frameworks.push({ name: 'Cloudflare', evidence: 'Cloudflare headers found' })
 
         result.techStack = frameworks
+        }
       }
     } catch { /* best-effort */ }
 
@@ -122,6 +129,10 @@ export const graphqlIntrospect = createTool({
     const { url } = ctx
 
     try {
+      const scopeCheck = isUrlInScope(url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -208,6 +219,10 @@ export const frameworkFingerprint = createTool({
     const { url } = ctx
 
     try {
+      const scopeCheck = isUrlInScope(url)
+      if (!scopeCheck.allowed) {
+        return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
       const html = await res.text()
 

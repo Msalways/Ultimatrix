@@ -9,6 +9,7 @@ import { log } from '../utils/logger'
 import { captureScreenshot } from '../browser/manager'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { EvidenceLevel } from '../types/shared'
+import { isUrlInScope } from '../safety/scope-guard'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string }>>()
 
@@ -16,6 +17,10 @@ let _evidenceGate: EvidenceGate | null = null
 
 export function setEvidenceGateForFindings(gate: EvidenceGate): void {
   _evidenceGate = gate
+}
+
+export function getGlobalEvidenceGate(): EvidenceGate | null {
+  return _evidenceGate
 }
 
 export const recordEvidence = createTool({
@@ -265,6 +270,12 @@ export async function verifyPendingFindings(options?: {
   for (const finding of toCheck) {
     try {
       const endpoint = finding.properties.endpoint
+      const scopeCheck = isUrlInScope(endpoint)
+      if (!scopeCheck.allowed) {
+        log.warn(`Verifier: skipping ${finding.id} — ${scopeCheck.reason}`)
+        skipped.push(finding.id)
+        continue
+      }
       const method = (finding.properties.technique?.includes('GET') ? 'GET' : 'GET') as string
 
       const controller = new AbortController()

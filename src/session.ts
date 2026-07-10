@@ -11,6 +11,7 @@ import { getGlobalWorkspace } from './workspace'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { getGlobalQuotaTracker } from './models/quota-tracker'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
@@ -65,11 +66,8 @@ export async function main(targetUrl?: string) {
         },
         onPhase: (event) => {
           if (event.text) {
-            if (event.phase === 'reason') {
-              log.dim(event.text)
-            } else {
-              process.stdout.write(event.text)
-            }
+            // Both reasoning-delta (analysis) and text-delta (non-reasoning response) stream inline
+            process.stdout.write(event.text)
           }
           if (event.toolName) log.dim(`  → ${event.toolName}`)
 
@@ -97,6 +95,14 @@ export async function main(targetUrl?: string) {
         process.stdout.write(result.text)
       }
       log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)
+
+      const quotaTracker = getGlobalQuotaTracker()
+      const providerStatus = quotaTracker.getStatus()
+      const providerInfo = providerStatus[config.provider]
+      if (providerInfo) {
+        log.dim(`[quota] ${config.provider}: ${providerInfo.used} requests this session` +
+          (providerInfo.inCooldown ? ' (COOLDOWN)' : ''))
+      }
       if (result.planSummary) {
         log.info('Plan summary:')
         log.info(result.planSummary)

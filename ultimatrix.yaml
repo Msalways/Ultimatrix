@@ -27,3 +27,7 @@ memory:
 agent:
   maxSteps: 25
   scansDir: ./scans
+credentials:
+  launchdarkly:
+    email: xidade7621@dysonc.com
+    password: Pass@Check
