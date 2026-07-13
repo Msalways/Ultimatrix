@@ -1,4 +1,4 @@
----
+﻿---
 name: reporting
 description: "Transforming technical findings into actionable reports with severity classification and remediation"
 category: core

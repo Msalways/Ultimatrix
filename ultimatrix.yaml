@@ -4,10 +4,10 @@ model: nvidia/nemotron-3-super-120b-a12b
 modelTiers:
   fast:
     provider: nvidia
-    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    model: mistralai/mistral-small-4-119b-2603
   balanced:
     provider: nvidia
-    model: nvidia/nemotron-3-super-120b-a12b
+    model: mistralai/mistral-small-4-119b-2603
   powerful:
     provider: nvidia
     model: nvidia/nemotron-3-ultra-550b-a55b
@@ -20,6 +20,14 @@ browser:
   env: LOCAL
   selfHeal: true
   verbose: 0
+scope:
+  allowedDomains:
+    - public-firing-range.appspot.com
+    - app.launchdarkly.com
+  allowedProtocols:
+    - https
+    - http
+  enforcement: hard
 memory:
   lastMessages: 10
   semanticRecall: false
@@ -27,6 +35,8 @@ memory:
 agent:
   maxSteps: 25
   scansDir: ./scans
+spider:
+  maxSteps: 1
 credentials:
   launchdarkly:
     email: xidade7621@dysonc.com

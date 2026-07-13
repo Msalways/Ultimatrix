@@ -2,8 +2,67 @@ import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFile, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir, tmpdir, platform } from 'node:os'
+import { recordStructuredEvidence } from './control-tools'
 
 const execAsync = promisify(exec)
+
+// ─── Cross-platform paths ───────────────────────────────────────────────────
+
+function defaultWordlistDir(): string {
+  return join(homedir(), '.config', 'ultimatrix', 'wordlists')
+}
+
+function tempFile(name: string): string {
+  return join(tmpdir(), name)
+}
+
+// ─── Tool availability ──────────────────────────────────────────────────────
+
+const availabilityCache = new Map<string, boolean>()
+
+/**
+ * Check whether an external tool is available on PATH.
+ * Uses `which` on Unix-like systems, `where` on Windows.
+ * Results are cached per tool name for the lifetime of the process.
+ */
+export async function isToolAvailable(toolName: string): Promise<boolean> {
+  if (availabilityCache.has(toolName)) {
+    return availabilityCache.get(toolName)!
+  }
+  const cmd = platform() === 'win32' ? `where ${toolName}` : `which ${toolName}`
+  try {
+    await execAsync(cmd, { timeout: 5000 })
+    availabilityCache.set(toolName, true)
+    return true
+  } catch {
+    availabilityCache.set(toolName, false)
+    return false
+  }
+}
+
+function toolMissingError(toolName: string): string {
+  const installHint: Record<string, string> = {
+    nmap: 'Install nmap: https://nmap.org/download.html or `apt install nmap` / `brew install nmap`',
+    sqlmap: 'Install sqlmap: `pip install sqlmap` or https://sqlmap.org',
+    ffuf: 'Install ffuf: `go install github.com/ffuf/ffuf/v2@latest` or https://github.com/ffuf/ffuf',
+    nuclei: 'Install nuclei: `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest` or https://github.com/projectdiscovery/nuclei',
+  }
+  return `${toolName} is not installed or not on PATH. ${installHint[toolName] ?? `Install ${toolName} and ensure it is on your PATH.`}`
+}
+
+/** Record the target as structured evidence so findings can be verified against it. */
+function recordTargetEvidence(tool: string, target: string): void {
+  if (!target) return
+  const url = target.startsWith('http') ? target : `http://${target}`
+  recordStructuredEvidence({
+    type: 'raw_request',
+    data: `running ${tool} against ${target}`,
+    label: `${tool} ${target}`,
+    observed: { url },
+  })
+}
 
 
 export interface ToolResult {
@@ -33,12 +92,16 @@ export async function runSqlMap(options: SqlMapOptions): Promise<ToolResult> {
   if (!options.url) {
     return { tool: 'sqlmap', target: '', status: 'error', output: 'URL is required', findings: [], duration: 0 }
   }
+  if (!(await isToolAvailable('sqlmap'))) {
+    return { tool: 'sqlmap', target: options.url, status: 'error', output: toolMissingError('sqlmap'), findings: [], duration: 0 }
+  }
+  recordTargetEvidence('sqlmap', options.url)
   const startTime = Date.now()
   const args: string[] = [
     '-u', `"${options.url}"`,
     '--batch',
     '--flush-session',
-    '--output-dir="/tmp/ultimatrix-sqli"',
+    `--output-dir="${tempFile('ultimatrix-sqli')}"`,
   ]
 
   if (options.method) args.push('--method', options.method)
@@ -120,11 +183,15 @@ export async function runFfuf(options: FfufOptions): Promise<ToolResult> {
   if (!options.wordlist) {
     return { tool: 'ffuf', target: options.url, status: 'error', output: 'Wordlist is required', findings: [], duration: 0 }
   }
+  if (!(await isToolAvailable('ffuf'))) {
+    return { tool: 'ffuf', target: options.url, status: 'error', output: toolMissingError('ffuf'), findings: [], duration: 0 }
+  }
+  recordTargetEvidence('ffuf', options.url)
   const startTime = Date.now()
   const args: string[] = [
     '-u', `"${options.url}"`,
     '-w', options.wordlist,
-    '-o', '/tmp/ultimatrix-ffuf.json',
+    '-o', tempFile('ultimatrix-ffuf.json'),
     '-of', 'json',
     '-s',
   ]
@@ -149,14 +216,15 @@ export async function runFfuf(options: FfufOptions): Promise<ToolResult> {
     let findings: string[] = []
 
     // Try to parse JSON output
+    const ffufJson = tempFile('ultimatrix-ffuf.json')
     try {
-      if (existsSync('/tmp/ultimatrix-ffuf.json')) {
-        const jsonContent = await readFile('/tmp/ultimatrix-ffuf.json', 'utf-8')
+      if (existsSync(ffufJson)) {
+        const jsonContent = await readFile(ffufJson, 'utf-8')
         const data = JSON.parse(jsonContent)
         findings = (data.results || []).map((r: any) =>
           `${r.status} ${r.url} [Words:${r.words} Lines:${r.lines}]`
         )
-        await rm('/tmp/ultimatrix-ffuf.json', { force: true })
+        await rm(ffufJson, { force: true })
       }
     } catch {
       // Fall back to stdout parsing
@@ -214,6 +282,10 @@ export async function runNuclei(options: NucleiOptions): Promise<ToolResult> {
   if (!options.url) {
     return { tool: 'nuclei', target: '', status: 'error', output: 'URL is required', findings: [], duration: 0 }
   }
+  if (!(await isToolAvailable('nuclei'))) {
+    return { tool: 'nuclei', target: options.url, status: 'error', output: toolMissingError('nuclei'), findings: [], duration: 0 }
+  }
+  recordTargetEvidence('nuclei', options.url)
   const startTime = Date.now()
   const args: string[] = [
     '-u', options.url,
@@ -298,6 +370,10 @@ export async function runNmap(options: NmapOptions): Promise<ToolResult> {
   if (!options.host) {
     return { tool: 'nmap', target: '', status: 'error', output: 'Host is required', findings: [], duration: 0 }
   }
+  if (!(await isToolAvailable('nmap'))) {
+    return { tool: 'nmap', target: options.host, status: 'error', output: toolMissingError('nmap'), findings: [], duration: 0 }
+  }
+  recordTargetEvidence('nmap', options.host)
   const startTime = Date.now()
   const args: string[] = [options.host]
 
@@ -305,7 +381,7 @@ export async function runNmap(options: NmapOptions): Promise<ToolResult> {
   if (options.scripts) args.push('--script', options.scripts.join(','))
   if (options.timing) args.push(`-T${options.timing}`)
   if (options.serviceVersion) args.push('-sV')
-  args.push('-oX', '/tmp/ultimatrix-nmap.xml')
+  args.push('-oX', tempFile('ultimatrix-nmap.xml'))
 
   try {
     const { stdout, stderr } = await execAsync(

@@ -6,9 +6,9 @@ describe('Skill tier parsing', () => {
     resetSkillCache()
   })
 
-  it('all 47 skills have a tier field', () => {
+  it('all skills have a tier field', () => {
     const skills = getAllSkills()
-    expect(skills.length).toBe(47)
+    expect(skills.length).toBe(56)
     for (const skill of skills) {
       expect(skill.tier).toBeDefined()
       expect(['fast', 'balanced', 'powerful']).toContain(skill.tier)

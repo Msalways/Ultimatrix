@@ -128,6 +128,7 @@ export interface PhaseEvent {
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolResult?: unknown;
+  reason?: string;
   progress?: {
     endpoints: number;
     findings: number;
@@ -632,8 +633,11 @@ export async function solve(
         case "reasoning-delta":
           if (chunk.payload.text) {
             hasReasoningChunks = true;
-            fullText += chunk.payload.text;
-            // Emit reasoning as the response — this IS the analysis for reasoning models
+            // Display reasoning live only. It is NOT appended to `fullText`,
+            // because `fullText` becomes the assistant turn persisted to working
+            // memory — re-injecting the entire reasoning trace into the next
+            // turn's context (token bloat / "reasoning echo"). The graph + tool
+            // results are the durable record, not the scratch reasoning.
             emit({
               phase: "reason",
               step: toolCallCount,

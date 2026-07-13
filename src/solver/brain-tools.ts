@@ -43,7 +43,7 @@ import { listSkills } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
-import { getOastUrlTool } from '../oast/tools'
+import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import {
@@ -55,6 +55,7 @@ import {
   getResearchStatus,
 } from '../tools/research-tools'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
+import { getGlobalObserver, type AuthState } from '../capture/human-observer'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
@@ -138,6 +139,109 @@ export function createSolverBrain(
     restoreSession: sanitizeTool(restoreSession, p),
   }
 
+  // ─── Auth flow tools (autonomous auth detection) ──────────────────
+  const detectAuthFlowsTool = createTool({
+    id: 'detectAuthFlows',
+    description: 'Scan the current page for login forms, OAuth buttons, SAML redirects, and session tokens. Returns structured auth state including form fields, providers, and login endpoint.',
+    inputSchema: z.object({
+      url: z.string().optional().describe('URL to navigate to before scanning (optional — scans current page if omitted)'),
+    }),
+    execute: async ({ url }) => {
+      const page = options.browser?.page?.()
+      if (!page) return { ok: false, error: 'No active browser page' }
+
+      try {
+        if (url) {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+        }
+
+        const observer = getGlobalObserver()
+        const detector = observer.getAuthDetector()
+        const state = await detector.detectAuthState(page as any)
+
+        const result: Record<string, unknown> = {
+          ok: true,
+          hasLoginForm: state.hasLoginForm,
+          authType: state.authType,
+          hasPasswordField: state.hasPasswordField,
+          hasRememberMe: state.hasRememberMe,
+          formCount: state.formCount,
+          oauthProviders: state.oauthProviders,
+        }
+        if (state.loginEndpoint) result.loginEndpoint = state.loginEndpoint
+
+        return result
+      } catch (error) {
+        return { ok: false, error: `Auth detection failed: ${error instanceof Error ? error.message : String(error)}` }
+      }
+    },
+  })
+
+  const testSessionValidTool = createTool({
+    id: 'testSessionValid',
+    description: 'Test if the current session is authenticated by sending a request to the target and checking for redirects to login pages or presence of login forms. Returns whether the session is valid.',
+    inputSchema: z.object({
+      testUrl: z.string().optional().describe('URL to test (defaults to target)'),
+      protectedPaths: z.array(z.string()).optional().describe('Paths that require auth (e.g. ["/dashboard", "/api/me"])'),
+    }),
+    execute: async ({ testUrl, protectedPaths }) => {
+      const page = options.browser?.page?.()
+      if (!page) return { ok: false, error: 'No active browser page' }
+
+      const targetUrl = testUrl || config.target || ''
+      const paths = protectedPaths || ['/dashboard', '/api/me', '/profile', '/account']
+
+      const results: Array<{ path: string; authenticated: boolean; reason?: string }> = []
+
+      for (const path of paths) {
+        const url = path.startsWith('http') ? path : `${targetUrl}${path}`
+        try {
+          const response = await (page as any).goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 })
+          const finalUrl = (page as any).url?.() || ''
+
+          const loginPatterns = [/\/login/i, /\/signin/i, /\/auth\/login/i, /\/sso/i, /session\/new/i]
+          const isLoginPage = loginPatterns.some(p => p.test(finalUrl))
+
+          if (isLoginPage) {
+            results.push({ path, authenticated: false, reason: `Redirected to login: ${finalUrl}` })
+            continue
+          }
+
+          const hasPwField = await (page as any).$('input[type="password"]').catch(() => null)
+          if (hasPwField) {
+            results.push({ path, authenticated: false, reason: 'Page contains password field' })
+            continue
+          }
+
+          const status = response?.status?.() || 200
+          if (status === 401 || status === 403) {
+            results.push({ path, authenticated: false, reason: `HTTP ${status}` })
+            continue
+          }
+
+          results.push({ path, authenticated: true })
+        } catch (error) {
+          results.push({ path, authenticated: false, reason: `Request failed: ${error instanceof Error ? error.message : String(error)}` })
+        }
+      }
+
+      const allAuthenticated = results.every(r => r.authenticated)
+      const anyAuthenticated = results.some(r => r.authenticated)
+
+      return {
+        ok: true,
+        authenticated: allAuthenticated,
+        partiallyAuthenticated: anyAuthenticated && !allAuthenticated,
+        results,
+      }
+    },
+  })
+
+  const authTools: Record<string, any> = {
+    detectAuthFlows: sanitizeTool(detectAuthFlowsTool, p),
+    testSessionValid: sanitizeTool(testSessionValidTool, p),
+  }
+
   // ─── Orchestration tools (delegate to workers) ─────────────────
   const orchestrationTools: Record<string, any> = {
     spawnWorker: sanitizeTool(createSpawnWorkerTool(config, options.skillRegistry, options.workerPool), p),
@@ -150,10 +254,27 @@ export function createSolverBrain(
     askUser: sanitizeTool(askUser, p),
     observeHumanActions: sanitizeTool(observeHumanActions, p),
     getOastUrl: sanitizeTool(getOastUrlTool, p),
+    checkOastCallbacks: sanitizeTool(checkOastCallbacks, p),
     detectReactions: sanitizeTool(detectReactions, p),
     getDialogEvidence: sanitizeTool(getDialogEvidence, p),
     getRecentChanges: sanitizeTool(getRecentChanges, p),
     recordOutcome: sanitizeTool(recordOutcomeTool, p),
+  }
+
+  // ─── Council request tool (brain suggests council, user decides) ──
+  const councilTools: Record<string, any> = {
+    requestCouncil: sanitizeTool(createTool({
+      id: 'requestCouncil',
+      description: 'Suggest bringing in the council for complex decisions. The brain recommends a council deliberation when a task requires multiple perspectives or strategic debate. The user decides whether to run /council.',
+      inputSchema: z.object({
+        goal: z.string().describe('What the council should deliberate on'),
+        reason: z.string().describe('Why council input is needed — what makes this too complex for solo reasoning'),
+      }),
+      execute: async ({ goal, reason }) => {
+        log.info(`\n🧠 Brain suggests council deliberation:\n   Goal: ${goal}\n   Reason: ${reason}\n   → Type: /council ${goal}`)
+        return { suggest: true, goal, reason }
+      },
+    }), p),
   }
 
   // ─── Model selection tool (multi-model engine only) ──────────────
@@ -231,8 +352,10 @@ export function createSolverBrain(
     ...skillTools,
     ...researchTools,
     ...sessionTools,
+    ...authTools,
     ...orchestrationTools,
     ...miscTools,
+    ...councilTools,
     ...primitiveTools,
     ...campaignTools,
     ...modelSelectionTools,

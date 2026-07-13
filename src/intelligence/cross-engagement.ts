@@ -63,7 +63,7 @@ function assertNoIdentity(value: unknown, path = 'root'): void {
  *   • everything else                -> lowercased literal token
  */
 export function anonymizePath(url: string): string[] {
-  let path = url
+  let path: string
   try {
     const withoutOrigin = url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '')
     path = withoutOrigin.split('?')[0].split('#')[0]

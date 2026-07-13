@@ -1,31 +1,55 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EvidenceGate } from '../../src/intelligence/evidence-gate'
+import { coreEvidenceLedger } from '../../src/core/evidence'
+import type { FindingClaim } from '../../src/intelligence/evidence-ledger'
 
 describe('EvidenceGate', () => {
   let gate: EvidenceGate
 
   beforeEach(() => {
+    coreEvidenceLedger.clear()
     gate = new EvidenceGate()
   })
 
-  it('records tool output', () => {
+  it('records raw tool output to the text buffer', () => {
     gate.recordToolOutput('Status: 200\nBody: {"user":"admin"}')
     expect(gate.getBuffer()).toHaveLength(1)
     expect(gate.getBuffer()[0]).toContain('200')
   })
 
-  it('verifies claim that exists in buffer', () => {
-    gate.recordToolOutput('HTTP/1.1 200 OK. User admin found with token abc123. Response complete.')
-    const result = gate.verifyClaim('User admin found with token abc123')
+  it('verifies a claim backed by a structured observed record', () => {
+    gate.recordObserved({
+      type: 'raw_response',
+      data: '200',
+      label: 'resp',
+      observed: { method: 'GET', url: 'https://app.example.com/api/users', status: 200 },
+    })
+    const claim: FindingClaim = {
+      type: 'idor',
+      endpoint: 'https://app.example.com/api/users',
+      method: 'GET',
+      observed: { status: 200 },
+    }
+    const result = gate.verifyClaim(claim)
     expect(result.verified).toBe(true)
     expect(result.missing).toHaveLength(0)
   })
 
-  it('rejects claim not in buffer', () => {
-    gate.recordToolOutput('Status: 200\nBody: {"user":"admin"}')
-    const result = gate.verifyClaim('Found SQL injection vulnerability on /api/users')
+  it('rejects a claim with no supporting observed record', () => {
+    const claim: FindingClaim = {
+      type: 'sqli',
+      endpoint: 'https://app.example.com/api/users',
+      observed: { status: 500 },
+    }
+    const result = gate.verifyClaim(claim)
     expect(result.verified).toBe(false)
     expect(result.missing.length).toBeGreaterThan(0)
+  })
+
+  it('does NOT verify via substring of free text', () => {
+    gate.recordToolOutput('Found SQL injection vulnerability on /api/users')
+    const claim: FindingClaim = { type: 'sqli', endpoint: 'https://app.example.com/api/users' }
+    expect(gate.verifyClaim(claim).verified).toBe(false)
   })
 
   it('extracts flags from text', () => {
@@ -64,8 +88,8 @@ describe('EvidenceGate', () => {
 
   it('handles empty buffer', () => {
     expect(gate.getBuffer()).toHaveLength(0)
-    const result = gate.verifyClaim('anything')
-    expect(result.verified).toBe(false)
+    const claim: FindingClaim = { type: 'x', endpoint: 'https://x.com' }
+    expect(gate.verifyClaim(claim).verified).toBe(false)
   })
 
   it('clears buffer', () => {
@@ -75,7 +99,7 @@ describe('EvidenceGate', () => {
     expect(gate.getBuffer()).toHaveLength(0)
   })
 
-  it('trims large buffers', () => {
+  it('trims large text buffers', () => {
     for (let i = 0; i < 500; i++) {
       gate.recordToolOutput(`output ${i}`)
     }

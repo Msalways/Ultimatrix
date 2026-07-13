@@ -1,3 +1,8 @@
+/**
+ * @deprecated Use the council engine (`src/council/orchestrator.ts`) or the
+ * solver engine (`src/solver/solver.ts`) instead. This module is retained
+ * solely for backward compatibility with legacy v6/v7 workflows.
+ */
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { Agent } from '@mastra/core/agent'
 import { getOrCreateBrowser, closeBrowser } from '../browser/manager'
@@ -331,7 +336,7 @@ export class AgentManager {
 
     this.initialized = true
     events.push({ type: 'info', message: `Agent ready — ${cfg.model}${cfg.target ? ' targeting ' + cfg.target : ''}`, timestamp: Date.now() })
-    log.banner('Ultimatrix Security Assistant v6',
+    log.banner('Ultimatrix v8 (legacy mode)',
       'Model: ' + cfg.model + (cfg.target ? '  |  Target: ' + cfg.target : '') + (this.oastPort ? `  |  OAST: :${this.oastPort}` : ''))
   }
 

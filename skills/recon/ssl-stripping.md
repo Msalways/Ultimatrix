@@ -1,4 +1,4 @@
----
+﻿---
 name: ssl-stripping
 description: "SSL/TLS stripping attacks including HTTPS downgrade, HSTS bypass, and certificate validation testing"
 category: specialized
@@ -76,9 +76,6 @@ Record each auth flow endpoint and its transport protocol in the graph.
 
 ### mitmproxy
 
-```
-mitmproxy --mode transparent --set upstream_cert=false
-```
 
 - Transparent mode: intercepts all traffic at the network layer.
 - `upstream_cert=false`: disables upstream certificate verification for testing.
@@ -87,9 +84,6 @@ mitmproxy --mode transparent --set upstream_cert=false
 
 ### sslstrip (legacy)
 
-```
-sslstrip -l 8080
-```
 
 - Listens on port 8080, redirects HTTP traffic through the stripper.
 - Patches `iptables` rules to capture port 80/443 traffic.
@@ -98,9 +92,6 @@ sslstrip -l 8080
 
 ### bettercap
 
-```
-bettercap -iface eth0 -eval "http.proxy on; http.proxy.script strip.js"
-```
 
 - ARP spoofing + HTTP proxy in one tool.
 - JavaScript-based stripping scripts for link rewriting.
@@ -159,9 +150,6 @@ Check for these misconfigurations:
 
 ### mitmproxy with --ignore-ssl-pin
 
-```
-mitmproxy --mode regular --set ignore_ssl_pin=true
-```
 
 - Requires root/admin for certificate installation.
 - `--set ssl_insecure=true` to skip upstream verification.
@@ -255,21 +243,12 @@ Some resources are loaded over HTTP even on an HTTPS page. This creates exploita
 
 ### Step 1: Redirect Handling
 
-```
-GET http://target.com/ HTTP/1.1
-
-Expected (secure): 301/302 → https://target.com/
-Expected (vuln):   200 OK with HTTP content, no redirect
-```
 
 - If the HTTP request returns a 200 with content (no redirect), the site is immediately vulnerable.
 - If it redirects to HTTPS, check if HSTS header is present on the HTTPS response.
 
 ### Step 2: HSTS Header Analysis
 
-```
-GET https://target.com/ HTTP/1.1
-```
 
 Check response headers for:
 - `Strict-Transport-Security` present and correctly configured.
@@ -330,3 +309,24 @@ This skill provides attack techniques and testing methodologies. Every claim mus
 - Claiming preload status without checking hstspreload.org.
 - Claiming certificate pinning exists without evidence of HPKP headers or mobile app pinning.
 - Confusing `HttpOnly` (XSS protection) with `Secure` (MITM protection).
+
+## Trigger Conditions
+
+Activate when auditing transport security: the target uses HTTPS but relies on server-side 302/301 redirects rather than HSTS-enforced upgrade, or HSTS is absent/not preloaded. Trigger on mixed content (HTTP resources on HTTPS pages), login forms served over HTTP, or session cookies lacking the `Secure` flag. Also relevant when assessing first-visit downgrade and certificate-validation surfaces. Do not trigger when the apex is HSTS-preloaded (browser refuses HTTP pre-request), when certificate pinning blocks interception you can't control, or when scope excludes network-layer MITM.
+
+## Detection Approach
+
+First determine whether an HSTS policy exists and its directives (same checks as the hsts-bypass skill): `max-age` threshold, `includeSubDomains`, `preload`. If not preloaded and HSTS is merely a redirect, the first HTTP request is interceptable. Audit each cookie's `Set-Cookie` flags — `Secure`, `HttpOnly`, `SameSite` — to see if a downgrade would expose it. Enumerate subdomains for HSTS coverage and probe for mixed-content resources (scripts/iframes loaded over HTTP on an HTTPS page). Evaluate `upgrade-insecure-requests` presence in CSP. Reason about whether a MITM position is even in scope — most findings here are configuration-audit results (missing `Secure`, missing HSTS, mixed content) validated against the actual response/headers, not live interception.
+
+## Pitfalls
+
+- Claiming "vulnerable to SSL stripping" without testing actual HTTP→HTTPS redirect behavior.
+- Assuming HSTS is disabled from its absence on the HTTP response (it belongs on HTTPS).
+- Claiming cookies lack `Secure` without capturing the real `Set-Cookie` header.
+- Confusing `HttpOnly` (XSS protection) with `Secure` (MITM protection).
+- Claiming preload status without checking hstspreload.org / browser HSTS state.
+- Reporting a finding without a captured HTTP response as evidence.
+
+## Verification & Impact
+
+CONFIRMED when a captured response shows: HSTS absent/not-preloaded with content served over HTTP on first request, a session cookie missing `Secure`, or active mixed-content scripts/iframes over HTTP. SUSPECTED when a theoretical downgrade window exists but isn't reproduced — record as candidate. Document impact by exposure: credential interception (high when cookies lack `Secure`), session hijack, or mixed-content script injection. Capture the raw HTTP/HTTPS responses and cookie headers via `recordEvidence`.

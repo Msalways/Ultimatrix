@@ -1,3 +1,8 @@
+/**
+ * @deprecated Use the graph store (`src/graph/store.ts`) for reading
+ * application state instead. This module is retained solely for backward
+ * compatibility with legacy v6/v7 scan workflows.
+ */
 import { readFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'

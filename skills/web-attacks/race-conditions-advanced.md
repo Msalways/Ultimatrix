@@ -45,11 +45,6 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 
 A TOCTOU vulnerability exists when the application performs a check (is this coupon valid?) and then acts on the result (redeem the coupon) as two separate, non-atomic operations. The vulnerability is the gap between the check and the use.
 
-```
-Thread A: CHECK coupon_valid → TRUE ────────────────── USE coupon
-Thread B: CHECK coupon_valid → TRUE ────────────────── USE coupon
-                                ↑ both see valid state before either acts
-```
 
 **Critical principle**: The exploit is not about speed — it is about ensuring two requests observe the same precondition before either commits the effect.
 
@@ -94,15 +89,6 @@ An operation is atomic if it completes entirely or not at all, with no observabl
 
 Use scripting to spawn N threads, each issuing an identical HTTP request. The goal is to overwhelm the application's sequential processing assumption.
 
-```
-function raceAttack(targetUrl, payload, concurrency) {
-  const promises = [];
-  for (let i = 0; i < concurrency; i++) {
-    promises.push(httpRequest(targetUrl, payload));
-  }
-  return Promise.allSettled(promises);
-}
-```
 
 **Key parameters**:
 - `concurrency`: Start with 10, scale to 50-100 if needed
@@ -143,12 +129,6 @@ Turbowlence (or Turboslacker-style techniques) refers to sending N concurrent HT
 
 ### Configuration
 
-```
-concurrency: 20-50 requests
-target: single state-changing endpoint
-payload: identical across all requests
-measure: response codes, response bodies, server-side state
-```
 
 ### Interpreting Results
 
@@ -172,13 +152,6 @@ The single-packet attack is an advanced technique that embeds multiple HTTP requ
 
 ### Crafting the Packet
 
-```
-TCP Packet:
-  [Frame 1: Stream 1, HEADERS, POST /transfer {amount: 1000}]
-  [Frame 2: Stream 2, HEADERS, POST /transfer {amount: 1000}]
-  [Frame 3: Stream 3, HEADERS, POST /transfer {amount: 1000}]
-  ...
-```
 
 ### Requirements
 
@@ -225,11 +198,6 @@ The classic double-spend race:
 
 Look for this code pattern in application logic (or infer from behavior):
 
-```
-1. READ resource state
-2. EVALUATE condition
-3. MODIFY resource based on evaluation
-```
 
 If steps 1-3 are not within a single atomic transaction, the race window exists.
 
@@ -316,11 +284,6 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 
 GraphQL allows multiple mutations in a single request. If the server processes them concurrently:
 
-```json
-{
-  "query": "mutation { A: transfer(from: \"me\", to: \"alice\", amount: 100) { success } B: transfer(from: \"me\", to: \"bob\", amount: 100) { success } }"
-}
-```
 
 Both mutations may read the same balance before either commits. Test by sending batched mutations that affect the same resource.
 
@@ -364,3 +327,24 @@ Both mutations may read the same balance before either commits. Test by sending 
 4. Use `getCapturedHeaders` to preserve auth context for the evidence chain
 5. Use `writeFinding` to document the race condition with severity assessment
 6. Use `updateGraph` to link the finding to the affected endpoints and data flows
+
+## Trigger Conditions
+
+Activate on state-changing endpoints that perform a check-then-act or read-modify-write without atomic guarantees: balance transfers, coupon/voucher redemption, inventory/booking, role assignment, password/email change, registration, and endpoints lacking CSRF/nonce protection. Especially valuable over HTTP/2+ multiplexing (single-packet techniques). Do not trigger on read-only endpoints, or where DB-level serializable isolation / `SELECT FOR UPDATE` demonstrably encloses the full transaction. Avoid mass-burst testing that risks DoS on production.
+
+## Detection Approach
+
+First enumerate every POST/PUT/PATCH/DELETE that mutates state and trace whether the check and the act are within one atomic transaction. Look for missing version/ETag/`If-Match` controls. Baseline the endpoint latency, then fire a burst of identical concurrent requests and use `compareResponses` to detect divergent status/body and `measureTiming` for window variance. Confirm a positive by inspecting *server state after the burst* — did the unit get consumed once or N times? Narrow the window if partial protection appears (some 409/429). Prefer single-packet/HTTP-2 multiplexing when available to maximize overlap. Distinguish a genuine race from rate-limiting by checking whether duplicate *side effects* occurred, not just duplicate 200s.
+
+## Pitfalls
+
+- Claiming a race from absence of concurrency controls alone — necessary but not sufficient; you must show duplicate/inconsistent state.
+- Counting duplicate 200s as double-spend without verifying the operation was applied multiple times server-side.
+- Sequential requests masquerading as concurrent — no overlap, no race evidence.
+- Assuming HTTP/1.1 can achieve single-packet overlap — multiplexing requires HTTP/2+.
+- Ignoring optimistic-versioning mitigations — the version check must cover the full transaction to count.
+- Mass-bursting production payment endpoints risking DoS — keep within agreed bounds.
+
+## Verification & Impact
+
+CONFIRMED when concurrent requests produce duplicated or inconsistent server state: two transactions with distinct IDs, negative balance after two full-balance transfers, or the same single-use coupon applied twice. SUSPECTED when responses diverge but state impact is unverified — record as candidate. Document impact by the resource abused (funds, coupons, inventory, privileges, sessions) and severity. Capture the full concurrent request set, timing, and resulting state via `recordEvidence`.

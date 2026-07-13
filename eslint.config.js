@@ -14,6 +14,8 @@ export default tseslint.config(
       'src/components/**',
       'src/swarm/**',
       'src/context/**',
+      'src/core/**',
+      'src/lib/**',
     ],
   },
   {

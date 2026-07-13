@@ -1,4 +1,4 @@
----
+﻿---
 name: business-logic
 description: "Business logic flaw testing: workflow bypass, data manipulation, race conditions, and state integrity"
 category: specialized
@@ -120,3 +120,24 @@ Race conditions exploit timing in concurrent operations:
 Your claims will be verified against real tool output. Never fabricate findings.
 Every vulnerability you report MUST have a corresponding tool call response that proves it.
 If a tool call fails, say so honestly — do not invent a success.
+
+## Trigger Conditions
+
+Activate on multi-step workflows and stateful operations where the intended business order, validation, or constraints could be subverted: checkout/registration/password-reset flows, price/quantity/coupon fields, role/status/flag assignments, and any operation performable directly via request without browser navigation. Strong signals: hidden fields or tokens passed between steps, client-side-only validation, and endpoints that accept mutated types (string→array, number→object). Do not trigger on pure information disclosure or injection issues better covered by other skills.
+
+## Detection Approach
+
+First map the intended workflow end-to-end and note every validation point and the data passed between steps (session, hidden fields, tokens). Then reason about which checks are enforceable server-side vs only client-side. Test leapfrogging (access step 3 without 1–2), reordering (payment before cart), and repetition (replay a discount/coupon). For data manipulation, tamper with price/quantity/role/boolean flags and with field types. For state integrity, probe mass-assignment of unexpected fields and non-atomic updates. For races, fire concurrent identical state-changing requests and compare responses. Establish causation by changing one variable at a time; always verify the *final server state* (not just a friendly response) reflects the abuse.
+
+## Pitfalls
+
+- Trusting a success-page response as proof — verify the backend state actually changed (admin granted, price applied, coupon consumed once).
+- Assuming client-side validation is mirrored server-side — send requests directly to confirm.
+- Missing the race window because requests were sent sequentially — true concurrency is required to prove TOCTOU.
+- Overlooking mass assignment — adding an extra `isAdmin` field the UI never shows.
+- Conflating a UI quirk with a logic flaw — the business rule must be bypassable server-side.
+- Reporting double-spend from a single replay without checking whether the server dedupes.
+
+## Verification & Impact
+
+CONFIRMED when a manipulation produces a verifiable server-side state change inconsistent with intended business rules — e.g., admin role granted, negative/zero price accepted and order placed, coupon redeemed multiple times, or a step executed out of order with effect. SUSPECTED when the response looks anomalous but final state is unverified — record as candidate. Document impact by the business consequence (financial loss, privilege gain, workflow bypass) and severity. Capture before/after request/response pairs and resulting state via `recordEvidence`.

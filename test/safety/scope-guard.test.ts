@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { isUrlInScope, setScopeConfig, getScopeConfig } from '../../src/safety/scope-guard'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { isUrlInScope, setScopeConfig, getScopeConfig, setAllowAny, deriveScopeFromTarget } from '../../src/safety/scope-guard'
 import type { ScopeConfig } from '../../src/config'
 
 const baseConfig: ScopeConfig = {
@@ -8,10 +8,24 @@ const baseConfig: ScopeConfig = {
 }
 
 describe('isUrlInScope', () => {
-  it('allows all URLs when no config is set', () => {
+  beforeEach(() => {
+    setAllowAny(false)
     setScopeConfig(null)
+  })
+
+  it('denies all URLs when no config is set (deny-by-default)', () => {
+    setScopeConfig(null)
+    setAllowAny(false)
     const r = isUrlInScope('https://evil.com/payload')
-    expect(r.allowed).toBe(true)
+    expect(r.allowed).toBe(false)
+    expect(r.reason).toContain('No scope policy')
+  })
+
+  it('allows all URLs when --allow-any is set', () => {
+    setScopeConfig(null)
+    setAllowAny(true)
+    expect(isUrlInScope('https://evil.com/payload').allowed).toBe(true)
+    setAllowAny(false)
   })
 
   it('allows exact domain match', () => {
@@ -70,13 +84,13 @@ describe('isUrlInScope', () => {
     expect(r.reason).toContain('Invalid URL')
   })
 
-  it('allows all domains when allowedDomains is empty', () => {
+  it('denies when allowedDomains is empty', () => {
     const config: ScopeConfig = {
       allowedDomains: [],
       enforcement: 'hard',
     }
     const r = isUrlInScope('https://anything.com/path', config)
-    expect(r.allowed).toBe(true)
+    expect(r.allowed).toBe(false)
   })
 
   it('checks path prefix when allowedPaths is set', () => {
@@ -112,5 +126,55 @@ describe('isUrlInScope', () => {
     const r2 = isUrlInScope('https://evil.com/payload')
     expect(r2.allowed).toBe(false)
     setScopeConfig(null)
+  })
+})
+
+describe('deriveScopeFromTarget', () => {
+  it('derives allowedDomains from target hostname', () => {
+    const scope = deriveScopeFromTarget('https://example.com')
+    expect(scope).not.toBeNull()
+    expect(scope!.allowedDomains).toEqual(['example.com'])
+    expect(scope!.enforcement).toBe('hard')
+  })
+
+  it('extracts hostname from URL with path', () => {
+    const scope = deriveScopeFromTarget('https://target.example.com/api/v1')
+    expect(scope).not.toBeNull()
+    expect(scope!.allowedDomains).toEqual(['target.example.com'])
+  })
+
+  it('preserves protocol from target URL', () => {
+    const scope = deriveScopeFromTarget('http://insecure.example.com')
+    expect(scope).not.toBeNull()
+    expect(scope!.allowedProtocols).toEqual(['http'])
+  })
+
+  it('lowercases hostname', () => {
+    const scope = deriveScopeFromTarget('https://EXAMPLE.COM')
+    expect(scope).not.toBeNull()
+    expect(scope!.allowedDomains).toEqual(['example.com'])
+  })
+
+  it('returns null for invalid URL', () => {
+    expect(deriveScopeFromTarget('not-a-url')).toBeNull()
+  })
+
+  it('returns null for empty string', () => {
+    expect(deriveScopeFromTarget('')).toBeNull()
+  })
+
+  it('derived scope allows target URL but blocks other domains', () => {
+    const scope = deriveScopeFromTarget('https://example.com')
+    expect(scope).not.toBeNull()
+    expect(isUrlInScope('https://example.com/page', scope).allowed).toBe(true)
+    expect(isUrlInScope('https://evil.com/payload', scope).allowed).toBe(false)
+  })
+
+  it('derived scope allows subdomains when target uses subdomain', () => {
+    const scope = deriveScopeFromTarget('https://sub.example.com')
+    expect(scope).not.toBeNull()
+    // Exact hostname match (not wildcard)
+    expect(isUrlInScope('https://sub.example.com/api', scope).allowed).toBe(true)
+    expect(isUrlInScope('https://other.example.com/api', scope).allowed).toBe(false)
   })
 })

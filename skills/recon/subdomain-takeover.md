@@ -1,4 +1,4 @@
----
+﻿---
 name: subdomain-takeover
 description: "Subdomain takeover discovery and exploitation via dangling CNAME records and cloud service misconfigurations"
 category: specialized
@@ -41,36 +41,12 @@ Subdomain takeover is typically passive recon — no authentication required. DN
 
 ### Automated DNS Brute-Force
 
-```bash
-# amass — passive enumeration from multiple sources
-amass enum -passive -d target.com -o amass_passive.txt
-
-# subfinder — fast passive subdomain discovery
-subfinder -d target.com -silent -o subfinder.txt
-
-# assetfinder — quick passive enumeration
-assetfinder --subs-only target.com > assetfinder.txt
-```
 
 ### Certificate Transparency Logs
 
-```bash
-# crt.sh — free CT log search
-curl -s "https://crt.sh/?q=%25.target.com&output=json" | jq -r '.[].name_value' | sort -u
-
-# Use webfetch to pull crt.sh data
-GET https://crt.sh/?q=%25.target.com&output=json
-```
 
 ### DNS Brute-Force (Active)
 
-```bash
-# dnsx — fast DNS brute-force
-dnsx -d target.com -w wordlist.txt -silent
-
-# gobuster — DNS mode brute-force
-gobuster dns -d target.com -w wordlist.txt -t 50
-```
 
 ### Aggregation Strategy
 
@@ -86,16 +62,6 @@ gobuster dns -d target.com -w wordlist.txt -t 50
 
 ### CNAME Record Lookup
 
-```bash
-# dig CNAME records
-dig +short CNAME subdomain.target.com
-
-# Check for dangling CNAME (resolves to NXDOMAIN on target side)
-dig subdomain.target.com
-
-# Check if CNAME target is dead
-dig +short CNAME cname-target.com
-```
 
 ### Dangling CNAME Detection Logic
 
@@ -122,40 +88,17 @@ A CNAME is dangling when:
 
 **Fingerprint:** `NoSuchBucket`, `The specified bucket does not exist`, `404: Not Found`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```xml
-<Error>
-  <Code>NoSuchBucket</Code>
-  <Message>The specified bucket does not exist</Message>
-</Error>
-```
 
 **Exploitation:**
-```bash
-aws s3 mb s3://claimed-bucket-name --region us-east-1
-# Upload proof content to the bucket
-echo "Proof of concept" > index.html
-aws s3 cp index.html s3://claimed-bucket-name/index.html
-```
 
 ### Azure Web Apps
 
 **Fingerprint:** `Azure Web App - Your web app is running and waiting for your content`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```html
-<h1 style="font-family: 'Segoe UI', sans-serif;">Azure Web App - Your web app is running and waiting for your content.</h1>
-```
 
 **Exploitation:**
 - Create Azure account → create Web App with the exact hostname
@@ -165,15 +108,8 @@ Host: subdomain.target.com
 
 **Fingerprint:** `There isn't a GitHub Pages site here.`, `For root URLs`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```html
-<h1>There isn't a GitHub Pages site here.</h1>
-```
 
 **Exploitation:**
 - Fork or create a repository named `username.github.io`
@@ -184,16 +120,8 @@ Host: subdomain.target.com
 
 **Fingerprint:** `no such app`, `no-hierarchical-name`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```html
-<h1>No such app</h1>
-<p>There is no app configured at that hostname.</p>
-```
 
 **Exploitation:**
 - Create Heroku app with the exact subdomain name
@@ -203,15 +131,8 @@ Host: subdomain.target.com
 
 **Fingerprint:** `Fastly error: unknown domain subdomain.target.com`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```
-Fastly error: unknown domain subdomain.target.com
-```
 
 **Exploitation:**
 - Create Fastly account → add custom domain matching the subdomain
@@ -221,16 +142,8 @@ Fastly error: unknown domain subdomain.target.com
 
 **Fingerprint:** `Not Found - Request ID:`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Response to look for:**
-```html
-<h1>Not Found</h1>
-<p>Request ID: <some-id></p>
-```
 
 **Exploitation:**
 - Create Netlify site with the exact subdomain name
@@ -240,10 +153,6 @@ Host: subdomain.target.com
 
 **Fingerprint:** `Bad request.`, `ERROR: The request could not be satisfied`
 
-```http
-GET / HTTP/1.1
-Host: subdomain.target.com
-```
 
 **Exploitation:**
 - Create CloudFront distribution with the exact domain
@@ -280,23 +189,9 @@ Always verify the actual response before claiming takeover. Common patterns:
 
 ### Step 1: Confirm Dangling CNAME
 
-```bash
-# Verify the CNAME exists and points to external service
-dig CNAME subdomain.target.com
-
-# Verify CNAME target is not owned by the target
-whois cname-target.com
-```
 
 ### Step 2: Verify Service Takeover Feasibility
 
-```bash
-# HTTP probe to confirm fingerprint
-httpx -u subdomain.target.com -mc 200,301,302,404 -title -tech-detect
-
-# Or manual curl
-curl -sI https://subdomain.target.com
-```
 
 ### Step 3: Claim the Service
 
@@ -310,17 +205,6 @@ curl -sI https://subdomain.target.com
 ### Step 4: Upload Proof Content
 
 Create a proof page:
-```html
-<html>
-<head><title>Subdomain Takeover Proof</title></head>
-<body>
-<h1>Subdomain Takeover Proof of Concept</h1>
-<p>Subdomain: subdomain.target.com</p>
-<p>Attacker: your-identifier</p>
-<p>Date: $(date)</p>
-</body>
-</html>
-```
 
 ### Step 5: Document & Report
 
@@ -335,39 +219,12 @@ Create a proof page:
 
 ### Automated Scanning
 
-```bash
-# subjack — fast subdomain takeover checker
-subjack -w subdomains.txt -t 100 -timeout 30 -ssl -a fingerprints.json
-
-# nuclei — template-based scanner
-nuclei -l subdomains.txt -t subdomain-takeover/
-
-# takeover — Go-based scanner
-takeover -l subdomains.txt -all
-```
 
 ### Nuclei Templates (Recommended)
 
-```bash
-# Run all subdomain takeover templates
-nuclei -l subdomains.txt -t http/vulnerabilities/subdomain-takeover/
-
-# Specific service checks
-nuclei -l subdomains.txt -t http/vulnerabilities/subdomain-takeover/s3.yaml
-nuclei -l subdomains.txt -t http/vulnerabilities/subdomain-takeover/azure.yaml
-nuclei -l subdomains.txt -t http/vulnerabilities/subdomain-takeover/github-pages.yaml
-```
 
 ### Manual Verification
 
-```bash
-# Check CNAME for all subdomains
-for sub in $(cat subdomains.txt); do
-  echo "=== $sub ==="
-  dig +short CNAME $sub
-  dig +short A $sub
-done
-```
 
 ---
 
@@ -385,13 +242,6 @@ done
 
 ### Cookie Impact Analysis
 
-```
-If subdomain.target.com is taken over:
-  - Cookies set with Domain=.target.com → accessible by attacker
-  - Cookies set with Domain=subdomain.target.com → accessible by attacker
-  - Cookies with HttpOnly flag → NOT accessible via JavaScript
-  - Cookies with Secure flag → only sent over HTTPS
-```
 
 ### Escalation Paths
 
@@ -429,3 +279,24 @@ Every subdomain takeover finding requires:
 2. HTTP response body showing the service fingerprint
 3. Screenshot or proof of the claimed service endpoint
 4. Description of how the service was claimed (if exploited)
+
+## Trigger Conditions
+
+Activate during subdomain enumeration when a subdomain's CNAME points to an external cloud/service (S3, Azure, GitHub Pages, Heroku, Fastly, Netlify, CloudFront) or to an expired/dangling target. Trigger on HTTP "not found"/service-specific error pages at subdomains, or DNS results referencing third-party hosting. Strong signal: a large subdomain footprint (enterprise/SaaS). Do not trigger when all CNAMEs resolve to the target's own infra, targets are active/serving legit content, or scope prohibits DNS enumeration.
+
+## Detection Approach
+
+Enumerate subdomains (passive CT logs + active brute), then for each live subdomain extract the CNAME chain and classify: CNAME→external service, CNAME→NXDOMAIN on the target, or active-but-error page. A dangling CNAME exists when the subdomain points to a service the target no longer has an active resource at. Verify the service fingerprint from the actual HTTP response (`NoSuchBucket`, `no such app`, GitHub Pages "isn't a site here", etc.). Confirm the service permits public re-registration of that exact hostname and that no legitimate content is served. Only after CNAME + fingerprint + claimability are confirmed should you attempt to claim it (requires valid cloud accounts, in scope). Route confirmed takeovers to impact analysis (cookie theft if broad Domain cookie, phishing/OAuth pivot).
+
+## Pitfalls
+
+- Claiming takeover from a DNS record alone — HTTP verification of the fingerprint is required.
+- Assuming a service is claimable without confirming it allows public re-registration of the hostname.
+- Reporting a CNAME to active, target-owned infrastructure as dangling.
+- Trusting an error page that is actually the real service's generic 404 (still owned).
+- Ignoring DNS propagation consistency across resolvers.
+- Claiming impact (cookie theft) without verifying cookie scope/CSP.
+
+## Verification & Impact
+
+CONFIRMED when evidence shows: the CNAME chain to the external service, the matching service fingerprint response, and (if exploited) a claimed endpoint serving proof content at the subdomain. SUSPECTED when a dangling CNAME/fingerprint is observed but claimability isn't verified — record as candidate. Document impact by pivot potential: cookie theft/session hijack (broad Domain cookies), phishing/credential harvest, XSS-in-context/CSP bypass (if subdomain whitelisted), or OAuth redirect abuse. Capture dig output, HTTP fingerprint, and proof via `recordEvidence`.

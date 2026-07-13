@@ -39,7 +39,7 @@ function estimateTokens(text: string): number {
   // Split on whitespace for word count, apply multiplier
   const words = text.split(/\s+/).filter(Boolean).length
   // Code blocks and special chars tend to tokenize more
-  const codeOverhead = (text.match(/[{}\[\]();=<>!&|]/g)?.length ?? 0) * 0.1
+  const codeOverhead = (text.match(/[{}[\]();=<>!&|]/g)?.length ?? 0) * 0.1
   return Math.ceil(words * 1.3 + codeOverhead)
 }
 

@@ -9,7 +9,7 @@ import { resolve } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { verifyPendingFindings } from '../tools/control-tools'
-import { startOastServer, stopOastServer } from '../oast/server'
+import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { getOrCreateBrowser, closeBrowser } from '../browser/manager'
 import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
@@ -36,6 +36,7 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   await workspace.getGraphStore()?.load()
 
   // Start OAST server
+  setOastConfig(config.oast ?? null)
   const oastPort = await startOastServer()
   log.info(`OAST server on port ${oastPort}`)
 
@@ -75,14 +76,14 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   log.info(`Starting solver engine against ${target}`)
 
   // First, run the spider to populate the graph (with HAR capture + streaming)
-  let harJson: string | null = null
+  let harJson: string | null = null // eslint-disable-line no-useless-assignment
   try {
     log.info('Crawling target to populate graph...')
     const harCapture = await startHarCapture(target, [])
 
     const spiderAgent = createSpiderAgent(config, memory, browser)
     const spiderResult = await spiderAgent.stream(
-      `Navigate to ${target} using stagehand_navigate. Use stagehand tools to dismiss overlays, discover forms and record them, detect auth flows. Record everything with the graph tools.`,
+      `Navigate to ${target}. Use the available browser capabilities to dismiss overlays, discover forms and record them, detect auth flows. Record everything to the knowledge graph.`,
       { maxSteps: config.agent.maxSteps },
     )
 

@@ -1,4 +1,4 @@
----
+﻿---
 name: information-disclosure
 description: "Information disclosure testing for verbose errors, sensitive data exposure, debug leaks, and exposed secrets"
 category: specialized
@@ -32,28 +32,12 @@ Examine ALL response headers for information leaks:
 Examine the full HTML source of EVERY page:
 
 1. **HTML comments** — developers often leave sensitive data:
-   ```
-   <!-- TODO: remove admin password before production -->
-   <!-- Internal API: https://api-internal.company.com/v2 -->
-   <!-- Debug mode: set DEBUG=false -->
-   ```
 
 2. **Hidden form fields** — may contain tokens, user IDs, or default values:
-   ```html
-   <input type="hidden" name="user_id" value="12345">
-   <input type="hidden" name="csrf_token" value="abc123">
-   ```
 
 3. **Meta tags** — may expose internal information:
-   ```html
-   <meta name="author" content="admin@company.com">
-   <meta name="robots" content="noindex"><!-- why noindex? -->
-   ```
 
 4. **Inline scripts** — configuration objects with sensitive defaults:
-   ```html
-   <script>var config = { apiKey: "sk_live_abc123", debug: true }</script>
-   ```
 
 ### Step 3: JavaScript Bundle Analysis (CRITICAL — Most Common Miss)
 This is where exposed API keys and secrets are most often found:
@@ -128,3 +112,24 @@ Review API responses for excessive data:
 Your claims will be verified against real tool output. Never fabricate findings.
 Every discovery you report MUST have a corresponding tool call response that proves it.
 If a tool call fails, say so honestly — do not invent a success.
+
+## Trigger Conditions
+
+Activate during any assessment as a continuous recon/disclosure pass: on every page fetch, JavaScript bundle, error response, and API response. Trigger specifically when responses expose headers revealing tech/version, HTML comments/hidden fields, embedded config objects (`window.__NEXT_DATA__`), API keys/secrets in JS, debug endpoints, or verbose stack traces. Also trigger when probing common exposed files (`.env`, `.git`, `robots.txt`, `swagger.json`). Do not treat disclosure as out of scope for any other skill — it is cross-cutting.
+
+## Detection Approach
+
+Reason systematically across channels. Start with response headers (capture all) — `Server`, `X-Powered-By`, debug tokens, and absent `Strict-Transport-Security`. Then fetch and fully read the HTML source for comments, hidden inputs, and inline config. Next, enumerate and fetch every JS bundle and grep for key patterns (`sk_live_`, `AKIA`, `ghp_`, internal `/admin`/`/internal` URLs, source-map references). Trigger errors with malformed/invalid input to surface stack traces and SQL structure. Probe well-known sensitive paths. Finally, review API responses for over-broad fields. Escalate each finding by confirming the data is real and sensitive (not a placeholder), then route to the relevant exploitation skill (e.g., discovered endpoint → web-pentest; key → note for credential use).
+
+## Pitfalls
+
+- Scanning only the landing page — secrets live in JS bundles and admin/debug routes.
+- Claiming a "secret" from a placeholder or example value — confirm it is live/credential-shaped.
+- Missing source-map references that expose original source.
+- Treating an error page as a vuln without checking it actually leaks internals.
+- Stopping at headers — HTML comments and inline config are the most common misses.
+- Assuming no disclosure because the main page is clean.
+
+## Verification & Impact
+
+CONFIRMED when a captured response/body actually contains the disclosed data — a real API key, stack trace with paths, internal endpoint, or config object with sensitive values. SUSPECTED when a file/path is guessed but unverified — record as candidate. Document impact by what leaked: technology fingerprint (low), internal paths/endpoints (medium), or live credentials/keys/PII (high/critical). Always attach the exact source (header name, file, line context) via `recordEvidence`.

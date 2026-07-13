@@ -126,7 +126,7 @@ export const getAuthFlows = createTool({
 
 export const upsertPage = createTool({
   id: 'upsertPage',
-  description: 'Record or update a page in the knowledge graph. Call this after navigating to a URL with stagehand_navigate.',
+  description: 'Record or update a page in the knowledge graph. Call this after navigating to a URL.',
   inputSchema: z.object({
     url: z.string().describe('The page URL'),
     title: z.string().optional().describe('Page title'),
@@ -342,7 +342,7 @@ export const chainFindings = createTool({
 
 export const updateGraph = createTool({
   id: 'updateGraph',
-  description: 'Write data to the knowledge graph. Prefer the focused tools (upsertPage, addAction, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings) instead — they have clearer schemas.',
+  description: 'Write data to the knowledge graph. Prefer the focused single-purpose graph mutation tools, which expose clearer per-action schemas.',
   inputSchema: z.object({
     action: z.enum(['upsertPage', 'addAction', 'addInput', 'addEndpoint', 'addTest', 'addFinding', 'addAuthFlow', 'addRBACRole', 'addAttack', 'chainFindings']),
     pageUrl: z.string().optional(),

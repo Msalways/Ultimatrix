@@ -1,4 +1,4 @@
----
+﻿---
 name: type-juggling
 description: "PHP type juggling exploitation using magic hashes, loose comparison, and implicit type coercion"
 category: specialized
@@ -59,29 +59,11 @@ PHP has two equality operators with fundamentally different behavior:
 
 Compares both **value** and **type** without coercion:
 
-```php
-"0" === 0        // false (string vs integer)
-"0" === false    // false (string vs boolean)
-"" === false     // false (string vs boolean)
-null === false   // false (null vs boolean)
-"0e123" === "0e456"  // false (string comparison, not numeric)
-[] === false     // false (array vs boolean)
-```
 
 ### Loose Comparison (`==`)
 
 Applies PHP's type coercion rules before comparing values. This is where vulnerabilities arise:
 
-```php
-"0" == 0         // true  (string "0" cast to integer 0)
-"0" == false     // true  (both cast to boolean false)
-"" == false      // true  (empty string is falsy)
-null == false    // true  (null is falsy)
-"0e123" == "0e456"  // true  (both treated as 0 in scientific notation)
-"1abc" == 1      // true  (string "1abc" cast to integer 1)
-[] == false      // true  (empty array is falsy)
-"php" == 0       // true  (non-numeric string cast to 0)
-```
 
 ### PHP 8.0 Changes
 
@@ -100,17 +82,9 @@ When PHP encounters a string in a numeric context (comparison with `==` to anoth
 
 If both strings start with `"0e"` followed by only digits, PHP treats them both as the number `0`:
 
-```php
-"0e123456" == "0e999999"  // true — both parse as 0
-"0e0" == "0e999999999"    // true — both parse as 0
-"0e485374" == "0e999999"  // true — both parse as 0
-```
 
 **Critical distinction**: This only works when the string is **purely numeric** after `"0e"`. If there are trailing non-numeric characters, PHP does not treat it as scientific notation:
 
-```php
-"0e123abc" == "0e456def"  // false — non-numeric content prevents numeric parsing
-```
 
 ### Common Magic Hashes by Hash Algorithm
 
@@ -150,16 +124,6 @@ PHP's loose comparison triggers magic hash behavior when both sides are numeric-
 
 **Vulnerable pattern:**
 
-```php
-// register.php
-$stored_hash = md5($user_password);  // stored in database
-
-// login.php
-$input = $_POST['password'];
-if (md5($input) == $stored_hash) {
-    // authenticated
-}
-```
 
 **Attack:**
 - If `$stored_hash` starts with `"0e"` followed by only digits, send a magic hash input
@@ -167,24 +131,11 @@ if (md5($input) == $stored_hash) {
 - The attacker authenticates without knowing the real password
 
 **Proof of concept:**
-```php
-// If stored hash is md5("real_password") = "0e462097431906509019562988736854"
-// Send password: "240610708"
-// md5("240610708") = "0e462097431906509019562988736854"
-// "0e462097431906509019562988736854" == "0e462097431906509019562988736854" → true
-```
 
 ### Token Forgery
 
 **Vulnerable pattern:**
 
-```php
-// password_reset.php
-$expected_token = md5($user_id . $secret_key);
-if ($_GET['token'] == $expected_token) {
-    // allow password reset
-}
-```
 
 **Attack:**
 1. Determine or guess the hash algorithm (likely `md5()` based on output length)
@@ -194,12 +145,6 @@ if ($_GET['token'] == $expected_token) {
 
 ### Session Validation Bypass
 
-```php
-// session validation
-if ($_COOKIE['session'] == md5($_SERVER['REMOTE_ADDR'] . $secret)) {
-    $authenticated = true;
-}
-```
 
 Same technique — forge a magic hash cookie that loosely equals the expected hash.
 
@@ -209,39 +154,12 @@ Same technique — forge a magic hash cookie that loosely equals the expected ha
 
 When a string is compared with a number using `==`:
 
-```php
-"1abc" == 1     // true  — "1abc" cast to int 1, 1 == 1
-"2abc" == 2     // true  — "2abc" cast to int 2, 2 == 2
-"abc" == 0      // true  — non-numeric string cast to 0, 0 == 0
-"123abc" == 123  // true  — "123abc" cast to int 123
-"0x1A" == 26     // true  — hex notation cast to int 26
-"010" == 8       // false — string "010" is NOT treated as octal in loose comparison
-"10" == 10       // true  — decimal string cast to int
-```
 
 ### Boolean Coercion
 
-```php
-true == "1"       // true  — "1" is truthy
-true == "2"       // true  — "2" is truthy (any non-empty, non-"0" string)
-false == ""       // true  — both falsy
-false == "0"      // true  — "0" is falsy
-false == "foo"    // false — "foo" is truthy, false is falsy
-0 == false        // true  — both falsy
-1 == true         // true  — both truthy
--1 == true        // true  — non-zero is truthy
-```
 
 ### Null Coercion
 
-```php
-null == false     // true  — both falsy
-null == ""        // true  — null is coerced to "" or "" to null
-null == 0         // true  — null is coerced to 0
-null == "0"       // true  — null to 0, "0" to 0
-null == "foo"     // false — null to "", "foo" is not ""
-null == []        // true  — both are "empty"
-```
 
 ### Type Juggling Quick Reference Table
 
@@ -267,54 +185,12 @@ null == []        // true  — both are "empty"
 
 ### Empty Array as False
 
-```php
-[] == false    // true  — empty array is falsy
-[] == 0        // true  — empty array cast to 0
-[] == ""       // true  — empty array cast to ""
-[] == null     // true  — empty array cast to null
-[] == "php"    // false — "php" is truthy
-```
 
 ### Non-Empty Array
 
-```php
-[1] == true    // true  — non-empty array is truthy
-["php"] == true  // true
-[0] == false   // true  — array with single 0
-[1] == 1       // false — array cannot be cast to integer
-```
 
 ### Array in Comparison Chains
 
-```php
-$input = $_GET['value'];  // attacker controls this as "0"
-$secret = md5($admin_password);
-
-if ($input == $secret) {
-    // bypass — $input "0" == $secret (if $secret is "0e...")
-}
-```
-
-### Practical Attack: Array Injection via POST
-
-If a parameter accepts arrays via POST:
-
-```
-POST /login HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
-
-password[]=anything
-```
-
-```php
-// Vulnerable code
-if (md5($_POST['password']) == $stored_hash) {
-    // md5() of an array returns null with a warning
-    // null == "0e..." → depends on stored hash
-}
-```
-
-This technique can suppress error output and manipulate return values.
 
 ## 8. `strcmp()` Bypass
 
@@ -322,49 +198,22 @@ PHP's `strcmp()` compares two strings and returns `0` if equal, non-zero otherwi
 
 ### The NULL Return Vulnerability
 
-```php
-strcmp("password", "password")   // 0 (equal)
-strcmp("password", "wrong")      // non-zero (not equal)
-
-// BUG: passing an array instead of a string
-strcmp(array("password"), "password")  // NULL (with warning)
-```
 
 **Why this matters:**
 
-```php
-$stored_password = "correct_password_hash";
-$input = $_POST['password'];
-
-if (strcmp($input, $stored_password) == 0) {
-    // authenticated!
-}
-```
 
 If `$input` is an array (via `password[]=anything` in POST), `strcmp()` returns `NULL`:
 
-```php
-NULL == 0  // true!
-```
 
 **The attacker authenticates without knowing the password.**
 
 ### Exploitation
 
-```
-POST /login HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
-
-username=admin&password[]=anything
-```
 
 The server returns a valid session or authentication token because `strcmp(array(), "hash") == 0` evaluates as `true`.
 
 ### `strncmp()` Variant
 
-```php
-strncmp($input, $secret, strlen($secret)) == 0
-```
 
 Same vulnerability — passing an array returns `NULL`, which loosely equals `0`.
 
@@ -378,13 +227,6 @@ Same pattern applies to multibyte and case-insensitive variants.
 
 The most powerful type juggling attack: two different inputs whose `md5()` outputs are both magic hashes.
 
-```php
-md5("240610708") = "0e462097431906509019562988736854"
-md5("QNKCDZO")   = "0e830400451993494058024219903391"
-
-// Both are magic hashes — both parse as 0 in scientific notation
-"0e462097431906509019562988736854" == "0e830400451993494058024219903391"  // true
-```
 
 ### Hash Algorithm Detection
 
@@ -405,29 +247,6 @@ To exploit, first determine which hash algorithm the server uses:
 
 ### Generating Custom Magic Hashes
 
-```python
-import hashlib
-import random
-import string
-
-def find_magic_hash(algorithm='md5', prefix='0e'):
-    while True:
-        candidate = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-        if algorithm == 'md5':
-            h = hashlib.md5(candidate.encode()).hexdigest()
-        elif algorithm == 'sha1':
-            h = hashlib.sha1(candidate.encode()).hexdigest()
-        else:
-            h = hashlib.sha256(candidate.encode()).hexdigest()
-
-        if h.startswith(prefix) and h[len(prefix):].isdigit():
-            return candidate, h
-
-# Find magic hashes for different algorithms
-for algo in ['md5', 'sha1']:
-    input_val, hash_val = find_magic_hash(algo)
-    print(f"{algo}('{input_val}') = '{hash_val}'")
-```
 
 ### Precomputed Magic Hash Lists
 
@@ -448,70 +267,15 @@ If the application stores MD5 hashes (common in legacy PHP apps) and compares th
 
 PHP's `switch` statement uses loose comparison internally:
 
-```php
-$input = $_GET['role'];
-
-switch ($input) {
-    case 'admin':
-        grant_admin_access();
-        break;
-    case 'user':
-        grant_user_access();
-        break;
-    case 0:
-        grant_default_access();
-        break;
-}
-```
 
 ### Type Juggling in Switch
 
-```php
-// Attacker sends: ?role=0
-switch ("0") {
-    case 'admin':  // "0" == 'admin' → false
-    case 'user':   // "0" == 'user' → false
-    case 0:        // "0" == 0 → true (type juggling!)
-        grant_default_access();
-        break;
-}
-```
 
 ### Switch with Integer 0
 
-```php
-switch ($user_role_id) {
-    case 1:  // admin
-        echo "Admin panel";
-        break;
-    case 2:  // editor
-        echo "Editor panel";
-        break;
-    case 0:  // guest
-        echo "Guest panel";
-        break;
-}
-
-// If user sends role_id="1abc" → cast to int 1 → admin access
-// If user sends role_id="php"  → cast to int 0 → guest access (unexpected)
-// If user sends role_id="2.5"  → cast to int 2 → editor access
-```
 
 ### Switch on Hash Comparison
 
-```php
-switch (md5($input)) {
-    case $admin_hash:
-        $role = 'admin';
-        break;
-    case $user_hash:
-        $role = 'user';
-        break;
-    default:
-        $role = 'guest';
-        break;
-}
-```
 
 If `$admin_hash` is a magic hash and `$input`'s md5 is also a magic hash, they match.
 
@@ -519,64 +283,24 @@ If `$admin_hash` is a magic hash and `$input`'s md5 is also a magic hash, they m
 
 `in_array()` checks if a value exists in an array. Without the `strict` parameter set to `true`, it uses loose comparison:
 
-```php
-// VULNERABLE — loose comparison
-in_array("admin", array("0", "user", "guest"))  // true!
-
-// Why: "admin" == 0 → true (non-numeric string cast to 0)
-// The array contains 0 (integer), "admin" loosely equals 0
-```
 
 ### Attack Scenarios
 
 **Role Bypass:**
 
-```php
-$allowed_roles = array(0, 1, 2);  // 0 = guest, 1 = user, 2 = admin
-$user_role = $_GET['role'];
 
-if (in_array($user_role, $allowed_roles)) {
-    // Access granted
-}
-```
 
-```
-GET /dashboard?role=admin
-```
-
-```php
-in_array("admin", array(0, 1, 2))  // true — "admin" == 0
-```
 
 The attacker gains access with role "admin" even though only integers are in the allowlist.
 
 **Numeric String Bypass:**
 
-```php
-$valid_tokens = array("token_abc123", "token_def456");
-$input = "0";
-
-if (in_array($input, $valid_tokens)) {
-    // true — "0" == "token_abc123"? No.
-    // Actually: "0" cast to 0, "token_abc123" cast to 0 → true
-}
-```
 
 ### Fix: Always Use Strict Mode
 
-```php
-in_array("admin", array(0, 1, 2), true)  // false — strict comparison
-```
 
 ### `array_search()` Same Vulnerability
 
-```php
-$key = array_search("admin", array("admin", "user"));
-// Works correctly — "admin" is in the array
-
-$key = array_search("admin", array(0, 1, 2));
-// Returns 0 — "admin" loosely equals 0 (the first element)
-```
 
 If `$key` is used for array indexing or conditional logic, this can cause unintended behavior.
 
@@ -584,55 +308,18 @@ If `$key` is used for array indexing or conditional logic, this can cause uninte
 
 ### Ternary Operator Coercion
 
-```php
-$input = $_GET['value'];
-$result = $input ?: 'default';
-
-// If $input is "0" → "0" is falsy → $result = "default"
-// If $input is ""  → "" is falsy  → $result = "default"
-// If $input is null → null is falsy → $result = "default"
-```
 
 ### Loose Comparison in Conditionals
 
-```php
-if ($token = $_GET['token']) {
-    // true for any non-empty, non-"0" string
-    // "0" → false → skipped
-    // "anything" → true → entered
-}
-```
 
 ### PHP `filter_var()` Type Juggling
 
-```php
-filter_var("0x1A", FILTER_VALIDATE_INT)  // 26 — hex parsed as integer
-filter_var("010", FILTER_VALIDATE_INT)   // 10 — octal NOT parsed (PHP 7+)
-filter_var("1.5", FILTER_VALIDATE_INT)   // false — float rejected
-filter_var("1.5", FILTER_VALIDATE_FLOAT) // 1.5
-```
 
 ### Object Coercion (PHP 7.4+)
 
-```php
-class Foo {
-    public $value = 1;
-}
-
-$foo = new Foo();
-$foo == 1   // true — object with one property loosely equals 1
-$foo == true  // true — object is truthy
-```
 
 ### `isset()` vs `empty()` vs Loose Comparison
 
-```php
-$val = "0";
-isset($val)   // true  — value exists
-empty($val)   // true  — "0" is falsy
-$val == false // true  — type juggling
-$val === false // false — strict comparison
-```
 
 ## 13. Anti-Hallucination
 
@@ -666,3 +353,24 @@ When reporting a PHP type juggling vulnerability:
 - "Any non-numeric string loosely equals 0" — true in PHP <8, false in PHP 8.0+
 - "in_array() always uses loose comparison" — it does unless `strict: true` is passed; verify the actual call
 - "This vulnerability exists because the developer used md5()" — the vulnerability is in the loose comparison, not the hash function itself
+
+## Trigger Conditions
+
+Activate when the target is a PHP application performing security-critical comparisons with loose equality (`==`), `strcmp`/`strncmp` family, `switch`, or `in_array()` without strict mode — particularly at auth, session-token, password-reset, CSRF-token, or role checks. Also trigger when hashes (`md5`/`sha1`) are compared loosely or when magic-hash-shaped values appear. Do not trigger on non-PHP apps (coercion rules differ), on apps using `===`/`hash_equals()`/`password_verify()`/`sodium_*`, or when no comparison logic is observable or behavioral.
+
+## Detection Approach
+
+First establish the target is PHP and identify where user input reaches a comparison. Probe for behavioral tells: send a numeric/empty/array input where a string secret is expected and observe whether auth/token checks pass. For magic hashes, determine the hash algorithm from output length (32=MD5, 40=SHA1, 64=SHA256) and test a known magic-hash input (`QNKCDZO`, `240610708`) where the stored hash is also a `0e[digits]` string — both coerce to `0`. For `strcmp`, send the parameter as an array (`param[]=x`); a `NULL` return loosely equals `0`, often granting access. For `in_array()`/role checks, send `"admin"` where an integer allowlist is expected. Confirm the PHP version (error messages/`phpinfo`) since 8.0 changed several coercion rules. Always verify the actual bypass result (authenticated session/token accepted), not just a non-error response.
+
+## Pitfalls
+
+- Claiming magic-hash vulnerability without computing both hashes and confirming both are purely `0e[digits]`.
+- Assuming `strcmp()` returns NULL for arrays without testing the live PHP version (warning suppression matters).
+- Guessing the hash algorithm — detect from length/source before crafting payloads.
+- Claiming type juggling on PHP 8.0+ without checking changed coercion rules (`0==""` is now false).
+- Conflating the `0e` prefix with a magic hash — trailing non-digits disqualify it.
+- Assuming `in_array()` is loose — verify the actual call; strict mode may be set.
+
+## Verification & Impact
+
+CONFIRMED when a crafted input (magic hash, array, or type-confused value) demonstrably passes a security check — e.g., authenticated session granted, token/reset accepted, or admin role attained — with the comparison context shown. SUSPECTED when coercion looks possible but the bypass isn't reproduced — record as candidate. Document impact by the boundary crossed (auth bypass, token forgery, privilege/role escalation) and severity (typically High/Critical at auth boundaries). Capture the probe request, the server response proving the bypass, and the comparison context via `recordEvidence`.

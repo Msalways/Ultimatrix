@@ -41,6 +41,22 @@ export interface AgentOptions {
   skillIds?: string[]
   skills?: Skill[]
   extraTools?: Record<string, any>
+  /** Explicit allow-list of tool IDs. When set, only these tools are exposed. */
+  toolIds?: string[]
+  /** Additional instructions appended after the base + skill instructions (e.g. current task). */
+  taskInstructions?: string
+}
+
+/**
+ * Intersect two allow-sets. `undefined` on either side means "no restriction",
+ * so the other side wins. Both undefined → no restriction.
+ */
+function intersectAllowSets(a?: Set<string>, b?: Set<string>): Set<string> | undefined {
+  if (!a) return b
+  if (!b) return a
+  const out = new Set<string>()
+  for (const id of a) if (b.has(id)) out.add(id)
+  return out
 }
 
 export function createAgent(
@@ -50,17 +66,33 @@ export function createAgent(
   const log = options?.logger || new Logger('AgentFactory')
   const fullRegistry = options?.tools || createToolRegistry(log)
 
-  let allTools: Record<string, any>
-
+  // Build the skill-derived allow-set (existing behavior).
+  let allowSet: Set<string> | undefined
   if (options?.skillIds && options.skillIds.length > 0) {
-    const allowedToolIds = new Set(resolveToolsForSkills(options.skillIds))
+    allowSet = new Set(resolveToolsForSkills(options.skillIds))
+  }
+
+  // Build the explicit toolIds allow-set (council per-role restrictions).
+  let explicitSet: Set<string> | undefined
+  if (options?.toolIds && options.toolIds.length > 0) {
+    explicitSet = new Set(options.toolIds)
+  }
+
+  // Single source of truth: intersection of all active restrictions.
+  const effectiveAllow = intersectAllowSets(allowSet, explicitSet)
+
+  let allTools: Record<string, any>
+  if (effectiveAllow) {
     allTools = {}
     for (const [key, tool] of Object.entries(fullRegistry)) {
-      if (allowedToolIds.has(key)) {
+      if (effectiveAllow.has(key)) {
         allTools[key] = tool
       }
     }
-    log.info(`Skill-filtered: ${Object.keys(allTools).length} tools from skills [${options.skillIds.join(', ')}]`)
+    const source = options?.toolIds?.length
+      ? `toolIds [${options.toolIds.join(', ')}]`
+      : `skills [${options!.skillIds!.join(', ')}]`
+    log.info(`Tool-filtered (${source}): ${Object.keys(allTools).length}/${Object.keys(fullRegistry).length} tools`)
   } else {
     allTools = { ...fullRegistry }
   }
@@ -77,12 +109,17 @@ export function createAgent(
     ? options.skills.map(s => s.instructions).join('\n\n')
     : ''
 
+  const fullInstructions = [
+    getAgentInstructions(config, skillInstructions),
+    options?.taskInstructions ? `\n## Current Task\n${options.taskInstructions}` : '',
+  ].filter(Boolean).join('\n')
+
   const agentConfig: any = {
     name: 'ultimatrix-agent',
     model: resolveModel(config, options?.modelId ? { modelId: options.modelId, tier: options?.tier } : options?.tier),
     target: config.target,
     tools: sanitizeToolRecord(allTools, config.provider),
-    instructions: getAgentInstructions(config, skillInstructions),
+    instructions: fullInstructions,
   }
 
   if (options?.memory) {

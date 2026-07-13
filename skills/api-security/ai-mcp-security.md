@@ -1,4 +1,4 @@
----
+﻿---
 name: ai-mcp-security
 description: "AI and MCP security testing: prompt injection, data leakage, tool abuse, and guardrail bypass"
 category: specialized

@@ -3,7 +3,6 @@ import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import { createAgent } from '../mastra/index.js'
 import { loadSkill } from '../solver/skills/loader'
-import { CORE_CONTRACT } from '../prompts/core-contract'
 
 export interface WorkerConfig {
   skillId: string
@@ -20,6 +19,11 @@ export interface WorkerConfig {
    */
   tenant?: string
   sandboxId?: string
+  /**
+   * Per-worker LLM call timeout in ms. If the worker doesn't complete within
+   * this deadline, the call is abandoned. Default: no timeout (caller decides).
+   */
+  timeoutMs?: number
 }
 
 export class WorkerFactory {
@@ -37,14 +41,11 @@ export class WorkerFactory {
       modelId: workerConfig.modelId,
       skillIds: [workerConfig.skillId],
       skills: skill ? [skill] : undefined,
+      taskInstructions: workerConfig.task,
     })
 
     agent.id = `${workerConfig.skillId}-${Date.now()}`
     agent.name = skill ? `${skill.name} Specialist` : `${workerConfig.skillId} Specialist`
-
-    if (skill) {
-      agent.instructions = `${CORE_CONTRACT}\n\n${skill.instructions}\n\n## Current Task\n${workerConfig.task}`
-    }
 
     return agent
   }

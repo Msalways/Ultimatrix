@@ -1,4 +1,4 @@
----
+﻿---
 name: hsts-bypass
 description: "HSTS (HTTP Strict Transport Security) bypass techniques including downgrade attacks and subdomain issues"
 category: specialized
@@ -42,9 +42,6 @@ HSTS bypass is most impactful when:
 
 Check for the `Strict-Transport-Security` header on every HTTPS response:
 
-```
-Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-```
 
 **Required fields to check:**
 
@@ -56,10 +53,6 @@ Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
 
 ### Detection Method
 
-```
-httpRequest(method="HEAD", url="https://TARGET/")
-parseResponse → extract Strict-Transport-Security header
-```
 
 If the header is absent on the initial HTTPS response, HSTS is not enforced and there is nothing to bypass. Report it as a missing HSTS configuration issue instead.
 
@@ -75,16 +68,6 @@ HSTS only takes effect **after** the browser receives and caches the header. On 
 
 ### Attack Window
 
-```
-User clicks http://TARGET/
-  → Browser sends HTTP request (no cached HSTS)
-  → Attacker intercepts (MITM, DNS hijack, BGP)
-  → Server responds on HTTP (no redirect yet)
-  → Session cookie transmitted in cleartext
-  → Attacker captures cookie
-  → User eventually reaches HTTPS, HSTS header cached
-  → Too late — session already stolen
-```
 
 ### Testing
 
@@ -93,10 +76,6 @@ User clicks http://TARGET/
 3. Check if the server responds with content or a redirect on port 80
 4. If content is served over HTTP on the first request, the downgrade window exists
 
-```
-httpRequest(method="GET", url="http://TARGET/")
-parseResponse → check for 200 OK (vulnerable) vs redirect to HTTPS (safe)
-```
 
 ### Mitigation Note
 
@@ -120,24 +99,11 @@ If the `Strict-Transport-Security` header lacks the `includeSubDomains` directiv
 
 ### Testing
 
-```
-For each discovered subdomain:
-  httpRequest(method="GET", url="https://SUBDOMAIN.TARGET.com/")
-  parseResponse → check for Strict-Transport-Security header
-
-  httpRequest(method="GET", url="http://SUBDOMAIN.TARGET.com/")
-  parseResponse → check if HTTP content is served (not redirected)
-```
 
 If any subdomain serves content over HTTP without redirecting to HTTPS, it is a bypass vector.
 
 ### Subdomain Takeover Check
 
-```
-For each subdomain with a dangling CNAME:
-  Check if the external service (Heroku, GitHub Pages, Azure) allows claiming
-  If claimable → report as subdomain takeover leading to HSTS bypass
-```
 
 ---
 
@@ -169,10 +135,6 @@ The HSTS preload list is a hardcoded list of domains in browsers (Chrome, Firefo
 2. Verify all preload requirements are met in the actual HTTP response
 3. Check subdomains — the apex being preloaded does not cover subdomains unless they are also in the preload list
 
-```
-httpRequest(method="GET", url="https://TARGET.com/")
-parseResponse → verify max-age >= 31536000, includeSubDomains, preload
-```
 
 ---
 
@@ -188,14 +150,6 @@ SSL stripping is an active attack where a MITM attacker intercepts the initial H
 
 ### Attack Flow
 
-```
-User → http://TARGET.com (HTTP)
-  → Attacker intercepts
-  → Attacker connects to TARGET.com over HTTPS
-  → Target returns HSTS header → Attacker STRIPS it
-  → Attacker serves content to user over HTTP
-  → All user data visible in cleartext
-```
 
 ### Tools for SSL Stripping
 
@@ -212,13 +166,6 @@ User → http://TARGET.com (HTTP)
 
 ### Testing
 
-```
-httpRequest(method="GET", url="http://TARGET.com/")
-parseResponse → check:
-  1. Is content served over HTTP? (200 OK, not redirect)
-  2. Are links in the response HTTP instead of HTTPS?
-  3. Is there a login form with an HTTP action?
-```
 
 ---
 
@@ -245,15 +192,6 @@ HSTS policies are cached by the browser for the duration of `max-age`. An attack
 
 Use a fresh browser profile or clear the HSTS cache before testing:
 
-```
-# Chrome: clear HSTS cache
-# Navigate to chrome://net-internals/#hsts
-# Delete domain security policies for TARGET.com
-
-# Then test:
-httpRequest(method="GET", url="http://TARGET.com/")
-parseResponse → check if HTTP content is served
-```
 
 ---
 
@@ -273,14 +211,6 @@ If session cookies lack the `Secure` flag, they will be transmitted over HTTP co
 
 ### Testing
 
-```
-httpRequest(method="GET", url="https://TARGET.com/login")
-parseResponse → extract Set-Cookie headers
-check each cookie for:
-  - Secure flag (required for HTTPS-only cookies)
-  - HttpOnly flag (prevents JavaScript access)
-  - SameSite attribute (prevents CSRF)
-```
 
 If any session cookie lacks `Secure`, it is vulnerable to downgrade-based theft.
 
@@ -298,71 +228,21 @@ If any session cookie lacks `Secure`, it is vulnerable to downgrade-based theft.
 
 ### Step 1: Header Analysis
 
-```
-httpRequest(method="GET", url="https://TARGET.com/")
-parseResponse → extract all security headers
-  - Strict-Transport-Security (value, directives)
-  - Content-Security-Policy (upgrade-insecure-requests)
-  - X-Content-Type-Options
-  - Set-Cookie (Secure, HttpOnly, SameSite flags)
-```
 
 ### Step 2: HTTP Response Check
 
-```
-httpRequest(method="GET", url="http://TARGET.com/")
-parseResponse → check:
-  - Status code (200 = vulnerable, 301/302 redirect = partially safe)
-  - Is the redirect to HTTPS? Or to HTTP?
-  - Is content served before redirect?
-```
 
 ### Step 3: Subdomain Enumeration
 
-```
-For each subdomain:
-  httpRequest(method="GET", url="https://SUB.TARGET.com/")
-  parseResponse → check for HSTS header
-
-  httpRequest(method="GET", url="http://SUB.TARGET.com/")
-  parseResponse → check for HTTP content
-```
 
 ### Step 4: Preload Verification
 
-```
-Check https://hstspreload.org/?domain=TARGET.com
-Verify all preload requirements in actual response headers
-Check if subdomains are individually preloaded
-```
 
 ### Step 5: Cookie Analysis
 
-```
-For authenticated sessions:
-  Extract all Set-Cookie headers
-  Check each for Secure, HttpOnly, SameSite flags
-  Identify cookies that would be sent over HTTP
-```
 
 ### Step 6: Document Findings
 
-```
-writeFinding({
-  type: "hsts-bypass",
-  severity: "high" | "medium" | "low",
-  title: "HSTS bypass via [technique]",
-  description: "Detailed description of the bypass",
-  evidence: "HTTP response showing missing HSTS or HTTP content",
-  recommendation: "How to fix the issue"
-})
-
-recordEvidence({
-  type: "http-response",
-  data: <response>,
-  context: "HSTS bypass testing"
-})
-```
 
 ### Tools for Manual Testing
 
@@ -396,3 +276,24 @@ recordEvidence({
 - Do not assume `includeSubDomains` is present without verifying
 - Do not claim preload eligibility without checking all 5 requirements
 - Do not report findings based on browser behavior you cannot reproduce
+
+## Trigger Conditions
+
+Activate when the target serves HTTPS and sends (or should send) a `Strict-Transport-Security` header — i.e., when auditing transport-security effectiveness. Trigger on first-visit/downgrade windows, missing `includeSubDomains`, subdomains serving HTTP, `max-age` below preload thresholds, absent `preload`, or session cookies lacking the `Secure` flag. Do not trigger when HSTS is entirely absent (report as missing HSTS, not a bypass) or when the apex is fully preloaded with `includeSubDomains`+`preload` (bypass-resistant). Not applicable to API-only/mobile contexts where HSTS is irrelevant.
+
+## Detection Approach
+
+First confirm the policy exists: fetch the HTTPS response and parse `Strict-Transport-Security` — if absent, there is nothing to bypass (report missing). If present, evaluate each directive: `max-age` value, `includeSubDomains`, `preload`. Check preload status via hstspreload.org and the live header. Test the first-visit window with a fresh profile hitting HTTP before any HTTPS (does port 80 serve content?). Per subdomain, fetch HTTP and HTTPS to see if any serves content over plain HTTP. Inspect `Set-Cookie` for `Secure`/`HttpOnly`/`SameSite` to assess downgrade-based cookie theft. Reason about whether a MITM position is even achievable in scope — many of these are configuration-audit findings, not live exploits.
+
+## Pitfalls
+
+- Claiming a header is missing without actually requesting and parsing the response.
+- Claiming a subdomain is vulnerable without testing both HTTP and HTTPS.
+- Assuming preloading is effective without checking the preload list and all 5 requirements.
+- Inferring `max-age`/`includeSubDomains` without reading the actual header.
+- Conflating "HSTS not present on HTTP response" (expected) with "HSTS missing" (must check HTTPS).
+- Claiming cookie downgrade without extracting real `Set-Cookie` flags.
+
+## Verification & Impact
+
+CONFIRMED when a captured response shows: HSTS present but misconfigured (low `max-age`, no `includeSubDomains`/`preload`), a subdomain serving real content over HTTP, or a session cookie without `Secure`. SUSPECTED when a theoretical window exists but isn't reproduced — record as candidate. Document impact by the exposure enabled: first-visit MITM/credential interception (high when cookies lack `Secure`), subdomain cookie theft/CSP-bypass pivot, or merely a hardening gap (low/medium). Capture the raw HTTP/HTTPS responses and cookie headers via `recordEvidence`.

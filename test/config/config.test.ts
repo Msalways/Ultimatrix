@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { validateConfig } from '../../src/config'
 import { resolveModel } from '../../src/models/factory'
 import type { UltimatrixConfig } from '../../src/config'
@@ -120,14 +120,14 @@ describe('validateConfig', () => {
 })
 
 describe('engine config', () => {
-  it('engine defaults to solver (v8 default)', () => {
+  it('engine defaults to multi-model', () => {
     const config = validateConfig({
       provider: 'groq',
       model: 'llama3-8b-8192',
       target: 'https://example.com',
       creds: { groq: { apiKey: 'gsk_xxx' } },
     })
-    expect(config.engine).toBe('solver')
+    expect(config.engine).toBe('multi-model')
     expect(config.solver).toBeUndefined()
     expect(config.antiLoop).toBeUndefined()
     expect(config.reflexion).toBeUndefined()
@@ -143,14 +143,27 @@ describe('engine config', () => {
     expect(config.engine).toBe('legacy')
   })
 
-  it('accepts engine=solver', () => {
+  it('coerces engine=solver to multi-model', () => {
     const config = validateConfig({
       provider: 'groq',
       model: 'llama3-8b-8192',
       creds: { groq: { apiKey: 'gsk_xxx' } },
       engine: 'solver',
     })
-    expect(config.engine).toBe('solver')
+    expect(config.engine).toBe('multi-model')
+  })
+
+  it('coerces engine=council to multi-model with deprecation', () => {
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      engine: 'council',
+    })
+    expect(config.engine).toBe('multi-model')
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('DEPRECATION'))
+    consoleSpy.mockRestore()
   })
 
   it('rejects invalid engine value', () => {
@@ -159,7 +172,7 @@ describe('engine config', () => {
       model: 'llama3-8b-8192',
       creds: { groq: { apiKey: 'gsk_xxx' } },
       engine: 'hybrid',
-    })).toThrow('engine must be "legacy", "solver", or "multi-model"')
+    })).toThrow('engine must be "multi-model", "council", or "solver"')
   })
 
   it('accepts solver config block', () => {
@@ -253,12 +266,12 @@ describe('engine config', () => {
       provider: 'groq',
       model: 'llama3-8b-8192',
       creds: { groq: { apiKey: 'gsk_xxx' } },
-      engine: 'solver',
+      engine: 'multi-model',
       solver: { maxToolCalls: 20 },
       antiLoop: { staleThreshold: 5 },
       reflexion: { enabled: true, maxSameVulnFails: 3 },
     })
-    expect(config.engine).toBe('solver')
+    expect(config.engine).toBe('multi-model')
     expect(config.solver).toEqual({ maxToolCalls: 20 })
     expect(config.antiLoop).toEqual({ staleThreshold: 5 })
     expect(config.reflexion).toEqual({ enabled: true, maxSameVulnFails: 3 })
@@ -521,5 +534,54 @@ describe('DEFAULTS extended fields', () => {
     expect(DEFAULTS.budgetPolicy.allocation).toEqual({ brain: 0.3, workers: 0.6, spider: 0.1 })
     expect(DEFAULTS.budgetPolicy.maxModelCallsPerTask).toBe(15)
     expect(DEFAULTS.budgetPolicy.trackTokens).toBe(false)
+  })
+})
+
+describe('spider config', () => {
+  it('accepts spider.enabled boolean', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      spider: { enabled: false },
+    })
+    expect(config.spider?.enabled).toBe(false)
+  })
+
+  it('accepts spider with all fields', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      spider: { enabled: true, maxSteps: 10, maxDurationMs: 60000 },
+    })
+    expect(config.spider).toEqual({ enabled: true, maxSteps: 10, maxDurationMs: 60000 })
+  })
+
+  it('rejects spider.enabled with non-boolean', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      spider: { enabled: 'yes' as any },
+    })).toThrow('spider.enabled must be a boolean')
+  })
+
+  it('rejects spider.maxSteps with non-positive value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      spider: { maxSteps: 0 },
+    })).toThrow('spider.maxSteps must be a positive number')
+  })
+
+  it('rejects spider.maxDurationMs with negative value', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      spider: { maxDurationMs: -1 },
+    })).toThrow('spider.maxDurationMs must be a positive number')
   })
 })

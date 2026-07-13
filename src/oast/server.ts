@@ -1,14 +1,59 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { getGlobalOastStore, OastCallback } from './store'
+import { recordStructuredEvidence } from '../tools/control-tools'
+import type { OastConfig } from '../config'
 
 let server: ReturnType<typeof createServer> | null = null
 let serverPort = 0
 const oastHost = 'localhost'
 
+let _oastConfig: OastConfig | null = null
+
+export function setOastConfig(config: OastConfig | null): void {
+  _oastConfig = config
+}
+
+/** Callback TTL in ms. Default 1h. */
+function getCallbackTtlMs(): number {
+  if (_oastConfig?.callbackTtlMs !== undefined) return _oastConfig.callbackTtlMs
+  const envTtl = process.env.OAST_CALLBACK_TTL_MS
+  if (envTtl) {
+    const n = Number(envTtl)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return 3_600_000
+}
+
+/**
+ * Build the OAST callback URL.
+ * Priority: OAST_CALLBACK_HOST env > config.oast.externalHost > local server.
+ */
 export function getOastUrl(): string {
+  const ext = process.env.OAST_CALLBACK_HOST || _oastConfig?.externalHost
+  if (ext) {
+    return `https://${ext}`
+  }
   if (serverPort === 0) return 'http://oast-not-started'
   return `http://${oastHost}:${serverPort}`
+}
+
+/** Prune callbacks older than TTL from the store. Returns count removed. */
+export function pruneExpiredCallbacks(): number {
+  const store = getGlobalOastStore()
+  const ttlMs = getCallbackTtlMs()
+  const cutoff = Date.now() - ttlMs
+  const all = store.getAll()
+  const before = all.length
+  store.clear()
+  let kept = 0
+  for (const cb of all) {
+    if (cb.timestamp >= cutoff) {
+      store.add(cb)
+      kept++
+    }
+  }
+  return before - kept
 }
 
 function parseBody(req: IncomingMessage): Promise<string> {
@@ -43,6 +88,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const path = url.split('?')[0]
 
   if (path === '/callbacks' && method === 'GET') {
+    pruneExpiredCallbacks()
     const store = getGlobalOastStore()
     return jsonResponse(res, 200, { ok: true, count: store.count(), callbacks: store.getAll() })
   }
@@ -52,6 +98,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const store = getGlobalOastStore()
     const cb = store.getById(id)
     if (!cb) return jsonResponse(res, 404, { ok: false, error: 'callback not found' })
+    if (cb.timestamp < Date.now() - getCallbackTtlMs()) {
+      return jsonResponse(res, 410, { ok: false, error: 'callback expired' })
+    }
     return jsonResponse(res, 200, { ok: true, callback: cb })
   }
 
@@ -62,7 +111,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (path === '/health' || path === '/') {
-    return jsonResponse(res, 200, { ok: true, service: 'oast', port: serverPort, callbacks: getGlobalOastStore().count() })
+    return jsonResponse(res, 200, { ok: true, service: 'oast', port: serverPort, callbacks: getGlobalOastStore().count(), externalHost: process.env.OAST_CALLBACK_HOST || _oastConfig?.externalHost || null })
   }
 
   // Catch-all: record any request as a callback
@@ -84,6 +133,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   getGlobalOastStore().add(callback)
+
+  // Structured evidence: an out-of-band callback is hard proof of SSRF/XXE/RCE.
+  recordStructuredEvidence({
+    type: 'raw_request',
+    data: `${method} ${url}`,
+    label: `OAST callback from ${callback.sourceIp}`,
+    observed: { method, url: `http://${oastHost}:${serverPort}${path}` },
+  })
+
   jsonResponse(res, 200, { ok: true, recorded: callback.id })
 }
 

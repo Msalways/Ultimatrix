@@ -1,0 +1,16 @@
+=== diag start 2026-07-12T09:10:22.402Z ===
+config loaded: engine=council provider=nvidia model=nvidia/nemotron-3-super-120b-a12b
+agent created
+calling agent.generate() with 60s timeout...
+GENERATE OK — text length=160
+text[:500]={
+  "intent": "propose",
+  "proposal": {
+    "action": "test",
+    "skillId": "xss",
+    "impact": "low",
+    "complexity": "low",
+    "reasoning": "diag"
+  }
+}
+=== diag OK ===

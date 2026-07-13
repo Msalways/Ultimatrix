@@ -1,3 +1,8 @@
+/**
+ * @deprecated Use the graph schema types (`src/graph/schema.ts`) and council
+ * types (`src/council/types.ts`) instead. This module is retained solely for
+ * backward compatibility with legacy v6/v7 context reader/writer workflows.
+ */
 import { z } from 'zod'
 import { NodeType, EdgeType } from '../graph/schema.js'
 

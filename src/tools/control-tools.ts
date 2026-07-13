@@ -10,10 +10,22 @@ import { captureScreenshot } from '../browser/manager'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { EvidenceLevel } from '../types/shared'
 import { isUrlInScope } from '../safety/scope-guard'
+import {
+  verifyFindingClaim,
+  type EvidenceItem,
+  type EvidenceItemType,
+  type FindingClaim,
+  type ObservedFacts,
+  type VerificationResult,
+} from '../intelligence/evidence-ledger'
+import { coreEvidenceLedger } from '../core/evidence'
 
-const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string }>>()
+const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }>>()
 
 let _evidenceGate: EvidenceGate | null = null
+
+/** Global structured ledger of what actually happened (auto-captured by tools). */
+const structuredLedger = coreEvidenceLedger
 
 export function setEvidenceGateForFindings(gate: EvidenceGate): void {
   _evidenceGate = gate
@@ -23,22 +35,65 @@ export function getGlobalEvidenceGate(): EvidenceGate | null {
   return _evidenceGate
 }
 
+/**
+ * Record a structured evidence item captured directly by a tool (not via the
+ * LLM-facing recordEvidence tool). This is the source of truth for claim
+ * verification. No substring scanning — items carry typed observed facts.
+ */
+export function recordStructuredEvidence(item: {
+  type: EvidenceItemType
+  data: string
+  label: string
+  observed?: ObservedFacts
+  session?: string
+}): void {
+  structuredLedger.record(item)
+}
+
+/** Verify a finding claim against the global structured ledger. */
+export function verifyClaimStructured(claim: FindingClaim): VerificationResult {
+  return structuredLedger.verify(claim)
+}
+
+/** Clear the structured ledger (per-session / per-target isolation). */
+export function resetStructuredLedger(): void {
+  structuredLedger.clear()
+}
+
 export const recordEvidence = createTool({
   id: 'recordEvidence',
-  description: 'Record an evidence item that will be included in the next writeFinding call.',
+  description: 'Record an evidence item to attach to a subsequently emitted finding.',
   inputSchema: z.object({
     type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
     data: z.string(),
     label: z.string(),
     session: z.string().optional(),
     findingKey: z.string().optional().describe('Key to group evidence items. Defaults to "default".'),
+    method: z.string().optional().describe('HTTP method observed for this evidence item'),
+    url: z.string().optional().describe('URL observed for this evidence item'),
+    status: z.number().optional().describe('HTTP status observed for this evidence item'),
+    requestHeaders: z.record(z.string(), z.string()).optional(),
+    responseHeaders: z.record(z.string(), z.string()).optional(),
   }),
-  execute: async ({ type, data, label, session, findingKey }) => {
+  execute: async ({ type, data, label, session, findingKey, method, url, status, requestHeaders, responseHeaders }) => {
     const key = findingKey || 'default'
-    const item = { type, data, label, timestamp: Date.now(), ...(session ? { session } : {}) }
+    const observed: ObservedFacts | undefined =
+      method || url || status != null || requestHeaders || responseHeaders
+        ? {
+            ...(method ? { method } : {}),
+            ...(url ? { url } : {}),
+            ...(status != null ? { status } : {}),
+            ...(requestHeaders ? { requestHeaders } : {}),
+            ...(responseHeaders ? { responseHeaders } : {}),
+          }
+        : undefined
+    const item = { type, data, label, timestamp: Date.now(), ...(session ? { session } : {}), ...(observed ? { observed } : {}) }
     const existing = evidenceBuffer.get(key) || []
     existing.push(item)
     evidenceBuffer.set(key, existing)
+    // Manual evidence also feeds the global structured ledger so claim verification
+    // works regardless of findingKey. Typed observed facts only — no prose scanning.
+    recordStructuredEvidence({ type, data, label, observed, ...(session ? { session } : {}) })
     return {
       ok: true,
       value: {
@@ -51,7 +106,7 @@ export const recordEvidence = createTool({
   },
 })
 
-export const flushEvidence = (findingKey?: string): Array<{ type: string; data: string; label: string; timestamp: number; session?: string }> => {
+export const flushEvidence = (findingKey?: string): Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }> => {
   if (findingKey) {
     const items = evidenceBuffer.get(findingKey) || []
     evidenceBuffer.delete(findingKey)
@@ -96,11 +151,21 @@ export const writeFinding = createTool({
     confidence: z.number().min(0).max(1),
     cwe: z.string().optional().describe('CWE ID'),
     remediation: z.string().optional(),
-    findingKey: z.string().optional().describe('Key to pull buffered evidence from recordEvidence'),
+    findingKey: z.string().optional().describe('Key matching the evidence buffer to pull previously recorded items from.'),
+    observedStatus: z.number().optional().describe('HTTP status you observed that proves this finding. Used for structural evidence verification (no prose scanning).'),
   }),
   execute: async (args) => {
     const store = getGlobalGraphStore()
     const evidenceItems = flushEvidence(args.findingKey)
+    const structuredEvidenceItems: EvidenceItem[] = evidenceItems.map((e, i) => ({
+      id: `flush_${i}`,
+      type: e.type as EvidenceItemType,
+      data: e.data,
+      label: e.label,
+      timestamp: e.timestamp,
+      ...(e.session ? { session: e.session } : {}),
+      ...(e.observed ? { observed: e.observed } : {}),
+    }))
 
     // Phase E: Auto-screenshot on finding confirmation
     const workspace = getGlobalWorkspace()
@@ -116,18 +181,34 @@ export const writeFinding = createTool({
     const evidenceLevel = determineEvidenceLevel(evidenceItems)
     const findingId = buildFindingId(args.type, args.endpoint, args.param)
 
-    // Maker/Checker: cross-check claim against recorded evidence
-    let effectiveSeverity = args.severity
-    if (_evidenceGate && args.severity !== 'info') {
-      const claim = `${args.type} on ${args.endpoint}`
-      const verification = _evidenceGate.verifyClaim(claim)
+    // Maker/Checker: structural verification of the claim against recorded evidence.
+    // Root-cause fix: verify typed observed facts, do NOT substring-scan prose, and
+    // HARD-REJECT unsupported claims (no severity downgrade bandaid).
+    const effectiveSeverity = args.severity
+    if (args.severity !== 'info') {
+      const claim: FindingClaim = {
+        type: args.type,
+        endpoint: args.endpoint,
+        param: args.param,
+        method: args.method,
+        observed: args.observedStatus != null ? { status: args.observedStatus } : undefined,
+      }
+      const globalCheck = verifyClaimStructured(claim)
+      const localCheck = verifyFindingClaim(claim, structuredEvidenceItems)
+      const verification: VerificationResult =
+        globalCheck.verified || localCheck.verified
+          ? { verified: true, missing: [], supporting: [...globalCheck.supporting, ...localCheck.supporting] }
+          : {
+              verified: false,
+              missing: globalCheck.missing.length ? globalCheck.missing : localCheck.missing,
+              supporting: [],
+            }
       if (!verification.verified) {
-        // Downgrade severity when evidence doesn't support the claim
-        const sevOrder = ['critical', 'high', 'medium', 'low', 'info']
-        const idx = sevOrder.indexOf(args.severity)
-        if (idx < sevOrder.length - 1) {
-          effectiveSeverity = sevOrder[idx + 1] as typeof args.severity
-          log.warn(`EvidenceGate: "${claim}" lacks supporting evidence, downgrading ${args.severity} → ${effectiveSeverity}`)
+        log.warn(`EvidenceGate: claim "${args.type} on ${args.endpoint}" not supported by recorded evidence — missing: ${verification.missing.join(', ')}`)
+        return {
+          ok: false,
+          error: `EvidenceGate: claim not supported by recorded evidence. Missing: ${verification.missing.join(', ')}. Capture real evidence (recordEvidence with observed facts, or a tool-captured request/response) before writing the finding.`,
+          missing: verification.missing,
         }
       }
     }

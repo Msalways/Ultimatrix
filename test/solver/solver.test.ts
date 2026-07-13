@@ -217,7 +217,7 @@ describe('solve', () => {
     expect(reasonEvents.some(e => e.text?.includes('SQL injection'))).toBe(true)
   })
 
-  it('returns reasoningText as result.text when reasoning model', async () => {
+  it('does not persist reasoning prose into result.text (prevents next-turn echo, A12)', async () => {
     const agent = createReasoningMockAgent(
       ['I found SQL injection. Evidence confirmed via error-based response.'],
       ['| Endpoint | Type |']
@@ -226,8 +226,11 @@ describe('solve', () => {
       origin: 'https://example.com',
       goal: 'Find SQL injection',
     })
+    // Reasoning is displayed live but NOT persisted into result.text — otherwise it
+    // re-enters working memory and bloats the next turn's context.
     expect(result.text).toBeDefined()
-    expect(result.text).toContain('SQL injection')
+    expect(result.text).not.toContain('SQL injection')
+    expect(result.text).toContain('| Endpoint | Type |')
   })
 
   it('returns responseText as result.text when non-reasoning model', async () => {

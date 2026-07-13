@@ -24,6 +24,8 @@ import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
 import { log } from '../utils/logger'
 import { upsertPage } from '../graph/tools'
 import { isUrlInScope } from '../safety/scope-guard'
+import { recordStructuredEvidence } from '../tools/control-tools'
+import { getGlobalBotHandler } from './anti-bot'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -69,11 +71,23 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
     wrapped[name] = {
       ...tool,
       execute: async (input: any, context: any) => {
-        // Scope guard for browser navigation
+        // Scope guard for browser navigation (explicit target URL)
         if (name === 'stagehand_navigate' && input?.url) {
           const scopeCheck = isUrlInScope(input.url)
           if (!scopeCheck.allowed) {
             return { success: false, error: `Scope violation: ${scopeCheck.reason}` }
+          }
+        }
+
+        // Scope guard for every other browser action: must stay on a scoped page.
+        if (name !== 'stagehand_navigate') {
+          const page = context?.page
+          const pageUrl = page?.url?.()
+          if (pageUrl && pageUrl !== 'about:blank' && pageUrl !== '') {
+            const pageScope = isUrlInScope(pageUrl)
+            if (!pageScope.allowed) {
+              return { success: false, error: `Scope violation: ${pageScope.reason}` }
+            }
           }
         }
 
@@ -96,6 +110,41 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
                 sessionId: context?.sessionId,
               })
               log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
+              // Structured evidence that this URL was actually visited.
+              recordStructuredEvidence({
+                type: 'text',
+                data: `navigated to ${page.url()}`,
+                label: `navigate ${page.url()}`,
+                observed: { url: page.url() },
+              })
+
+              // Bot detection after navigation
+              const botHandler = getGlobalBotHandler()
+              const challenge = await botHandler.detectChallenge(page)
+              if (challenge.detected) {
+                log.info(`[dialog-inject] Bot challenge detected: ${challenge.vendor} ${challenge.challengeType}`)
+                recordStructuredEvidence({
+                  type: 'text',
+                  data: `Bot challenge: ${challenge.vendor} ${challenge.challengeType} on ${challenge.url}`,
+                  label: `bot-challenge ${challenge.vendor}`,
+                  observed: { url: challenge.url },
+                })
+
+                // In headful mode, we can wait for auto-resolution or prompt user
+                // In headless mode, just record and continue (the challenge may persist)
+                const resolved = await botHandler.waitForResolution(page, 10_000)
+                if (resolved) {
+                  log.info(`[dialog-inject] Bot challenge resolved automatically`)
+                  recordStructuredEvidence({
+                    type: 'text',
+                    data: `Bot challenge resolved: ${challenge.vendor} ${challenge.challengeType}`,
+                    label: `bot-resolved ${challenge.vendor}`,
+                    observed: { url: challenge.url },
+                  })
+                } else {
+                  log.dim(`[dialog-inject] Bot challenge not resolved — human intervention may be needed`)
+                }
+              }
             }
           } catch (error) {
             log.dim(`[dialog-inject] Auto-page-record failed: ${error}`)
@@ -107,6 +156,16 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
           const newDialogs = watcher.getDialogs().slice(before)
           const evidence = buildDialogEvidence(newDialogs)
           log.info(`[dialog-inject] ${newDialogs.length} dialog(s) during ${name}: ${newDialogs.map(d => `[${d.type}] "${d.message}"`).join(', ')}`)
+
+          // Structured evidence: a native dialog is hard proof of XSS/etc.
+          for (const d of newDialogs) {
+            recordStructuredEvidence({
+              type: 'text',
+              data: `[${d.type}] ${d.message}`,
+              label: `dialog on ${d.url}`,
+              observed: { url: d.url },
+            })
+          }
 
           if (result && typeof result === 'object') {
             return {

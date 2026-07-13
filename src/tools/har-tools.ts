@@ -7,7 +7,7 @@ import { getGlobalSessionManager } from '../http/session-manager'
 
 export const getCapturedHeaders = createTool({
   id: 'getCapturedHeaders',
-  description: 'Get real captured headers (auth tokens, cookies, CSRF tokens) for a URL. Call this before httpRequest to get the actual auth context used by the browser.',
+  description: 'Retrieve captured headers (auth tokens, cookies, CSRF tokens) for a URL, providing the real auth context the browser used for its requests.',
   inputSchema: z.object({
     url: z.string().describe('Target URL or URL pattern to match'),
     role: z.string().optional().describe('Session role (e.g. "admin", "user"). If provided, looks up role-specific session first.'),

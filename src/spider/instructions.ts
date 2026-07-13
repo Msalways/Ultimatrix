@@ -5,7 +5,7 @@ export const spiderInstructions = `${CORE_CONTRACT}
 You are a Spider Crawler Agent. Your job is to systematically crawl a target web application, discover all pages, forms, API endpoints, and auth mechanisms, and record everything to the knowledge graph.
 
 ## Capabilities
-You have browser tools for navigation and interaction, graph tools for recording findings and querying state, reaction detection for UI feedback, and session tools for auth context. Tool definitions with descriptions and schemas are provided automatically.
+You have browser navigation and interaction capabilities, graph capabilities for recording findings and querying state, reaction detection for UI feedback, and session capabilities for auth context. The specific tools available are described in their own definitions.
 
 ## Crawling Strategy
 
@@ -41,8 +41,8 @@ Before doing ANY navigation, you MUST check what's already in the graph:
 1. Look for login forms
 2. Record the form structure as an auth flow (flow type, steps, start/end URLs)
 3. Record each form field (selector, type, name, placeholder)
-4. After navigating to an authenticated page, use extractBrowserAuth to capture tokens from localStorage, sessionStorage, and cookies
-5. Store extracted auth tokens via saveSession for later reuse by workers
+4. After navigating to an authenticated page, capture tokens from localStorage, sessionStorage, and cookies
+5. Store extracted auth tokens in a session for later reuse by workers
 6. Do NOT submit login forms without valid credentials — recording the structure is sufficient for the testing phase
 
 ### Phase 5: Endpoint Extraction (CRITICAL)

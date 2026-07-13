@@ -725,4 +725,166 @@ describe('HumanObserver', () => {
       expect(STAGEHAND_INIT_SCRIPT).toContain('labels')
     })
   })
+
+  describe('AuthStateDetector', () => {
+    function makeAuthPage(result: {
+      hasPasswordField?: boolean
+      formCount?: number
+      hasLoginForm?: boolean
+      loginEndpoint?: string
+      oauthProviders?: string[]
+      hasRememberMe?: boolean
+      title?: string
+      url?: string
+    } = {}) {
+      const {
+        hasPasswordField = false,
+        formCount = 0,
+        hasLoginForm = false,
+        loginEndpoint = undefined,
+        oauthProviders = [],
+        hasRememberMe = false,
+        title = '',
+        url = 'https://example.com/page',
+      } = result
+
+      return {
+        url: vi.fn().mockReturnValue(url),
+        evaluate: vi.fn().mockResolvedValue({
+          hasPasswordField,
+          formCount,
+          hasLoginForm,
+          loginEndpoint,
+          oauthProviders,
+          hasRememberMe,
+        }),
+      }
+    }
+
+    it('detects a form-based login page', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const page = makeAuthPage({
+        hasPasswordField: true,
+        formCount: 1,
+        hasLoginForm: true,
+        loginEndpoint: 'https://example.com/login',
+      })
+
+      const state = await detector.detectAuthState(page as any)
+      expect(state.hasLoginForm).toBe(true)
+      expect(state.authType).toBe('form')
+      expect(state.hasPasswordField).toBe(true)
+      expect(state.loginEndpoint).toBe('https://example.com/login')
+    })
+
+    it('detects OAuth providers on the page', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const page = makeAuthPage({
+        hasLoginForm: true,
+        oauthProviders: ['Google', 'GitHub'],
+      })
+
+      const state = await detector.detectAuthState(page as any)
+      expect(state.hasLoginForm).toBe(true)
+      expect(state.authType).toBe('oauth')
+      expect(state.oauthProviders).toContain('Google')
+      expect(state.oauthProviders).toContain('GitHub')
+    })
+
+    it('returns unknown auth type when no indicators found', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const page = makeAuthPage()
+
+      const state = await detector.detectAuthState(page as any)
+      expect(state.hasLoginForm).toBe(false)
+      expect(state.authType).toBe('unknown')
+      expect(state.hasPasswordField).toBe(false)
+    })
+
+    it('returns default state when page evaluation fails', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const page = { evaluate: vi.fn().mockRejectedValue(new Error('page crashed')), url: vi.fn() }
+
+      const state = await detector.detectAuthState(page as any)
+      expect(state.hasLoginForm).toBe(false)
+      expect(state.authType).toBe('unknown')
+    })
+
+    it('tracks state changes and notifies callbacks', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const callback = vi.fn()
+      detector.onStateChange(callback)
+
+      const page1 = makeAuthPage({ hasLoginForm: false })
+      await detector.detectAuthState(page1 as any)
+      expect(callback).toHaveBeenCalledTimes(1)
+      expect(callback).toHaveBeenCalledWith(null, expect.objectContaining({ hasLoginForm: false }))
+
+      const page2 = makeAuthPage({ hasLoginForm: true, hasPasswordField: true })
+      await detector.detectAuthState(page2 as any)
+      expect(callback).toHaveBeenCalledTimes(2)
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ hasLoginForm: false }),
+        expect.objectContaining({ hasLoginForm: true }),
+      )
+    })
+
+    it('does not notify when state has not changed', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const callback = vi.fn()
+      detector.onStateChange(callback)
+
+      const page = makeAuthPage({ hasLoginForm: false })
+      await detector.detectAuthState(page as any)
+      await detector.detectAuthState(page as any)
+      // First call fires (null → state), second does not (same state)
+      expect(callback).toHaveBeenCalledTimes(1)
+    })
+
+    it('clears state', async () => {
+      const obs = new HumanObserver()
+      const detector = obs.getAuthDetector()
+      const page = makeAuthPage({ hasLoginForm: true, hasPasswordField: true })
+      await detector.detectAuthState(page as any)
+      expect(detector.getLastState()).not.toBeNull()
+
+      detector.clear()
+      expect(detector.getLastState()).toBeNull()
+    })
+
+    it('triggers auth detection on navigate actions', async () => {
+      const obs = new HumanObserver()
+      const page = {
+        url: vi.fn().mockReturnValue('https://example.com/login'),
+        addInitScript: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        off: vi.fn(),
+        evaluate: vi.fn().mockResolvedValue({
+          hasPasswordField: true,
+          formCount: 1,
+          hasLoginForm: true,
+          loginEndpoint: 'https://example.com/login',
+          oauthProviders: [],
+          hasRememberMe: false,
+        }),
+      }
+
+      obs.attach(page as any)
+      obs.record({ type: 'navigate', url: 'https://example.com/login', timestamp: Date.now() })
+
+      // Give async auth detection time to run
+      await new Promise(r => setTimeout(r, 100))
+
+      const detector = obs.getAuthDetector()
+      const state = detector.getLastState()
+      expect(state).not.toBeNull()
+      expect(state!.hasLoginForm).toBe(true)
+    })
+  })
 })

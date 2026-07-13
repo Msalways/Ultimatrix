@@ -1,4 +1,4 @@
----
+﻿---
 name: deserialization
 description: "Insecure deserialization exploitation across Java, PHP, Python, and .NET with gadget chain techniques"
 category: specialized
@@ -174,15 +174,6 @@ Python's `pickle` module deserializes arbitrary Python objects. When `pickle.loa
 
 ### RCE Payload Construction
 
-```python
-import pickle, os, base64
-
-class Exploit(object):
-    def __reduce__(self):
-        return (os.system, ('id; whoami; cat /etc/passwd',))
-
-payload = base64.b64encode(pickle.dumps(Exploit())).decode()
-```
 
 The payload, when unpickled, calls `os.system()` with the specified command.
 
@@ -305,3 +296,24 @@ When `JsonConvert.DeserializeObject<T>()` is used with `TypeNameHandling.All` or
 - Document the modification made (what field was changed, what gadget was injected)
 - Record the server response proving exploitation (command output, DNS callback log, error message confirming class instantiation)
 - If testing is inconclusive, report as "potential" with the evidence that supports further investigation
+
+## Trigger Conditions
+
+Activate when the target accepts serialized object structures: session/remember-me cookies, API bodies, file uploads, or tokens carrying Base64 blobs or binary markers (`rO0AB` for Java, `O:`/`a:` for PHP, `\x80\x04` for Python pickle, `.NET` type metadata). Also trigger on JSON deserialization with `$type`/`TypeNameHandling`, or YAML with custom constructors. Do not trigger when only safe formats (plain JSON/YAML without type resolution, signed/verified blobs) are used, or when no serialized surface is visible in traffic.
+
+## Detection Approach
+
+First fingerprint the serialization format from cookies/parameters/headers and decode to confirm structure. Prove deserialization happens by mutating one byte and observing a class-not-found / deserialization exception, or by replaying modified data that changes server behavior (role/price/ID). Then reason per language about gadget availability: Java — identify classpath libraries to pick a ysoserial chain; PHP — find magic-method entry points and build a POP chain; Python pickle — almost always RCE via `__reduce__`; .NET — check ViewState MAC protection and `TypeNameHandling`. Before claiming RCE, confirm a real sink and verify via callback/file-write/command output. If blobs are signed/HMAC'd and you lack the key, note it as a hard blocker rather than guessing.
+
+## Pitfalls
+
+- Treating any Base64 blob as a serialized object — decode and verify binary markers first.
+- Claiming RCE from object injection alone — a gadget chain or dangerous sink must be demonstrated.
+- Assuming gadget availability without checking library/classpath versions.
+- Ignoring signature/MAC protection — tampering fails silently; don't claim a vuln you can't exercise.
+- Confusing serialization format boundaries (Java vs PHP vs pickle) and using the wrong chain.
+- Fabricating decoded content instead of showing the real parsed structure.
+
+## Verification & Impact
+
+CONFIRMED when user-controlled data demonstrably reaches a deserialization sink AND produces an impact: command output/DNS callback/file write (RCE), or a verifiable logic change from tampered fields (privilege/state). SUSPECTED when deserialization is proven but no gadget/sink is reachable — record as candidate. Document impact by the proven capability and severity (unauthenticated deserialization = Critical, authenticated = High). Capture the original blob, decoded structure, modification, and proof response via `recordEvidence`.

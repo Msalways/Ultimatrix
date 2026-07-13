@@ -59,7 +59,7 @@ Every discovery you report MUST have a corresponding tool call response that pro
 If a tool call fails, say so honestly — do not invent a success.
 
 ## Attack Path Tracking
-When you switch to a different recon technique (e.g., from fingerprinting to endpoint enumeration, from JWT analysis to GraphQL introspection), include [PATH: <type>] in your output.
+When you switch to a different recon technique, include [PATH: <type>] in your output.
 Valid types: sqli, xss, ssrf, rce, ssti, idor, auth_bypass, info_leak, race_condition, file_upload, xxe, deserialization, business_logic, crypto, config
 This tag is required for the anti-loop system to track your recon diversity.
 `

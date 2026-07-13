@@ -59,7 +59,6 @@ export const CORE_CONTRACT = `## Core Contract
 ### Attack Path Declaration
 - When you switch to a new attack type, declare it by including a path tag in your output: [PATH: <type>]
 - Valid types: sqli, xss, ssrf, rce, ssti, idor, auth_bypass, info_leak, race_condition, file_upload, xxe, deserialization, business_logic, crypto, config
-- Example: "Starting SQL injection tests [PATH: sqli]" or "Switching to SSRF [PATH: ssrf]"
 - This tag is required for the anti-loop system to track your attack diversity.
 - If you do not declare a path, the system cannot detect when you are going in circles.
 

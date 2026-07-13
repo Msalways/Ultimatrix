@@ -1,4 +1,4 @@
-# Ultimatrix v8.3
+# Ultimatrix v8.4
 
 **An autonomous security researcher that reasons, learns, and adapts — not another pattern-matching scanner.**
 
@@ -20,10 +20,14 @@ It finds vulnerabilities that pattern-based scanners miss, because it understand
 - [Why Ultimatrix?](#why-ultimatrix)
 - [How It Works](#how-it-works)
 - [Architecture Overview](#architecture-overview)
-- [Three Engine Architecture](#three-engine-architecture)
+- [Choosing Your Engine](#choosing-your-engine)
+- [Engine 1: Legacy Supervisor](#engine-1-legacy-supervisor)
+- [Engine 2: Solver (OODA Loop)](#engine-2-solver-ooda-loop)
+- [Engine 3: Multi-Model (Dynamic Routing)](#engine-3-multi-model-dynamic-routing)
+- [Engine 4: Council (Debate Framework)](#engine-4-council-debate-framework)
 - [The Intelligence Layer](#the-intelligence-layer)
 - [Multi-Model Routing](#multi-model-routing)
-- [47 Knowledge-Based Skills](#47-knowledge-based-skills)
+- [21 Knowledge-Based Skills](#21-knowledge-based-skills)
 - [Human-in-the-Loop](#human-in-the-loop)
 - [Graph-Powered Reasoning](#graph-powered-reasoning)
 - [Scope Guard](#scope-guard)
@@ -132,79 +136,69 @@ That's not a toy. That's a security consultant that works 24/7.
                                            │
                     ┌──────────────────────▼──────────────────────┐
                     │            Engine Selector                  │
-                    │     config.engine: 'legacy' | 'solver'      │
-                    │                | 'multi-model'              │
-                    └──────┬──────────────┬──────────────┬───────┘
-                           │              │              │
-          ┌────────────────▼──┐  ┌────────▼────────┐  ┌─▼──────────────────┐
-          │  Legacy           │  │  Solver Engine   │  │  Multi-Model       │
-          │  Supervisor       │  │  (OODA Loop)     │  │  Engine            │
-          │  ─────────────    │  │  ────────────    │  │  ──────────────    │
-          │  Observe → Learn  │  │  REASON →        │  │  Solver + Dynamic  │
-          │  → Attack → Loop  │  │  EXPLORE →       │  │  Model Selection   │
-          │                   │  │  CONCLUDE        │  │                    │
-          │  4 Specialist     │  │  Blackboard      │  │  ModelSelector     │
-          │  Workers          │  │  State-Space     │  │  Scores optimal    │
-          │                   │  │                  │  │  model per task    │
-          └──────────┬────────┘  └────────┬─────────┘  └──────────┬─────────┘
-                     │                    │                        │
-          ┌──────────▼────────────────────▼────────────────────────▼─────────┐
-           │  Shared Intelligence Layer                          │
-           │  ─────────────────────────────────────────────                  │
-           │  • Evidence Gate (anti-hallucination, zero leniency)           │
-           │  • Reflexion Engine (L0-L4 failure classification)             │
-           │  • Anti-Loop Detector (stale/dead-end detection)               │
-           │  • Knowledge Graph (17 node types, 12 edge types)             │
-           │  • Skill Library (47 knowledge-based skills)                   │
-           │  • Scope Guard (URL validation, domain/path enforcement)       │
-           │  • Headroom Compression (intelligent response compression)     │
-           │  • Session Manager (cookie expiry validation)                  │
-           │  • Cross-Engagement Memory (anonymized pattern learning)       │
-           │  • Attack-Path Solver (BFS traversal of vulnerability chains)  │
-           │  • Campaign Autonomy (systematic test coverage planning)       │
-          └──────────────────────────┬──────────────────────────────────────┘
+                    │     config.engine: 'multi-model' (default)  │
+                    │              | 'legacy'                     │
+                    └──────┬──────────────────────┬──────────────┘
+                           │                      │
+          ┌────────────────▼──────────────┐  ┌────▼──────────┐
+          │  Multi-Model Engine           │  │ Legacy        │
+          │  (default)                    │  │ Supervisor    │
+          │  ────────────                 │  │ ────────────  │
+          │  OODA solver +                │  │ Observe →     │
+          │  Dynamic Model Selection      │  │ Learn →       │
+          │  + /council on-demand         │  │ Attack → Loop │
+          │  ─────────────                │  │               │
+          │  Brain decides when to        │  │ 4 Specialist  │
+          │  bring in council (4 LLMs)    │  │ Workers       │
+          │  via requestCouncil tool      │  │               │
+          └──────────────┬────────────────┘  └────┬──────────┘
+                         │                       │
+          ┌──────────────▼───────────────────────▼──────────┐
+           │  Shared Intelligence Layer                      │
+           │  ─────────────────────────────────────────────  │
+           │  • Evidence Gate (anti-hallucination)           │
+           │  • Reflexion Engine (L0-L4 failure class)       │
+           │  • Anti-Loop Detector (stale/dead-end detect)   │
+            │  • Knowledge Graph (20 node types, 15 edges)   │
+            │  • Skill Library (57 knowledge-based skills)    │
+           │  • Scope Guard (URL/domain enforcement)         │
+           │  • Headroom Compression (response compress)     │
+           │  • Session Manager (cookie expiry handling)     │
+           │  • Cross-Engagement Memory (pattern learning)   │
+           │  • Attack-Path Solver (BFS vulnerability chains) │
+           │  • Campaign Autonomy (coverage planning)        │
+           │  • Debate Memory (stance tracking for council)  │
+          └──────────────────────────┬──────────────────────────┘
                                      │
-          ┌──────────────────────────▼──────────────────────────────────────┐
-          │                    Multi-Model Layer                           │
-          │  ────────────────────────────────────────                      │
-          │  ModelSelector: scoring engine for per-task model routing      │
-          │  ModelTiers: fast | balanced | powerful                        │
-          │  ProviderAwareLimiter: per-provider rate limiting              │
-          │  ContextBudgetManager: pre-flight context validation           │
-          │  SchemaSanitizer: provider-specific JSON schema compat         │
-          │  TokenBudgetTracker: per-task budget enforcement               │
-          │  QuotaTracker: per-provider quota + cooldown management        │
-          │  UsageTracker: token usage aggregation                         │
-          └──────────────────────────┬──────────────────────────────────────┘
-                                     │
-          ┌──────────────────────────▼──────────────────────────────────────┐
+          ┌──────────────────────────▼─────────────────────────────────────┐
            │  Tool Layer                                │
-           │  ──────────────────────────────────                            │
-           │  28+ specialized tools:                                         │
-           │  httpRequest, browser automation, graph queries,               │
-           │  session restore, skill loading, encode/decode,               │
-           │  finding generation, delegation, OAST callbacks,              │
-           │  scope enforcement, browser auth extraction,                  │
-           │  attack-path analysis, case file export...                    │
+           │  ──────────────────────────────────                           │
+           │  28+ specialized tools:                                        │
+           │  httpRequest, browser automation, graph queries,              │
+           │  session restore, skill loading, encode/decode,              │
+           │  finding generation, delegation, OAST callbacks,             │
+           │  scope enforcement, browser auth extraction,                 │
+           │  attack-path analysis, case file export...                   │
           │                                                                │
-          │  Response Flow:                                                 │
-          │  HTTP Response → Headroom Compression → LLM                    │
-          │  (structured CompressionResult with                            │
-          │   wasCompressed/wasTruncated booleans)                         │
-          └──────────────────────────┬──────────────────────────────────────┘
+          │  Response Flow:                                                │
+          │  HTTP Response → Headroom Compression → LLM                   │
+          │  (structured CompressionResult with                           │
+          │   wasCompressed/wasTruncated booleans)                        │
+          └──────────────────────────┬─────────────────────────────────────┘
                                      │
-          ┌──────────────────────────▼──────────────────────────────────────┐
-          │                    Browser Layer                               │
-          │  ──────────────────────────────────                            │
-          │  • Playwright + Stagehand hybrid                               │
-          │  • Dialog watcher (auto-dismiss JS alerts)                     │
-          │  • Human observer (action capture)                             │
-          │  • State bridge (CDP session persistence)                      │
-          │  • Reaction observer (DOM mutation tracking)                   │
-          └────────────────────────────────────────────────────────────────┘
+          ┌──────────────────────────▼─────────────────────────────────────┐
+           │                    Browser Layer                              │
+           │  ──────────────────────────────────                           │
+           │  • Playwright + Stagehand hybrid                              │
+           │  • Dialog watcher (auto-dismiss JS alerts)                    │
+           │  • Human observer (action capture)                            │
+           │  • State bridge (CDP session persistence)                     │
+           │  • Reaction observer (DOM mutation tracking)                  │
+           │  • Bot detection (Cloudflare/Akamai/DataDome/PerimeterX)     │
+           └───────────────────────────────────────────────────────────────┘
 ```
 
-### Source Layout (180+ TypeScript files, 26K+ LOC)
+### Source Layout (228+ TypeScript files, 30K+ LOC)
 
 ```
 src/
@@ -215,11 +209,23 @@ src/
 ├── cli/               # CLI entry point, command handlers
 ├── compression/       # Headroom compression service
 ├── config/            # Config loader, schema, validation
+├── council/           # Council debate engine (4 LLM members, debate memory)
+│   ├── personas/      # 8 persona .md files with YAML frontmatter
+│   ├── factory.ts     # LLM member creation, per-role tool filtering
+│   ├── orchestrator.ts # Parallel debate, stance extraction
+│   ├── debate-memory.ts # Stance tracking, contradiction detection
+│   ├── persona-loader.ts # YAML frontmatter parser
+│   ├── bus.ts         # Conversation bus, sliding-window transcript
+│   ├── types.ts       # MemberOutput, DebateMemory, Stance types
+│   ├── approval.ts    # HITL approval gate
+│   ├── evidence-bridge.ts # Worker results → evidence items
+│   └── blackboard-shared.ts # SharedBlackboard adapter
+├── core/              # Unified execution core (runner, strategies, blackboard)
 ├── events/            # Typed event emitter
 ├── generation/        # Test generator, parameterizer, storage
 ├── graph/             # Knowledge graph (TypeGraph), store, tools
 ├── http/              # HTTP client with compression, rate limiting
-├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining, cross-engagement
+├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining
 ├── logging/           # Forensic event logger, system metrics
 ├── manager/           # Agent manager (legacy supervisor)
 ├── mastra/            # Mastra agent wiring, tool registry
@@ -245,11 +251,32 @@ src/
 
 ---
 
-## Three Engine Architecture
+## Choosing Your Engine
 
-Ultimatrix has three engines, because different situations call for different approaches:
+Before diving into each engine, here's the decision matrix:
 
-### Engine 1: Legacy Supervisor
+| I want to... | Engine | Why |
+|-------------|--------|-----|
+| **Autonomous attack** — give a goal, walk away | `multi-model` | OODA loop runs unattended, dynamic model selection |
+| **Guided pentest** — I steer, agent executes | `multi-model` + `/council` | Brain runs autonomously, bring in council for complex decisions |
+| **Budget optimization** — many tasks, different models | `multi-model` | Dynamic model selection per task (cheap for recon, powerful for exploitation) |
+| **Structured scan** — predictable phases | `legacy` | Observe → Learn → Attack → Report loop |
+| **Just chat** — ask questions about the target | `interact` + any engine | REPL accepts natural language in any engine mode |
+
+### Quick comparison
+
+| Feature | Multi-Model (Default) | Legacy | 
+|---------|----------------------|--------|
+| Autonomy | Full | Reactive |
+| Decision making | Single LLM brain + model picker | Supervisor + 4 workers |
+| Model routing | Dynamic per-task | Single model |
+| Council debate | On-demand via `/council` | N/A |
+| Memory across turns | Blackboard | Thread memory |
+| Best for | Deep autonomous research, interactive red teaming | Predictable scans |
+
+---
+
+## Engine 1: Legacy Supervisor
 
 The battle-tested engine. **Observe → Learn → Attack → Report** in a structured 5-phase loop.
 
@@ -402,15 +429,227 @@ The primary engine. **R**eason → **E**xplore → **C**onclude, in a tight loop
 
 ```yaml
 # ultimatrix.yaml
-engine: solver       # 'legacy' | 'solver' | 'multi-model'
+engine: multi-model     # 'legacy' | 'multi-model' (default)
+                         # 'solver' → alias for multi-model (deprecated)
+                         # 'council' → deprecated, coerced to multi-model
 ```
 
 | CLI Command | Default Engine | Notes |
 |-------------|---------------|-------|
-| `ultimatrix solve` | `solver` (hardcoded) | Always uses OODA loop |
-| `ultimatrix interact` | From config | Respects `config.engine` |
+| `ultimatrix solve` | `multi-model` (hardcoded) | Always uses OODA loop |
+| `ultimatrix interact` | From config | Respects `config.engine`, `/council` available |
 | `ultimatrix scan` | From config | Respects `config.engine` |
 | `ultimatrix assess` | `legacy` (hardcoded) | Legacy supervisor |
+
+---
+
+## Council (On-Demand Debate)
+
+**Four LLM specialists debate what to test. On-demand via `/council`.**
+
+Council is not an engine — it's a REPL command. The brain runs as your default `multi-model` engine, and when you hit a complex decision, you bring in the council with `/council <goal>`. The brain can also suggest council via the `requestCouncil` tool.
+
+```
+> Test this app for IDOR
+[Brain runs autonomously — OODA loop with model selection]
+
+> /council What's the best approach for privilege escalation?
+[Council debate] 4 LLM members respond in parallel:
+  Strategist: "Chain IDOR on /api/users with session fix on /auth"
+  Operator: "Need auth cookies first — suggest testing login flow"
+  Skeptic: "No evidence /api/users accepts user input — verify first"
+  Analyst: "Connect with info disclosure on /api/errors we found"
+→ [Human decides] approves the strategy
+
+> /council Verify our findings are reportable
+[Council debate] Skeptic verifies evidence for each finding
+```
+
+```
+    ┌────────────────────────────────────────────────────────────┐
+    │                    COUNCIL DEBATE                         │
+    │  ────────────────────────────────                         │
+    │                                                          │
+    │  Phase 1: PROPOSAL (Strategist)                          │
+    │  "Test SQL injection on /api/users — endpoint takes      │
+    │   user input, no visible sanitization, 200 OK response"  │
+    │                                                          │
+    │  Phase 2: CHALLENGE (all others, parallel)               │
+    │  ┌────────────────────────────────────────────────────┐  │
+    │  │ Skeptic:   "Where's the evidence? Show me the     │  │
+    │  │             recorded observation."                  │  │
+    │  │ Operator:  "I need auth cookies to reach /api/     │  │
+    │  │             users. Can't test without them."        │  │
+    │  │ Analyst:   "SQLi + IDOR is more impactful. Chain   │  │
+    │  │             with /api/users/:id."                   │  │
+    │  └────────────────────────────────────────────────────┘  │
+    │                                                          │
+    │  Phase 3: REVISION (Strategist revises based on feedback)│
+    │  Phase 4: EXECUTION (Operator runs approved proposal)    │
+    │  Phase 5: REFLECTION (All: what worked, what failed)     │
+    │                                                          │
+    └──────────────────────────────┬─────────────────────────────┘
+                                   │
+                                   ▼
+    ┌────────────────────────────────────────────────────────────┐
+    │                    DEBATE MEMORY                          │
+    │  ────────────────────────────────                         │
+    │  Tracks: stances, failed approaches, proven findings     │
+    │  Members reference past positions for consistency        │
+    │  Contradictions detected and surfaced                    │
+    └────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+    ┌────────────────────────────────────────────────────────────┐
+    │                    HITL APPROVAL                          │
+    │  ────────────────────────────────                         │
+    │  Critical actions → human approval required               │
+    │  Low/medium impact → auto-approve                         │
+    │  Skeptic veto → blocks without evidence                   │
+    └────────────────────────────────────────────────────────────┘
+```
+
+### How Council Works
+
+Council is invoked on-demand via `/council <goal>` during any multi-model REPL session:
+
+| Aspect | Brain (default) | Council (on-demand) |
+|--------|----------------|---------------------|
+| Decision making | Single LLM brain decides | Four LLMs debate and challenge |
+| Adversarial checking | None (self-correction via reflexion) | Skeptic actively rejects unsupported claims |
+| Human control | Fully autonomous | HITL approval for critical actions |
+| Persona depth | Brain instructions | 4 rich personas with backstories, expertise, debate behavior |
+| Memory | Blackboard (facts + intents) | Blackboard + Debate Memory (stances, contradictions) |
+| Flow | Brain proposes → executes | Strategist proposes → skeptic gates → human approves → operator executes |
+
+### Persona System
+
+Personas are loaded from markdown files with YAML frontmatter metadata:
+
+```
+src/council/personas/
+├── charter.md          # Shared rules of engagement
+├── strategist.md       # The Architect — attack direction
+├── operator.md         # The Runner — execution
+├── skeptic.md          # The Auditor — evidence gating
+├── analyst.md          # The Cartographer — pattern chains
+├── debate-protocol.md  # 5-phase debate structure
+├── output-contract.md  # Structured JSON schemas
+└── human.md            # Human seated member
+```
+
+Each persona file contains:
+- **YAML frontmatter**: `id`, `name`, `role`, `tier`, `toolRestrictions`, `expertise[]`, `constraints[]`, `authority`
+- **Markdown body**: Rich persona instructions (50+ lines each vs 3-6 lines before)
+
+Tool restrictions from YAML frontmatter automatically filter which tools each member can use:
+- **Strategist**: all tools (needs full visibility)
+- **Operator**: HTTP, browser, worker delegation, finding recording
+- **Skeptic**: HTTP read-only, browser observation (no write tools)
+- **Analyst**: HTTP, browser, graph updates, chain detection
+
+### Debate Memory
+
+Debate memory tracks member positions across REPL turns:
+
+```typescript
+interface DebateMemory {
+  stances: Stance[]              // who said what about which proposal
+  failedApproaches: FailedApproach[]  // techniques that didn't work (don't retry)
+  provenFindings: ProvenFinding[]      // confirmed vulnerabilities
+}
+```
+
+**What debate memory prevents:**
+- Members contradicting themselves ("I supported SQLi last turn, now I oppose it")
+- Retrying failed approaches ("SQLi on /api/users failed with 403 — let's try SQLi on /api/users again")
+- Forgetting proven findings ("We already confirmed XSS on /search")
+
+**What debate memory enables:**
+- Cross-reference: "As the skeptic noted, we lack evidence for that claim"
+- Chain building: "The analyst's finding connects to our confirmed XSS"
+- Consistency: members maintain coherent positions across turns
+
+### Using Council
+
+```bash
+# Configure multi-model engine (council is available by default)
+cat > ultimatrix.yaml << 'EOF'
+provider: groq
+model: llama3-8b-8192
+target: https://your-app.com
+engine: multi-model
+
+council:
+  approvalMode: hitl      # 'autonomous' | 'hitl' | 'both'
+  maxRounds: 8
+  budgetPerRound: 20000
+
+browser:
+  headless: false         # Council works best with visible browser
+EOF
+
+# Start interactive session — brain is always running
+npx ultimatrix interact -t https://your-app.com
+
+# At the REPL, bring in council when needed:
+> /council What's the best approach for privilege escalation?
+> /council Verify our findings are reportable
+```
+
+**Example session:**
+```
+> Find authentication vulnerabilities
+
+[Council debate] r1
+[Council:debate] r1
+[council:execute] SQL injection on /api/login
+Council: 1 tasks proposed, 3 evidence items
+
+> Test the admin panel for IDOR
+
+[Council debate] r2
+  Skeptic: "Need evidence that /admin panel exists first"
+  Operator: "I can navigate there — but need auth cookies"
+  Analyst: "Chain with the session hijack we found in R1"
+[council:execute] IDOR on /admin/users/:id
+Council: 1 tasks proposed, 2 evidence items
+
+> What have we found so far?
+
+Council signals completion:
+  Worked: SQL injection on /api/login, IDOR on /admin/users/:id
+  Failed: XSS on /search (input is escaped)
+  Learned: Admin panel uses session cookies, user IDs are sequential
+```
+
+### Council Execution Flow
+
+```
+User input
+    │
+    ▼
+debateOnce(goal, members, bus, blackboard, execute)
+    │
+    ├── Phase 1: All 4 LLM members respond in parallel
+    │   Each gets role-specific prompt + debate memory + transcript
+    │
+    ├── Phase 2: Post to bus + extract stances → debate memory
+    │
+    ├── Phase 3: Check completion (intent === 'complete')
+    │
+    ├── Phase 4: Collect proposals (intent === 'propose')
+    │
+    ├── Phase 5: Skeptic verification (structured evidence check)
+    │
+    ├── Phase 6: HITL approval gate (critical → human, low → auto)
+    │
+    ├── Phase 7: Execute approved proposals via worker pool
+    │   Results bridged to evidence ledger
+    │
+    └── Phase 8: Reflection — stances, failures, findings extracted
+         Back to Phase 1 next turn (debate memory accumulates)
+```
 
 ---
 
@@ -618,11 +857,11 @@ Different LLM providers have different JSON Schema compatibility. The `SchemaSan
 
 ---
 
-## 47 Knowledge-Based Skills
+## 57 Knowledge-Based Skills
 
 Not payload lists. Not regex patterns. **Knowledge.**
 
-Each skill is a markdown file containing security expertise — reasoning patterns, testing methodologies, what to look for and why. The LLM reads these skills and applies the knowledge using its own reasoning capabilities. Skills are organized across **8 domain directories** with MITRE ATT&CK and OWASP Top 10 references.
+Each skill is a markdown file containing security expertise — reasoning patterns, testing methodologies, what to look for and why. The LLM reads these skills and applies the knowledge using its own reasoning capabilities. Skills are organized across **10 domain directories** with YAML frontmatter metadata and progressive disclosure.
 
 ### Skills by Domain
 
@@ -738,6 +977,31 @@ This keeps init fast even with 47 skills and 15K+ lines of skill content.
 
 Ultimatrix isn't a black box. It works *with* you:
 
+### Council Debate (HITL Mode)
+
+When using the council engine, four LLM specialists debate what to test. You sit as a member — approve or block critical actions, steer the research direction, ask questions.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Human-in-the-Loop Council                                     │
+│  ─────────────────────────                                     │
+│  You type a goal → 4 LLMs debate in parallel                   │
+│  → Skeptic verifies evidence                                   │
+│  → You approve/reject critical actions                         │
+│  → Operator executes approved proposals                        │
+│  → Results feed back into debate                               │
+│  → Repeat with debate memory (stances carry across turns)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Approval modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `autonomous` | No human input needed — council decides everything |
+| `hitl` | High-impact actions require your approval |
+| `both` | Low/medium auto-approve, high/critical need approval |
+
 ### Browser Visibility
 Watch the agent navigate in real time in a visible Chromium window. See exactly what it's clicking, what it's typing, what it's finding.
 
@@ -787,7 +1051,7 @@ Every finding includes visual proof — screenshots of the vulnerable page, resp
 
 ## Graph-Powered Reasoning
 
-Under the hood, Ultimatrix maintains a knowledge graph with 17 node types and 12 edge types:
+Under the hood, Ultimatrix maintains a knowledge graph with 20 node types and 15 edge types:
 
 ```
                     ┌──────────┐
@@ -826,9 +1090,6 @@ Under the hood, Ultimatrix maintains a knowledge graph with 17 node types and 12
 │ OutcomeFeedback   │  │ CandidateFinding  │
 │                   │  │                   │
 └───────────────────┘  └───────────────────┘
-```
-└──────────┘         └──────────┘         └──────────┘
-  (what we know)     (what we plan)        (what we learned)
 ```
 
 This isn't just data storage. The agent *queries* the graph to make decisions:
@@ -1112,20 +1373,142 @@ npx ultimatrix init
 export GROQ_API_KEY=gsk_your_key_here    # Free tier available
 ```
 
-### Start Testing
+### Choose Your Engine
+
+Different engines for different workflows:
+
+#### Multi-Model (Default) — "Give it a goal, bring in the team when needed"
+
+Best for: **Autonomous research, interactive red teaming, budget-conscious scanning.**
 
 ```bash
-# Interactive session — talk to the agent like a colleague
-npx ultimatrix interact -t https://httpbin.org
+# Configure
+cat > ultimatrix.yaml << 'EOF'
+provider: groq
+model: llama3-8b-8192
+target: https://your-app.com
+engine: multi-model
+EOF
 
 # Autonomous solve — give it a goal, let it work
-npx ultimatrix solve -t https://httpbin.org
+npx ultimatrix solve -t https://your-app.com
 
-# Full scan pipeline: capture → analyze → generate tests → report
-npx ultimatrix scan -t https://httpbin.org
+# Interactive REPL — guide the solver turn by turn
+npx ultimatrix interact -t https://your-app.com
+
+# At the REPL, bring in council when needed:
+> /council What's the best approach for privilege escalation?
+```
+
+**What happens:** The OODA solver runs autonomously with dynamic model selection. When you hit a complex decision, bring in the council with `/council <goal>` — 4 LLM members debate and you steer.
+
+#### Council (Debate + HITL) — "On-demand adversarial checking"
+
+Council is available in any multi-model session. The brain can also suggest council via the `requestCouncil` tool when it encounters complex decisions.
+
+```
+> Test the admin panel for IDOR
+
+[Brain runs OODA loop autonomously]
+
+> /council What's the best escalation path from our current findings?
+
+[Council debate] r1
+  Strategist proposes approach
+  Skeptic challenges weak claims
+  Operator flags prerequisites
+  Analyst connects to prior findings
+→ [Human decides] approves the strategy
+```
+
+#### Multi-Model with Tiers — "Optimize cost and performance"
+
+Best for: **Large targets, budget-conscious, mixed-complexity tasks.**
+
+```bash
+# Configure with model tiers
+cat > ultimatrix.yaml << 'EOF'
+provider: groq
+model: llama3-8b-8192
+target: https://your-app.com
+engine: multi-model
+modelTiers:
+  fast: groq/llama3-8b-8192           # Recon, simple checks
+  balanced: openai/gpt-4o-mini        # General testing
+  powerful: anthropic/claude-3.5-sonnet # Deep reasoning
+EOF
+
+# Same commands — model selection happens automatically
+npx ultimatrix solve -t https://your-app.com
+npx ultimatrix interact -t https://your-app.com
+```
+
+**What happens:** Same OODA loop, but with dynamic model selection. Quick recon uses cheap/fast models. Deep exploitation uses powerful/expensive models. The `selectModel` tool scores candidates by capability, budget, rate limits, and success history.
+
+#### Legacy (Structured) — "Predictable phases"
+
+Best for: **Structured scans, compatibility with older configs.**
+
+```bash
+# Configure
+cat > ultimatrix.yaml << 'EOF'
+provider: groq
+model: llama3-8b-8192
+target: https://your-app.com
+engine: legacy
+EOF
+
+# Full scan pipeline
+npx ultimatrix scan -t https://your-app.com
+
+# Or interactive legacy REPL
+npx ultimatrix interact -t https://your-app.com
+```
+
+### When to Use What
+
+| Scenario | Recommended | Why |
+|----------|-------------|-----|
+| Bug bounty research | `multi-model` | Autonomous + on-demand council for complex decisions |
+| Compliance audit with sign-off | `multi-model` + `/council` | HITL approval via council debate |
+| Quick vulnerability check | `multi-model` | Fast, autonomous, minimal config |
+| Deep penetration test | `multi-model` + `/council` | Adversarial debate catches blind spots |
+| Cost-sensitive scanning | `multi-model` | Cheap models for recon, powerful for exploitation |
+| Reproducible test suite | `legacy` | Predictable phase ordering |
+| Learning/education | `multi-model` + `/council` | Watch LLM members debate and challenge each other |
+
+### All Commands
+
+```bash
+# Autonomous testing
+npx ultimatrix solve -t https://your-app.com
+
+# Interactive session (uses config.engine)
+npx ultimatrix interact -t https://your-app.com
+
+# Full scan pipeline: capture → analyze → generate → report
+npx ultimatrix scan -t https://your-app.com
+
+# Traffic capture and analysis
+npx ultimatrix learn -t https://your-app.com
+
+# Generate test cases from captured traffic
+npx ultimatrix generate -t https://your-app.com
+
+# Re-run previously generated tests
+npx ultimatrix replay
+
+# Generate report
+npx ultimatrix report
+
+# Web UI
+npx ultimatrix web
 
 # Full assessment (legacy engine)
 npx ultimatrix assess -t https://your-app.com -o ./results
+
+# Re-run findings against new deployment
+npx ultimatrix verify -a ./results/app-model.json -t https://new-site.com
 ```
 
 ---
@@ -1153,7 +1536,7 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 --model <name>            # Override config model
 --key <api-key>           # Override config API key
 --non-interactive         # Skip prompts, use defaults
---engine <legacy|solver|multi-model>  # Override engine selection
+--engine <legacy|multi-model>  # Override engine selection (solver/council deprecated)
 ```
 
 ---
@@ -1165,13 +1548,21 @@ npx ultimatrix assess -t https://your-app.com -o ./results
 provider: groq
 model: llama3-8b-8192
 target: https://your-app.com
-engine: solver                # 'legacy' | 'solver' | 'multi-model'
+engine: multi-model           # 'legacy' | 'multi-model' (default)
+                               # 'solver' → alias for multi-model (deprecated)
+                               # 'council' → deprecated, coerced to multi-model
 
 # Multi-tier model configuration
 modelTiers:
   fast: groq/llama3-8b-8192              # Recon, simple checks
   balanced: openai/gpt-4o-mini           # General testing
   powerful: anthropic/claude-3.5-sonnet  # Deep reasoning, exploitation
+
+# Council configuration (on-demand via /council command)
+council:
+  approvalMode: hitl           # 'autonomous' | 'hitl' | 'both'
+  maxRounds: 8                 # Max debate cycles per session
+  budgetPerRound: 20000        # Token budget per round (advisory)
 
 solver:
   maxToolCalls: 50            # Max tool-call rounds per turn
@@ -1299,7 +1690,7 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (1128 passing)
+# Run all tests (1319 passing)
 npm test
 
 # Run specific test suite
@@ -1307,6 +1698,8 @@ npx vitest run test/intelligence/evidence-gate.test.ts
 npx vitest run test/tools/flow-tools.test.ts
 npx vitest run test/solver/solver.test.ts
 npx vitest run test/safety/scope-guard.test.ts
+npx vitest run test/council/debate-memory.test.ts
+npx vitest run test/council/persona-loader.test.ts
 
 # Watch mode
 npm run test:watch
@@ -1320,15 +1713,16 @@ npm run build:cli    # ESM + CJS + DTS
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | Intelligence (evidence-gate, reflexion, anti-loop) | 110+ | Core logic, L0-L4 escalation, zero leniency |
-| Graph (store, tools, schema) | 96 | Full CRUD, 17 node types, 12 edge types |
+| Graph (store, tools, schema) | 96 | Full CRUD, 20 node types, 15 edge types |
 | Tools (28+ tools) | 130+ | All tool interfaces, flow tools, skill tools, scope guard |
 | Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid, scope enforcement |
 | Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
 | Solver (OODA, blackboard, plan) | 60+ | Full loop, tool chains, composition, attack-path |
 | Models (rate-limiter, quota, selector, middleware) | 80+ | All providers, 3-layer rate limiting |
 | Session (lifecycle, engine routing) | 15 | Both engines, 6-phase lifecycle |
+| Council (orchestrator, approval, personas, debate-memory, persona-loader) | 60+ | Parallel debate, stance tracking, contradiction detection, file loader |
 | Recorder (code gen, interaction) | 57 | Full pipeline, action capture |
-| Skills (loader, matcher, registry, tool-filter) | 60+ | 47 skills, progressive disclosure, domain matching |
+| Skills (loader, matcher, registry, tool-filter) | 60+ | 57 skills, progressive disclosure, domain matching |
 | Safety (scope guard) | 15 | Domain matching, wildcard, path prefix, protocol |
 | Campaign (planner, executor, continuity) | 40+ | Coverage planning, auto-replan, outcome feedback |
 
@@ -1348,34 +1742,36 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Metric | Value |
 |--------|-------|
-| Source files | 180+ TypeScript files |
-| Source lines | 26,000+ |
-| Test files | 81 files |
-| Tests passing | 1128 |
-| Skills | 47 (across 8 domains) |
-| Skill lines | 15,277 |
+| Source files | 228+ TypeScript files |
+| Source lines | 30,000+ |
+| Test files | 97 files |
+| Tests passing | 1319 |
+| Skills | 57 (across 10 domains) |
 | Tools | 28+ specialized tools |
-| Engines | 3 (legacy, solver, multi-model) |
-| Node types | 17 (graph schema) |
-| Edge types | 12 (graph schema) |
+| Engines | 2 active (multi-model default, legacy) + council on-demand |
+| Council personas | 8 markdown files (charter, 4 members, protocol, contract, human) |
+| Node types | 20 (graph schema) |
+| Edge types | 15 (graph schema) |
 | Providers | 16 supported |
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
-| Intelligence modules | 8 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard) |
+| Intelligence modules | 9 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard, debate-memory) |
 
 ### Skill Domain Breakdown
 
-| Domain | Skills | Total Lines | Avg Lines |
-|--------|--------|-------------|-----------|
-| web-attacks | 16 | 6,228 | 389 |
-| recon | 9 | 1,609 | 179 |
-| injection | 7 | 3,578 | 511 |
-| cloud-security | 6 | ~2,400 | ~400 |
-| api-security | 4 | 2,260 | 565 |
-| auth-security | 2 | 878 | 439 |
-| crypto | 2 | 676 | 338 |
-| reports | 1 | 48 | 48 |
-| **Total** | **47** | **15,277** | **325** |
+| Domain | Skills |
+|--------|--------|
+| web-attacks | 19 |
+| recon | 9 |
+| injection | 8 |
+| cloud-security | 6 |
+| api-security | 6 |
+| auth-security | 3 |
+| crypto | 2 |
+| supply-chain | 1 |
+| llm-security | 1 |
+| reports | 1 |
+| **Total** | **57** |
 
 ---
 

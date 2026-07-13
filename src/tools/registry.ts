@@ -47,7 +47,7 @@ export function registerAllTools() {
     parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
     extractSessionCookie, extractCsrfToken, useSession,
     recordEvidence, writeFinding,
-    verifyChainsTool,
+    verifyChains: verifyChainsTool,
     queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
     upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings,
     readAppModelSection, writeAppModelSection,
@@ -58,8 +58,8 @@ export function registerAllTools() {
     loadSkillReference, searchSkills: searchSkillTool, encodeDecode,
     saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
     buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
-    runPrimitiveTool,
-    runCampaignTool,
-    recordOutcomeTool,
+    runPrimitive: runPrimitiveTool,
+    runCampaign: runCampaignTool,
+    recordOutcome: recordOutcomeTool,
   }
 }

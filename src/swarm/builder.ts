@@ -1,3 +1,9 @@
+/**
+ * @deprecated Use the council orchestrator (`src/council/orchestrator.ts`) or
+ * the solver engine (`src/solver/solver.ts`) for agent coordination instead.
+ * This module is retained solely for backward compatibility with legacy v6/v7
+ * swarm workflows.
+ */
 import type { Agent } from '@mastra/core/agent'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'

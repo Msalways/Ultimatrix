@@ -56,13 +56,13 @@ export function createSpawnSwarmTool(
               let endpointBlock = `${taskDef.task}\n\n## Target Endpoint\n- URL: ${p.url}\n- Method: ${p.method}\n- Params: ${JSON.stringify(p.params || [])}${p.authRequired ? '\n- Auth Required: Yes (' + (p.authType || 'unknown') + ')' : ''}`
 
               if (headerLines.length > 0) {
-                endpointBlock += `\n\n## Captured Headers (use these in httpRequest headers)\n${headerLines.join('\n')}`
+                endpointBlock += `\n\n## Captured Headers (use these in your HTTP request headers)\n${headerLines.join('\n')}`
               }
               if (cookieStr) {
-                endpointBlock += `\n\n## Captured Cookies (use these in httpRequest headers.cookie)\n  ${cookieStr}`
+                endpointBlock += `\n\n## Captured Cookies (use these in your HTTP request cookie header)\n  ${cookieStr}`
               }
               if (p.authType) {
-                endpointBlock += `\n\n## Auth Type: ${p.authType} — use getCapturedHeaders("${p.url}") for full auth context`
+                endpointBlock += `\n\n## Auth Type: ${p.authType} — retrieve the captured auth headers for ${p.url} to get full auth context`
               }
 
               informedTask = endpointBlock

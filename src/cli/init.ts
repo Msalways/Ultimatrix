@@ -74,9 +74,9 @@ export async function initWizard() {
   // ── Step 1: Provider + Model ──────────────────────────────────────
 
   let selectedProvider: (typeof PROVIDER_INFO)[string] | undefined
-  let modelId = ''
-  let apiKey = ''
-  let baseUrl = ''
+  let modelId: string
+  let apiKey: string
+  let baseUrl: string
 
   if (opts.provider && opts.model) {
     // Non-interactive: use CLI args
@@ -210,7 +210,7 @@ export async function initWizard() {
   // ── Step 2: Multi-model? ──────────────────────────────────────────
 
   let useMultiModel = false
-  let tiers: Record<string, { provider: string; model: string }> = {}
+  const tiers: Record<string, { provider: string; model: string }> = {}
   const crossProviderKeys: Record<string, { apiKey: string; baseUrl?: string }> = {}
 
   if (!opts.nonInteractive) {
@@ -289,7 +289,7 @@ export async function initWizard() {
         knownKeys.add(tierProviderId)
 
         // Step 3d: Get base URL for this provider
-        let tierBaseUrl = ''
+        let tierBaseUrl: string
         const defaultTierUrl = tierProviderInfo?.defaultBaseUrl
         if (defaultTierUrl) {
           const urlInput = await input({

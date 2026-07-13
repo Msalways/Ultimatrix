@@ -46,7 +46,7 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
         return Reflect.get(target, prop, receiver)
       }
 
-      const originalMethod = Reflect.get(target, prop, receiver) as Function
+      const originalMethod = Reflect.get(target, prop, receiver) as (...args: unknown[]) => Promise<unknown>
 
       return async function (this: any, args: any) {
         // Resolve provider from model ID or target modelId

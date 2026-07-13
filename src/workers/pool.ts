@@ -10,6 +10,21 @@ import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
 
 /**
+ * Wrap a promise with a wall-clock timeout. Timer is `.unref()`'d so it doesn't
+ * keep the process alive if the promise resolves first.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Timeout: ${label} exceeded ${ms}ms`))
+    }, ms)
+  })
+  if (typeof timer! === 'object' && 'unref' in timer!) timer!.unref()
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!))
+}
+
+/**
  * A unit of fan-out work for `dispatchSlices`. Each slice is routed to a model
  * via the `ModelSelector` (slice-level multi-model fan-out) and executed as a
  * specialized worker.
@@ -31,6 +46,11 @@ export interface DispatchOptions {
   modelSelector?: ModelSelector
   /** Role passed to ModelSelector.selectForTask for every slice. */
   perSliceRole?: 'brain' | 'worker' | 'spider'
+  /**
+   * Per-slice worker timeout in ms. Threaded into each slice's WorkerConfig.timeoutMs.
+   * If a worker doesn't complete within this deadline, the slice returns an error.
+   */
+  perSliceTimeoutMs?: number
 }
 
 export interface DispatchResult {
@@ -173,7 +193,16 @@ export class WorkerPool {
     }
     const worker = this.spawn(workerConfig)
     try {
-      const result = await worker.generate(workerConfig.task)
+      let result: any
+      if (workerConfig.timeoutMs) {
+        result = await withTimeout(
+          worker.generate(workerConfig.task),
+          workerConfig.timeoutMs,
+          `worker:${workerConfig.skillId}`,
+        )
+      } else {
+        result = await worker.generate(workerConfig.task)
+      }
       return result
     } finally {
       this.kill(worker.id)
@@ -234,6 +263,7 @@ export class WorkerPool {
         tokenBudget: slice.tokenBudget,
         tenant: slice.tenant ?? this.tenant ?? undefined,
         sandboxId: slice.sandboxId ?? this.sandboxId ?? undefined,
+        timeoutMs: options.perSliceTimeoutMs,
       }
 
       try {

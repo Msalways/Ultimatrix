@@ -1,6 +1,7 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { isUrlInScope } from '../safety/scope-guard'
+import { Resolver } from 'node:dns/promises'
 
 function base64urlDecode(s: string): string {
   try {
@@ -22,6 +23,133 @@ function isAlgorithmVulnerable(alg: string): boolean {
   return false
 }
 
+const dnsResolver = new Resolver()
+
+const DNS_RECORD_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS'] as const
+
+const COMMON_SUBDOMAINS = [
+  'www', 'mail', 'ftp', 'localhost', 'webmail', 'smtp', 'pop', 'ns1', 'ns2', 'ns3',
+  'ns4', 'dns', 'dns1', 'dns2', 'mx', 'mx1', 'mx2', 'email', 'vpn', 'gateway',
+  'proxy', 'proxy1', 'proxy2', 'cdn', 'api', 'api2', 'dev', 'staging', 'stage',
+  'test', 'testing', 'qa', 'uat', 'admin', 'portal', 'app', 'apps', 'web', 'blog',
+  'shop', 'store', 'secure', 'auth', 'sso', 'login', 'remote', 'ssh', 'git',
+  'gitlab', 'bitbucket', 'jenkins', 'ci', 'cd', 'monitor', 'grafana', 'kibana',
+]
+
+async function lookupWhoisViaRdap(domain: string): Promise<any> {
+  // Use RDAP bootstrap for TLD resolution
+  const tld = domain.split('.').pop()!
+  try {
+    const bootstrapRes = await fetch(`https://data.iana.org/rdap/dns.json`, {
+      signal: AbortSignal.timeout(8000),
+    })
+    if (bootstrapRes.ok) {
+      const bootstrap = await bootstrapRes.json() as { services: Array<[string[], string]> }
+      let rdapBase = ''
+      for (const [tlds, url] of bootstrap.services) {
+        if (tlds.some(t => domain.endsWith(t.slice(1)))) {
+          rdapBase = url
+          break
+        }
+      }
+      if (rdapBase) {
+        const res = await fetch(`${rdapBase}/domain/${encodeURIComponent(domain)}`, {
+          signal: AbortSignal.timeout(8000),
+        })
+        if (res.ok) {
+          const data = await res.json() as any
+          return {
+            ldhName: data.ldhName,
+            status: data.status,
+            events: data.events?.map((e: any) => ({ action: e.eventAction, date: e.eventDate })),
+            nameservers: data.nameservers?.map((ns: any) => ns.ldhName),
+            registrar: data.entities?.find((e: any) => e.roles?.includes('registrar'))?.handle,
+          }
+        }
+      }
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: use Google's public DNS-over-HTTPS for basic info
+  try {
+    const res = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=SOA`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    if (res.ok) {
+      const data = await res.json() as any
+      const soa = data.Answer?.find((a: any) => a.type === 6)
+      if (soa) {
+        const parts = soa.data.split(' ')
+        return { soa: { mname: parts[0], rname: parts[1], serial: parts[2] }, source: 'dns-google' }
+      }
+    }
+  } catch { /* fall through */ }
+
+  return null
+}
+
+async function lookupDns(domain: string): Promise<Record<string, any[]>> {
+  const records: Record<string, any[]> = {}
+  const queries = DNS_RECORD_TYPES.map(async (type) => {
+    try {
+      const method = type === 'A' ? 'resolve4'
+        : type === 'AAAA' ? 'resolve6'
+        : type === 'MX' ? 'resolveMx'
+        : type === 'TXT' ? 'resolveTxt'
+        : type === 'CNAME' ? 'resolveCname'
+        : 'resolveNs'
+      const result = await (dnsResolver as any)[method](domain)
+      if (result && result.length > 0) {
+        records[type] = result
+      }
+    } catch {
+      // NXDOMAIN or no records of this type — expected
+    }
+  })
+  await Promise.allSettled(queries)
+  return records
+}
+
+async function enumerateSubdomains(domain: string): Promise<string[]> {
+  const found = new Set<string>()
+
+  // Source 1: crt.sh certificate transparency
+  try {
+    const crtRes = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {
+      signal: AbortSignal.timeout(15000),
+    })
+    if (crtRes.ok) {
+      const certs: any[] = await crtRes.json()
+      for (const cert of certs) {
+        if (cert.name_value) {
+          cert.name_value.split('\n').forEach((n: string) => {
+            const name = n.trim().toLowerCase()
+            if (name && name.includes(domain) && !name.includes('*')) found.add(name)
+          })
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+
+  // Source 2: DNS brute-force with common subdomain wordlist
+  const wordlistResults = await Promise.allSettled(
+    COMMON_SUBDOMAINS.map(async (sub) => {
+      const fqdn = `${sub}.${domain}`
+      try {
+        await dnsResolver.resolve4(fqdn)
+        found.add(fqdn)
+      } catch {
+        // NXDOMAIN — subdomain doesn't exist
+      }
+    })
+  )
+
+  // Suppress unused variable warning
+  void wordlistResults
+
+  return Array.from(found).slice(0, 200)
+}
+
 export const runRecon = createTool({
   id: 'runRecon',
   description: 'Runs lightweight recon against a target: whois, DNS, tech-stack fingerprinting, and subdomain discovery',
@@ -34,27 +162,18 @@ export const runRecon = createTool({
   execute: async (ctx): Promise<{ ok: boolean; value?: any; error?: string }> => {
     const { target, probes } = ctx
     const result: any = { target, whois: null, dnsRecords: null, techStack: [], subdomains: [] }
+    const domain = target.replace(/^https?:\/\//, '').split('/')[0]
 
     const activeProbes = probes ?? []
     try {
       if (activeProbes.includes('whois')) {
-        // TODO: Implement WHOIS lookup
-        // const whoisRes = await fetch(`https://whois.freeaiapi.workers.dev/?domain=${encodeURIComponent(target)}`)
-        // if (whoisRes.ok) {
-        //   const whoisData = await whoisRes.json()
-        //   result.whois = whoisData
-        // }
+        result.whois = await lookupWhoisViaRdap(domain)
       }
     } catch { /* best-effort */ }
 
     try {
       if (activeProbes.includes('dns')) {
-        // TODO: Implement DNS lookup
-        // const dnsRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(target)}&type=ANY`)
-        // if (dnsRes.ok) {
-        //   const dnsData = await dnsRes.json()
-        //   result.dnsRecords = dnsData
-        // }
+        result.dnsRecords = await lookupDns(domain)
       }
     } catch { /* best-effort */ }
 
@@ -65,53 +184,40 @@ export const runRecon = createTool({
         if (!scopeCheck.allowed) {
           result.techStack = []
         } else {
-        const pageRes = await fetch(targetUrl, {
-          signal: AbortSignal.timeout(10000),
-        })
-        const html = await pageRes.text()
-        const headers: Record<string, string> = {}
-        pageRes.headers.forEach((v, k) => { headers[k] = v })
+          const pageRes = await fetch(targetUrl, {
+            signal: AbortSignal.timeout(10000),
+          })
+          const html = await pageRes.text()
+          const headers: Record<string, string> = {}
+          pageRes.headers.forEach((v, k) => { headers[k] = v })
 
-        const frameworks: Array<{ name: string; version?: string; evidence: string }> = []
+          const frameworks: Array<{ name: string; version?: string; evidence: string }> = []
 
-        const server = headers['server']
-        if (server) frameworks.push({ name: 'Server', version: server, evidence: `Server header: ${server}` })
-        const xpb = headers['x-powered-by']
-        if (xpb) frameworks.push({ name: 'X-Powered-By', version: xpb, evidence: `X-Powered-By header: ${xpb}` })
+          const server = headers['server']
+          if (server) frameworks.push({ name: 'Server', version: server, evidence: `Server header: ${server}` })
+          const xpb = headers['x-powered-by']
+          if (xpb) frameworks.push({ name: 'X-Powered-By', version: xpb, evidence: `X-Powered-By header: ${xpb}` })
 
-        if (/__NEXT_DATA__|next\.js/i.test(html)) frameworks.push({ name: 'Next.js', evidence: '__NEXT_DATA__ found' })
-        if (/ng-version|ng-app|angular/i.test(html)) frameworks.push({ name: 'Angular', evidence: 'ng-version/ng-app attribute' })
-        if (/react-root|react-container|__REACT_DEVTOOLS|data-reactroot/i.test(html)) frameworks.push({ name: 'React', evidence: 'React root or data-reactroot' })
-        if (/vue-app|__VUE_DEVTOOLS|v-bind|v-model/i.test(html)) frameworks.push({ name: 'Vue.js', evidence: 'Vue directives found' })
-        if (/jquery/i.test(html)) frameworks.push({ name: 'jQuery', evidence: 'jQuery reference in HTML' })
-        if (/wp-content|wp-includes|wordpress/i.test(html)) frameworks.push({ name: 'WordPress', evidence: 'WordPress-specific paths' })
-        if (/laravel|livewire/i.test(html)) frameworks.push({ name: 'Laravel', evidence: 'Laravel/Livewire reference' })
-        if (/django|csrfmiddlewaretoken/i.test(html)) frameworks.push({ name: 'Django', evidence: 'Django CSRF token or reference' })
-        if (/express/i.test(html)) frameworks.push({ name: 'Express', evidence: 'Express reference in HTML' })
-        if (/nuxt/i.test(html)) frameworks.push({ name: 'Nuxt', evidence: 'Nuxt reference' })
-        if (/cloudflare|__cfduid|cflb/i.test(JSON.stringify(headers))) frameworks.push({ name: 'Cloudflare', evidence: 'Cloudflare headers found' })
+          if (/__NEXT_DATA__|next\.js/i.test(html)) frameworks.push({ name: 'Next.js', evidence: '__NEXT_DATA__ found' })
+          if (/ng-version|ng-app|angular/i.test(html)) frameworks.push({ name: 'Angular', evidence: 'ng-version/ng-app attribute' })
+          if (/react-root|react-container|__REACT_DEVTOOLS|data-reactroot/i.test(html)) frameworks.push({ name: 'React', evidence: 'React root or data-reactroot' })
+          if (/vue-app|__VUE_DEVTOOLS|v-bind|v-model/i.test(html)) frameworks.push({ name: 'Vue.js', evidence: 'Vue directives found' })
+          if (/jquery/i.test(html)) frameworks.push({ name: 'jQuery', evidence: 'jQuery reference in HTML' })
+          if (/wp-content|wp-includes|wordpress/i.test(html)) frameworks.push({ name: 'WordPress', evidence: 'WordPress-specific paths' })
+          if (/laravel|livewire/i.test(html)) frameworks.push({ name: 'Laravel', evidence: 'Laravel/Livewire reference' })
+          if (/django|csrfmiddlewaretoken/i.test(html)) frameworks.push({ name: 'Django', evidence: 'Django CSRF token or reference' })
+          if (/express/i.test(html)) frameworks.push({ name: 'Express', evidence: 'Express reference in HTML' })
+          if (/nuxt/i.test(html)) frameworks.push({ name: 'Nuxt', evidence: 'Nuxt reference' })
+          if (/cloudflare|__cfduid|cflb/i.test(JSON.stringify(headers))) frameworks.push({ name: 'Cloudflare', evidence: 'Cloudflare headers found' })
 
-        result.techStack = frameworks
+          result.techStack = frameworks
         }
       }
     } catch { /* best-effort */ }
 
     try {
       if (activeProbes.includes('subdomains')) {
-        const domain = target.replace(/^https?:\/\//, '').split('/')[0]
-        const crtRes = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {
-          signal: AbortSignal.timeout(15000),
-        })
-        if (crtRes.ok) {
-          const certs: any[] = await crtRes.json()
-          const unique = new Set<string>()
-          for (const cert of certs) {
-            if (cert.name_value) {
-              cert.name_value.split('\n').forEach((n: string) => unique.add(n.trim()))
-            }
-          }
-          result.subdomains = Array.from(unique).slice(0, 100)
-        }
+        result.subdomains = await enumerateSubdomains(domain)
       }
     } catch { /* best-effort */ }
 
@@ -326,6 +432,12 @@ export const cloudMetadataProbe = createTool({
   }),
   execute: async (ctx): Promise<{ ok: boolean; value?: any; error?: string }> => {
     const { url } = ctx
+
+    const scopeCheck = isUrlInScope(url)
+    if (!scopeCheck.allowed) {
+      return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+    }
+
     const base = url.replace(/\/+$/, '')
 
     const probes: Array<{ provider: string; url: string; suffix: string }> = [
@@ -387,4 +499,3 @@ export const cloudMetadataProbe = createTool({
     return { ok: true, value: { probes: results } }
   },
 })
-

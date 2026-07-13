@@ -8,6 +8,18 @@ import { log } from '../utils/logger'
 
 const ASK_USER_TIMEOUT_MS = 300_000 // 5 minutes
 
+/**
+ * Ask a yes/no question on the REPL stdin and resolve to a boolean.
+ * Used by the council HITL gate (decideApproval → humanApprove) so the human
+ * can approve/reject high-impact proposals directly. Returns false on timeout
+ * or close (fail-safe: never auto-approve).
+ */
+export async function askUserConfirm(question: string, timeoutMs = ASK_USER_TIMEOUT_MS): Promise<boolean> {
+  const answer = await waitForInput(timeoutMs)
+  if (!answer || answer === '__TIMEOUT__') return false
+  return answer.trim().toLowerCase().startsWith('y')
+}
+
 export const userInputEmitter = new EventEmitter()
 
 function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS): Promise<string> {

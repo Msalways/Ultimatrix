@@ -117,7 +117,7 @@ export const saveSession = createTool({
     })
 
     store.addFact({
-      description: `Session "${name}" saved for ${target || 'unknown target'}. Use restoreSession('${name}') to restore.`,
+      description: `Session "${name}" saved for ${target || 'unknown target'}. Use the saved session to continue testing.`,
       source: 'human-demonstration',
       confidence: 1.0,
     })

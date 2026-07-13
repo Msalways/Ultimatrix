@@ -1,4 +1,4 @@
----
+﻿---
 name: ctf-misc
 description: "CTF miscellaneous challenges: steganography, encoding chains, forensics, and OSINT"
 category: specialized
@@ -48,3 +48,24 @@ CTF miscellaneous challenges span steganography, encoding chains, forensics, and
 - CyberChef (GCHQ)
 - Volatility Foundation (memory forensics)
 - CTF misc write-ups on CTFtime
+
+## Trigger Conditions
+
+Activate on CTF "misc" challenges that span multiple categories: steganography (hidden data in images/audio), forensics (file/memory/PCAP analysis), encoding chains (layered transformations), and OSINT (public-data leads). Trigger when a challenge file/artifact is provided and its category isn't a single clean bucket, or when a solved step reveals another layer. Do not trigger for pure web/pwn/crypto challenges (use the dedicated skill) — misc is the multi-category catch-all.
+
+## Detection Approach
+
+First classify the artifact: check magic bytes (not the extension) to learn the real file type, then branch by category. For steganography, test multiple methods (LSB, palette, metadata, appended/concatenated files like a zip after a JPEG) since several may coexist. For encoding chains, decode systematically — base64 → hex → binary → rot13 → URL — and re-check the output for another layer rather than stopping at the first readable text. For forensics, inspect headers, strings, and structure (memory dumps, network captures) and pick the right analyzer. For OSINT, start from the public lead and cross-reference. Use multiple tools/methods because each detects different hiding techniques; a single negative result isn't conclusive. Chain categories: decode → find binary → forensics-extract → steg.
+
+## Pitfalls
+
+- Trusting the file extension over magic bytes (a `.png` may be a `.zip`).
+- Testing only one steganography method when several may be layered.
+- Assuming the first successful decode is the final answer — chains are common.
+- Skipping `strings`/metadata on binary files.
+- Using one tool when another detects the specific hiding technique.
+- Overlooking appended/concenated data at the end of a valid file.
+
+## Verification & Impact
+
+CONFIRMED when a systematic method yields the hidden data/flag and the extraction is reproducible step-by-step (each decode/extract layer shown). SUSPECTED when a technique *might* apply but no data is recovered — record the attempt. Document impact as the solved challenge with the full decode/extraction chain as evidence. Capture each layer's input/output via `recordEvidence` for reproducibility.

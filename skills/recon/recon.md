@@ -1,4 +1,4 @@
----
+﻿---
 name: recon
 description: "Reconnaissance and attack surface mapping through passive and active intelligence gathering"
 category: core
@@ -95,3 +95,24 @@ This is where most scanners miss real findings. You must look at what the page a
 Your claims will be verified against real tool output. Never fabricate findings.
 Every discovery you report MUST have a corresponding tool call response that proves it.
 If a tool call fails, say so honestly — do not invent a success.
+
+## Trigger Conditions
+
+Activate at the start of any assessment (or whenever new surface appears) to map the attack surface before vulnerability testing. Trigger on requests to "find endpoints", "map the attack surface", fingerprint tech, or discover API/GraphQL/docs endpoints. Especially valuable before active exploitation skills run. Do not trigger for active exploitation itself (use the relevant injection/auth/API skill) — recon is discovery, not proof-of-exploit.
+
+## Detection Approach
+
+Work passive-before-active to avoid premature detection. Phase 1: passive — tech stack from headers/errors/cookies, JS library versions, public repos, CT logs, DNS. Phase 2: endpoint discovery — capture the page, extract links/forms/API endpoints, probe common paths (`/api`, `/graphql`, `/admin`, `/.env`, `/robots.txt`, `/swagger`). Phase 3: deep page analysis (the highest-value step) — read HTML source for comments/hidden fields/inline config, analyze JS bundles for embedded secrets and internal endpoints and source maps, probe exposed files, and fingerprint the framework. Phase 4: GraphQL recon if applicable (introspection). Phase 5: record everything to the graph and write findings for disclosures. Revisit recon iteratively as new findings reveal more surface.
+
+## Pitfalls
+
+- Skipping deep page/JS-bundle analysis — that's where most real findings hide.
+- Shallow-scanning many targets instead of deeply mapping few.
+- Treating the file extension as authoritative — verify magic bytes / actual responses.
+- Only testing the landing page and missing admin/docs/staging endpoints.
+- Not recording negative results (paths confirmed absent).
+- Jumping to exploitation before the surface is fully mapped.
+
+## Verification & Impact
+
+CONFIRMED when a discovered item is backed by a real captured response — an endpoint that responds, a secret found in a JS bundle, a disclosed config file, or an introspectable GraphQL schema. SUSPECTED when a path is guessed but unverified — record as candidate. Document impact by what the discovery enables (attack surface for later skills, exposed credentials = high). Capture each discovery with `recordEvidence` and summarize the full surface via `writeFinding`/graph updates.

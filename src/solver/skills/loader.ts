@@ -171,17 +171,10 @@ function resolveSkillPath(id: string): string | null {
   return null
 }
 
-/**
- * Phase 1: Scan all domain directories, parse ONLY frontmatter.
- * Fast init — ~80 lines of metadata for 16 skills.
- */
-export function initSkillIndex(): Map<string, SkillMeta> {
-  if (metaCache) return metaCache
-
+function initSkillIndexImpl(): Map<string, SkillMeta> {
   const cache = new Map<string, SkillMeta>()
 
   if (!existsSync(SKILLS_DIR)) {
-    metaCache = cache
     return cache
   }
 
@@ -200,8 +193,38 @@ export function initSkillIndex(): Map<string, SkillMeta> {
     }
   } catch {}
 
-  metaCache = cache
   return cache
+}
+
+/**
+ * Shared skill index singleton. Both the REPL (session.ts via tool-filter) and
+ * the worker pool (WorkerPool → SkillRegistry) must resolve skills from ONE
+ * index so a skill added/observed at runtime is visible to every component.
+ */
+let sharedMetaCache: Map<string, SkillMeta> | null = null
+
+export function getSharedSkillIndex(): Map<string, SkillMeta> {
+  if (!sharedMetaCache) {
+    sharedMetaCache = initSkillIndexImpl()
+  }
+  return sharedMetaCache
+}
+
+/** Reset the shared index (used by tests or when skills change at runtime). */
+export function resetSharedSkillIndex(): void {
+  sharedMetaCache = null
+  metaCache = null
+  fullCache = null
+}
+
+/**
+ * Phase 1: Scan all domain directories, parse ONLY frontmatter.
+ * Fast init — ~80 lines of metadata for 16 skills.
+ */
+export function initSkillIndex(): Map<string, SkillMeta> {
+  if (metaCache) return metaCache
+  metaCache = getSharedSkillIndex()
+  return metaCache
 }
 
 /**

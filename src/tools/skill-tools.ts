@@ -79,7 +79,7 @@ export const loadSkillReference = createTool({
 
 export const searchSkillTool = createTool({
   id: 'searchSkills',
-  description: 'Search skills by keyword when you know what attack type you need (e.g. "SQL injection", "race condition"). For browsing all available skills, use listSkills instead.',
+  description: 'Search skills by keyword when you know what attack type you need (e.g. "SQL injection", "race condition"). For a complete catalog, browse all available skills instead of searching.',
   inputSchema: z.object({
     query: z.string().describe('Search query (e.g. "SQL injection", "race condition")'),
   }),

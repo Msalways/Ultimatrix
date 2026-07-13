@@ -12,6 +12,8 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
+import { askUserConfirm } from './tools/interaction-tools'
+import type { DebateMemory } from './council/types'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
@@ -29,6 +31,15 @@ export async function main(targetUrl?: string) {
 
   // REPL loop
   await lifecycle.runREPL(async (line: string) => {
+    // Commands
+    if (line.trim() === '/help') {
+      log.info('Commands:')
+      log.info('  /council <goal>  — deliberate with the council (strategist / operator / skeptic / analyst)')
+      log.info('  /help            — show this help')
+      log.info('  <goal>           — send a goal to the solver brain')
+      return
+    }
+
     // Dispatch skills based on user input
     const matchedSkills = resolveSkillsForInput(line)
     if (matchedSkills.length > 0) {
@@ -41,9 +52,193 @@ export async function main(targetUrl?: string) {
       .filter((s): s is NonNullable<typeof s> => s !== null)
 
     const { config, target, threadId, resourceId } = resources
-    const useSolver = config.engine === 'solver' || config.engine === 'multi-model'
+    const councilMatch = line.match(/^\/council(?:\s+(.*))?$/)
 
-    if (useSolver && target) {
+    if (councilMatch) {
+      const goal = (councilMatch[1] ?? '').trim()
+      if (!goal) {
+        log.warn('Usage: /council <goal>')
+        return
+      }
+      if (!target || !resources.council) {
+        log.warn('Council requires a target URL. Set one with: ultimatrix solve -t <url>')
+        return
+      }
+
+      // Council path — one debate cycle per REPL turn (not a blocking loop).
+      // The human can interject between turns. Structured output, no text parsing.
+      const { debateOnce } = await import('./council/orchestrator')
+      const { proposalToWorkerConfig } = await import('./council/types')
+      const council = resources.council
+
+      // Matched skills for this turn (progressive disclosure): full skill bodies
+      // are loaded only for the skills the REPL matched from user input. When the
+      // council proposes one of these skills, the worker receives its instructions.
+      const matchedById = new Map(matchedWithInstructions.map(s => [s.id, s]))
+
+      // Wire execute callback — proposals actually spawn workers via dispatchSlices
+      // so multi-model routing, tier selection, concurrency, and tenant isolation apply.
+      const execute = async (proposal: import('./council/types').MemberOutput) => {
+        if (!proposal.proposal) return 'no proposal'
+        try {
+          const matched = matchedById.get(proposal.proposal.skillId)
+          const workerConfig = proposalToWorkerConfig(proposal.proposal, {
+            context: matched
+              ? { skillInstructions: matched.instructions, skillReferences: matched.references }
+              : undefined,
+          })
+
+          const slice: import('./workers/pool').DispatchSlice = {
+            id: `council-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            skillId: workerConfig.skillId,
+            task: workerConfig.task,
+            complexity: proposal.proposal.complexity,
+            requiredCapabilities: [],
+            context: workerConfig.context,
+            tenant: resources.tenant,
+            sandboxId: resources.sandboxId,
+          }
+
+          const results = await resources.workerPool!.dispatchSlices([slice], {
+            modelSelector: resources.modelSelector,
+            perSliceRole: 'worker',
+            perSliceTimeoutMs: config.council?.executeTimeoutMs ?? 120_000,
+          })
+
+          const sliceResult = results[0]
+          if (sliceResult.error) throw new Error(sliceResult.error)
+          const r = sliceResult.result
+          if (!r) return 'no result'
+          return typeof r.text === 'string' ? r.text : String(r.text ?? '')
+        } catch (err: any) {
+          return `execution error: ${err.message}`
+        }
+      }
+
+      // HITL approval gate — uses askUserConfirm which reads from REPL stdin
+      // and returns a boolean. Low/medium impact proposals are auto-approved
+      // (governed by council approvalMode in approval.ts).
+      const humanApprove = async (proposal: import('./council/types').MemberOutput): Promise<boolean> => {
+        if (!proposal.proposal) return false
+        const p = proposal.proposal
+        const question =
+          `\n[HITL] Council proposes: ${p.action}\n` +
+          `Skill: ${p.skillId} | Impact: ${p.impact} | Complexity: ${p.complexity}\n` +
+          `Reasoning: ${p.reasoning}\nApprove? (y/n): `
+        try {
+          return await askUserConfirm(question)
+        } catch {
+          return false
+        }
+      }
+
+      // Initialize debate memory for this session (accumulates across REPL turns)
+      if (!resources.debateMemory) {
+        resources.debateMemory = { stances: [], failedApproaches: [], provenFindings: [] }
+      }
+
+      const result = await debateOnce({
+        members: council.members,
+        bus: council.bus,
+        blackboard: council.blackboard,
+        goal,
+        config: council.councilConfig,
+        ledger: resources.coreServices?.evidence,
+        execute,
+        humanApprove,
+        debateMemory: resources.debateMemory,
+        onPhase: (phase, round, text) => {
+          if (phase === 'execute') {
+            log.success(text ?? '')
+          } else if (phase === 'reject') {
+            log.warn(`[council] rejected r${round}: ${text ?? ''}`)
+            // Surface timeout rejections to forensic log for post-mortem.
+            if (text?.includes('timeout')) {
+              resources.forensicLog.log({
+                type: 'council-timeout',
+                agent: 'council',
+                args: { phase, round, reason: text },
+              })
+            }
+          } else {
+            log.dim(`[council:${phase}] r${round}`)
+          }
+        },
+      })
+      log.nl()
+      if (result.complete) {
+        log.success(`Council signals completion: ${result.summary}`)
+      } else {
+        log.info(`Council debate: ${result.proposedTasks.length} tasks proposed, ${result.newEvidence} evidence items`)
+        if (result.summary) log.dim(result.summary)
+      }
+    } else if (target && resources.coreServices) {
+      // B3: Solver bypasses runner — calls solve() directly with real brain agent
+      // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
+      const result = await solve(resources.solverBrain!, {
+        origin: target,
+        goal: line,
+        model: config.model,
+        memory: { thread: threadId, resource: resourceId },
+        matchedSkills: matchedWithInstructions.length > 0 ? matchedWithInstructions : undefined,
+        blackboard: resources.coreServices.blackboard,
+        evidence: resources.sessionEvidence,
+        loopDetector: resources.coreServices.loopDetector,
+        reflexion: resources.coreServices.reflexion,
+        config: {
+          maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
+          maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
+          staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
+          maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+        },
+        onToolComplete: (_toolName: string, _result?: unknown) => {
+          getGlobalWorkspace().getGraphStore()?.scheduleSave()
+        },
+        onPhase: (event) => {
+          if (event.text) {
+            process.stdout.write(event.text)
+          }
+          if (event.toolName) log.dim(`  → ${event.toolName}`)
+          resources.forensicLog.log({
+            type: 'solver-phase',
+            agent: 'solver-brain',
+            args: {
+              phase: event.phase,
+              step: event.step,
+              toolName: event.toolName,
+              toolArgs: event.toolArgs,
+              reason: event.reason,
+            },
+          })
+        },
+      })
+      log.nl()
+      if (result.completed) {
+        log.success(`Solver completed: ${result.reason}`)
+      } else {
+        log.warn(`Solver stopped: ${result.reason}`)
+      }
+      if (result.error) {
+        log.error(`Error: ${result.error}`)
+      }
+      if (result.text) {
+        process.stdout.write(result.text)
+      }
+      log.info(`Steps: ${result.steps ?? 0} | Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0} | Tool calls: ${result.toolCalls ?? 0}`)
+
+      const quotaTracker = getGlobalQuotaTracker()
+      const providerStatus = quotaTracker.getStatus()
+      const providerInfo = providerStatus[config.provider]
+      if (providerInfo) {
+        log.dim(`[quota] ${config.provider}: ${providerInfo.used} requests this session` +
+          (providerInfo.inCooldown ? ' (COOLDOWN)' : ''))
+      }
+      if (result.planSummary) {
+        log.info('Plan summary:')
+        log.info(result.planSummary)
+      }
+    } else if (target) {
+      // Fallback: solver without pre-built coreServices (backward compat)
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -61,24 +256,23 @@ export async function main(targetUrl?: string) {
           maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
         },
         onToolComplete: (_toolName: string, _result?: unknown) => {
-          // Debounced graph save — coalesces rapid tool calls into 1-2 writes
           getGlobalWorkspace().getGraphStore()?.scheduleSave()
         },
         onPhase: (event) => {
           if (event.text) {
-            // Both reasoning-delta (analysis) and text-delta (non-reasoning response) stream inline
             process.stdout.write(event.text)
           }
           if (event.toolName) log.dim(`  → ${event.toolName}`)
-
           resources.forensicLog.log({
             type: 'solver-phase',
             agent: 'solver-brain',
-            phase: event.phase,
-            step: event.step,
-            toolName: event.toolName,
-            toolArgs: event.toolArgs,
-            reason: event.reason,
+            args: {
+              phase: event.phase,
+              step: event.step,
+              toolName: event.toolName,
+              toolArgs: event.toolArgs,
+              reason: event.reason,
+            },
           })
         },
       })
@@ -95,20 +289,12 @@ export async function main(targetUrl?: string) {
         process.stdout.write(result.text)
       }
       log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)
-
-      const quotaTracker = getGlobalQuotaTracker()
-      const providerStatus = quotaTracker.getStatus()
-      const providerInfo = providerStatus[config.provider]
-      if (providerInfo) {
-        log.dim(`[quota] ${config.provider}: ${providerInfo.used} requests this session` +
-          (providerInfo.inCooldown ? ' (COOLDOWN)' : ''))
-      }
       if (result.planSummary) {
         log.info('Plan summary:')
         log.info(result.planSummary)
       }
     } else {
-      // Legacy supervisor: stream conversation
+      // @deprecated Legacy supervisor path — kept for backward compatibility with web UI
       const result = await resources.supervisor!.stream(line, {
         memory: { thread: threadId, resource: resourceId },
         maxSteps: config.agent.maxSteps,
@@ -204,8 +390,10 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
                 type: 'ui-reaction',
                 agent: agentId,
                 tool: chunk.payload.toolName,
-                reactions: reactionResult.reactions,
-                summary: reactionResult.summary,
+                args: {
+                  reactions: reactionResult.reactions,
+                  summary: reactionResult.summary,
+                },
               })
             }
           } catch {}

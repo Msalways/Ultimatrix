@@ -2,6 +2,7 @@ import type { ScopeConfig } from '../config'
 import { log } from '../utils/logger'
 
 let _config: ScopeConfig | null = null
+let _allowAny = false
 
 export function setScopeConfig(config: ScopeConfig | null): void {
   _config = config
@@ -11,15 +12,35 @@ export function getScopeConfig(): ScopeConfig | null {
   return _config
 }
 
+/** Explicit opt-out (runtime `--allow-any`). Off by default = deny-by-default. */
+export function setAllowAny(value: boolean): void {
+  _allowAny = value
+}
+
+export function isAllowAny(): boolean {
+  return _allowAny
+}
+
 export interface ScopeCheckResult {
   allowed: boolean
   reason?: string
 }
 
 export function isUrlInScope(url: string, config: ScopeConfig | null = _config): ScopeCheckResult {
-  if (!config) return { allowed: true }
+  // Explicit opt-out overrides everything.
+  if (_allowAny) return { allowed: true }
+
+  // Root-cause fix (gap-analysis P0-3): scope is a required security
+  // policy. When none is configured, DENY — do not silently allow.
+  if (!config) {
+    return {
+      allowed: false,
+      reason: 'No scope policy configured — set scope.allowedDomains or pass --allow-any',
+    }
+  }
+
   if (!config.allowedDomains || config.allowedDomains.length === 0) {
-    return { allowed: true }
+    return { allowed: false, reason: 'No allowed domains configured in scope policy' }
   }
 
   let parsed: URL
@@ -64,9 +85,44 @@ export function isUrlInScope(url: string, config: ScopeConfig | null = _config):
   return { allowed: true }
 }
 
-export function assertInScope(url: string, config: ScopeConfig | null = _config): void {
+/**
+ * Hard gate. Throws on any denied URL (no `enforcement` opt-out) — this is the
+ * single transport-level scope enforcer used by HTTP / browser / traditional
+ * tools. Deny-by-default makes it safe even when misconfigured.
+ */
+export function enforceScope(url: string, config: ScopeConfig | null = _config): void {
   const result = isUrlInScope(url, config)
-  if (!result.allowed && config?.enforcement === 'hard') {
+  if (!result.allowed) {
     throw new Error(`Scope violation: ${result.reason}`)
+  }
+}
+
+export function assertInScope(url: string, config: ScopeConfig | null = _config): void {
+  enforceScope(url, config)
+}
+
+/**
+ * Derive a ScopeConfig from a target URL. Used when no explicit scope is
+ * configured — the target's own hostname becomes the sole allowed domain.
+ *
+ * This is NOT a security relaxation: it scopes the tool to exactly the target
+ * the user specified, which is the minimum safe default. Without this, every
+ * HTTP/browser tool call is hard-rejected, making the tool unusable out of
+ * the box.
+ *
+ * Returns null if the target URL cannot be parsed (caller should deny).
+ */
+export function deriveScopeFromTarget(target: string): ScopeConfig | null {
+  try {
+    const parsed = new URL(target)
+    const hostname = parsed.hostname.toLowerCase()
+    if (!hostname) return null
+    return {
+      allowedDomains: [hostname],
+      allowedProtocols: [parsed.protocol.replace(':', '')],
+      enforcement: 'hard',
+    }
+  } catch {
+    return null
   }
 }

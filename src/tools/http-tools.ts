@@ -4,6 +4,94 @@ import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
 import { CompressionService } from '../compression/headroom-service'
 import { isUrlInScope, getScopeConfig } from '../safety/scope-guard'
+import { recordStructuredEvidence } from './control-tools'
+
+// --- Target-aware rate limiting ---
+const HOST_DELAY_MS = 200
+const hostLastRequest = new Map<string, number>()
+
+function hostKey(url: string): string {
+  try { return new URL(url).host } catch { return url }
+}
+
+async function waitForHostSlot(url: string): Promise<void> {
+  const key = hostKey(url)
+  const last = hostLastRequest.get(key) ?? 0
+  const elapsed = Date.now() - last
+  if (elapsed < HOST_DELAY_MS) {
+    await new Promise(r => setTimeout(r, HOST_DELAY_MS - elapsed))
+  }
+  hostLastRequest.set(key, Date.now())
+}
+
+// --- 429 exponential backoff ---
+const MAX_429_RETRIES = 3
+const BACKOFF_BASE_MS = 1000
+
+async function fetchWithBackoff(url: string, opts: RequestInit, maxRetries = MAX_429_RETRIES): Promise<Response> {
+  let lastErr: Error | undefined
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, opts)
+    if (res.status !== 429) return res
+    const retryAfter = res.headers.get('retry-after')
+    const backoffMs = retryAfter
+      ? Math.min(Number(retryAfter) * 1000, 30_000)
+      : Math.min(BACKOFF_BASE_MS * Math.pow(2, attempt), 30_000)
+    log.warn(`429 from ${url}, backoff ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`)
+    await new Promise(r => setTimeout(r, backoffMs))
+    lastErr = new Error(`429 Too Many Requests after ${attempt + 1} retries`)
+    hostLastRequest.set(hostKey(url), Date.now())
+  }
+  throw lastErr ?? new Error('429 Too Many Requests')
+}
+
+// --- robots.txt cache ---
+const robotsCache = new Map<string, Set<string>>()
+
+async function isAllowedByRobots(url: string): Promise<boolean> {
+  try {
+    const parsed = new URL(url)
+    const origin = parsed.origin
+    if (robotsCache.has(origin)) {
+      return !isDisallowed(robotsCache.get(origin)!, parsed.pathname)
+    }
+    // Fetch and cache robots.txt (only once per origin)
+    robotsCache.set(origin, new Set())
+    try {
+      const res = await fetch(`${origin}/robots.txt`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      if (res.ok) {
+        const text = await res.text()
+        const disallowed = parseRobotsDisallows(text)
+        robotsCache.set(origin, disallowed)
+        return !isDisallowed(disallowed, parsed.pathname)
+      }
+    } catch { /* robots.txt unavailable — allow all */ }
+    return true
+  } catch { return true }
+}
+
+function parseRobotsDisallows(text: string): Set<string> {
+  const disallowed = new Set<string>()
+  let inUserAgent = false
+  for (const line of text.split('\n')) {
+    const trimmed = line.split('#')[0].trim().toLowerCase()
+    if (trimmed.startsWith('user-agent:')) {
+      const agent = trimmed.slice('user-agent:'.length).trim()
+      inUserAgent = agent === '*' || agent.includes('ultimatrix')
+    } else if (inUserAgent && trimmed.startsWith('disallow:')) {
+      const path = trimmed.slice('disallow:'.length).trim()
+      if (path) disallowed.add(path)
+    }
+  }
+  return disallowed
+}
+
+function isDisallowed(disallowed: Set<string>, pathname: string): boolean {
+  for (const rule of disallowed) {
+    if (pathname === rule || pathname.startsWith(rule.endsWith('/') ? rule : rule + '/')) return true
+  }
+  return false
+}
 
 export const httpRequest = createTool({
   id: 'httpRequest',
@@ -11,7 +99,7 @@ export const httpRequest = createTool({
   inputSchema: z.object({
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
     url: z.string().url().describe('Target URL'),
-    headers: z.record(z.string(), z.string()).optional().describe('Request headers — use getCapturedHeaders to get real auth context'),
+    headers: z.record(z.string(), z.string()).optional().describe('Request headers. Pass auth/session headers previously captured from the target session.'),
     body: z.string().optional().describe('Request body — only valid with POST, PUT, or PATCH'),
     timeoutMs: z.number().int().positive().default(10000).describe('Timeout in milliseconds'),
   }).refine(
@@ -25,6 +113,10 @@ export const httpRequest = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
+      if (!(await isAllowedByRobots(url))) {
+        return { ok: false, error: `Blocked by robots.txt: ${url}` }
+      }
+      await waitForHostSlot(url)
       const fetchOpts: RequestInit = {
         method,
         headers: headers ?? {},
@@ -34,12 +126,19 @@ export const httpRequest = createTool({
       if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
         fetchOpts.body = body
       }
-      const raw = await fetch(url, fetchOpts)
+      const raw = await fetchWithBackoff(url, fetchOpts)
       const rawBody = await raw.text()
       const compressionResult = await new CompressionService().compressResponse(rawBody)
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      // Auto-capture structured evidence for claim verification (typed facts, no prose scanning)
+      recordStructuredEvidence({
+        type: 'raw_response',
+        data: responseBody,
+        label: `${method} ${url} → ${raw.status}`,
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, ...(headers ? { requestHeaders: headers } : {}) },
+      })
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
       // LOG-3: Record HTTP request/response with compression info
       getForensicLog()?.log({
@@ -87,13 +186,17 @@ export const multipartUpload = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
+      if (!(await isAllowedByRobots(url))) {
+        return { ok: false, error: `Blocked by robots.txt: ${url}` }
+      }
+      await waitForHostSlot(url)
       const formData = new FormData()
       const blob = new Blob([content], { type: contentType })
       formData.append('file', blob, filename)
       const reqHeaders: Record<string, string> = { ...(headers ?? {}) }
       delete reqHeaders['content-type']
       delete reqHeaders['Content-Type']
-      const raw = await fetch(url, {
+      const raw = await fetchWithBackoff(url, {
         method: 'POST',
         headers: reqHeaders,
         body: formData,
@@ -103,6 +206,12 @@ export const multipartUpload = createTool({
       const responseBody = (await new CompressionService().compressResponse(await raw.text())).compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      recordStructuredEvidence({
+        type: 'raw_response',
+        data: responseBody,
+        label: `POST ${url} (upload=${filename}) → ${raw.status}`,
+        observed: { method: 'POST', url, status: raw.status, responseHeaders: resHeaders, filename, contentType },
+      })
       log.info(`multipartUpload POST ${url} (file=${filename}) → ${raw.status}`, { method: 'POST', url, filename, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
       return {
         ok: true,
@@ -141,14 +250,18 @@ export const followRedirects = createTool({
       if (!initialCheck.allowed) {
         return { ok: false, error: `Scope violation: ${initialCheck.reason}` }
       }
+      if (!(await isAllowedByRobots(url))) {
+        return { ok: false, error: `Blocked by robots.txt: ${url}` }
+      }
       while (hops < (maxHops ?? 5)) {
+        await waitForHostSlot(currentUrl)
         const fetchOpts: RequestInit = {
           method: 'GET',
           headers: headers ?? {},
           redirect: 'manual',
           signal: AbortSignal.timeout(10_000),
         }
-        const raw = await fetch(currentUrl, fetchOpts)
+        const raw = await fetchWithBackoff(currentUrl, fetchOpts)
         const isRedirect = raw.status >= 300 && raw.status < 400
         const location = raw.headers.get('location')
         if (!isRedirect || !location) {
@@ -157,6 +270,12 @@ export const followRedirects = createTool({
           const body = compressionResult.compressed
           const resHeaders: Record<string, string> = {}
           raw.headers.forEach((v, k) => { resHeaders[k] = v })
+          recordStructuredEvidence({
+            type: 'raw_response',
+            data: body,
+            label: `GET ${url} (redirect-chain, ${hops} hops) → ${raw.status}`,
+            observed: { method: 'GET', url: currentUrl, status: raw.status, responseHeaders: resHeaders, hops },
+          })
           log.info(`followRedirects ${url} → ${raw.status} (${hops} hops)`, { url, status: raw.status, hops, durationMs: performance.now() - start, bodySize: body.length })
           return {
             ok: true,
@@ -210,6 +329,10 @@ export const omitHeader = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
+      if (!(await isAllowedByRobots(url))) {
+        return { ok: false, error: `Blocked by robots.txt: ${url}` }
+      }
+      await waitForHostSlot(url)
       const stripped = { ...headers }
       delete stripped[headerToOmit]
       const fetchOpts: RequestInit = {
@@ -221,12 +344,18 @@ export const omitHeader = createTool({
       if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
         fetchOpts.body = body
       }
-      const raw = await fetch(url, fetchOpts)
+      const raw = await fetchWithBackoff(url, fetchOpts)
       const rawBody = await raw.text()
       const compressionResult = await new CompressionService().compressResponse(rawBody)
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      recordStructuredEvidence({
+        type: 'raw_response',
+        data: responseBody,
+        label: `${method} ${url} (omit=${headerToOmit}) → ${raw.status}`,
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, omittedHeader: headerToOmit },
+      })
       log.info(`omitHeader ${method} ${url} (omit=${headerToOmit}) → ${raw.status}`, { method, url, omittedHeader: headerToOmit, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length })
       return {
         ok: true,

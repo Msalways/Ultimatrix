@@ -1,5 +1,6 @@
 import type { Page } from 'playwright'
 import { getTechniqueRegistry } from '../skills/technique-registry'
+import { log } from '../utils/logger'
 
 export type HumanActionType = 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
 
@@ -20,6 +21,174 @@ export interface FlowGroup {
   startUrl: string
   endUrl: string
   duration: number
+}
+
+// ─── Auth state detection ─────────────────────────────────────────────
+
+export type AuthType = 'form' | 'oauth' | 'saml' | 'unknown'
+
+export interface AuthState {
+  hasLoginForm: boolean
+  authType: AuthType
+  loginEndpoint?: string
+  oauthProviders: string[]
+  hasPasswordField: boolean
+  hasRememberMe: boolean
+  formCount: number
+}
+
+const OAUTH_PROVIDER_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
+  { name: 'Google', pattern: /accounts\.google\.com|google.*oauth|google.*sign.?in/i },
+  { name: 'GitHub', pattern: /github\.com\/login|github.*oauth|github.*sign.?in/i },
+  { name: 'Facebook', pattern: /facebook\.com\/.*oauth|facebook.*login|fb.*login/i },
+  { name: 'Microsoft', pattern: /login\.microsoftonline|microsoft.*oauth|microsoft.*sign.?in/i },
+  { name: 'Apple', pattern: /appleid\.apple\.com|apple.*sign.?in/i },
+]
+
+const SAML_PATTERNS = [
+  /saml/i, /saml2/i, /sso\/saml/i, /adfs/i, /okta.*saml/i,
+  /onelogin.*saml/i, /ping.*federate/i,
+]
+
+const LOGIN_FORM_PATTERNS = [
+  /sign.?in/i, /log.?in/i, /email.*password/i, /username.*password/i,
+  /authenticate/i, /credentials/i,
+]
+
+export class AuthStateDetector {
+  private lastState: AuthState | null = null
+  private stateChangeCallbacks: Array<(prev: AuthState | null, current: AuthState) => void> = []
+
+  /**
+   * Detect the current auth state of a page by inspecting DOM elements.
+   * Returns structured auth state without any substring hacks.
+   */
+  async detectAuthState(page: Page): Promise<AuthState> {
+    const state: AuthState = {
+      hasLoginForm: false,
+      authType: 'unknown',
+      oauthProviders: [],
+      hasPasswordField: false,
+      hasRememberMe: false,
+      formCount: 0,
+    }
+
+    try {
+      const result = await page.evaluate(() => {
+        const doc = document as any
+
+        // Check for password fields
+        const passwordFields = doc.querySelectorAll('input[type="password"]')
+        const hasPasswordField = passwordFields.length > 0
+
+        // Count forms
+        const forms = doc.querySelectorAll('form')
+        const formCount = forms.length
+
+        // Check for login-related form content
+        let hasLoginForm = false
+        let loginEndpoint: string | undefined
+
+        const loginPatterns = [
+          /sign.?in/i, /log.?in/i, /authenticate/i, /credentials/i,
+        ]
+        const bodyText = doc.body?.innerText || ''
+
+        // Check forms for password fields or login text
+        for (const form of forms) {
+          const hasPw = form.querySelector('input[type="password"]')
+          const formText = form.textContent || ''
+          if (hasPw || loginPatterns.some(p => p.test(formText))) {
+            hasLoginForm = true
+            if (form.action && form.action !== window.location.href) {
+              loginEndpoint = form.action
+            }
+            break
+          }
+        }
+
+        // Detect OAuth buttons/links
+        const oauthProviders: string[] = []
+        const allLinks = doc.querySelectorAll('a, button')
+        for (const el of allLinks) {
+          const text = (el.textContent || '').toLowerCase()
+          const href = el.href || ''
+          if (text.includes('google') || href.includes('accounts.google.com')) oauthProviders.push('Google')
+          if (text.includes('github') || href.includes('github.com/login')) oauthProviders.push('GitHub')
+          if (text.includes('facebook') || href.includes('facebook.com')) oauthProviders.push('Facebook')
+          if (text.includes('microsoft') || href.includes('login.microsoftonline')) oauthProviders.push('Microsoft')
+          if (text.includes('apple') || href.includes('appleid.apple.com')) oauthProviders.push('Apple')
+        }
+
+        // Check for remember me checkbox
+        const rememberMe = doc.querySelector('input[name*="remember"], input[id*="remember"]')
+
+        // Check page title and body for login indicators
+        const titleText = doc.title || ''
+        const allText = titleText + ' ' + bodyText
+
+        return {
+          hasPasswordField,
+          formCount,
+          hasLoginForm: hasLoginForm || (hasPasswordField && loginPatterns.some(p => p.test(allText))),
+          loginEndpoint,
+          oauthProviders: [...new Set(oauthProviders)],
+          hasRememberMe: !!rememberMe,
+        }
+      })
+
+      state.hasPasswordField = result.hasPasswordField
+      state.formCount = result.formCount
+      state.hasLoginForm = result.hasLoginForm
+      state.loginEndpoint = result.loginEndpoint
+      state.oauthProviders = result.oauthProviders
+      state.hasRememberMe = result.hasRememberMe
+
+      // Determine auth type
+      if (state.oauthProviders.length > 0) {
+        state.authType = 'oauth'
+      } else if (SAML_PATTERNS.some(p => p.test(page.url()))) {
+        state.authType = 'saml'
+      } else if (state.hasLoginForm || state.hasPasswordField) {
+        state.authType = 'form'
+      }
+    } catch {
+      // Page may have navigated or be unavailable — return default state
+      log.dim('[auth-state-detector] Failed to evaluate page for auth state')
+    }
+
+    // Notify state change listeners
+    if (this.lastState === null || this.lastState.hasLoginForm !== state.hasLoginForm || this.lastState.authType !== state.authType) {
+      for (const cb of this.stateChangeCallbacks) {
+        cb(this.lastState, state)
+      }
+    }
+
+    this.lastState = state
+    return state
+  }
+
+  /**
+   * Get the last detected auth state without re-scanning the page.
+   */
+  getLastState(): AuthState | null {
+    return this.lastState
+  }
+
+  /**
+   * Register a callback for auth state changes (e.g., navigation to login page).
+   */
+  onStateChange(callback: (prev: AuthState | null, current: AuthState) => void): void {
+    this.stateChangeCallbacks.push(callback)
+  }
+
+  /**
+   * Clear internal state (e.g., on detach).
+   */
+  clear(): void {
+    this.lastState = null
+    this.stateChangeCallbacks = []
+  }
 }
 
 function getSensitiveRegex(): RegExp {
@@ -115,11 +284,27 @@ export class HumanObserver {
   private callback: ((action: HumanAction) => void) | null = null
   private snapshotBeforeAsk: HumanAction[] = []
   private capturing = false
+  private authDetector = new AuthStateDetector()
+
+  /**
+   * Get the auth state detector for this observer.
+   * Use to detect login forms, OAuth buttons, SAML, etc.
+   */
+  getAuthDetector(): AuthStateDetector {
+    return this.authDetector
+  }
 
   attach(page: Page): void {
     this.detach()
     this.page = page
     this.capturing = true
+
+    // Hook auth detection into navigation events
+    this.authDetector.onStateChange((_prev, current) => {
+      if (current.hasLoginForm) {
+        log.info(`[human-observer] Auth state changed: detected ${current.authType} login (endpoint: ${current.loginEndpoint || 'same-page'})`)
+      }
+    })
 
     const isStagehand = typeof (page as any).sendCDP === 'function'
 
@@ -233,6 +418,7 @@ export class HumanObserver {
     this.listeners = []
     this.page = null
     this.capturing = false
+    this.authDetector.clear()
   }
 
   startSnapshot(): void {
@@ -249,6 +435,11 @@ export class HumanObserver {
     const full: HumanAction = { ...action, timestamp: action.timestamp || Date.now() }
     this.actions.push(full)
     this.callback?.(full)
+
+    // Trigger auth state detection on navigations
+    if (full.type === 'navigate' && this.page) {
+      this.authDetector.detectAuthState(this.page).catch(() => {})
+    }
   }
 
   getActions(): HumanAction[] {

@@ -11,8 +11,36 @@
 
 import { existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
-const START_DIR = import.meta.dirname || __dirname
+// Resolve the directory of THIS module in a way that works in both ESM and
+// the tsup CJS/ESM bundle. `import.meta.url` is the clean ESM form
+// (supported under the project's esnext module target), but in some
+// bundling targets only `__dirname` is defined. We try `import.meta.url`
+// first, then fall back to `__dirname` (guarded by a typeof check so
+// referencing it in a pure ESM context does not throw a ReferenceError),
+// and finally CWD.
+function moduleDirname(): string {
+  try {
+    // `import.meta.url` is available in ESM; guarded by typeof because TS
+    // in some single-file checks still treats it as a potential error.
+    if (typeof import.meta !== 'undefined' && typeof import.meta.url === 'string') {
+      return dirname(fileURLToPath(import.meta.url))
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    // @ts-ignore — only present in CJS/bundled contexts; guarded by typeof.
+    const d: string = (typeof __dirname !== 'undefined' && __dirname) as unknown as string
+    if (typeof d === 'string' && d.length > 0) return d
+  } catch {
+    /* __dirname not defined in ESM — ignore */
+  }
+  return process.cwd()
+}
+
+const START_DIR = moduleDirname()
 
 /**
  * Walk up from `startDir` looking for a directory containing package.json

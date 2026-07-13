@@ -16,7 +16,7 @@ describe('Scenario A: Single model, no tiers', () => {
 
     expect(config.provider).toBe('groq')
     expect(config.model).toBe('llama3-8b-8192')
-    expect(config.engine).toBe('solver')
+    expect(config.engine).toBe('multi-model')
 
     // budgetPolicy should be DEFAULTS (not undefined!)
     expect(config.budgetPolicy).toBeDefined()

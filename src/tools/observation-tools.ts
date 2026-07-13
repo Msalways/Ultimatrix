@@ -40,7 +40,7 @@ export const parseResponse = createTool({
     try {
       json = JSON.parse(compressionResult.compressed)
     } catch {
-      json = null
+      // json stays null
     }
     const textSnippets: string[] = []
     if (json && typeof json === 'object') {

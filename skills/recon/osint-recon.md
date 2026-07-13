@@ -1,4 +1,4 @@
----
+﻿---
 name: osint-recon
 description: "Open source intelligence gathering from public data sources, social media, and infrastructure records"
 category: specialized
@@ -48,3 +48,24 @@ Open Source Intelligence (OSINT) gathering uses publicly available information t
 - Maltego (OSINT visualization)
 - Shodan, Censys (infrastructure search)
 - crt.sh (certificate transparency)
+
+## Trigger Conditions
+
+Activate during the passive/early recon phase to build target knowledge from public sources: domain/IP infrastructure, employee/tech-stack intel, leaked credentials, exposed files, and historical changes. Trigger when starting any assessment before active testing, or to support social-engineering/phishing awareness and subdomain/infra mapping. Do not trigger for active vulnerability testing (use active skills) or where scope prohibits passive collection; keep queries privacy- and scope-aware.
+
+## Detection Approach
+
+Define the intelligence need first (infra, people, tech, leaks, relationships). Then gather from multiple independent sources and cross-reference: search-engine dorking for indexed/admin/config pages, WHOIS/DNS history/RIR data and BGP for infra evolution, certificate transparency logs (crt.sh/Censys) for subdomains and internal hostnames, social/professional platforms for org structure and stack, and breach corpora for credential reuse. Use temporal analysis (Wayback snapshots) to find forgotten subdomains/panels. Build relationship maps (domains↔IPs↔people↔orgs) but treat correlation as hypothesis, not proof. Route concrete technical findings (subdomains, exposed files, disclosed endpoints) into active verification via the recon/information-disclosure skills.
+
+## Pitfalls
+
+- Relying on a single source — always cross-reference.
+- Hitting search-engine rate limits and getting IP-blocked.
+- Confusing correlation with causation in relationship mapping.
+- Ignoring non-English/regional platforms.
+- Not recording negative results (domains confirmed absent).
+- Treating a leaked credential as valid on the target without verification.
+
+## Verification & Impact
+
+CONFIRMED when OSINT yields actionable, cross-referenced artifacts: verified subdomains/IP ranges, real exposed credentials/files, or tech-stack indicators tied to the target. SUSPECTED when a lead is plausible but unverified — record as candidate for active confirmation. Document impact by what the intel enables (phishing targeting, attack-surface expansion, credential reuse, forgotten-asset discovery). Capture source URLs, CT-log entries, and breach references via `recordEvidence`.

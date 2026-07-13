@@ -1,0 +1,12 @@
+=== debateOnce stub diag 2026-07-12T10:37:10.950Z ===
+config loaded, calling debateOnce with 90s timeout...
+  onPhase: debate r1 
+  onPhase: reject r1 endpoint:https://public-firing-range.appspot.com/
+  onPhase: reject r1 endpoint:https://public-firing-range.appspot.com/
+  onPhase: reject r1 endpoint:https://public-firing-range.appspot.com/
+  onPhase: reject r1 endpoint:https://public-firing-range.appspot.com/
+DEBATEONCE OK
+  complete=false
+  proposedTasks=[]
+  summary=Round 1: 0 proposals executed, 0 evidence items recorded.
+=== diag OK ===

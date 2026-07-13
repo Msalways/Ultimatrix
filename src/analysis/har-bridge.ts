@@ -214,9 +214,9 @@ function extractXHRBodies(entries: ReturnType<typeof parseHar>['log']['entries']
     const bodyText = entry.response.content.text
     if (!bodyText) continue
 
-    let parsed: Record<string, unknown> | null = null
+    let parsed: Record<string, unknown> | null = null // eslint-disable-line no-useless-assignment
     try {
-      parsed = JSON.parse(bodyText)
+      parsed = JSON.parse(bodyText) as Record<string, unknown> | null
     } catch {
       continue
     }

@@ -1,34 +1,24 @@
 import { loadSkill, getAllSkills, type SkillMeta, type SkillTier } from './loader'
 
 const CORE_TOOLS = [
-  'updateGraph',
   'writeFinding',
-  'readReport',
   'askUser',
   'loadSkillReference',
   'searchSkills',
   'encodeDecode',
   'queryGraph',
-  'detectChains',
   'verifyChains',
-  'evaluateRendered',
-  'findEndpointsInResponse',
-  'compareResponses',
-  'measureTiming',
   'recordEvidence',
   'detectReactions',
   'getDialogEvidence',
   'getRecentChanges',
   'getTargetSummary',
   'getEndpointsWithParams',
-  'getTestCoverage',
   'upsertPage',
   'addAction',
   'addInput',
   'addEndpoint',
   'addFinding',
-  'addAuthFlow',
-  'addAttack',
   'saveSession',
   'restoreSession',
   'getCapturedHeaders',
@@ -39,6 +29,15 @@ const CORE_TOOLS = [
   'recordFindingCandidate',
   'assessCandidateReportability',
   'getResearchStatus',
+  'runPrimitive',
+  'getOastUrl',
+  'recordOutcome',
+  'runCampaign',
+  'runRecon',
+  'graphqlIntrospect',
+  'jwtDecode',
+  'frameworkFingerprint',
+  'cloudMetadataProbe',
 ]
 
 export function resolveToolsForSkills(skillIds: string[]): string[] {
@@ -104,6 +103,32 @@ export function resolveSkillsForInput(userInput: string): SkillMeta[] {
         score += 2
       }
     })
+
+    // Negative scoring: explicit exclusion patterns (e.g. "NOT for X", "exclude X", "skip X")
+    const exclusionPatterns = [
+      /\bnot\s+(for|about|related\s+to|about|used\s+for)\b/,
+      /\bexclude[sd]?\b/,
+      /\bskip(?:ping|ped)?\b/,
+      /\bignore\b/,
+      /\bwithout\b/,
+    ]
+    const skillTerms = [
+      skill.id.toLowerCase(),
+      skill.name.toLowerCase(),
+      ...skill.description.toLowerCase().split(/\s+/).filter(w => w.length > 3),
+    ]
+    for (const pattern of exclusionPatterns) {
+      const patternMatch = input.match(pattern)
+      if (patternMatch) {
+        const afterMatch = input.slice(input.indexOf(patternMatch[0]) + patternMatch[0].length)
+        for (const term of skillTerms) {
+          if (term.length > 3 && afterMatch.includes(term)) {
+            score -= 15
+            break
+          }
+        }
+      }
+    }
 
     return { skill, score }
   })

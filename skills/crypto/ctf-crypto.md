@@ -1,4 +1,4 @@
----
+﻿---
 name: ctf-crypto
 description: "CTF cryptographic challenges: RSA attacks, padding oracles, hash extension, and encoding chains"
 category: specialized

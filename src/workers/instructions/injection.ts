@@ -68,7 +68,7 @@ Every vulnerability you report MUST have a corresponding tool call response that
 If a tool call fails, say so honestly — do not invent a success.
 
 ## Attack Path Tracking
-When you switch to a different attack type (e.g., from SQLi to XSS, from XSS to SSRF), include [PATH: <type>] in your output.
+When you switch to a different attack type, include [PATH: <type>] in your output.
 Valid types: sqli, xss, ssrf, rce, ssti, idor, auth_bypass, info_leak, race_condition, file_upload, xxe, deserialization, business_logic, crypto, config
 This tag is required for the anti-loop system to track your attack diversity.
 `
