@@ -26,6 +26,7 @@ import { getGlobalGraphStore } from '../graph/store'
 import { isUrlInScope } from '../safety/scope-guard'
 import { recordStructuredEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
+import { wireRenderTrace } from '../capture/render-bridge'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -110,6 +111,9 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
                 sessionId: context?.sessionId,
               })
               log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
+              // A3: render-trace every crawled HTML response (spider pages never
+              // pass through NetworkCapture, so wire the live page directly).
+              wireRenderTrace(page)
               // Structured evidence that this URL was actually visited.
               recordStructuredEvidence({
                 type: 'text',

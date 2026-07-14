@@ -75,3 +75,43 @@ export function recordRenderTraceFromResponse(input: RenderCaptureInput): Render
 
   return trace
 }
+
+/**
+ * Wire a live Playwright/Stagehand page so every HTML response is render-traced
+ * into RENDERED_ELEMENT graph nodes — including pages the spider crawls (which
+ * otherwise never pass through NetworkCapture). Idempotent per page object.
+ *
+ * Lightweight by design: no HAR accumulation, just the same best-effort
+ * trace that NetworkCapture performs for the capture browser. Skips
+ * non-HTML responses before reading the body to avoid needless I/O.
+ */
+const renderWiredPages = new WeakSet<object>()
+
+export function wireRenderTrace(page: any): void {
+  if (!page || typeof page.on !== 'function') return
+  if (renderWiredPages.has(page)) return
+  renderWiredPages.add(page)
+
+  page.on('response', (response: any) => {
+    const run = async () => {
+      try {
+        const ct = (response.headers?.()?.['content-type'] ?? '').toLowerCase()
+        if (ct && !ct.includes('text/html')) return
+        const body = await response.body?.().catch(() => null)
+        if (!body) return
+        const text = body.toString('utf-8')
+        if (!text) return
+        recordRenderTraceFromResponse({
+          url: response.request?.()?.url?.(),
+          method: response.request?.()?.method?.(),
+          status: response.status?.(),
+          contentType: ct || undefined,
+          body: text,
+        })
+      } catch {
+        /* best-effort render tracing */
+      }
+    }
+    run()
+  })
+}
