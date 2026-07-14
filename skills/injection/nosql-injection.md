@@ -3,7 +3,7 @@ name: nosql-injection
 description: "NoSQL injection exploitation for MongoDB, CouchDB, and other document databases including operator injection"
 category: specialized
 tier: balanced
-toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["nosql injection", "mongodb injection", "nosql injection", "nosql attack", "document database injection", "operator injection", "mongodb operator", "nosql authentication bypass", "couchdb injection", "database injection nosql"]
 contextBoosts: [sqli]
 mitreAttack: ["T1190", "T1059"]

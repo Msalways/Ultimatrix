@@ -3,7 +3,7 @@ name: xxe
 description: "XML External Entity exploitation including classic, blind OOB, SVG upload, and filter bypass techniques"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["xxe", "xml external entity", "xml injection", "xml parsing vulnerability", "external entity", "blind xxe", "ootband xxe", "xml entity expansion", "billion laughs", "soap injection"]
 contextBoosts: [api]
 mitreAttack: ["T1203", "T1190"]

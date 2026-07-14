@@ -147,8 +147,9 @@ export interface VerifierConfig {
 }
 
 export interface ScopeConfig {
-  /** Domains allowed for outbound requests. Supports exact match and wildcard (*.example.com). */
-  allowedDomains: string[]
+  /** Domains allowed for outbound requests. Supports exact match and wildcard (*.example.com).
+   *  Optional — when omitted (or empty) the tool is free-for-all (no domain restriction). */
+  allowedDomains?: string[]
   /** URL path prefixes allowed (e.g., ['/api', '/admin']). Empty = all paths. */
   allowedPaths?: string[]
   /** Protocols allowed. Default: ['https']. */
@@ -553,15 +554,20 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     }
   }
 
-  // Validate scope config
+  // Validate scope config.
+  // `allowedDomains` is OPTIONAL. Scope is only enforced when the user
+  // explicitly provides a non-empty list — otherwise the tool is free-for-all
+  // (no domain restriction). An empty array is also treated as free-for-all.
   const scopeRaw = raw.scope as Record<string, unknown> | undefined
   if (scopeRaw) {
-    if (!Array.isArray(scopeRaw.allowedDomains) || scopeRaw.allowedDomains.length === 0) {
-      errors.push('scope.allowedDomains must be a non-empty array of domain strings')
-    } else {
-      for (const d of scopeRaw.allowedDomains) {
-        if (typeof d !== 'string' || d.length === 0) {
-          errors.push(`scope.allowedDomains contains invalid entry: ${JSON.stringify(d)}`)
+    if (scopeRaw.allowedDomains !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedDomains)) {
+        errors.push('scope.allowedDomains must be an array of domain strings')
+      } else {
+        for (const d of scopeRaw.allowedDomains) {
+          if (typeof d !== 'string' || d.length === 0) {
+            errors.push(`scope.allowedDomains contains invalid entry: ${JSON.stringify(d)}`)
+          }
         }
       }
     }

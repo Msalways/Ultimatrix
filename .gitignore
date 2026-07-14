@@ -67,3 +67,6 @@ scan-manager.test.ts
 tool-registry.test.ts
 test-e2e.ts
 test-worker.ts
+
+# Evaluation run artifacts
+evals/

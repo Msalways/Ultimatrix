@@ -13,12 +13,11 @@ describe('isUrlInScope', () => {
     setScopeConfig(null)
   })
 
-  it('denies all URLs when no config is set (deny-by-default)', () => {
+  it('allows all URLs when no config is set (free-for-all by default)', () => {
     setScopeConfig(null)
     setAllowAny(false)
     const r = isUrlInScope('https://evil.com/payload')
-    expect(r.allowed).toBe(false)
-    expect(r.reason).toContain('No scope policy')
+    expect(r.allowed).toBe(true)
   })
 
   it('allows all URLs when --allow-any is set', () => {
@@ -84,13 +83,13 @@ describe('isUrlInScope', () => {
     expect(r.reason).toContain('Invalid URL')
   })
 
-  it('denies when allowedDomains is empty', () => {
+  it('allows all URLs when allowedDomains is empty (free-for-all)', () => {
     const config: ScopeConfig = {
       allowedDomains: [],
       enforcement: 'hard',
     }
     const r = isUrlInScope('https://anything.com/path', config)
-    expect(r.allowed).toBe(false)
+    expect(r.allowed).toBe(true)
   })
 
   it('checks path prefix when allowedPaths is set', () => {

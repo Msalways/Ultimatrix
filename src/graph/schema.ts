@@ -29,6 +29,7 @@ export enum NodeType {
   HEADER_SEMANTIC = 'HeaderSemantic',
   AUTH_SCHEME = 'AuthScheme',
   OUTCOME_FEEDBACK = 'OutcomeFeedback',
+  RENDERED_ELEMENT = 'RenderedElement',
 }
 
 export enum EdgeType {
@@ -47,6 +48,7 @@ export enum EdgeType {
   VALUE_ORIGIN = 'VALUE_ORIGIN',
   REQUIRES_ROLE = 'REQUIRES_ROLE',
   CHAINS_TO = 'CHAINS_TO',
+  RENDERED_ON = 'RENDERED_ON',
 }
 
 export interface GraphNodeData {
@@ -345,7 +347,24 @@ export interface AuthSchemeNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode
+export interface RenderedElementNode extends GraphNodeData {
+  type: NodeType.RENDERED_ELEMENT
+  properties: {
+    url?: string
+    method?: string
+    selector: string
+    tag: string
+    name?: string
+    inputType?: string
+    value?: string
+    isFormField?: boolean
+    attributes?: Record<string, string>
+    text?: string
+    payloadHit?: boolean
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -368,4 +387,5 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.HEADER_SEMANTIC]: ['header', 'role', 'endpoint', 'confidence'],
   [NodeType.AUTH_SCHEME]: ['scheme', 'decoded', 'reusedAcross', 'maskedCredential'],
   [NodeType.OUTCOME_FEEDBACK]: ['findingId', 'techniqueId', 'accepted', 'fixed', 'retestHeld', 'severityAdjusted', 'note', 'targetOrigin', 'timestamp'],
+  [NodeType.RENDERED_ELEMENT]: ['url', 'method', 'selector', 'tag', 'name', 'inputType', 'value', 'isFormField', 'attributes', 'text', 'payloadHit'],
 }

@@ -125,6 +125,8 @@ export interface PhaseEvent {
   phase: SolverPhase;
   step: number;
   text?: string;
+  /** True when `text` is model reasoning/thinking (not the final answer). */
+  reasoning?: boolean;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolResult?: unknown;
@@ -626,6 +628,7 @@ export async function solve(
               phase: "reason",
               step: toolCallCount,
               text: chunk.payload.text,
+              reasoning: false,
             });
           }
           break;
@@ -642,6 +645,7 @@ export async function solve(
               phase: "reason",
               step: toolCallCount,
               text: chunk.payload.text,
+              reasoning: true,
             });
           }
           break;

@@ -3,7 +3,7 @@ name: ssti
 description: "Server-Side Template Injection exploitation across Jinja2, Twig, Freemarker, Velocity, Handlebars, and Go templates"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["server side template injection", "ssti", "template injection", "template escape", "jinja2", "twig", "freemarker", "velocity", "handlebars template", "go template injection"]
 contextBoosts: [sqli]
 mitreAttack: ["T1059.007", "T1190"]

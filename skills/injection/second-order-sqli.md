@@ -10,6 +10,7 @@ toolRefs:
   - compareResponses
   - recordEvidence
   - writeFinding
+  - runPrimitive
   - getTargetSummary
 triggers:
   - second order sql injection

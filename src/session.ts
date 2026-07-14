@@ -175,6 +175,7 @@ export async function main(targetUrl?: string) {
     } else if (target && resources.coreServices) {
       // B3: Solver bypasses runner — calls solve() directly with real brain agent
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
+      let streamedResponse = false
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -196,7 +197,12 @@ export async function main(targetUrl?: string) {
         },
         onPhase: (event) => {
           if (event.text) {
-            process.stdout.write(event.text)
+            if (event.reasoning) {
+              log.dim(`[thinking] ${event.text}`)
+            } else {
+              process.stdout.write(event.text)
+              streamedResponse = true
+            }
           }
           if (event.toolName) log.dim(`  → ${event.toolName}`)
           resources.forensicLog.log({
@@ -221,7 +227,7 @@ export async function main(targetUrl?: string) {
       if (result.error) {
         log.error(`Error: ${result.error}`)
       }
-      if (result.text) {
+      if (!streamedResponse && result.text) {
         process.stdout.write(result.text)
       }
       log.info(`Steps: ${result.steps ?? 0} | Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0} | Tool calls: ${result.toolCalls ?? 0}`)
@@ -239,6 +245,7 @@ export async function main(targetUrl?: string) {
       }
     } else if (target) {
       // Fallback: solver without pre-built coreServices (backward compat)
+      let streamedResponse = false
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -260,7 +267,12 @@ export async function main(targetUrl?: string) {
         },
         onPhase: (event) => {
           if (event.text) {
-            process.stdout.write(event.text)
+            if (event.reasoning) {
+              log.dim(`[thinking] ${event.text}`)
+            } else {
+              process.stdout.write(event.text)
+              streamedResponse = true
+            }
           }
           if (event.toolName) log.dim(`  → ${event.toolName}`)
           resources.forensicLog.log({
@@ -285,7 +297,7 @@ export async function main(targetUrl?: string) {
       if (result.error) {
         log.error(`Error: ${result.error}`)
       }
-      if (result.text) {
+      if (!streamedResponse && result.text) {
         process.stdout.write(result.text)
       }
       log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)

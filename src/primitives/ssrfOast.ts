@@ -8,6 +8,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { getOastUrl } from '../oast/server'
 import { getGlobalOastStore } from '../oast/store'
@@ -76,9 +77,16 @@ export const ssrfOast: TechniquePrimitive = {
     // Record any real callback into the proof layer.
     if (hit) {
       evidenceGate.recordToolOutput(`[OAST] callback received: ${hit.method} ${hit.url} body=${hit.body ?? ''}`)
+      // Structured fact so the claim co-occurs with a recorded evidence item.
+      evidenceGate.recordObserved({
+        type: 'text',
+        data: `url=${hit.url} body=${hit.body ?? ''}`,
+        label: `OAST callback ${hit.method} ${hit.url}`,
+        observed: { url: oastHost ?? oast },
+      })
     }
 
-    const { verified } = evidenceGate.verifyClaim(`ssrf callback from ${oastHost ?? oast}`)
+    const { verified } = evidenceGate.verifyClaim(claimFor('ssrf', oastHost ?? oast))
     const confirmed = !!hit && verified
 
     const evidence = hit

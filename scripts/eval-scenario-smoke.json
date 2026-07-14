@@ -1,0 +1,14 @@
+{
+  "name": "smoke-fresh-thread",
+  "target": "https://public-firing-range.appspot.com/?eval=fresh",
+  "turns": [
+    {
+      "human": "hey hex",
+      "expect": "conversational",
+      "expectWorkers": false,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Smoke test on a FRESH thread (no resumed tool history) to confirm NVIDIA API accepts the greeting turn."
+    }
+  ]
+}

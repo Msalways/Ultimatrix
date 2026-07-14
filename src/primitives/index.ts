@@ -33,10 +33,15 @@ import { configTrust } from './configTrust'
 import { idorSwapper } from './idorSwapper'
 import { ssrfOast } from './ssrfOast'
 import { classicInjection } from './classicInjection'
+import { headerInjection } from './headerInjection'
 import { aiTrust } from './ai-trust'
+import { authBypass } from './authBypass'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings, recordEvidence, writeFinding } from '../tools/control-tools'
 import { httpRequest } from '../tools/http-tools'
+import { getGlobalWorkspace } from '../workspace'
+import { summarizeTrace } from '../capture/render-tracer'
+import { NodeType, type EndpointNode } from '../graph/schema'
 
 // ─── Register all primitives (single source of truth) ───────────────────
 
@@ -49,7 +54,9 @@ for (const p of [
   idorSwapper,
   ssrfOast,
   classicInjection,
+  headerInjection,
   aiTrust,
+  authBypass,
 ]) {
   registerPrimitive(p)
 }
@@ -129,6 +136,42 @@ export async function runPrimitiveById(
   setEvidenceGateForFindings(gate)
 
   const result = await runPrimitive(primitive, ctx, httpExecutor, gate)
+
+  // WS-E: persist render traces as RENDERED_ELEMENT graph nodes and surface a
+  // compact render summary in the evidence the LLM (and report) consumes.
+  if (result.renderTraces?.length) {
+    const store = getGlobalWorkspace().getGraphStore()
+    const endpointUrl = ctx.endpoint?.url ?? ctx.target
+    const endpoint = endpointUrl
+      ? ((store?.queryNodes(NodeType.ENDPOINT) as EndpointNode[] | undefined) ?? []).find(
+          (e) => e.properties.url === endpointUrl,
+        )
+      : undefined
+    for (const trace of result.renderTraces) {
+      if (store) {
+        for (const f of trace.formFields) {
+          store.addRenderedElement(
+            endpoint?.id,
+            {
+              url: endpointUrl,
+              method: ctx.endpoint?.method,
+              selector: f.selector,
+              tag: f.tag,
+              name: f.name,
+              inputType: f.type,
+              value: f.value,
+              isFormField: true,
+              attributes: f.attributes,
+              text: f.text,
+              payloadHit: trace.payloadHits.length > 0,
+            },
+          )
+        }
+      }
+    }
+    const summary = result.renderTraces.map(summarizeTrace).join('\n')
+    result.evidence.push({ kind: 'render', label: `render trace ${endpointUrl ?? ''}`, data: summary })
+  }
 
   if (result.confirmed && options?.commit !== false) {
     for (const ev of result.evidence) {

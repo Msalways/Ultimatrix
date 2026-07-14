@@ -9,6 +9,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 
@@ -70,7 +71,7 @@ export const authzMatrix: TechniquePrimitive = {
     const escalated = (baselineDenied && altAllowed) || (cmp.vulnerable && altAllowed)
 
     const { verified } = evidenceGate.verifyClaim(
-      `authorization failure on ${baseline.step.request.url} baseline=${baseStatus} alt=${altStatus}`,
+      claimFor('broken_access_control', baseline.step.request.url, baseStatus, baseline.step.request.method),
     )
     const confirmed = escalated && verified
 

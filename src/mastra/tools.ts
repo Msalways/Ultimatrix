@@ -321,6 +321,7 @@ export const TOOL_IDS = [
   'verifyChains',
   'readReport',
   'loadSkillReference',
+  'listSkills',
   'searchSkills',
   'encodeDecode',
   'saveSession',

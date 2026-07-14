@@ -3,7 +3,7 @@ name: email-injection
 description: "Email header injection (SMTP injection) exploitation for header manipulation, email spoofing, and data exfiltration"
 category: specialized
 tier: balanced
-toolRefs: [httpRequest, parseResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["email injection", "smtp injection", "header injection", "email header", "mail header", "smtp header", "email spoofing injection", "email subject injection", "email body injection", "mail injection"]
 contextBoosts: [auth]
 mitreAttack: ["T1190", "T1566"]

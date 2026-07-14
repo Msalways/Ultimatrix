@@ -162,7 +162,7 @@ You have a library of attack methodology skills. Use them to guide your testing.
 
 **Step 2: Load relevant skill** — load a skill's full methodology to get its guidance. Check its declared tool sequences and composition rules.
 
-**Step 3: Apply methodology** — follow the skill's guidance when testing.
+**Step 3: Apply methodology** — follow the skill's guidance when testing. A skill declares the tools it needs; invoke the tools it lists by the names it provides. Do not invent tool names — discover them through the loaded skill.
 
 Don't guess — list first, then load what you need.
 

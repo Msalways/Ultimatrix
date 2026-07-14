@@ -14,6 +14,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { getOastUrl } from '../oast/server'
 import { getGlobalOastStore } from '../oast/store'
@@ -151,7 +152,15 @@ export const aiTrust: TechniquePrimitive = {
     }
 
     const toolAbuse = !!oastHit || !!abuseResponse
-    const { verified } = evidenceGate.verifyClaim(`prompt-injection tool abuse on ${oastHost || oast}`)
+    if (oastHit) {
+      evidenceGate.recordObserved({
+        type: 'text',
+        data: `url=${oastHit.url} body=${oastHit.body ?? ''}`,
+        label: `OAST callback ${oastHit.method} ${oastHit.url}`,
+        observed: { url: oastHost || oast },
+      })
+    }
+    const { verified } = evidenceGate.verifyClaim(claimFor('prompt_injection', oastHost || oast))
     const confirmed = toolAbuse && verified
 
     const evidence = []

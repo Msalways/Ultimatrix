@@ -3,7 +3,7 @@ name: command-injection-advanced
 description: "Advanced command injection with filter bypass, encoding tricks, OOB exfiltration, and polyglot payloads"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["advanced command injection", "command injection bypass", "os command injection", "rce injection", "shell injection", "command filter bypass", "blind command injection", "out of band command", "polyglot injection", "code injection"]
 contextBoosts: [sqli]
 mitreAttack: ["T1059", "T1059.004", "T1190"]

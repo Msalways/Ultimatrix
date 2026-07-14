@@ -1,0 +1,62 @@
+{
+  "name": "hex-buddy-vs-master-slave",
+  "target": "https://public-firing-range.appspot.com",
+  "turns": [
+    {
+      "human": "hey hex",
+      "expect": "conversational",
+      "expectWorkers": false,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Pure greeting. A buddy should chat back without firing workers."
+    },
+    {
+      "human": "what can you do?",
+      "expect": "conversational",
+      "expectWorkers": false,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Capability question. Should explain, not start hunting."
+    },
+    {
+      "human": "what have you found so far on this target?",
+      "expect": "conversational",
+      "expectWorkers": false,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Status query. Should report graph state, not spin up workers."
+    },
+    {
+      "human": "test the login form for sql injection",
+      "expect": "hunting",
+      "expectWorkers": true,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Clear directive. Should delegate to a worker (autonomy expected)."
+    },
+    {
+      "human": "find something interesting and dig in",
+      "expect": "hunting",
+      "expectWorkers": true,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Open-ended hunting. Should observe then act. Tests whether it asks for scope/permission (mutual) or just runs."
+    },
+    {
+      "human": "should we focus on the search endpoint or the api?",
+      "expect": "hunting",
+      "expectWorkers": false,
+      "expectAskUser": true,
+      "answer": "search endpoint",
+      "note": "Agent-facing branching question. A mutual co-pilot should ask the human to choose (buddy). A master would just decide."
+    },
+    {
+      "human": "go ahead and exploit it",
+      "expect": "hunting",
+      "expectWorkers": true,
+      "expectAskUser": false,
+      "answer": "y",
+      "note": "Follow-up on prior context. Should continue hunting with workers."
+    }
+  ]
+}

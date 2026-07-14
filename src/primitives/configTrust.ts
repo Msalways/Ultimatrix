@@ -9,6 +9,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 import { getTechniqueRegistry } from '../skills/technique-registry'
@@ -107,7 +108,7 @@ export const configTrust: TechniquePrimitive = {
     const privilegedHonored = cmp.vulnerable && mutatedOk
 
     const { verified } = evidenceGate.verifyClaim(
-      `client value trust on ${baseline.step.request.url} field ${mutated.step.metadata?.field}`,
+      claimFor('config_trust', baseline.step.request.url, baseline.status, baseline.step.request.method),
     )
     const confirmed = privilegedHonored && verified
 

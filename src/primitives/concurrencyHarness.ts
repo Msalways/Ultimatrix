@@ -12,6 +12,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 
@@ -80,7 +81,7 @@ export const concurrencyHarness: TechniquePrimitive = {
 
     const raced = divergent > 0
     const { verified } = evidenceGate.verifyClaim(
-      `race condition on ${baseline.step.request.url} divergent=${divergent}`,
+      claimFor('race_condition', baseline.step.request.url, baseline.status, baseline.step.request.method),
     )
     const confirmed = raced && verified
 

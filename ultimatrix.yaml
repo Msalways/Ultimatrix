@@ -4,10 +4,10 @@ model: nvidia/nemotron-3-super-120b-a12b
 modelTiers:
   fast:
     provider: nvidia
-    model: mistralai/mistral-small-4-119b-2603
+    model: nvidia/nemotron-3-ultra-550b-a55b
   balanced:
     provider: nvidia
-    model: mistralai/mistral-small-4-119b-2603
+    model: z-ai/glm-5.2
   powerful:
     provider: nvidia
     model: nvidia/nemotron-3-ultra-550b-a55b
@@ -21,9 +21,6 @@ browser:
   selfHeal: true
   verbose: 0
 scope:
-  allowedDomains:
-    - public-firing-range.appspot.com
-    - app.launchdarkly.com
   allowedProtocols:
     - https
     - http

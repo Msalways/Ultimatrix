@@ -3,7 +3,7 @@ name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["authorization testing", "access control", "broken access control", "idor", "privilege escalation", "session management", "authorization flaws", "access control testing", "privilege testing", "security testing"]
 contextBoosts: [auth]
 mitreAttack: ["T1190", "T1078"]
@@ -102,6 +102,17 @@ Strip signature entirely, set alg to none:
 If server rejects `none`, try mixed-case bypass:
 - `None`, `NONE`, `nOnE`, `null`, `NaN`
 - Some libraries only check lowercase `none` exactly
+
+### Authentication Bypass (login bypass, default credentials, JWT alg:none)
+
+For a dedicated login/auth endpoint, drive these authentication bypass techniques via the
+`runPrimitive` primitive `authBypass` (id `authBypass`), which covers:
+- **Login bypass** with SQLi credentials (`' OR '1'='1'-- `) against username/password fields.
+- **Default credentials** — probe common admin pairs (admin:admin, root:root, test:test).
+- **JWT alg:none** — forge an unsigned token from a captured sample and replay it.
+
+A success signal (session cookie issued, or welcome/dashboard body) without valid credentials
+confirms an authentication bypass. Pair with `writeFinding` once reproduced.
 
 ### jku / x5u Header Injection
 

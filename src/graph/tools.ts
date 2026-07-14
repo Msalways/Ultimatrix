@@ -344,7 +344,7 @@ export const updateGraph = createTool({
   id: 'updateGraph',
   description: 'Write data to the knowledge graph. Prefer the focused single-purpose graph mutation tools, which expose clearer per-action schemas.',
   inputSchema: z.object({
-    action: z.enum(['upsertPage', 'addAction', 'addInput', 'addEndpoint', 'addTest', 'addFinding', 'addAuthFlow', 'addRBACRole', 'addAttack', 'chainFindings']),
+    action: z.enum(['upsertPage', 'addAction', 'addInput', 'addEndpoint', 'addTest', 'addFinding', 'addAuthFlow', 'addRBACRole', 'addAttack', 'addRenderedElement', 'chainFindings']),
     pageUrl: z.string().optional(),
     pageData: z.record(z.string(), z.unknown()).optional(),
     pageId: z.string().optional(),
@@ -356,13 +356,15 @@ export const updateGraph = createTool({
     authFlowData: z.record(z.string(), z.unknown()).optional(),
     rbacData: z.record(z.string(), z.unknown()).optional(),
     attackData: z.record(z.string(), z.unknown()).optional(),
+    renderedEndpointId: z.string().optional(),
+    renderedData: z.record(z.string(), z.unknown()).optional(),
     fromId: z.string().optional(),
     toId: z.string().optional(),
   }),
   execute: async (input) => {
     try {
       const store = getGlobalGraphStore()
-      const { action, pageUrl, pageData, pageId, actionData, inputData, endpointData, testData, findingData, authFlowData, rbacData, attackData, fromId, toId } = input
+      const { action, pageUrl, pageData, pageId, actionData, inputData, endpointData, testData, findingData, authFlowData, rbacData, attackData, renderedEndpointId, renderedData, fromId, toId } = input
 
       let result: unknown
 
@@ -410,6 +412,11 @@ export const updateGraph = createTool({
         case 'addAttack':
           if (!attackData) return { ok: false, error: 'attackData required. Use the addAttack tool instead.' }
           result = store.addAttack(attackData as any)
+          break
+
+        case 'addRenderedElement':
+          if (!renderedData) return { ok: false, error: 'renderedData required (selector, tag).' }
+          result = store.addRenderedElement(renderedEndpointId, renderedData as any)
           break
 
         case 'chainFindings':

@@ -134,6 +134,7 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   const maxRounds = config.solver?.maxRounds ?? DEFAULTS.solver.maxRounds
   let round = 0
   let lastResult = null
+  let streamedResponse = false
   const goal = `Perform a comprehensive security assessment of ${target}. Test for SQL injection, XSS, IDOR, authentication bypass, and any other vulnerabilities. Record all findings.`
 
   while (round < maxRounds) {
@@ -153,6 +154,16 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
         maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
         staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
         maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+      },
+      onPhase: (event) => {
+        if (event.text) {
+          if (event.reasoning) {
+            log.dim(`[thinking] ${event.text}`)
+          } else {
+            process.stdout.write(event.text)
+            streamedResponse = true
+          }
+        }
       },
     })
 
@@ -184,7 +195,7 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   if (result.error) {
     log.error(`Error: ${result.error}`)
   }
-  if (result.text) {
+  if (!streamedResponse && result.text) {
     process.stdout.write(result.text)
   }
   log.info(`Tool calls: ${result.toolCalls} | Facts: ${result.facts} | Intents: ${result.intents} | Duration: ${result.durationMs}ms`)

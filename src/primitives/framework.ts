@@ -14,6 +14,19 @@
 import type { Severity } from '../types/shared'
 import type { Finding } from '../generation/test-generator'
 import { EvidenceGate } from '../intelligence/evidence-gate'
+import type { FindingClaim } from '../intelligence/evidence-ledger'
+import { traceRender } from '../capture/render-tracer'
+
+function looksRenderable(body: string): boolean {
+  if (!body) return false
+  const head = body.slice(0, 512).toLowerCase()
+  return (
+    head.includes('<html') ||
+    head.includes('<body') ||
+    head.includes('<!doctype') ||
+    /<[a-z][\s\S]*>/.test(body.slice(0, 200))
+  )
+}
 
 // ─── Context ───────────────────────────────────────────────────────────
 
@@ -88,7 +101,7 @@ export type StepExecutor = (step: AttackStep) => Promise<StepExecutionResult>
 
 /** A reference to REAL tool output, mirroring the EvidenceGate evidence concept. */
 export interface EvidenceRef {
-  kind: 'request' | 'response' | 'state' | 'oast' | 'tool'
+  kind: 'request' | 'response' | 'state' | 'oast' | 'tool' | 'render'
   label: string
   /** The actual snippet that was (or will be) recorded into the EvidenceGate. */
   data: string
@@ -105,6 +118,8 @@ export interface PrimitiveResult {
   severity?: Severity
   finding?: Partial<Finding>
   note?: string
+  /** WS-E: render traces captured from HTML responses during this run. */
+  renderTraces?: import('../capture/render-tracer').RenderTrace[]
 }
 
 // ─── Technique primitive interface ─────────────────────────────────────
@@ -162,23 +177,52 @@ export async function runPrimitive(
   const steps = await primitive.generate(ctx)
   const concurrent = steps.some(s => s.metadata?.concurrent === true)
 
-  const runOne = async (step: AttackStep): Promise<StepExecutionResult> => {
+    const runOne = async (step: AttackStep): Promise<StepExecutionResult> => {
     const res = await executor(step)
     // Record REAL tool output into the proof layer (request + response).
     evidenceGate.recordToolOutput(
       `[${step.request.method} ${step.request.url}] request` +
         (step.request.body ? ` body=${step.request.body}` : ''),
     )
+    // Populate the STRUCTURED ledger (the layer verifyClaim actually checks).
+    // Without this, confirmations can never be verified against recorded facts.
+    evidenceGate.recordObserved({
+      type: 'raw_request',
+      data: step.request.body ?? '',
+      label: `${step.request.method} ${step.request.url}`,
+      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers },
+    })
     if (res.status !== undefined) {
       evidenceGate.recordToolOutput(
         `[${step.request.method} ${step.request.url}] response status=${res.status}` +
           (res.body ? ` body=${res.body}` : ''),
       )
+      evidenceGate.recordObserved({
+        type: 'raw_response',
+        data: res.body ?? '',
+        label: `${step.request.method} ${step.request.url} → ${res.status}`,
+        observed: {
+          method: step.request.method,
+          url: step.request.url,
+          status: res.status,
+          responseHeaders: res.headers,
+        },
+      })
     }
     if (res.error) {
       evidenceGate.recordToolOutput(
         `[${step.request.method} ${step.request.url}] error=${res.error}`,
       )
+    }
+    // WS-E: trace renderability of HTML responses so a payload's landing spot is
+    // grounded evidence (fed to the LLM + persisted as RENDERED_ELEMENT nodes).
+    if (res.body && looksRenderable(res.body)) {
+      const trace = traceRender(res.body, {
+        payloads: step.metadata?.payload ? [String(step.metadata.payload)] : [],
+      })
+      if (trace.html) {
+        res.extra = { ...(res.extra ?? {}), renderTrace: trace }
+      }
     }
     return res
   }
@@ -191,23 +235,28 @@ export async function runPrimitive(
         return acc
       }, Promise.resolve([]))
 
-  return primitive.oracle(results, evidenceGate)
+  const renderTraces = results
+    .map((r) => (r.extra?.renderTrace as import('../capture/render-tracer').RenderTrace | undefined))
+    .filter((t): t is import('../capture/render-tracer').RenderTrace => !!t)
+
+  const result = await primitive.oracle(results, evidenceGate)
+  return { ...result, renderTraces: renderTraces.length ? renderTraces : undefined }
 }
 
-// ─── Proof helpers (shared by oracles) ──────────────────────────────────
-
 /**
- * Build the canonical claim string a primitive asserts, then verify it against
- * the recorded EvidenceGate. Returns both the verification and the claim.
+ * Build a structured FindingClaim from a real step result so an oracle can verify
+ * against the structured ledger (populated by runPrimitive's recordObserved).
+ * Pass the same url/status recorded for that step so the claim co-occurs with a
+ * recorded evidence item.
  */
-export function verifyClaimInGate(
-  gate: EvidenceGate,
-  opts: { type: string; endpoint: string; signal: string; status?: number },
-): { claim: string; verified: boolean } {
-  const parts = [opts.type, 'on', opts.endpoint]
-  if (opts.status !== undefined) parts.push(`status ${opts.status}`)
-  parts.push(opts.signal)
-  const claim = parts.join(' ')
-  const verified = gate.verifyClaim(claim).verified
-  return { claim, verified }
+export function claimFor(
+  type: string,
+  url?: string,
+  status?: number,
+  method?: string,
+): FindingClaim {
+  const claim: FindingClaim = { type, endpoint: url ?? '' }
+  if (method) claim.method = method
+  if (status !== undefined) claim.observed = { status }
+  return claim
 }

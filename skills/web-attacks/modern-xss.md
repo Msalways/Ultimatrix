@@ -3,7 +3,7 @@ name: modern-xss
 description: "Modern XSS exploitation with polyglot payloads, CSP bypass, DOM clobbering, and framework-specific techniques"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, getDialogEvidence, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, getDialogEvidence, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 triggers: ["modern xss", "polyglot xss", "csp bypass xss", "dom clobbering", "xss exploitation", "client side attack", "javascript injection", "cross site scripting advanced", "dom xss", "stored xss impact"]
 contextBoosts: [auth]
 mitreAttack: ["T1189", "T1059.007"]

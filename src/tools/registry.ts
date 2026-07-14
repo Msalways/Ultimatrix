@@ -10,7 +10,7 @@ import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMeta
 import { askUser } from './interaction-tools'
 import { getOastUrlTool, checkOastCallbacks, clearOastCallbacks } from '../oast/tools'
 import { getCapturedHeaders, storeSession } from './har-tools'
-import { loadSkillReference, searchSkillTool } from './skill-tools'
+import { listSkills, loadSkillReference, searchSkillTool } from './skill-tools'
 import { encodeDecode } from './encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from './flow-tools'
 import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
@@ -32,7 +32,7 @@ export {
   askUser,
   getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
   getCapturedHeaders, storeSession,
-  loadSkillReference, searchSkillTool, encodeDecode,
+  loadSkillReference, listSkills, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
   buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
   runPrimitiveTool,
@@ -55,7 +55,7 @@ export function registerAllTools() {
     askUser,
     getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
     getCapturedHeaders, storeSession,
-    loadSkillReference, searchSkills: searchSkillTool, encodeDecode,
+    loadSkillReference, listSkills, searchSkills: searchSkillTool, encodeDecode,
     saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
     buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
     runPrimitive: runPrimitiveTool,

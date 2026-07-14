@@ -1,6 +1,7 @@
 import type { Page, Response, Request } from 'playwright'
 import type { HarEntry, HarArchive } from './har-parser'
 import { createEmptyHar, addEntry } from './har-parser'
+import { recordRenderTraceFromResponse } from './render-bridge'
 
 export interface CaptureOptions {
   captureRequestBody?: boolean
@@ -83,6 +84,20 @@ export class NetworkCapture {
       const entry = await this.buildEntry(request, response)
       if (entry) {
         this.entries.push(entry)
+        // WS-E: trace renderable HTML responses into RENDERED_ELEMENT nodes.
+        if (this.options.captureResponseBody && entry.response.content.text) {
+          try {
+            recordRenderTraceFromResponse({
+              url: entry.request.url,
+              method: entry.request.method,
+              status: entry.response.status,
+              contentType: entry.response.content.mimeType,
+              body: entry.response.content.text,
+            })
+          } catch {
+            /* render tracing is best-effort */
+          }
+        }
       }
     } catch {
       // Silently skip failed captures

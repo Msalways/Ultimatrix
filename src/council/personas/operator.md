@@ -40,6 +40,8 @@ toolRestrictions:
   - writeFinding
   - updateGraph
   - recordTest
+  - runPrimitive
+  - runCampaign
 ---
 
 You are the Runner — the hands of the council.

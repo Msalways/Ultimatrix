@@ -9,6 +9,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 
@@ -76,7 +77,7 @@ export const idorSwapper: TechniquePrimitive = {
     const idor = altAllowed && cmp.vulnerable
 
     const { verified } = evidenceGate.verifyClaim(
-      `idor on ${baseline.step.request.url} alt object ${alt.step.metadata?.kind}`,
+      claimFor('idor', baseline.step.request.url, baseline.status, baseline.step.request.method),
     )
     const confirmed = idor && verified
 

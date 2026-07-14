@@ -20,6 +20,7 @@ import {
   IntentNode,
   ReflexionNode,
   OutcomeFeedbackNode,
+  RenderedElementNode,
   AnyNodeData,
 } from './schema'
 
@@ -39,6 +40,7 @@ interface LibSQLGraphStore {
   addRBACRole(data: Partial<RBACRoleNode['properties']>): RBACRoleNode
   addAttack(data: Partial<AttackNode['properties']>): AttackNode
   addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode
+  addRenderedElement(endpointId: string | undefined, data: Partial<RenderedElementNode['properties']>): RenderedElementNode
   upsertNode(node: AnyNodeData): AnyNodeData
   updateNode(node: GraphNodeData): void
   getNode(id: string): AnyNodeData | undefined
@@ -153,6 +155,34 @@ export class GraphStore {
     }
     this.nodes.set(id, node)
     this.addEdge({ fromId: pageId, toId: id, type: EdgeType.HAS_ACTION })
+    return node
+  }
+
+  addRenderedElement(
+    endpointId: string | undefined,
+    data: Partial<RenderedElementNode['properties']>,
+  ): RenderedElementNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addRenderedElement(endpointId, data)
+    }
+
+    const id = `rendered:${data.selector || 'unknown'}:${data.url || 'x'}:${Date.now()}`
+    const node: RenderedElementNode = {
+      id,
+      type: NodeType.RENDERED_ELEMENT,
+      label: `Rendered ${data.tag}${data.name ? `#${data.name}` : ''} on ${data.url ?? ''}`,
+      properties: {
+        selector: '',
+        tag: 'div',
+        ...data,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    if (endpointId) {
+      this.addEdge({ fromId: endpointId, toId: id, type: EdgeType.RENDERED_ON })
+    }
     return node
   }
 

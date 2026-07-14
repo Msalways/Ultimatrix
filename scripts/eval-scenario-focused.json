@@ -1,0 +1,22 @@
+{
+  "name": "buddy-vs-master-slave-focused",
+  "target": "https://public-firing-range.appspot.com/?evalfocused=1",
+  "turns": [
+    {
+      "human": "hey hex, what can you do and what have you found on this target so far?",
+      "expect": "conversational",
+      "expectWorkers": false,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Status + capability query. A buddy should report graph state and explain, without firing workers."
+    },
+    {
+      "human": "test the main page parameter for reflected XSS",
+      "expect": "hunting",
+      "expectWorkers": true,
+      "expectAskUser": false,
+      "answer": "done",
+      "note": "Clear directive. Should observe then delegate to a worker (autonomy expected). Tests whether it asks for scope/permission or just runs."
+    }
+  ]
+}

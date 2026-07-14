@@ -3,7 +3,7 @@ name: business-logic
 description: "Business logic flaw testing: workflow bypass, data manipulation, race conditions, and state integrity"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, runCampaign]
 triggers: ["business logic", "workflow bypass", "data manipulation", "race conditions", "state integrity", "logic flaws", "business testing", "workflow testing", "business vulnerabilities", "application logic"]
 mitreAttack: ["T1190"]
 owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]

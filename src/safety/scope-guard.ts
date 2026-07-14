@@ -30,17 +30,11 @@ export function isUrlInScope(url: string, config: ScopeConfig | null = _config):
   // Explicit opt-out overrides everything.
   if (_allowAny) return { allowed: true }
 
-  // Root-cause fix (gap-analysis P0-3): scope is a required security
-  // policy. When none is configured, DENY — do not silently allow.
-  if (!config) {
-    return {
-      allowed: false,
-      reason: 'No scope policy configured — set scope.allowedDomains or pass --allow-any',
-    }
-  }
-
-  if (!config.allowedDomains || config.allowedDomains.length === 0) {
-    return { allowed: false, reason: 'No allowed domains configured in scope policy' }
+  // Scope is OPTIONAL. When no scope policy is configured (or the policy has
+  // no allowedDomains), the tool is free-for-all — any URL is permitted.
+  // Restriction only applies when the user explicitly lists allowedDomains.
+  if (!config || !config.allowedDomains || config.allowedDomains.length === 0) {
+    return { allowed: true }
   }
 
   let parsed: URL

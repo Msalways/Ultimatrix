@@ -1133,6 +1133,9 @@ URL → isUrlInScope(url) → { allowed: boolean, reason?: string }
 
 ```yaml
 scope:
+  # allowedDomains is OPTIONAL. When omitted (or empty), Ultimatrix runs
+  # free-for-all — every URL is permitted. Restriction only applies when you
+  # explicitly list domains to test.
   allowedDomains:
     - target.com
     - *.target.com       # Wildcard support
@@ -1143,7 +1146,7 @@ scope:
   enforcement: hard       # 'hard' | 'warn'
 ```
 
-When no scope is configured, all requests are allowed (permissive default).
+When no `allowedDomains` is provided, all requests are allowed (permissive free-for-all default). `scope.allowedDomains` is *not* required during config validation — only its entries are type-checked (must be non-empty domain strings) when present.
 
 ---
 
@@ -1742,10 +1745,10 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Metric | Value |
 |--------|-------|
-| Source files | 228+ TypeScript files |
+| Source files | 234+ TypeScript files |
 | Source lines | 30,000+ |
-| Test files | 97 files |
-| Tests passing | 1319 |
+| Test files | 106 files |
+| Tests passing | 1350 |
 | Skills | 57 (across 10 domains) |
 | Tools | 28+ specialized tools |
 | Engines | 2 active (multi-model default, legacy) + council on-demand |

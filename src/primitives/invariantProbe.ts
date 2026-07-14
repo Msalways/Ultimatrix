@@ -10,6 +10,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
 
@@ -82,7 +83,7 @@ export const invariantProbe: TechniquePrimitive = {
 
     const tamperedAllowed = cmp.vulnerable || (baseline.status === mutated.status && baseline.status !== undefined && baseline.status < 400)
     const { verified } = evidenceGate.verifyClaim(
-      `invariant violation on ${baseline.step.request.url} status ${mutated.status ?? ''}`,
+      claimFor('invariant', baseline.step.request.url, baseline.status, baseline.step.request.method),
     )
     const confirmed = tamperedAllowed && verified
 

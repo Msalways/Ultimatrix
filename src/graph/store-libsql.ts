@@ -14,6 +14,7 @@ import {
   AttackNode,
   TestNode,
   OutcomeFeedbackNode,
+  RenderedElementNode,
   AnyNodeData,
 } from './schema'
 
@@ -143,6 +144,30 @@ export class LibSQLGraphStore {
     
     this.insertNode(node)
     this.addEdge({ fromId: actionId, toId: id, type: EdgeType.HAS_INPUT })
+    return node
+  }
+
+  addRenderedElement(
+    endpointId: string | undefined,
+    data: Partial<RenderedElementNode['properties']>,
+  ): RenderedElementNode {
+    const id = `rendered:${data.selector || 'unknown'}:${data.url || 'x'}:${Date.now()}`
+    const node: RenderedElementNode = {
+      id,
+      type: NodeType.RENDERED_ELEMENT,
+      label: `Rendered ${data.tag}${data.name ? `#${data.name}` : ''} on ${data.url ?? ''}`,
+      properties: {
+        selector: '',
+        tag: 'div',
+        ...data,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.insertNode(node)
+    if (endpointId) {
+      this.addEdge({ fromId: endpointId, toId: id, type: EdgeType.RENDERED_ON })
+    }
     return node
   }
 

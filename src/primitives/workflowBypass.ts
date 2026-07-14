@@ -13,6 +13,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
+import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeParse } from './observers'
 
@@ -72,7 +73,7 @@ export const workflowBypass: TechniquePrimitive = {
     const bypassed = statusOk && !denied && (success || lower.length > 0)
 
     const { verified } = evidenceGate.verifyClaim(
-      `workflow bypass on ${direct.step.request.url} status ${direct.status ?? ''}`,
+      claimFor('workflow_bypass', direct.step.request.url, direct.status, direct.step.request.method),
     )
     const confirmed = bypassed && verified
 
