@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyImpact } from '../../src/council/approval'
+import { classifyImpact, escalateImpactForTechnique } from '../../src/council/approval'
 import type { MemberOutput } from '../../src/council/types'
 
 describe('Approval — classifyImpact (root-cause fix)', () => {
@@ -87,5 +87,35 @@ describe('Approval — classifyImpact (root-cause fix)', () => {
       },
     }
     expect(classifyImpact(output)).toBe('low') // Structured field wins
+  })
+})
+
+describe('Approval — escalateImpactForTechnique (C1, fail-closed)', () => {
+  it('escalates a destructive technique declared low to its floor (injection → high)', () => {
+    expect(escalateImpactForTechnique('low', 'injection')).toBe('high')
+  })
+
+  it('escalates critical techniques declared low to critical (authBypass → critical)', () => {
+    expect(escalateImpactForTechnique('low', 'authBypass')).toBe('critical')
+    expect(escalateImpactForTechnique('medium', 'reverseShell')).toBe('critical')
+  })
+
+  it('never downgrades a declared impact below the technique floor', () => {
+    expect(escalateImpactForTechnique('critical', 'injection')).toBe('critical')
+    expect(escalateImpactForTechnique('high', 'injection')).toBe('high')
+  })
+
+  it('trusts declared impact for unknown techniques', () => {
+    expect(escalateImpactForTechnique('low', 'recon')).toBe('low')
+    expect(escalateImpactForTechnique('medium', 'osint')).toBe('medium')
+  })
+
+  it('fail-closed: missing impact + unknown technique → high', () => {
+    expect(escalateImpactForTechnique(undefined, 'unknownSkill')).toBe('high')
+  })
+
+  it('fail-closed: missing impact + known technique → technique floor', () => {
+    expect(escalateImpactForTechnique(undefined, 'injection')).toBe('high')
+    expect(escalateImpactForTechnique(undefined, 'authBypass')).toBe('critical')
   })
 })

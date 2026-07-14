@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { validateConfig } from '../../src/config'
+import { validateConfig, ENGINE_COERCION } from '../../src/config'
 import { resolveModel } from '../../src/models/factory'
 import type { UltimatrixConfig } from '../../src/config'
 import { DEFAULTS } from '../../src/config'
@@ -173,6 +173,17 @@ describe('engine config', () => {
       creds: { groq: { apiKey: 'gsk_xxx' } },
       engine: 'hybrid',
     })).toThrow('engine must be "multi-model", "council", or "solver"')
+  })
+
+  it('C3: ENGINE_COERCION is a rigid config→config map (no LLM-meaning detection)', () => {
+    // Council and solver collapse to multi-model; legacy stays legacy;
+    // multi-model stays multi-model. Deterministic, no substring logic.
+    expect(ENGINE_COERCION.legacy).toBe('legacy')
+    expect(ENGINE_COERCION.solver).toBe('multi-model')
+    expect(ENGINE_COERCION.council).toBe('multi-model')
+    expect(ENGINE_COERCION['multi-model']).toBe('multi-model')
+    // Every configured engine resolves to a valid engine value.
+    expect(Object.values(ENGINE_COERCION)).toEqual(['legacy', 'multi-model', 'multi-model', 'multi-model'])
   })
 
   it('accepts solver config block', () => {

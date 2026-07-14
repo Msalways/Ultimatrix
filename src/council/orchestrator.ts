@@ -305,6 +305,9 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
   let newEvidence = 0
   const executeMs = config.executeTimeoutMs ?? DEFAULT_EXECUTE_TIMEOUT_MS
   for (const proposal of finalProposals) {
+    // Snapshot ledger length so we only read back evidence recorded DURING this
+    // execution (ledger readback) — never fabricate a status.
+    const ledgerStart = ledger ? ledger.all().length : 0
     blackboard.claimIntent('operator', proposal.proposal!.action)
     bus.post('operator', 'execute', `Executing: ${proposal.proposal!.action}`, { round })
 
@@ -323,15 +326,36 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
       }
     }
 
+    // Ground the execution record in REAL evidence read back from the ledger.
+    // The worker tools record raw_request/raw_response items during execution;
+    // we prefer those observed facts (status/url) instead of fabricating 200.
+    let observedStatus: number | undefined
+    let observedUrl: string | undefined
+    if (ledger) {
+      const realItems = ledger.all().slice(ledgerStart)
+      const realResponse = realItems.find(
+        i => i.observed && typeof i.observed.status === 'number' && i.observed.url,
+      )
+      if (realResponse?.observed) {
+        observedStatus = realResponse.observed.status
+        observedUrl = realResponse.observed.url
+      }
+    }
+
     bus.post('operator', 'report', result, { round })
     onPhase?.('execute', round, result)
 
-    // Bridge worker results → structured evidence items
+    // Bridge worker results → structured evidence items (using REAL read-back
+    // status/url when available, never a hardcoded 200).
     if (ledger) {
       const toolCalls: WorkerToolCall[] = [{
         toolName: 'council-execution',
         args: { skillId: proposal.proposal!.skillId, task: proposal.proposal!.action },
-        result: { status: 200, url: proposal.proposal!.endpointId, body: result },
+        result: {
+          status: observedStatus,
+          url: observedUrl ?? proposal.proposal!.endpointId,
+          body: result,
+        },
       }]
       newEvidence += bridgeWorkerEvidence(toolCalls, ledger)
     }

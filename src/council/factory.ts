@@ -60,7 +60,7 @@ const LLM_ROLES: CouncilMemberRole[] = ['strategist', 'operator', 'skeptic', 'an
  * Extracts the JSON code block and maps it to typed MemberOutput fields.
  * No substring scanning — reads the JSON object's typed fields.
  */
-function parseStructuredOutput(rawText: string): MemberOutput {
+export function parseStructuredOutput(rawText: string): MemberOutput {
   const text = typeof rawText === 'string' ? rawText : String(rawText ?? '')
 
   // Extract JSON code block (```json ... ```)
@@ -116,6 +116,27 @@ function parseJsonBlock(jsonStr: string, fullText: string): MemberOutput {
         whatFailed: Array.isArray(parsed.reflection.whatFailed) ? parsed.reflection.whatFailed : [],
         whatLearned: Array.isArray(parsed.reflection.whatLearned) ? parsed.reflection.whatLearned : [],
         nextSteps: Array.isArray(parsed.reflection.nextSteps) ? parsed.reflection.nextSteps : [],
+      }
+    }
+
+    // Structured evidence claim (FindingClaim). The skeptic structurally verifies
+    // claim.observed against the recorded evidence ledger — this is how
+    // evidence-integrity is enforced without scanning free text.
+    if (parsed.claim && typeof parsed.claim === 'object') {
+      const c = parsed.claim
+      const observed = c.observed && typeof c.observed === 'object' ? c.observed : undefined
+      output.claim = {
+        type: typeof c.type === 'string' ? c.type : 'finding',
+        endpoint: typeof c.endpoint === 'string' ? c.endpoint : '',
+        param: typeof c.param === 'string' ? c.param : undefined,
+        method: typeof c.method === 'string' ? c.method : undefined,
+        observed: observed
+          ? {
+              method: typeof observed.method === 'string' ? observed.method : undefined,
+              url: typeof observed.url === 'string' ? observed.url : undefined,
+              status: typeof observed.status === 'number' ? observed.status : undefined,
+            }
+          : undefined,
       }
     }
 

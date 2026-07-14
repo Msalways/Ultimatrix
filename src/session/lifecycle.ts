@@ -93,6 +93,8 @@ export interface SessionResources {
   council?: import('../council/factory').CouncilResources
   /** Debate memory — accumulates stances across REPL turns. */
   debateMemory?: import('../council/types').DebateMemory
+  /** B3: Prior council execution results, carried turn→turn for results debate. */
+  councilPreviousResults?: string
   /** T3.3: Unified CoreServices — built once in setupEngine(), consumed by runner/session. */
   coreServices?: CoreServices
   /** Logical tenant namespace for worker isolation. */

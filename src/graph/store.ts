@@ -21,6 +21,7 @@ import {
   ReflexionNode,
   OutcomeFeedbackNode,
   RenderedElementNode,
+  CouncilDebateNode,
   AnyNodeData,
 } from './schema'
 
@@ -41,6 +42,7 @@ interface LibSQLGraphStore {
   addAttack(data: Partial<AttackNode['properties']>): AttackNode
   addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode
   addRenderedElement(endpointId: string | undefined, data: Partial<RenderedElementNode['properties']>): RenderedElementNode
+  addCouncilDebate(data: Partial<CouncilDebateNode['properties']> & { goal: string }): CouncilDebateNode
   upsertNode(node: AnyNodeData): AnyNodeData
   updateNode(node: GraphNodeData): void
   getNode(id: string): AnyNodeData | undefined
@@ -186,6 +188,34 @@ export class GraphStore {
     if (endpointId) {
       this.addEdge({ fromId: endpointId, toId: id, type: EdgeType.RENDERED_ON })
     }
+    return node
+  }
+
+  addCouncilDebate(
+    data: Partial<CouncilDebateNode['properties']> & { goal: string },
+  ): CouncilDebateNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addCouncilDebate(data)
+    }
+
+    const id = `council-debate:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const node: CouncilDebateNode = {
+      id,
+      type: NodeType.COUNCIL_DEBATE,
+      label: `Council debate r${data.round ?? 0}: ${data.goal}`,
+      properties: {
+        goal: data.goal,
+        round: data.round ?? 0,
+        members: data.members ?? [],
+        summary: data.summary ?? '',
+        proposedTasks: data.proposedTasks ?? 0,
+        newEvidence: data.newEvidence ?? 0,
+        complete: data.complete ?? false,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
     return node
   }
 

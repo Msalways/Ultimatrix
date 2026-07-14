@@ -23,6 +23,13 @@ export interface ProviderBreakdown {
   outputTokens: number
 }
 
+export interface ModelBreakdown {
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+}
+
 export interface AgentRoleBreakdown {
   calls: number
   tokens: number
@@ -46,6 +53,7 @@ export interface SessionBudgetSummary {
   totalTokens: { input: number; output: number; total: number }
   byProvider: Record<string, ProviderBreakdown>
   byAgentRole: Record<string, AgentRoleBreakdown>
+  byModel: Record<string, ModelBreakdown>
   byTask: TaskBreakdown[]
   rateLimitStatus: Record<string, RateLimitStatus>
   warnings: string[]
@@ -92,6 +100,7 @@ export class BudgetDashboard {
   getSessionSummary(): SessionBudgetSummary {
     const byProvider: Record<string, ProviderBreakdown> = {}
     const byAgentRole: Record<string, AgentRoleBreakdown> = {}
+    const byModel: Record<string, ModelBreakdown> = {}
     const toolSet = new Set<string>()
     const warnings: string[] = []
 
@@ -113,6 +122,17 @@ export class BudgetDashboard {
       byProvider[entry.provider].calls++
       byProvider[entry.provider].inputTokens += entry.inputTokens
       byProvider[entry.provider].outputTokens += entry.outputTokens
+
+      // By model (provider/model) — surfaces which concrete model served each
+      // task, so tier allocation (e.g. powerful actually used) is observable.
+      const modelKey = `${entry.provider}/${entry.modelId}`
+      if (!byModel[modelKey]) {
+        byModel[modelKey] = { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      }
+      byModel[modelKey].calls++
+      byModel[modelKey].inputTokens += entry.inputTokens
+      byModel[modelKey].outputTokens += entry.outputTokens
+      byModel[modelKey].totalTokens += entry.totalTokens
 
       // By agent role
       if (entry.agentRole) {
@@ -156,6 +176,7 @@ export class BudgetDashboard {
       totalTokens: { input: totalInput, output: totalOutput, total: totalTokens },
       byProvider,
       byAgentRole,
+      byModel,
       byTask: [], // Tasks require richer context; populated by external callers
       rateLimitStatus,
       warnings,
@@ -188,6 +209,17 @@ export class BudgetDashboard {
       lines.push(`║ BY PROVIDER                          ║`)
       for (const [name, data] of providers) {
         lines.push(`║ ${name}: ${data.calls} calls, ${data.inputTokens + data.outputTokens} tok`.padEnd(39) + `║`)
+      }
+    }
+
+    // Per-model — which concrete model served each task (tier allocation proof)
+    const models = Object.entries(summary.byModel)
+    if (models.length > 0) {
+      lines.push(`╠══════════════════════════════════════╣`)
+      lines.push(`║ BY MODEL                             ║`)
+      for (const [name, data] of models) {
+        const label = `${name}: ${data.calls}c/${data.totalTokens}tok`
+        lines.push(`║ ${label}`.padEnd(39) + `║`)
       }
     }
 
@@ -231,6 +263,14 @@ export class BudgetDashboard {
 
     if (s.warnings.length > 0) {
       lines.push(`- Warnings: ${s.warnings.join('; ')}`)
+    }
+
+    const models = Object.entries(s.byModel)
+    if (models.length > 0) {
+      lines.push(`- By model:`)
+      for (const [name, data] of models) {
+        lines.push(`  - ${name}: ${data.calls} calls, ${data.totalTokens} tokens`)
+      }
     }
 
     return lines.join('\n')

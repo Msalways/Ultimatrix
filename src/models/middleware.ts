@@ -113,15 +113,32 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
               getGlobalQuotaTracker().recordRequest(provider)
 
               // Capture token usage from doGenerate responses
+              let inputTokens = 0
+              let outputTokens = 0
               if (prop === 'doGenerate' && result?.usage) {
-                const usage = result.usage
-                const inputTokens = usage.inputTokens ?? 0
-                const outputTokens = usage.outputTokens ?? 0
+                inputTokens = result.usage.inputTokens ?? 0
+                outputTokens = result.usage.outputTokens ?? 0
                 if (inputTokens > 0 || outputTokens > 0) {
                   const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
                   getGlobalUsageTracker().record(prov, model, inputTokens, outputTokens)
                 }
               }
+
+              // Forensic model-call: record which model actually served the request
+              // so every dispatched task is attributable to a concrete modelId/tier.
+              getForensicLog()?.log({
+                type: 'model-call',
+                agent: provider,
+                tool: String(prop),
+                duration,
+                metadata: {
+                  provider,
+                  modelId: String(modelIdStr),
+                  inputTokens,
+                  outputTokens,
+                  totalTokens: inputTokens + outputTokens,
+                },
+              })
 
               return result
             } catch (err: any) {

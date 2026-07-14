@@ -100,6 +100,20 @@ describe('BudgetDashboard', () => {
       expect(summary.byProvider.groq.outputTokens).toBe(300)
     })
 
+    it('A3: breaks down by model (provider/model) for tier allocation proof', () => {
+      const dash = new BudgetDashboard(forensicLog, budgetPolicy)
+
+      dash.recordModelCall({ timestamp: Date.now(), provider: 'nvidia', modelId: 'nemotron-3-super-120b', inputTokens: 100, outputTokens: 200, totalTokens: 300 })
+      dash.recordModelCall({ timestamp: Date.now(), provider: 'nvidia', modelId: 'nemotron-3-ultra-550b-a55b', inputTokens: 500, outputTokens: 800, totalTokens: 1300 })
+
+      const summary = dash.getSessionSummary()
+      expect(Object.keys(summary.byModel)).toContain('nvidia/nemotron-3-ultra-550b-a55b')
+      expect(summary.byModel['nvidia/nemotron-3-super-120b'].calls).toBe(1)
+      expect(summary.byModel['nvidia/nemotron-3-super-120b'].totalTokens).toBe(300)
+      expect(summary.byModel['nvidia/nemotron-3-ultra-550b-a55b'].calls).toBe(1)
+      expect(summary.byModel['nvidia/nemotron-3-ultra-550b-a55b'].totalTokens).toBe(1300)
+    })
+
     it('breaks down by agent role', () => {
       const dash = new BudgetDashboard(forensicLog, budgetPolicy)
 
@@ -241,6 +255,15 @@ describe('BudgetDashboard', () => {
       expect(block).toContain('Budget Status')
       expect(block).toContain('1/')
       expect(block).toContain('300')
+    })
+
+    it('A3: toInstructionBlock includes per-model breakdown', () => {
+      const dash = new BudgetDashboard(forensicLog, budgetPolicy)
+      dash.recordModelCall({ timestamp: Date.now(), provider: 'nvidia', modelId: 'nemotron-3-ultra-550b-a55b', inputTokens: 100, outputTokens: 200, totalTokens: 300 })
+
+      const block = dash.toInstructionBlock()
+      expect(block).toContain('By model')
+      expect(block).toContain('nvidia/nemotron-3-ultra-550b-a55b')
     })
   })
 

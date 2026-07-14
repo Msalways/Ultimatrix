@@ -4,6 +4,7 @@ import { SharedBlackboard } from '../../src/council/blackboard-shared'
 import { runCouncil, debateOnce, withTimeout } from '../../src/council/orchestrator'
 import { defaultCouncilConfig } from '../../src/council/personas'
 import { recordStructuredEvidence, resetStructuredLedger, verifyClaimStructured } from '../../src/tools/control-tools'
+import { coreEvidenceLedger } from '../../src/core/evidence'
 import type { CouncilConfig, CouncilMember, MemberOutput } from '../../src/council/types'
 
 // ─── Structured mock helpers ──────────────────────────────────────────────
@@ -256,6 +257,67 @@ describe('Council orchestrator', () => {
       expect(result.complete).toBe(false)
     })
 
+    it('B2: execution evidence is grounded in REAL ledger read-back status, not fabricated 200', async () => {
+      resetStructuredLedger()
+      const cfg: CouncilConfig = { ...defaultCouncilConfig(), maxRounds: 1, approvalMode: 'autonomous' }
+      // Action-only proposal (no claim) → approved so it can gather evidence.
+      const output = structuredProposal({ impact: 'low' })
+      await debateOnce({
+        members: mockMembers(output),
+        bus: new ConversationBus(),
+        blackboard: new SharedBlackboard(),
+        goal: 'recon',
+        config: cfg,
+        ledger: coreEvidenceLedger,
+        execute: async () => {
+          // The worker records the REAL HTTP response into the ledger mid-execution.
+          recordStructuredEvidence({
+            type: 'raw_response',
+            data: 'HTTP/1.1 403 Forbidden',
+            label: 'GET https://x/admin',
+            observed: { method: 'GET', url: 'https://x/admin', status: 403 },
+          })
+          return 'done'
+        },
+      })
+
+      const items = coreEvidenceLedger.all()
+      // The bridged council-execution evidence carries the REAL observed status 403.
+      const grounded = items.find(
+        i => i.observed && i.observed.status === 403 && i.observed.url === 'https://x/admin',
+      )
+      expect(grounded).toBeDefined()
+      // No fabricated 200 execution evidence was produced.
+      const fabricated = items.find(
+        i => i.type === 'text' && i.observed?.status === 200 && String(i.label).includes('EXEC'),
+      )
+      expect(fabricated).toBeUndefined()
+    })
+
+    it('B3: threads previousResults into member prompts for results debate', async () => {
+      const cfg: CouncilConfig = { ...defaultCouncilConfig(), maxRounds: 1, approvalMode: 'autonomous' }
+      let captured = ''
+      const strategist: CouncilMember = {
+        role: 'strategist', id: 's', tier: 'balanced',
+        respond: async (prompt: string) => {
+          captured = prompt
+          return structuredProposal({ impact: 'low' })
+        },
+      }
+      const others = mockMembers(structuredProposal({ impact: 'low' })).filter(m => m.role !== 'strategist')
+      const result = await debateOnce({
+        members: [strategist, ...others],
+        bus: new ConversationBus(),
+        blackboard: new SharedBlackboard(),
+        goal: 'find vulns',
+        config: cfg,
+        previousResults: 'PREV_RESULT_MARKER_123',
+      })
+      expect(captured).toContain('PREV_RESULT_MARKER_123')
+      expect(captured).toContain('Previous execution results')
+      expect(result.complete).toBe(false)
+    })
+
     it('uses typed intent field, not text regex, for completion detection', async () => {
       recordStructuredEvidence(EVIDENCE)
       const cfg: CouncilConfig = { ...defaultCouncilConfig(), maxRounds: 1, approvalMode: 'autonomous' }
@@ -289,13 +351,14 @@ describe('Council orchestrator', () => {
     it('uses typed impact field, not text regex, for approval classification', async () => {
       recordStructuredEvidence(EVIDENCE)
       const cfg: CouncilConfig = { ...defaultCouncilConfig(), maxRounds: 1, approvalMode: 'both' }
-      // Text says "privilege escalation" but impact is 'low' — should auto-approve
+      // Text says "privilege escalation" but impact is 'low' on a SAFE technique —
+      // should auto-approve (typed field wins for non-destructive techniques).
       const outputLowImpact: MemberOutput = {
         text: 'Test for privilege escalation via sudo',
         intent: 'propose',
         proposal: {
           action: 'Test for privilege escalation via sudo',
-          skillId: 'exploitation',
+          skillId: 'recon',
           complexity: 'high',
           impact: 'low', // LLM declares low impact
           reasoning: 'Just checking configuration',
@@ -312,6 +375,36 @@ describe('Council orchestrator', () => {
       })
       // Should be approved (low impact = auto-approve even in both mode)
       expect(result.proposedTasks.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('C1: fail-closed escalation blocks a destructive technique declared low', async () => {
+      recordStructuredEvidence(EVIDENCE)
+      const cfg: CouncilConfig = { ...defaultCouncilConfig(), maxRounds: 1, approvalMode: 'both' }
+      // 'exploitation' has a minimum floor of 'high' — declaring 'low' must NOT
+      // bypass the human gate in both mode (no human harness → blocked).
+      const output: MemberOutput = {
+        text: 'Test for privilege escalation via sudo',
+        intent: 'propose',
+        proposal: {
+          action: 'Test for privilege escalation via sudo',
+          skillId: 'exploitation',
+          complexity: 'high',
+          impact: 'low',
+          reasoning: 'Just checking configuration',
+          evidenceRequired: [],
+        },
+      }
+      output.claim = CLAIM
+      const result = await debateOnce({
+        members: mockMembers(output),
+        bus: new ConversationBus(),
+        blackboard: new SharedBlackboard(),
+        goal: 'find vulns',
+        config: cfg,
+      })
+      // Escalated to high → requires human in both mode → blocked (no harness).
+      expect(result.proposedTasks.length).toBe(0)
+      expect(result.messages.some((m) => m.type === 'reject' && m.from === 'human')).toBe(true)
     })
   })
 

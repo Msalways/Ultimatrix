@@ -61,6 +61,14 @@ export async function budgetCommand(args: string[]): Promise<void> {
         }
       }
 
+      const models = Object.entries(summary.byModel)
+      if (models.length > 0) {
+        log.info('\n  By model (tier allocation proof):')
+        for (const [name, data] of models) {
+          log.info(`    ${name}: ${data.calls} calls, ${data.totalTokens} tokens`)
+        }
+      }
+
       if (summary.warnings.length > 0) {
         log.info('\n  Warnings:')
         for (const w of summary.warnings) {

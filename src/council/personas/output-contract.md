@@ -20,10 +20,23 @@ The orchestrator reads these typed fields — it does NOT parse your free text.
     "complexity": "low|medium|high|critical",
     "impact": "low|medium|high|critical",
     "reasoning": "why this attack and why now",
-    "evidenceRequired": ["list of evidence needed before executing"]
-  }
+    "evidenceRequired": ["list of evidence needed before executing"],
+    "claim": {
+      "type": "finding|vuln|behavior",
+      "endpoint": "https://target/path (must match an OBSERVED evidence URL)",
+      "param": "optional parameter name the finding concerns",
+      "method": "GET|POST|... (asserted HTTP method, if any)",
+      "observed": { "method": "POST", "url": "https://target/path", "status": 200 }
+    }
 }
 ```
+
+> Include `claim` ONLY when you are asserting a confirmed finding backed by
+> observed evidence already recorded in the ledger. Action-only proposals
+> (recon / explore / test) must OMIT `claim` so the skeptic approves them
+> to go gather that evidence. The skeptic structurally verifies every
+> `claim.observed` against the recorded evidence items — a claim with no
+> matching evidence is rejected, never silently passed.
 
 ### When critiquing others' proposals:
 ```json

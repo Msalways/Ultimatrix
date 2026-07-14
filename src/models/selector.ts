@@ -52,6 +52,9 @@ interface ScoredModel {
 
 // ─── Complexity weights ────────────────────────────────────────────
 
+// Complexity → model tier mapping for the DYNAMIC WORKER ENGINE (multi-model).
+// This is the engine's own source of truth for per-scenario tier selection and
+// must not be coupled to the council add-on's separate mapping.
 const COMPLEXITY_TIER_MAP: Record<string, string> = {
   low: 'fast',
   medium: 'balanced',
@@ -149,22 +152,27 @@ export class ModelSelector {
     budget: TaskBudget,
   ): number {
     let score = 0
-    // Look up capabilities by full modelId, or try provider-prefixed version
+    // Look up capabilities by full modelId, or try provider-prefixed version.
+    // Tier-only candidates (from config.modelTiers) have no capability entry —
+    // they are still scored on deterministic signals (alignment, rate-limit,
+    // diversity) so the explicit tier config is actually used instead of
+    // falling back to config.model with a cosmetic tier label.
     const cap = this.capabilities[candidate.modelId] ?? this.capabilities[candidate.modelId.replace(candidate.provider + '/', '')]
-    if (!cap) return 0
 
     // Capability match: +20 per matching strength
-    if (task.requiredCapabilities) {
+    if (cap && task.requiredCapabilities) {
       for (const req of task.requiredCapabilities) {
         if (cap.strengths.includes(req)) score += 20
       }
     }
 
-    // Context headroom: +10 if >20k, +5 if >5k
-    const estInput = COMPLEXITY_TOKEN_ESTIMATE[task.complexity]?.input ?? 2000
-    const headroom = cap.contextWindow - estInput
-    if (headroom > 20_000) score += 10
-    else if (headroom > 5_000) score += 5
+    // Context headroom: +10 if >20k, +5 if >5k (only when capability data exists)
+    if (cap) {
+      const estInput = COMPLEXITY_TOKEN_ESTIMATE[task.complexity]?.input ?? 2000
+      const headroom = cap.contextWindow - estInput
+      if (headroom > 20_000) score += 10
+      else if (headroom > 5_000) score += 5
+    }
 
     // Rate limit headroom: +10 if RPM available > estimated × 2
     const limiter = createProviderLimiter(candidate.provider, this.config)
@@ -272,6 +280,24 @@ export class ModelSelector {
       if (creds[provider] || creds[baseProvider]) {
         const tier = this.inferTier(cap.contextWindow)
         result.push({ provider: baseProvider, modelId: fullModelId, tier })
+      }
+    }
+
+    // Deterministic tier→model mapping from explicit config (single source of truth
+    // for the user's configured tiers). A model-id present here is always a
+    // usable candidate, so the powerful tier is actually reachable instead of
+    // being a cosmetic label when modelCapabilities is unset.
+    const tiers = this.config.modelTiers
+    if (tiers) {
+      for (const t of ['fast', 'balanced', 'powerful'] as const) {
+        const tc = (tiers as Record<string, { provider?: string; model?: string } | undefined>)[t]
+        if (!tc?.model) continue
+        const modelId = String(tc.model).includes('/')
+          ? String(tc.model)
+          : `${tc.provider}/${tc.model}`
+        if (!result.some(r => r.modelId === modelId)) {
+          result.push({ provider: tc.provider ?? this.config.provider, modelId, tier: t })
+        }
       }
     }
     return result

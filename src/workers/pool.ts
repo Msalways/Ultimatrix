@@ -8,6 +8,7 @@ import { ContextBudgetManager, type ContextFitParams } from '../models/context-m
 import type { ModelSelector, WorkerTask } from '../models/selector'
 import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
+import { getForensicLog } from '../tools/report-tools'
 
 /**
  * Wrap a promise with a wall-clock timeout. Timer is `.unref()`'d so it doesn't
@@ -247,6 +248,16 @@ export class WorkerPool {
         tier = selection.tier
         provider = selection.provider
         log.info(`[pool] slice ${slice.id} → ${modelId} (${tier}) [${role}]`)
+
+        // Forensic model-selection: record the routing decision per slice so the
+        // multi-model allocation is observable and attributable to each task.
+        getForensicLog()?.log({
+          type: 'model-selection',
+          agent: 'pool',
+          tool: 'dispatchSlices',
+          args: { sliceId: slice.id, complexity: slice.complexity, skillId: slice.skillId },
+          metadata: { provider: provider!, modelId: modelId!, tier: tier! },
+        })
       }
 
       // Scope state namespace to the slice's tenant if it differs from the pool tenant.

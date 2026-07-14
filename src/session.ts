@@ -14,6 +14,7 @@ import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
 import { askUserConfirm } from './tools/interaction-tools'
 import type { DebateMemory } from './council/types'
+import { getGlobalGraphStore } from './graph/store'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
@@ -109,9 +110,17 @@ export async function main(targetUrl?: string) {
           if (sliceResult.error) throw new Error(sliceResult.error)
           const r = sliceResult.result
           if (!r) return 'no result'
-          return typeof r.text === 'string' ? r.text : String(r.text ?? '')
+          const text = typeof r.text === 'string' ? r.text : String(r.text ?? '')
+          // B3: accumulate this execution's real result for the next turn's
+          // results debate (carry-over, deterministic — no meaning scanning).
+          resources.councilPreviousResults =
+            `${resources.councilPreviousResults ? resources.councilPreviousResults + '\n' : ''}${text}`
+          return text
         } catch (err: any) {
-          return `execution error: ${err.message}`
+          const msg = `execution error: ${err.message}`
+          resources.councilPreviousResults =
+            `${resources.councilPreviousResults ? resources.councilPreviousResults + '\n' : ''}${msg}`
+          return msg
         }
       }
 
@@ -146,6 +155,7 @@ export async function main(targetUrl?: string) {
         ledger: resources.coreServices?.evidence,
         execute,
         humanApprove,
+        previousResults: resources.councilPreviousResults,
         debateMemory: resources.debateMemory,
         onPhase: (phase, round, text) => {
           if (phase === 'execute') {
@@ -171,6 +181,21 @@ export async function main(targetUrl?: string) {
       } else {
         log.info(`Council debate: ${result.proposedTasks.length} tasks proposed, ${result.newEvidence} evidence items`)
         if (result.summary) log.dim(result.summary)
+      }
+
+      // B4: persist this debate cycle to the graph for post-session audit.
+      try {
+        getGlobalGraphStore().addCouncilDebate({
+          goal,
+          round: result.messages.length > 0 ? result.messages[result.messages.length - 1].round : 0,
+          members: council.members.map(m => m.role),
+          summary: result.summary,
+          proposedTasks: result.proposedTasks.length,
+          newEvidence: result.newEvidence,
+          complete: result.complete,
+        })
+      } catch (err: any) {
+        log.dim(`[council] debate persist skipped: ${err.message}`)
       }
     } else if (target && resources.coreServices) {
       // B3: Solver bypasses runner — calls solve() directly with real brain agent

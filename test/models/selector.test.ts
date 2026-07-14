@@ -166,4 +166,44 @@ describe('ModelSelector', () => {
     expect(selector.selectTierForSkill('recon', 'high')).toBe('powerful')
     expect(selector.selectTierForSkill('recon', 'critical')).toBe('powerful')
   })
+
+  it('A1: uses config.modelTiers even when modelCapabilities is unset', () => {
+    // Mirrors the user's tier-only config: no modelCapabilities, only modelTiers.
+    const config = makeConfig({
+      provider: 'nvidia',
+      model: 'nvidia/nemotron-3-super-120b',
+      creds: { nvidia: { apiKey: 'nv_xxx' } },
+      modelCapabilities: undefined,
+      modelTiers: {
+        fast: { provider: 'nvidia', model: 'nvidia/nemotron-nano-9b-v2' },
+        balanced: { provider: 'nvidia', model: 'nvidia/nemotron-3-super-120b' },
+        powerful: { provider: 'nvidia', model: 'nvidia/nemotron-3-ultra-550b-a55b' },
+      },
+    })
+    const selector = new ModelSelector({}, config.budgetPolicy!, config)
+
+    const critical = selector.selectForTask(makeTask({ complexity: 'critical' }), 'worker')
+    expect(critical.tier).toBe('powerful')
+    expect(critical.modelId).toBe('nvidia/nemotron-3-ultra-550b-a55b')
+
+    const low = selector.selectForTask(makeTask({ complexity: 'low' }), 'worker')
+    expect(low.tier).toBe('fast')
+    expect(low.modelId).toBe('nvidia/nemotron-nano-9b-v2')
+  })
+
+  it('A1: prefixes modelTiers model when provider slash is absent', () => {
+    const config = makeConfig({
+      provider: 'nvidia',
+      model: 'nvidia/nemotron-3-super-120b',
+      creds: { nvidia: { apiKey: 'nv_xxx' } },
+      modelCapabilities: undefined,
+      modelTiers: {
+        fast: { provider: 'nvidia', model: 'nemotron-nano-9b-v2' },
+        powerful: { provider: 'nvidia', model: 'nemotron-3-ultra-550b-a55b' },
+      },
+    })
+    const selector = new ModelSelector({}, config.budgetPolicy!, config)
+    const critical = selector.selectForTask(makeTask({ complexity: 'critical' }), 'worker')
+    expect(critical.modelId).toBe('nvidia/nemotron-3-ultra-550b-a55b')
+  })
 })

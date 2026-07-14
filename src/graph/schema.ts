@@ -30,6 +30,7 @@ export enum NodeType {
   AUTH_SCHEME = 'AuthScheme',
   OUTCOME_FEEDBACK = 'OutcomeFeedback',
   RENDERED_ELEMENT = 'RenderedElement',
+  COUNCIL_DEBATE = 'CouncilDebate',
 }
 
 export enum EdgeType {
@@ -364,7 +365,20 @@ export interface RenderedElementNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode
+export interface CouncilDebateNode extends GraphNodeData {
+  type: NodeType.COUNCIL_DEBATE
+  properties: {
+    goal: string
+    round: number
+    members: string[]
+    summary: string
+    proposedTasks: number
+    newEvidence: number
+    complete: boolean
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -388,4 +402,5 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.AUTH_SCHEME]: ['scheme', 'decoded', 'reusedAcross', 'maskedCredential'],
   [NodeType.OUTCOME_FEEDBACK]: ['findingId', 'techniqueId', 'accepted', 'fixed', 'retestHeld', 'severityAdjusted', 'note', 'targetOrigin', 'timestamp'],
   [NodeType.RENDERED_ELEMENT]: ['url', 'method', 'selector', 'tag', 'name', 'inputType', 'value', 'isFormField', 'attributes', 'text', 'payloadHit'],
+  [NodeType.COUNCIL_DEBATE]: ['goal', 'round', 'members', 'summary', 'proposedTasks', 'newEvidence', 'complete'],
 }

@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import os from 'node:os'
 import { wrapModel } from '../../src/models/middleware'
 import { resetAllProviderLimiters } from '../../src/models/limiter-factory'
 import { resetGlobalQuotaTracker } from '../../src/models/quota-tracker'
 import { getGlobalUsageTracker } from '../../src/usage/tracker'
+import { setForensicLog } from '../../src/tools/report-tools'
+import { ForensicLog } from '../../src/logging/forensic-log'
 import type { UltimatrixConfig } from '../../src/config'
 
 function createMockModel() {
@@ -269,4 +272,56 @@ describe('wrapModel', () => {
     expect(sent.length).toBe(4)
     expect(sent[3].role).toBe('assistant')
   })
+
+  it('A2: emits a model-call forensic event on each invocation with modelId + tokens', async () => {
+    const flog = new ForensicLog(`${osTmpDir()}/mw-model-call.ndjson`)
+    setForensicLog(flog)
+    try {
+      const model = createMockModel()
+      model.doGenerate.mockImplementation(async () => ({
+        type: 'generate',
+        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+        text: 'result',
+      }))
+      const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+      const wrapped = wrapModel(model as any, config)
+
+      await (wrapped as any).doGenerate({ prompt: 'test', model: 'groq/llama3-8b-8192' })
+
+      const calls = flog.getEvents({ type: 'model-call' })
+      expect(calls.length).toBeGreaterThanOrEqual(1)
+      const ev = calls[calls.length - 1]
+      expect(ev.metadata?.modelId).toBe('groq/llama3-8b-8192')
+      expect(ev.metadata?.provider).toBe('groq')
+      expect(ev.metadata?.inputTokens).toBe(100)
+      expect(ev.metadata?.outputTokens).toBe(50)
+      expect(ev.metadata?.totalTokens).toBe(150)
+    } finally {
+      setForensicLog(null as any)
+    }
+  })
+
+  it('A2: emits a model-call forensic event for doStream (tokens zero when absent)', async () => {
+    const flog = new ForensicLog(`${osTmpDir()}/mw-model-call-stream.ndjson`)
+    setForensicLog(flog)
+    try {
+      const model = createMockModel()
+      const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+      const wrapped = wrapModel(model as any, config)
+
+      await (wrapped as any).doStream({ prompt: 'x', model: 'openai/gpt-4o' })
+
+      const calls = flog.getEvents({ type: 'model-call' })
+      expect(calls.length).toBeGreaterThanOrEqual(1)
+      const ev = calls[calls.length - 1]
+      expect(ev.metadata?.modelId).toBe('openai/gpt-4o')
+      expect(ev.metadata?.inputTokens).toBe(0)
+    } finally {
+      setForensicLog(null as any)
+    }
+  })
 })
+
+function osTmpDir(): string {
+  return os.tmpdir()
+}

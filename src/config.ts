@@ -181,6 +181,16 @@ export interface OastConfig {
  */
 export type EngineType = 'legacy' | 'solver' | 'multi-model' | 'council'
 
+// Rigid engine coercion map. Council and solver are deprecated aliases that
+// both collapse to the multi-model engine (council is now a REPL command).
+// This is a deterministic config→config map — no LLM-meaning detection.
+export const ENGINE_COERCION: Record<EngineType, EngineType> = {
+  legacy: 'legacy',
+  solver: 'multi-model',
+  'multi-model': 'multi-model',
+  council: 'multi-model',
+}
+
 // ─── Model capability metadata ────────────────────────────────────
 
 export interface ModelCapability {
@@ -592,15 +602,11 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     errors.push(`engine must be "multi-model", "council", or "solver" (deprecated), got "${engine}"`)
   }
 
-  // Deprecation: 'council' engine → coerce to 'multi-model' with warning
-  let resolvedEngine = engine
+  // Deprecation: 'council' engine → coerce to 'multi-model' with warning.
+  // 'solver' is a legacy alias for 'multi-model'. Rigid config→config map.
+  const resolvedEngine = engine ? ENGINE_COERCION[engine] : engine
   if (engine === 'council') {
     console.warn('[ultimatrix] DEPRECATION: engine: council is deprecated. Council is now a REPL command — use engine: multi-model and type /council <goal> at the prompt.')
-    resolvedEngine = 'multi-model'
-  }
-  // 'solver' is a legacy alias for 'multi-model'
-  if (engine === 'solver') {
-    resolvedEngine = 'multi-model'
   }
 
   // Validate solver config
