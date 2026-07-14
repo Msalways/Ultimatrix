@@ -13,9 +13,8 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor } from './framework'
+import { claimFor, assessAccess } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { observeParse } from './observers'
 
 const DENY_MARKERS = [
   'unauthorized', 'forbidden', 'login required', 'please log in', 'session expired',
@@ -62,15 +61,16 @@ export const workflowBypass: TechniquePrimitive = {
     const direct = results[0]
     if (!direct) return { confirmed: false, confidence: 0, evidence: [], note: 'no result' }
 
-    const parsed = await observeParse(direct.body ?? '', direct.headers ?? {}, direct.status ?? 0)
-    const lower = (direct.body ?? '').toLowerCase()
-
-    const denied = DENY_MARKERS.some(m => lower.includes(m))
-    const success = SUCCESS_MARKERS.some(m => lower.includes(m))
-    const statusOk = (direct.status ?? 500) >= 200 && (direct.status ?? 500) < 400
-
-    // Bypass confirmed when the action appears to succeed without a denial.
-    const bypassed = statusOk && !denied && (success || lower.length > 0)
+    // Behavioral, status-authoritative verdict (keyword markers are a secondary
+    // signal only — see assessAccess). A custom denial/success page that does
+    // not contain the literal English markers is still correctly assessed.
+    const a = assessAccess({
+      status: direct.status,
+      body: direct.body,
+      denyMarkers: DENY_MARKERS,
+      successMarkers: SUCCESS_MARKERS,
+    })
+    const bypassed = a.granted && !a.denied
 
     const { verified } = evidenceGate.verifyClaim(
       claimFor('workflow_bypass', direct.step.request.url, direct.status, direct.step.request.method),
@@ -87,7 +87,7 @@ export const workflowBypass: TechniquePrimitive = {
 
     return {
       confirmed,
-      confidence: confirmed ? 0.8 : bypassed ? 0.45 : 0.1,
+      confidence: confirmed ? Math.max(0.8, a.confidence) : bypassed ? a.confidence : 0.1,
       evidence,
       severity: confirmed ? 'high' : undefined,
       finding: confirmed
@@ -99,7 +99,7 @@ export const workflowBypass: TechniquePrimitive = {
             cwe: 'CWE-841',
           }
         : undefined,
-      note: `denied=${denied} success=${success} statusOk=${statusOk} verified=${verified}`,
+      note: `granted=${a.granted} denied=${a.denied} signals=${a.signals.join(',')} verified=${verified}`,
     }
   },
 }

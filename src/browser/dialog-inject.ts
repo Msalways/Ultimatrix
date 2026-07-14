@@ -22,7 +22,7 @@
 import { createStagehandTools } from '@mastra/stagehand'
 import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
 import { log } from '../utils/logger'
-import { upsertPage } from '../graph/tools'
+import { getGlobalGraphStore } from '../graph/store'
 import { isUrlInScope } from '../safety/scope-guard'
 import { recordStructuredEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
@@ -101,8 +101,8 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
           try {
             const page = context?.page
             if (page) {
-              await upsertPage({
-                url: page.url(),
+              const store = getGlobalGraphStore()
+              store.upsertPage(page.url(), {
                 title: await page.title(),
                 contentType: 'text/html',
                 contentLength: 0,

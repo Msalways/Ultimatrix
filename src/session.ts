@@ -176,6 +176,7 @@ export async function main(targetUrl?: string) {
       // B3: Solver bypasses runner — calls solve() directly with real brain agent
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
       let streamedResponse = false
+      let inThinking = false
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -198,8 +199,16 @@ export async function main(targetUrl?: string) {
         onPhase: (event) => {
           if (event.text) {
             if (event.reasoning) {
-              log.dim(`[thinking] ${event.text}`)
+              if (!inThinking) {
+                process.stdout.write('\x1b[2m[thinking] ')
+                inThinking = true
+              }
+              process.stdout.write(event.text)
             } else {
+              if (inThinking) {
+                process.stdout.write('\x1b[0m\n')
+                inThinking = false
+              }
               process.stdout.write(event.text)
               streamedResponse = true
             }
@@ -218,6 +227,10 @@ export async function main(targetUrl?: string) {
           })
         },
       })
+      if (inThinking) {
+        process.stdout.write('\x1b[0m\n')
+        inThinking = false
+      }
       log.nl()
       if (result.completed) {
         log.success(`Solver completed: ${result.reason}`)
@@ -246,6 +259,7 @@ export async function main(targetUrl?: string) {
     } else if (target) {
       // Fallback: solver without pre-built coreServices (backward compat)
       let streamedResponse = false
+      let inThinking = false
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -268,8 +282,16 @@ export async function main(targetUrl?: string) {
         onPhase: (event) => {
           if (event.text) {
             if (event.reasoning) {
-              log.dim(`[thinking] ${event.text}`)
+              if (!inThinking) {
+                process.stdout.write('\x1b[2m[thinking] ')
+                inThinking = true
+              }
+              process.stdout.write(event.text)
             } else {
+              if (inThinking) {
+                process.stdout.write('\x1b[0m\n')
+                inThinking = false
+              }
               process.stdout.write(event.text)
               streamedResponse = true
             }
@@ -288,6 +310,10 @@ export async function main(targetUrl?: string) {
           })
         },
       })
+      if (inThinking) {
+        process.stdout.write('\x1b[0m\n')
+        inThinking = false
+      }
       log.nl()
       if (result.completed) {
         log.success(`Solver completed: ${result.reason}`)

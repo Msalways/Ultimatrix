@@ -135,6 +135,7 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   let round = 0
   let lastResult = null
   let streamedResponse = false
+  let inThinking = false
   const goal = `Perform a comprehensive security assessment of ${target}. Test for SQL injection, XSS, IDOR, authentication bypass, and any other vulnerabilities. Record all findings.`
 
   while (round < maxRounds) {
@@ -158,8 +159,16 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
       onPhase: (event) => {
         if (event.text) {
           if (event.reasoning) {
-            log.dim(`[thinking] ${event.text}`)
+            if (!inThinking) {
+              process.stdout.write('\x1b[2m[thinking] ')
+              inThinking = true
+            }
+            process.stdout.write(event.text)
           } else {
+            if (inThinking) {
+              process.stdout.write('\x1b[0m\n')
+              inThinking = false
+            }
             process.stdout.write(event.text)
             streamedResponse = true
           }
@@ -182,6 +191,11 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
     if (round < maxRounds) {
       log.info(`Round ${round} incomplete (${result.reason}), retrying with updated context...`)
     }
+  }
+
+  if (inThinking) {
+    process.stdout.write('\x1b[0m\n')
+    inThinking = false
   }
 
   const result = lastResult!

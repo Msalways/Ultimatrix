@@ -17,7 +17,7 @@ import type {
   PrimitiveGenerateInput,
 } from './types'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { claimFor } from './framework'
+import { claimFor, assessAccess } from './framework'
 
 interface AuthStepMeta {
   technique: 'sqli-login' | 'default-creds' | 'jwt-none'
@@ -55,14 +55,19 @@ function forgeAlgNone(token: string): string | null {
 }
 
 function successSignal(res: StepExecutionResult): boolean {
-  const status = res.status ?? 0
-  if (status < 200 || status >= 400) return false
-  const setCookie = String(res.headers?.['set-cookie'] ?? res.headers?.['Set-Cookie'] ?? '')
-  const cookieOk = /session|token|auth|jwt|sid/i.test(setCookie)
-  const body = (res.body ?? '').toLowerCase()
-  const bodyOk = body.includes('welcome') || body.includes('dashboard') || body.includes('logout')
-  const errMarker = /invalid|incorrect|authentication failed|wrong (user|password)/i.test(body)
-  return (cookieOk || bodyOk) && !errMarker
+  // Status-authoritative: a 2xx/3xx with a session cookie, a non-login
+  // redirect, or any success marker counts as granted; a denial page (401/403
+  // or error copy) counts as denied. Keyword copy is a secondary signal, so a
+  // custom localized login page is still assessed correctly.
+  const a = assessAccess({
+    status: res.status,
+    body: res.body,
+    setCookie: String(res.headers?.['set-cookie'] ?? res.headers?.['Set-Cookie'] ?? ''),
+    denyMarkers: ['invalid', 'incorrect', 'authentication failed', 'wrong user', 'wrong password'],
+    successMarkers: ['welcome', 'dashboard', 'logout'],
+    grantsOn2xx: false,
+  })
+  return a.granted && !a.denied
 }
 
 export const authBypass: AttackPrimitive = {

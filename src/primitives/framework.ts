@@ -260,3 +260,81 @@ export function claimFor(
   if (status !== undefined) claim.observed = { status }
   return claim
 }
+
+/**
+ * Behavioral, status-authoritative access assessment for vuln oracles.
+ *
+ * Design principle (anti-rigidity): keyword substring lists are a *secondary*
+ * signal only. The authoritative verdict comes from observable HTTP behavior
+ * (status class, session-cookie issuance, redirect-to-login). A custom
+ * application that uses non-English or non-standard success/denial copy is
+ * still correctly assessed because we never rely on the keyword alone.
+ *
+ * - granted: 3xx that is NOT a redirect-to-login, or a session cookie, or a
+ *   success marker. A bare 2xx only grants when `grantsOn2xx` (default true) —
+ *   state-changing endpoints treat any 2xx as "action went through", while an
+ *   auth/login endpoint should require a positive signal (cookie/keyword) so a
+ *   bare empty 200 does not over-fire.
+ * - denied:  401/403, or 400-with-denial-copy, or any deny marker.
+ * On conflict (text says both), status wins. Confidence reflects how much of
+ * the verdict is behavioral vs keyword-only.
+ */
+export interface AccessAssessment {
+  denied: boolean
+  granted: boolean
+  signals: string[]
+  confidence: number
+}
+
+export function assessAccess(input: {
+  status?: number
+  body?: string
+  setCookie?: string
+  denyMarkers?: string[]
+  successMarkers?: string[]
+  grantsOn2xx?: boolean
+}): AccessAssessment {
+  const status = input.status ?? 500
+  const lower = (input.body ?? '').toLowerCase()
+  const cookie = input.setCookie ?? ''
+  const grantsOn2xx = input.grantsOn2xx !== false
+
+  const redirectToLogin =
+    status >= 300 && status < 400 && /(log\s?in|sign\s?in|authentication|session expired)/i.test(lower)
+
+  const statusDenied =
+    status === 401 || status === 403 || (status === 400 && /unauthorized|forbidden|denied|invalid/i.test(lower))
+  const statusGranted = (grantsOn2xx && status >= 200 && status < 300) || (status >= 300 && status < 400 && !redirectToLogin)
+
+  const denyByText = (input.denyMarkers ?? []).some((m) => lower.includes(m))
+  const successByText = (input.successMarkers ?? []).some((m) => lower.includes(m))
+  const cookieGranted = /session|token|auth|jwt|sid/i.test(cookie)
+
+  const denied = statusDenied || denyByText || redirectToLogin
+  const granted = statusGranted || successByText || cookieGranted
+
+  const signals: string[] = []
+  if (statusDenied) signals.push(`status-denied-${status}`)
+  if (statusGranted) signals.push(`status-granted-${status}`)
+  if (denyByText) signals.push('deny-marker')
+  if (successByText) signals.push('success-marker')
+  if (cookieGranted) signals.push('session-cookie')
+  if (redirectToLogin) signals.push('redirect-to-login')
+
+  let confidence = 0
+  if (statusDenied || statusGranted) confidence = 0.8
+  else if (cookieGranted || successByText || denyByText) confidence = 0.45
+
+  // Conflict: trust status over verbatim copy.
+  if (denied && granted) {
+    const resolved = statusGranted && !statusDenied
+    return {
+      denied: statusDenied,
+      granted: resolved,
+      signals: [...signals, 'conflict-status-wins'],
+      confidence: statusDenied || statusGranted ? 0.8 : 0.3,
+    }
+  }
+
+  return { denied, granted, signals, confidence }
+}

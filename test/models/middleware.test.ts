@@ -230,4 +230,43 @@ describe('wrapModel', () => {
     const result = await (wrapped as any).doGenerate({ prompt: 'test' })
     expect(result.type).toBe('generate')
   })
+
+  it('inserts assistant placeholder when user follows tool message (OpenAI ordering)', async () => {
+    const model = createMockModel()
+    const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+    const wrapped = wrapModel(model as any, config)
+
+    const messages = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: '1', toolName: 'x', args: {} }] },
+      { role: 'tool', content: 'result', toolCallId: '1' },
+      { role: 'user', content: 'now what' },
+    ]
+    await (wrapped as any).doStream({ messages })
+
+    const sent = model.doStream.mock.calls[0][0].messages
+    expect(sent.length).toBe(5)
+    expect(sent[2].role).toBe('tool')
+    expect(sent[3].role).toBe('assistant')
+    expect(sent[3].content[0].type).toBe('text')
+    expect(sent[4].role).toBe('user')
+  })
+
+  it('leaves already-valid ordering untouched', async () => {
+    const model = createMockModel()
+    const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
+    const wrapped = wrapModel(model as any, config)
+
+    const messages = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: '1', toolName: 'x', args: {} }] },
+      { role: 'tool', content: 'r', toolCallId: '1' },
+      { role: 'assistant', content: 'ok' },
+    ]
+    await (wrapped as any).doStream({ messages })
+
+    const sent = model.doStream.mock.calls[0][0].messages
+    expect(sent.length).toBe(4)
+    expect(sent[3].role).toBe('assistant')
+  })
 })

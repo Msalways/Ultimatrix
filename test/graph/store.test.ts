@@ -530,3 +530,36 @@ describe('getGlobalGraphStore', () => {
     expect(() => getGlobalGraphStore()).toThrow('Graph store not initialized')
   })
 })
+
+describe('GraphStore serialized save (concurrency)', () => {
+  let tmpDir: string
+  const origCwd = process.cwd()
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'graph-save-test-'))
+    process.chdir(tmpDir)
+  })
+
+  afterEach(() => {
+    process.chdir(origCwd)
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('serializes concurrent scheduleSave/save calls and keeps the file valid', async () => {
+    const store = new GraphStore(join(tmpDir, 'test-graph.json'))
+    store.addFact({ description: 'seed', source: 'test' })
+
+    // Fire many debounced saves interleaved with direct saves (the overlap
+    // that previously caused Windows EPERM rename collisions).
+    for (let i = 0; i < 30; i++) store.scheduleSave()
+    await Promise.all(Array.from({ length: 30 }, () => store.save()))
+
+    // Let the debounced save flush.
+    await new Promise((r) => setTimeout(r, 700))
+
+    const { readFileSync } = await import('node:fs')
+    const raw = readFileSync(join(tmpDir, 'test-graph.json'), 'utf-8')
+    const parsed = JSON.parse(raw)
+    expect(parsed.nodes.length).toBeGreaterThanOrEqual(1)
+  })
+})

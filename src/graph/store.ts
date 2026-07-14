@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -70,6 +70,9 @@ export class GraphStore {
   private libSQLStore?: LibSQLGraphStore
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private static readonly SAVE_DEBOUNCE_MS = 500
+  /** Serializes file-store writes so overlapping saves never rename the same
+   *  target concurrently (the root cause of Windows EPERM on rename). */
+  private saveChain: Promise<void> = Promise.resolve()
 
   constructor(savePath?: string, useLibSQL: boolean = false) {
     this.savePath = savePath || resolve('output', 'graph.json')
@@ -800,12 +803,29 @@ export class GraphStore {
 
   async save(filePath?: string): Promise<void> {
     const targetPath = filePath || this.savePath
-    
+
     if (this.useLibSQL && this.libSQLStore) {
       await this.libSQLStore.save()
       return
     }
 
+    // Serialize file writes behind a single promise chain so concurrent
+    // scheduleSave() calls never overlap their renames (Windows EPERM fix).
+    const run = this.saveChain.then(
+      () => this.atomicWrite(targetPath),
+      () => this.atomicWrite(targetPath),
+    )
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
+  /**
+   * Atomic, crash-safe file write: temp file -> .bak of current -> rename
+   * temp over target. Renames are retried with backoff on EPERM/EBUSY so a
+   * transient external lock (antivirus, cloud-sync watcher) doesn't drop the
+   * save. Serialization via `saveChain` already prevents self-overlap.
+   */
+  private async atomicWrite(targetPath: string): Promise<void> {
     const dir = resolve(targetPath, '..')
     if (!existsSync(dir)) {
       await mkdir(dir, { recursive: true })
@@ -815,22 +835,35 @@ export class GraphStore {
       edges: this.edges,
     }
     const json = JSON.stringify(data, null, 2)
-    const tmpPath = `${targetPath}.${Date.now()}.${process.pid}.tmp`
-    const backupPath = `${targetPath}.bak`
+    const tmpPath = `${targetPath}.${Date.now()}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
 
     await writeFile(tmpPath, json, 'utf-8')
-    // Backup current if exists
+
+    // Snapshot the current file as .bak (best-effort).
     if (existsSync(targetPath)) {
       try {
-        await rename(targetPath, backupPath)
-      } catch { /* first save, no backup yet */ }
+        await rename(targetPath, `${targetPath}.bak`)
+      } catch { /* first save, or briefly locked — non-fatal */ }
     }
 
-    // Ensure directory exists before rename (race condition fix)
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true })
+    let lastErr: unknown
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rename(tmpPath, targetPath)
+        return
+      } catch (err: any) {
+        lastErr = err
+        const code = err?.code
+        if (code === 'EPERM' || code === 'EBUSY') {
+          await new Promise((r) => setTimeout(r, 50 * (attempt + 1)))
+          continue
+        }
+        throw err
+      }
     }
-    await rename(tmpPath, targetPath)
+    // Exhausted retries — drop the orphaned temp file and surface the error.
+    try { await unlink(tmpPath) } catch { /* ignore */ }
+    throw lastErr
   }
 
   async load(filePath?: string): Promise<void> {

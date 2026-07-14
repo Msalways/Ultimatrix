@@ -27,6 +27,28 @@ function isCumulativeQuotaExhausted(err: any): boolean {
 }
 
 /**
+ * Enforce OpenAI-compatible message ordering: a `user` or `system` message may
+ * not immediately follow a `tool` message. Strict providers (NVIDIA NIM, Mistral)
+ * reject `role: 'user' after role: 'tool'` with HTTP 400, while others tolerate
+ * it. Insert a minimal non-empty assistant placeholder so every tool result is
+ * "consumed" before any subsequent user/system message. This is purely a
+ * transport-compat shim — it does not change the agent's reasoning.
+ */
+function sanitizeMessageOrdering(messages: any[]): any[] {
+  if (!Array.isArray(messages) || messages.length === 0) return messages
+  const out: any[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const cur = messages[i]
+    out.push(cur)
+    const next = messages[i + 1]
+    if (cur?.role === 'tool' && next && (next.role === 'user' || next.role === 'system')) {
+      out.push({ role: 'assistant', content: [{ type: 'text', text: '[tool results processed]' }] })
+    }
+  }
+  return out
+}
+
+/**
  * Wraps a LanguageModelV2 with per-provider rate limiting, concurrency control,
  * retry with configurable backoff, header sync, and forensic logging.
  *
@@ -49,6 +71,13 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
       const originalMethod = Reflect.get(target, prop, receiver) as (...args: unknown[]) => Promise<unknown>
 
       return async function (this: any, args: any) {
+        // Enforce OpenAI-compatible message ordering before sending to the API
+        // (NVIDIA/Mistral reject `user` after `tool` with HTTP 400).
+        if (args && Array.isArray(args.messages)) {
+          const sanitized = sanitizeMessageOrdering(args.messages)
+          if (sanitized !== args.messages) args = { ...args, messages: sanitized }
+        }
+
         // Resolve provider from model ID or target modelId
         const modelIdStr = args?.model || args?.modelId || (target as any).modelId || 'unknown'
         const provider = getProviderFromModelId(String(modelIdStr))

@@ -71,4 +71,28 @@ describe('authBypass primitive (WS-B depth)', () => {
     )
     expect(res.confirmed).toBe(true)
   })
+
+  it('confirms a custom localized success page (non-English, no keyword) when a session cookie is issued', async () => {
+    // Anti-rigidity: body has no English 'welcome'/'dashboard'/'logout', yet the
+    // session cookie is the authoritative positive signal.
+    const p = getPrimitive('authBypass')!
+    const res = await runPrimitive(
+      p,
+      { target: 'https://t.example/login', endpoint: { url: 'https://t.example/login', method: 'POST' } },
+      executorFor(() => ({ status: 200, headers: { 'set-cookie': 'session=abc123' }, body: 'Connexion réussie' })),
+      gate,
+    )
+    expect(res.confirmed).toBe(true)
+  })
+
+  it('does NOT confirm a bare empty 200 (no cookie, no keyword) — avoids over-fire', async () => {
+    const p = getPrimitive('authBypass')!
+    const res = await runPrimitive(
+      p,
+      { target: 'https://t.example/login', endpoint: { url: 'https://t.example/login', method: 'POST' } },
+      executorFor(() => ({ status: 200, headers: {}, body: '' })),
+      gate,
+    )
+    expect(res.confirmed).toBe(false)
+  })
 })
