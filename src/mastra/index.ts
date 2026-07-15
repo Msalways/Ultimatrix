@@ -89,6 +89,13 @@ export function createAgent(
         allTools[key] = tool
       }
     }
+    // Surface allow-set IDs that don't match any registered tool (typo in a
+    // skill's toolRefs or CORE_TOOLS). These are silently dropped above, so
+    // warn loudly to prevent silent capability gaps.
+    const unknown = [...effectiveAllow].filter(id => !(id in fullRegistry))
+    if (unknown.length > 0) {
+      log.warn(`Tool-filtered allow-set references ${unknown.length} unknown tool ID(s), silently dropped: ${unknown.join(', ')}`)
+    }
     const source = options?.toolIds?.length
       ? `toolIds [${options.toolIds.join(', ')}]`
       : `skills [${options!.skillIds!.join(', ')}]`

@@ -30,7 +30,7 @@ const CORE_TOOLS = [
   'assessCandidateReportability',
   'getResearchStatus',
   'runPrimitive',
-  'getOastUrl',
+  'getOastUrlTool',
   'recordOutcome',
   'runCampaign',
   'runRecon',

@@ -51,8 +51,9 @@ describe('CORE_TOOLS includes new tools', () => {
     expect(getCoreTools()).toContain('runPrimitive')
   })
 
-  it('includes getOastUrl', () => {
-    expect(getCoreTools()).toContain('getOastUrl')
+  it('includes getOastUrlTool (registry key, not getOastUrl)', () => {
+    expect(getCoreTools()).toContain('getOastUrlTool')
+    expect(getCoreTools()).not.toContain('getOastUrl')
   })
 
   it('includes recordOutcome', () => {
