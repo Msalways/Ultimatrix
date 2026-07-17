@@ -259,19 +259,22 @@ async function resolveScheme(ah: {
   const v = ah.value
 
   if (ah.isCookie) return { scheme: 'cookie', decoded: false }
-  if (n.includes('api-key') || n.includes('apikey')) return { scheme: 'api-key', decoded: false }
+  if (n === 'authorization') {
+    const decoded = await tryDecode(v)
+    return { scheme: decoded.scheme ?? 'custom', decoded: decoded.decoded }
+  }
 
+  // Structural value-based detection — RFC 7235 auth-scheme tokens are the
+  // canonical signal; we never guess scheme from arbitrary header names.
   const lower = v.toLowerCase()
   if (lower.startsWith('bearer ')) {
     const decoded = await tryDecode(v.slice(7))
     return { scheme: decoded.scheme === 'jwt' ? 'jwt' : 'bearer', decoded: decoded.decoded }
   }
   if (lower.startsWith('basic ')) return { scheme: 'basic', decoded: false }
-  if (n.includes('auth')) {
-    const decoded = await tryDecode(v)
-    return { scheme: decoded.scheme ?? 'custom', decoded: decoded.decoded }
-  }
 
+  // Fallback: attempt a structural decode (JWT/etc.) and classify by what the
+  // value actually is, defaulting to api-key. No name-substring guessing.
   const decoded = await tryDecode(v)
   return { scheme: decoded.scheme ?? 'api-key', decoded: decoded.decoded }
 }

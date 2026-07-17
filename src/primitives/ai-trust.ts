@@ -15,6 +15,7 @@
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
+import { isAiEndpoint, hasTarget } from './routing'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { getOastUrl } from '../oast/server'
 import { getGlobalOastStore } from '../oast/store'
@@ -35,9 +36,6 @@ const AI_ENDPOINT_PATHS = [
   '/mcp',
   '/api/mcp',
 ]
-
-/** Heuristics: paths/params that suggest an AI/LLM integration worth probing. */
-const AI_SIGNAL = /(chat|complete|completion|generat|prompt|ai|llm|agent|mcp|gpt|assistant|bot|ask|query|message|infer|summar)/i
 
 /** Prompt-injection payloads (OAST placeholder replaced at generate time) instructing tool/function abuse. */
 const PROMPT_INJECTION_PAYLOADS: string[] = [
@@ -67,16 +65,8 @@ export const aiTrust: TechniquePrimitive = {
   description: 'Probe the target\'s AI/agent features for prompt injection that abuses tools/functions (e.g. OAST exfiltration or unauthorized actions).',
   technique: 'prompt-injection',
   appliesTo(ctx: TechniqueContext): boolean {
-    if (!(ctx.endpoint || ctx.target)) return false
-    if (ctx.payloads && ctx.payloads.length > 0) return true
-    if (ctx.state?.['aiFeature'] === true || ctx.param?.toLowerCase().includes('prompt')) return true
-    const url = (ctx.endpoint?.url ?? ctx.target ?? '').toLowerCase()
-    const params = (ctx.endpoint?.params ?? []).map(p => p.name.toLowerCase())
-    const hasAiSignal =
-      AI_SIGNAL.test(url) ||
-      params.some(p => AI_SIGNAL.test(p)) ||
-      (ctx.endpoint?.method ?? 'POST').toUpperCase() === 'POST'
-    return hasAiSignal
+    if (!hasTarget(ctx)) return false
+    return isAiEndpoint(ctx)
   },
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const oast = getOastUrl()

@@ -5,6 +5,28 @@ import { NodeType } from './schema'
 import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
 
+/**
+ * Single source of truth for `updateGraph` dispatch actions. Both the Mastra
+ * tool definition (mastra/tools.ts) and the graph tool definition import this
+ * array so the z.enum and the prose description can never diverge. Adding a
+ * new graph mutation means adding it here AND the switch below — one place.
+ */
+export const GRAPH_ACTIONS = [
+  'upsertPage',
+  'addAction',
+  'addInput',
+  'addEndpoint',
+  'addTest',
+  'addFinding',
+  'addAuthFlow',
+  'addRBACRole',
+  'addAttack',
+  'addRenderedElement',
+  'chainFindings',
+] as const
+
+export const graphActionEnum = z.enum(GRAPH_ACTIONS)
+
 // ─── Query Tools ───────────────────────────────────────────────
 
 export const queryGraph = createTool({
@@ -351,7 +373,7 @@ export const updateGraph = createTool({
   id: 'updateGraph',
   description: 'Write data to the knowledge graph. Prefer the focused single-purpose graph mutation tools, which expose clearer per-action schemas.',
   inputSchema: z.object({
-    action: z.enum(['upsertPage', 'addAction', 'addInput', 'addEndpoint', 'addTest', 'addFinding', 'addAuthFlow', 'addRBACRole', 'addAttack', 'addRenderedElement', 'chainFindings']),
+    action: graphActionEnum,
     pageUrl: z.string().optional(),
     pageData: z.record(z.string(), z.unknown()).optional(),
     pageId: z.string().optional(),

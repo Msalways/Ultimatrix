@@ -10,7 +10,7 @@ import { readAppModelSection, writeAppModelSection } from '../tools/app-model-to
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from '../tools/recon-tools'
 import { askUser } from '../tools/interaction-tools'
 import { getOastUrlTool, checkOastCallbacks, clearOastCallbacks } from '../oast/tools'
-import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
+import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings, GRAPH_ACTIONS, graphActionEnum } from '../graph/tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getFullContext } from '../manager/tools/get-full-context'
 import { addDiscovery } from '../tools/user-discovery'
@@ -788,10 +788,10 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   },
   updateGraph: {
     id: 'updateGraph',
-    description: 'Write data to the knowledge graph. Actions: upsertPage, addAction, addInput, addEndpoint, addTest, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings.',
+    description: 'Write data to the knowledge graph. Prefer the focused single-purpose graph mutation tools, which expose clearer per-action schemas. The `action` enum lists every supported mutation.',
     category: 'graph',
     inputSchema: z.object({
-      action: z.enum(['upsertPage', 'addAction', 'addInput', 'addEndpoint', 'addTest', 'addFinding', 'addAuthFlow', 'addRBACRole', 'addAttack', 'chainFindings']),
+      action: graphActionEnum,
       pageUrl: z.string().optional(),
       pageData: z.record(z.string(), z.unknown()).optional(),
       pageId: z.string().optional(),

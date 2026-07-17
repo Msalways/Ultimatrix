@@ -154,7 +154,7 @@ export const writeFinding = createTool({
     findingKey: z.string().optional().describe('Key matching the evidence buffer to pull previously recorded items from.'),
     observedStatus: z.number().optional().describe('HTTP status you observed that proves this finding. Used for structural evidence verification (no prose scanning).'),
     exploitProof: z.object({
-      relation: z.string().optional().describe('The relation type this proof exploits (e.g. REINGESTS). Discover via getGraphSchema.'),
+      relation: z.string().optional().describe('The relation type this proof exploits. Discover valid relation types via getGraphSchema — do not assume a fixed list.'),
       scenario: z.string().describe('The business-logic scenario class the proof demonstrates (e.g. cross-API trust boundary). Free-form, LLM-defined.'),
       request: z.string().describe('The exact request that achieves the exploit.'),
       response: z.string().describe('The exact response proving impact.'),

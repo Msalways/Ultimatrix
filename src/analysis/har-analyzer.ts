@@ -84,10 +84,13 @@ export function identifyPatterns(entries: HarEntry[]): Pattern[] {
     })
   }
 
-  // Pattern: Authentication tokens
+  // Pattern: Authentication — canonical Authorization header (value-based
+  // bearer/basic detection lives in analyseAuth/resolveScheme, the single
+  // owner of scheme classification). We do not guess auth from arbitrary
+  // header names here.
   const authHeaders = entries.filter(e =>
     e.request.headers.some(h =>
-      h.name.toLowerCase() === 'authorization' || h.name.toLowerCase().includes('token')
+      h.name.toLowerCase() === 'authorization'
     )
   )
 
@@ -100,11 +103,11 @@ export function identifyPatterns(entries: HarEntry[]): Pattern[] {
     })
   }
 
-  // Pattern: Cookie-based sessions
+  // Pattern: Cookie-based sessions — canonical session-cookie name patterns
+  // (vendor/standard session identifiers, not a guess over arbitrary names).
+  const SESSION_COOKIE = /^(session|sess|sid|jsessionid|phpsessid|aspsessionid|connect\.sid)/i
   const cookieSessions = entries.filter(e =>
-    e.request.cookies.some(c =>
-      c.name.toLowerCase().includes('session') || c.name.toLowerCase().includes('sid')
-    )
+    e.request.cookies.some(c => SESSION_COOKIE.test(c.name))
   )
 
   if (cookieSessions.length > 0) {

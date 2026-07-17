@@ -84,9 +84,12 @@ describe('extractAttackPath', () => {
     expect(extractAttackPath('No attack path declared here')).toBeNull()
   })
 
-  it('returns null for invalid path names', () => {
-    expect(extractAttackPath('[PATH: invalid_path]')).toBeNull()
-    expect(extractAttackPath('[PATH: random]')).toBeNull()
+  it('accepts any declared tag — diversity tracking is structural, not a closed vocabulary', () => {
+    // The agent declares what it is doing; we record it verbatim. Unrecognized
+    // tags are NOT rejected (rejecting them silently drops anti-loop signal).
+    expect(extractAttackPath('[PATH: invalid_path]')).toBe('invalid_path')
+    expect(extractAttackPath('[PATH: random]')).toBe('random')
+    expect(extractAttackPath('[PATH: some_novel_class]')).toBe('some_novel_class')
   })
 
   it('handles empty/null input', () => {
@@ -94,7 +97,7 @@ describe('extractAttackPath', () => {
     expect(extractAttackPath(null as any)).toBeNull()
   })
 
-  it('recognizes all canonical attack paths', () => {
+  it('accepts canonical attack paths as declared', () => {
     const paths = [
       'sqli', 'xss', 'ssrf', 'rce', 'ssti', 'idor', 'auth_bypass',
       'info_leak', 'race_condition', 'file_upload', 'xxe', 'deserialization',

@@ -14,6 +14,7 @@
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor, assessAccess } from './framework'
+import { isWorkflowEndpoint, hasTarget } from './routing'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 
 const DENY_MARKERS = [
@@ -32,12 +33,8 @@ export const workflowBypass: TechniquePrimitive = {
   description: 'Attempt to skip required steps in a multi-step flow by directly accessing the terminal endpoint with missing state.',
   technique: 'workflow_bypass',
   appliesTo(ctx: TechniqueContext): boolean {
-    if (!(ctx.endpoint || ctx.target)) return false
-    const url = (ctx.endpoint?.url ?? ctx.target ?? '').toLowerCase()
-    return (
-      (ctx.workflowSteps?.length ?? 0) > 1 ||
-      /\/(checkout|confirm|complete|submit|reset|verify|activate|pay|order|transfer|redeem|finalize|upgrade)/.test(url)
-    )
+    if (!hasTarget(ctx)) return false
+    return isWorkflowEndpoint(ctx)
   },
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!

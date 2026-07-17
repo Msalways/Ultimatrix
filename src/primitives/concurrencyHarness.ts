@@ -13,6 +13,7 @@
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
+import { isStateMutatingEndpoint, hasTarget } from './routing'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 
@@ -24,13 +25,8 @@ export const concurrencyHarness: TechniquePrimitive = {
   description: 'Fire N concurrent identical requests at a state-changing endpoint and compare responses to detect race/TOCTOU conditions.',
   technique: 'race_condition',
   appliesTo(ctx: TechniqueContext): boolean {
-    if (!(ctx.endpoint || ctx.target)) return false
-    const url = (ctx.endpoint?.url ?? ctx.target ?? '').toLowerCase()
-    const method = (ctx.endpoint?.method ?? 'POST').toUpperCase()
-    return (
-      method !== 'GET' &&
-      /(transfer|redeem|coupon|discount|withdraw|order|payment|credit|balance|stock|inventory|register|create|subscribe|upgrade|vote|claim|book|reserve)/.test(url)
-    )
+    if (!hasTarget(ctx)) return false
+    return isStateMutatingEndpoint(ctx)
   },
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!

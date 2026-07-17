@@ -9,6 +9,7 @@
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
+import { isSsrfProneEndpoint, hasTarget } from './routing'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { getOastUrl } from '../oast/server'
 import { getGlobalOastStore } from '../oast/store'
@@ -21,10 +22,8 @@ export const ssrfOast: TechniquePrimitive = {
   description: 'Inject an OAST callback URL into SSRF-prone parameters and confirm SSRF via an outbound callback to our listener.',
   technique: 'ssrf',
   appliesTo(ctx: TechniqueContext): boolean {
-    if (!(ctx.endpoint || ctx.target)) return false
-    const params = ctx.endpoint?.params ?? []
-    const hasSsrfParam = params.some(p => SSRF_PARAMS.includes(p.name.toLowerCase())) || !!ctx.param
-    return hasSsrfParam || /(fetch|proxy|import|load|render|convert|webhook|download|preview|scan)/.test((ctx.endpoint?.url ?? ctx.target ?? '').toLowerCase())
+    if (!hasTarget(ctx)) return false
+    return isSsrfProneEndpoint(ctx)
   },
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const oast = getOastUrl()

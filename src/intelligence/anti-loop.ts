@@ -17,7 +17,6 @@ import {
   MEANINGFUL_PROGRESS,
   MEANINGFUL_FAILURES,
   FAILED_ACCESS_PATTERNS,
-  ATTACK_PATHS,
   type AttackPath,
 } from './constants'
 
@@ -26,16 +25,22 @@ import {
 const PATH_TAG_RE = /\[PATH:\s*([a-z_]+)\]/i
 
 /**
- * Extract attack path tag from LLM output.
- * The agent is instructed to include `[PATH: sqli]` when switching attack types.
+ * Extract the agent's self-declared attack-path tag from LLM output.
+ *
+ * Root-cause design: the agent DECLARES what it is doing and we RECORD it.
+ * Diversity tracking is structural (we compare consecutive declared tags for
+ * equality) — it does NOT require a closed vocabulary. Rejecting a declared tag
+ * against a frozen list silently drops diversity signal whenever the prose list
+ * and the registry diverge, so we accept the tag verbatim. The set of *known*
+ * paths is still available from the TechniqueRegistry for guidance only.
+ *
  * Returns null if no tag found — callers should use Blackboard intent as fallback.
  */
 export function extractAttackPath(llmOutput: string): AttackPath | null {
   if (!llmOutput) return null
   const match = llmOutput.match(PATH_TAG_RE)
   if (!match) return null
-  const tag = match[1].toLowerCase()
-  return ATTACK_PATHS.includes(tag as AttackPath) ? tag as AttackPath : null
+  return match[1].toLowerCase()
 }
 
 // ── Loop detector ──────────────────────────────────────────────────────────

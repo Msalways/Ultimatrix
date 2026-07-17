@@ -87,6 +87,8 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
       params: Array.isArray(input.params) ? input.params : undefined,
       authRequired: input.authRequired,
       authType: input.authType,
+      useCase: input.useCase,
+      tags: input.tags,
     }
   }
   if (input.param) ctx.param = input.param
@@ -239,6 +241,8 @@ export const runPrimitiveTool = createTool({
       state: z.record(z.string(), z.any()).optional(),
       authRequired: z.boolean().optional(),
       authType: z.string().optional(),
+      useCase: z.string().optional().describe('Analyser-assigned endpoint use-case (single source of endpoint semantics). Route on this, not URL names.'),
+      tags: z.array(z.string()).optional().describe('Typed endpoint tags from the graph (single source of endpoint semantics).'),
       relationSeed: z.object({
         relationType: z.string().describe('Relation type from queryRelations (e.g. REINGESTS). Discover valid values via getGraphSchema.'),
         sourceValue: z.string().describe('The captured value flowing from source to sink.'),

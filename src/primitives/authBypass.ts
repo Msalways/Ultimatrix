@@ -18,6 +18,7 @@ import type {
 } from './types'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { claimFor, assessAccess } from './framework'
+import { isAuthEndpoint, hasTarget } from './routing'
 
 interface AuthStepMeta {
   technique: 'sqli-login' | 'default-creds' | 'jwt-none'
@@ -80,9 +81,8 @@ export const authBypass: AttackPrimitive = {
   technique: 'AUTHN_BYPASS',
   tags: ['auth', 'sqli', 'jwt', 'default-creds'],
   references: ['OWASP A07:2021', 'CWE-287', 'CWE-798'],
-  appliesTo: (endpoint) =>
-    /login|signin|sign-in|auth|token|session|admin|account/i.test(endpoint.path) &&
-    (endpoint.method === 'POST' || endpoint.method === 'GET'),
+  appliesTo: (ctx) =>
+    hasTarget(ctx) && isAuthEndpoint(ctx),
   generate(input: PrimitiveGenerateInput) {
     const url = input.endpoint?.url ?? input.target!
     const param = input.param ?? input.endpoint?.params?.[0]?.name

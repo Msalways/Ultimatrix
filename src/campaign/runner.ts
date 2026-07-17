@@ -64,7 +64,7 @@ async function httpExecutor(step: AttackStep): Promise<StepExecutionResult> {
  * so the maker/checker downgrade applies to campaign-persisted findings.
  */
 export function createPrimitiveRunner(
-  _graphStore: GraphStore,
+  graphStore: GraphStore,
   _config: UltimatrixConfig,
   gate: EvidenceGate,
 ): PrimitiveRunner {
@@ -80,15 +80,24 @@ export function createPrimitiveRunner(
     }
 
     const target = slice.endpoint.url
+    // Pull the analyser-assigned typed semantics (useCase / authType / tags) so
+    // primitive routing keys off a single source of truth instead of re-deriving
+    // endpoint purpose from URL names.
+    const epNode = graphStore.getNode(slice.endpoint.id)
+    const epProps = epNode && 'properties' in epNode ? (epNode as any).properties : undefined
     const techniqueCtx: TechniqueContext = {
       target,
       endpoint: {
         url: target,
         method: slice.endpoint.method,
+        authRequired: epProps?.authRequired,
+        authType: epProps?.authType,
+        useCase: epProps?.useCase,
+        tags: epProps?.tags,
       },
       param: slice.params[0],
       role: slice.role,
-      state: slice.state,
+      state: slice.state ? (slice.state as unknown as Record<string, unknown>) : undefined,
     }
 
     if (!primitive.appliesTo(techniqueCtx)) {

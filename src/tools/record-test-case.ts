@@ -7,7 +7,7 @@ export const recordTestCase = createTool({
   description: 'Proactively record a test case for a discovered endpoint. Call this after every test attempt to build a coverage map. Automatically links to the parent action/page node via the graph store.',
   inputSchema: z.object({
     parentActionId: z.string().describe('The ID of the parent action or page node this test targets'),
-    testType: z.enum(['xss', 'sqli', 'idor', 'jwt', 'race', 'logic', 'graphql', 'mass-assignment', 'waf-bypass', 'second-order', 'oauth', 'other']).describe('Category of the security test'),
+    testType: z.string().describe('Category of the security test — free-form label (e.g. "sqli", "ssrf", "idor", "logic"). The coverage map groups tests by whatever label you supply; do not fit your test into a preset list.'),
     status: z.enum(['pass', 'fail', 'vulnerable', 'error', 'inconclusive']).describe('Result of the test attempt'),
     endpoint: z.string().describe('The full URL or endpoint path that was tested'),
     technique: z.string().describe('Specific technique used, e.g. "reflected-xss-get", "time-based-blind-sqli", "horizontal-idor"'),

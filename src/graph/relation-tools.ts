@@ -127,7 +127,7 @@ export const queryRelations = createTool({
     'node types via getGraphSchema first. Filter by relation `type`, focus node `type`, or trace a ' +
     'specific `value`.',
   inputSchema: z.object({
-    relationType: z.nativeEnum(EdgeType).optional().describe('Edge/relation type to follow. Discover valid values via getGraphSchema (e.g. REINGESTS, VALUE_ORIGIN, ORDERED_BEFORE).'),
+    relationType: z.nativeEnum(EdgeType).optional().describe('Edge/relation type to follow. Discover valid values via getGraphSchema — do not assume a fixed list.'),
     nodeType: z.nativeEnum(NodeType).optional().describe('If set, only return edges touching a node of this type. Discover valid values via getGraphSchema.'),
     value: z.string().optional().describe('Trace a value: return edges where this value is the provenance source or sink (substring match on the recorded value sample).'),
     limit: z.number().optional().default(100).describe('Max edges to return. 0 = unbounded.'),

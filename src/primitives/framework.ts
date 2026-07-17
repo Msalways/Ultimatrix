@@ -39,6 +39,9 @@ export interface TechniqueContext {
     params?: Array<{ name: string; type?: string; in?: string; required?: boolean }>
     authRequired?: boolean
     authType?: string
+    /** Typed use-case assigned by the analyser (single source of endpoint semantics). */
+    useCase?: string
+    tags?: string[]
   }
   /** The specific parameter under test (e.g. a query/body field name). */
   param?: string
