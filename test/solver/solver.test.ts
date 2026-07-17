@@ -1,13 +1,41 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const h = vi.hoisted(() => ({
+  runActiveChainingMock: vi.fn(),
+  graphStoreMock: {
+    hasFinding: false,
+    queryNodes: (type?: any) =>
+      type && String(type) === 'Finding' && h.graphStoreMock.hasFinding
+        ? [
+            {
+              id: 'finding-1',
+              type: 'Finding',
+              properties: { technique: 'idor', endpoint: 'https://example.com/api/user/1', method: 'GET', severity: 'medium' },
+            },
+          ]
+        : [],
+    getTargetSummary: () => ({ totalFindings: 0, totalEndpoints: 0, totalTests: 0, totalCapturedHeaders: 0, findingsBySeverity: {}, endpoints: [], authFlows: 0, rbacRoles: 0, untestedActions: 0 }),
+  },
+  logWarn: vi.fn(),
+}))
 vi.mock('../../src/utils/logger', () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), dim: vi.fn(), success: vi.fn(), nl: vi.fn() },
+  log: { info: vi.fn(), warn: h.logWarn, error: vi.fn(), dim: vi.fn(), success: vi.fn(), nl: vi.fn() },
 }))
 
 vi.mock('../../src/tools/report-tools', () => ({
   setForensicLog: vi.fn().mockReturnValue({
     log: vi.fn(),
   }),
+}))
+
+vi.mock('../../src/intelligence/chain-planner', () => ({
+  runActiveChaining: (...args: any[]) => h.runActiveChainingMock(...args),
+}))
+
+// Mock the global graph store with a seeded IDOR finding.
+vi.mock('../../src/graph/store', () => ({
+  getGlobalGraphStore: () => h.graphStoreMock,
+  NodeType: { FINDING: 'FINDING' },
 }))
 
 import { solve } from '../../src/solver/solver'
@@ -58,6 +86,11 @@ function createReasoningMockAgent(reasoningChunks: string[], textChunks: string[
 }
 
 describe('solve', () => {
+  beforeEach(() => {
+    h.runActiveChainingMock.mockClear()
+    h.graphStoreMock.hasFinding = false
+  })
+
   it('creates plan and executes tasks sequentially', async () => {
     const agent = createMockAgent([
       'I will test /api/users for SQL injection and /login for auth bypass. Starting with /api/users.',
@@ -259,5 +292,38 @@ describe('solve', () => {
     const hasRawTable = reasonEvents.some(e => e.text?.includes('| # |'))
     expect(hasAnalysis).toBe(true)
     expect(hasRawTable).toBe(false)
+  })
+
+  it('invokes active chain planner after a finding lands (multi-model engine)', async () => {
+    h.runActiveChainingMock.mockResolvedValue({
+      steps: [{ rationale: 'deepen idor with bolaFuzzer', expectedSeverity: 'high' }],
+      executed: [{ step: { rationale: 'deepen idor with bolaFuzzer', expectedSeverity: 'high' }, outcome: { ok: true } }],
+    })
+    h.graphStoreMock.hasFinding = true
+    const agent = createMockAgent(['Done.'])
+    const events: any[] = []
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find vulnerabilities',
+      ultimatrixConfig: { engine: 'multi-model', solver: { maxActiveChainSteps: 3 } } as any,
+      onPhase: (event) => events.push(event),
+    })
+    console.log('WARN CALLS:', h.logWarn.mock.calls.map(c => c[0]))
+    expect(h.runActiveChainingMock).toHaveBeenCalledTimes(1)
+    const calledFindings = h.runActiveChainingMock.mock.calls[0][0]
+    expect(Array.isArray(calledFindings)).toBe(true)
+    expect(calledFindings.length).toBeGreaterThan(0)
+    expect(events.some(e => e.text?.includes('[chain-planner]'))).toBe(true)
+  })
+
+  it('does not invoke active chain planner when maxActiveChainSteps is 0', async () => {
+    h.runActiveChainingMock.mockResolvedValue({ steps: [], executed: [] })
+    const agent = createMockAgent(['Done.'])
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find vulnerabilities',
+      ultimatrixConfig: { engine: 'multi-model', solver: { maxActiveChainSteps: 0 } } as any,
+    })
+    expect(h.runActiveChainingMock).not.toHaveBeenCalled()
   })
 })

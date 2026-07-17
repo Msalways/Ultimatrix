@@ -1,20 +1,46 @@
 import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
-import { stableId } from './utils'
+import { looksLikeId, stableId } from './utils'
 
 function endpointById(store: GraphStore): Map<string, EndpointNode> {
   return new Map((store.queryNodes(NodeType.ENDPOINT) as EndpointNode[]).map(e => [e.id, e]))
 }
 
-function hasIdSignal(endpoint: EndpointNode): boolean {
+/**
+ * An endpoint is an IDOR candidate when it is addressed by a structured object
+ * identifier — derived from value SHAPE (numeric / hex / uuid), never from a
+ * keyword list. We cross-reference the entity's already-extracted id segments
+ * (typed upstream) and also check param/body field names by shape.
+ */
+function hasIdSignal(endpoint: EndpointNode, entityIds: Set<string>): boolean {
   const url = endpoint.properties.url
+  let pathSegments: string[] = []
+  try {
+    pathSegments = new URL(url).pathname.split('/').filter(Boolean)
+  } catch {
+    pathSegments = []
+  }
+  const idInPath = pathSegments.some(s => looksLikeId(s) || entityIds.has(s))
+  if (idInPath) return true
+
   const params = endpoint.properties.params || []
-  return /\/(\d+|[0-9a-f-]{8,})(\/|$)/i.test(url) || params.some(p => /(^id$|id$|uuid|slug)/i.test(p.name))
+  const idInParams = params.some(p => looksLikeId(p.name) || entityIds.has(p.name))
+  if (idInParams) return true
+
+  return false
 }
 
 function mutating(method: string): boolean {
   return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())
+}
+
+/**
+ * Risk for a workflow is derived from STRUCTURED signals — whether it touched
+ * roles or required auth — not from scanning the workflow name for keywords.
+ */
+function workflowRisk(workflow: ResearchWorkflow): 'high' | 'medium' {
+  return workflow.observedRoles.length > 0 || workflow.requiredAuth ? 'high' : 'medium'
 }
 
 export function generateHypotheses(
@@ -27,7 +53,8 @@ export function generateHypotheses(
 
   for (const entity of entities) {
     const entityEndpoints = entity.endpoints.map(id => endpoints.get(id)).filter((e): e is EndpointNode => Boolean(e))
-    const idEndpoints = entityEndpoints.filter(hasIdSignal)
+    const idSet = new Set(entity.ids)
+    const idEndpoints = entityEndpoints.filter(e => hasIdSignal(e, idSet))
     if (idEndpoints.length > 0) {
       hypotheses.push({
         id: stableId('hypothesis', ['idor', entity.id, idEndpoints.map(e => e.id).join(',')]),
@@ -61,13 +88,13 @@ export function generateHypotheses(
       })
     }
 
-    const disclosureEndpoints = entityEndpoints.filter(e => entity.sensitiveFields.length > 0 || /user|account|profile|billing|invoice/i.test(e.properties.url))
+    const disclosureEndpoints = entityEndpoints.filter(e => entity.sensitiveFields.length > 0)
     if (disclosureEndpoints.length > 0) {
       hypotheses.push({
         id: stableId('hypothesis', ['info-disclosure', entity.id]),
         title: `${entity.name} responses may expose sensitive fields`,
         kind: 'information_disclosure',
-        reason: `Entity has sensitive-looking fields or routes. Compare responses across auth states and roles.`,
+        reason: `Entity has sensitive-looking fields. Compare responses across auth states and roles.`,
         targetEndpoints: disclosureEndpoints.map(e => e.id),
         relatedWorkflowIds: workflows.filter(w => w.relatedEndpoints.some(id => entity.endpoints.includes(id))).map(w => w.id),
         relatedEntityIds: [entity.id],
@@ -90,7 +117,7 @@ export function generateHypotheses(
         relatedWorkflowIds: [workflow.id],
         relatedEntityIds: entities.filter(e => e.endpoints.some(id => workflow.relatedEndpoints.includes(id))).map(e => e.id),
         requiredSetup: ['Replayable request from the normal UI flow'],
-        risk: /billing|admin|role|password/i.test(workflow.name) ? 'high' : 'medium',
+        risk: workflowRisk(workflow),
         confidence: 0.48,
         status: 'open',
       })

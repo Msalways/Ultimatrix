@@ -17,6 +17,7 @@ import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
 import { log } from '../utils/logger'
 import { parseHar, getEndpointsWithHeaders, getSecrets, getDataFlows } from '../capture/har-parser'
+import { getOastUrl } from '../oast/server'
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
 import { detectChains } from '../intelligence/chaining'
 import { getTechniqueRegistry } from '../skills/technique-registry'
@@ -31,6 +32,25 @@ export interface BridgeResult {
   patternsFound: number
   hypothesesGenerated: number
   contextForLLM: string
+}
+
+/**
+ * Resolve the "self" traffic origin from the platform: the OAST callback host
+ * (OAST_CALLBACK_HOST > config.oast.externalHost > local server). We match by
+ * host:port equality — never a substring or blind `localhost` string — so a
+ * user testing a local dev app is correctly tagged `target`, while our own
+ * OAST callbacks are tagged `self`. Returns the host:port (or null).
+ */
+function resolveSelfOrigin(): string | null {
+  try {
+    const url = getOastUrl()
+    if (!url || url === 'http://oast-not-started') return null
+    const u = new URL(url)
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+    return `${u.hostname}:${port}`
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -62,9 +82,26 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   let factsWritten = 0
   let intentsWritten = 0
 
+  // Self-origin (OAST callback host) — used to tag our own callback traffic so
+  // the LLM can scope it out structurally via queryGraph({ origin: 'target' }).
+  const selfOrigin = resolveSelfOrigin()
+  const originOf = (url: string): 'target' | 'self' => {
+    if (!selfOrigin) return 'target'
+    try {
+      const u = new URL(url)
+      const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+      return `${u.hostname}:${port}` === selfOrigin ? 'self' : 'target'
+    } catch {
+      return 'target'
+    }
+  }
+  const selfUrls = new Set<string>()
+
   // ── 1. Endpoints with headers/params/auth ──────────────────────
   const endpoints = getEndpointsWithHeaders(entries)
   for (const ep of endpoints) {
+    const origin = originOf(ep.url)
+    if (origin === 'self') selfUrls.add(ep.url)
     store.addEndpoint({
       url: ep.url,
       method: ep.method,
@@ -72,15 +109,20 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       headers: ep.headers,
       authRequired: ep.authType !== null,
       authType: ep.authType,
-      tags: ['har-capture'],
+      tags: origin === 'self' ? ['har-capture', 'self-traffic', 'oast'] : ['har-capture'],
       source: 'har-bridge',
+      origin,
     })
     endpointsWritten++
   }
 
   // ── 2. Secrets → Finding nodes ────────────────────────────────
+  // Secrets derived from a self (OAST callback) entry are tagged 'self-traffic'
+  // so value-provenance never treats our own callback body as a target secret.
   const secrets = getSecrets(entries)
   for (const secret of secrets) {
+    const entryUrl = entries[secret.entryIndex]?.request?.url ?? ''
+    const secretOrigin = originOf(entryUrl)
     store.addFinding({
       endpoint: `${secret.location}:${secret.name}`,
       technique: `Secret Exposure: ${secret.type}`,
@@ -88,7 +130,9 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       confidence: 0.7,
       description: `${secret.description}. Found in ${secret.location} (entry ${secret.entryIndex}): ${secret.name} = ${secret.value}`,
       evidence: [`HAR entry ${secret.entryIndex}`, `${secret.location}: ${secret.name}`],
-      tags: ['har-bridge', 'secret', secret.type],
+      tags: secretOrigin === 'self'
+        ? ['har-bridge', 'secret', secret.type, 'self-traffic']
+        : ['har-bridge', 'secret', secret.type],
       source: 'har-bridge',
     })
     secretsWritten++

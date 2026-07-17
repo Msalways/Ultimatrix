@@ -9,23 +9,30 @@ import { getForensicLog } from '../tools/report-tools'
 
 export const queryGraph = createTool({
   id: 'queryGraph',
-  description: 'Query the knowledge graph for nodes by type and filters. Types: Page, Action, Input, Endpoint, Test, Finding, AuthFlow, RBACRole, Attack.',
+  description:
+    'Query the knowledge graph for nodes by type and filters. Returns the matching nodes (never a truncated summary). ' +
+    'Discover the valid node types via getGraphSchema before filtering by `type`. ' +
+    'When at least one filter (type/url/method/tags) is supplied, results are scoped by that filter — set `limit: 0` to return the entire scoped result set with no cap. ' +
+    'Use this to pull the full set of nodes you need to reason over; do not rely on a pre-summarized view.',
   inputSchema: z.object({
-    type: z.nativeEnum(NodeType).optional(),
+    type: z.nativeEnum(NodeType).optional().describe('Node type to filter by. Discover valid values via getGraphSchema.'),
     url: z.string().optional(),
     method: z.string().optional(),
     tags: z.array(z.string()).optional(),
-    limit: z.number().optional().default(50),
+    origin: z.enum(['target', 'self']).optional().describe('Filter endpoints by traffic origin: target = app under test, self = our own tooling (e.g. OAST callbacks).'),
+    limit: z.number().optional().default(50).describe('Max nodes to return. 0 = unbounded (returns the entire scoped result set).'),
   }),
-  execute: async ({ type, url, method, tags, limit }) => {
+  execute: async ({ type, url, method, tags, origin, limit }) => {
     try {
       const store = getGlobalGraphStore()
       const filters: Record<string, unknown> = {}
       if (url !== undefined) filters.url = url
       if (method !== undefined) filters.method = method
       if (tags !== undefined) filters.tags = tags
+      if (origin !== undefined) filters.origin = origin
       const result = store.queryNodes(type, Object.keys(filters).length > 0 ? filters : undefined)
-      return { ok: true, value: result.slice(0, limit || 50) }
+      const cap = limit === 0 ? result.length : (limit ?? 50)
+      return { ok: true, value: result.slice(0, cap) }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }

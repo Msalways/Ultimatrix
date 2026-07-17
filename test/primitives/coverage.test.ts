@@ -10,6 +10,7 @@ const KEYWORDS: Record<string, string[]> = {
   headerInjection: ['header injection', 'crlf', 'response-header'],
   workflowBypass: ['workflow bypass', 'workflow', 'auth bypass', 'state machine'],
   idorSwapper: ['idor'],
+  bolaFuzzer: ['bola', 'broken object level', 'action-level', 'mass assignment', 'idor'],
   authzMatrix: ['authorization', 'access control', 'broken access'],
   configTrust: ['client-side', 'config trust', 'client value'],
   invariantProbe: ['invariant', 'business logic'],
@@ -17,6 +18,11 @@ const KEYWORDS: Record<string, string[]> = {
   ssrfOast: ['ssrf', 'oast'],
   aiTrust: ['prompt injection', 'llm', 'ai security', 'ai/mcp'],
   authBypass: ['auth bypass', 'authentication bypass', 'default credentials', 'jwt', 'login bypass'],
+  atoChain: ['account takeover', 'ato', 'reset', '2fa'],
+  ssrfMetadata: ['ssrf', 'metadata', 'imds', 'cloud metadata'],
+  rceClass: ['ssti', 'command injection', 'xxe', 'rce'],
+  graphqlBola: ['graphql', 'introspection', 'bola'],
+  aiAgentAttack: ['prompt injection', 'tool poisoning', 'ai security', 'llm'],
 }
 
 function loadAllSkillText(): string {

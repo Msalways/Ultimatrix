@@ -2,10 +2,71 @@ import { getGlobalGraphStore, type GraphStore } from '../graph/store'
 import { NodeType, EdgeType } from '../graph/schema'
 import type { FindingNode } from '../graph/schema'
 import { getTechniqueRegistry } from '../skills/technique-registry'
+import { listPrimitives } from '../primitives/framework'
 import type { ChainRule, ChainSeverity, Severity } from '../types/shared'
 import type { EvidenceGate } from './evidence-gate'
 
 export type { ChainRule, ChainSeverity }
+
+/**
+ * Typed technique matcher (no substring scanning of free-form text).
+ *
+ * A finding's `technique` property is a controlled classification slug — set by
+ * primitives, not LLM prose. We match by exact token membership against a
+ * normalized token set, never by `String.includes(rule)` on arbitrary text.
+ *
+ * The token set is derived by:
+ *   1. lowercasing,
+ *   2. splitting on non-alphanumeric boundaries (so `data-exfiltration` yields
+ *      `data`, `exfiltration`, and the full `data-exfiltration`),
+ *   3. splitting camelCase,
+ *   4. aliasing a primitive *id* (e.g. `idorSwapper`) to its canonical slug
+ *      (`idor`) so production findings (tagged with the primitive id) match the
+ *      same rules as test fixtures (tagged with the slug).
+ */
+const PRIMITIVE_TECHNIQUE: Record<string, string[]> = {
+  idorSwapper: ['idor'],
+  ssrfOast: ['ssrf'],
+  classicInjection: ['injection', 'sqli'],
+  authzMatrix: ['authorization'],
+  configTrust: ['business_logic'],
+  headerInjection: ['header-injection'],
+  aiTrust: ['prompt-injection', 'ai'],
+  authBypass: ['auth-bypass', 'jwt', 'sqli-login'],
+  concurrencyHarness: ['race_condition'],
+  invariantProbe: ['invariant'],
+  workflowBypass: ['workflow_bypass'],
+}
+
+// Case-insensitive lookup so a lowercased primitive id (e.g. "idorswapper")
+// still aliases to its canonical slug ("idor").
+const PRIMITIVE_TECHNIQUE_LC: Record<string, string[]> = {}
+for (const [k, v] of Object.entries(PRIMITIVE_TECHNIQUE)) {
+  PRIMITIVE_TECHNIQUE_LC[k.toLowerCase()] = v
+}
+
+export function techniqueTokens(technique: string): Set<string> {
+  const t = (technique || '').toLowerCase()
+  const set = new Set<string>()
+  if (!t) return set
+  set.add(t)
+  for (const raw of t.split(/[^a-z0-9]+/)) {
+    if (!raw) continue
+    set.add(raw)
+    // camelCase split (e.g. "idorswapper" stays; "openRedirect" -> "open","redirect")
+    for (const c of raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/)) {
+      if (c) set.add(c.toLowerCase())
+    }
+  }
+  const aliases = PRIMITIVE_TECHNIQUE_LC[t]
+  if (aliases) for (const a of aliases) set.add(a)
+  return set
+}
+
+/** True iff `ruleToken` is an exact token of the finding's technique classification. */
+export function techniqueMatches(ruleToken: string, findingTech: string): boolean {
+  return techniqueTokens(findingTech).has(ruleToken.toLowerCase())
+}
 
 /** A detected (but not yet verified) chain: a source finding linked to a target
  *  finding by a chain rule. Mirrors the tuple returned by `detectChains`. */
@@ -81,10 +142,10 @@ export function detectChains(
     const sourceTech = source.properties.technique.toLowerCase()
 
     for (const rule of rules) {
-      if (sourceTech.includes(rule.source)) {
+      if (techniqueMatches(rule.source, sourceTech)) {
         const targetsByType = findings.filter(f => {
           const t = f.properties.technique.toLowerCase()
-          return t.includes(rule.target)
+          return techniqueMatches(rule.target, t)
         })
 
         for (const target of targetsByType) {
@@ -241,5 +302,23 @@ export function verifyDetectedChains(
 
 export function suggestFollowUp(finding: FindingNode): string[] {
   const tech = finding.properties.technique.toLowerCase()
-  return getTechniqueRegistry().getFollowUps(tech)
+  const registry = getTechniqueRegistry()
+  const out: string[] = []
+
+  // Chain-rule driven follow-ups (typed token match, no substring of prose).
+  for (const rule of registry.getChainRules()) {
+    if (techniqueMatches(rule.source, tech)) {
+      out.push(rule.description)
+    }
+  }
+
+  // Primitive-driven follow-ups: a registered primitive whose own technique or
+  // id matches the finding's classification is a concrete next step.
+  for (const p of listPrimitives()) {
+    if ((p.technique && techniqueMatches(p.technique, tech)) || techniqueMatches(p.id, tech)) {
+      out.push(`Run ${p.name} (${p.id}) to deepen the chain`)
+    }
+  }
+
+  return [...new Set(out)]
 }

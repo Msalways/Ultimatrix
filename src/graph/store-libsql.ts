@@ -16,6 +16,7 @@ import {
   OutcomeFeedbackNode,
   RenderedElementNode,
   CouncilDebateNode,
+  ExploitProofNode,
   AnyNodeData,
 } from './schema'
 
@@ -230,6 +231,30 @@ export class LibSQLGraphStore {
       updatedAt: Date.now(),
     }
     
+    this.insertNode(node)
+    return node
+  }
+
+  addExploitProof(data: Partial<ExploitProofNode['properties']>): ExploitProofNode {
+    const id = `exploitproof:${data.findingId || 'unknown'}:${Date.now()}`
+    const node: ExploitProofNode = {
+      id,
+      type: NodeType.EXPLOIT_PROOF,
+      label: `ExploitProof: ${data.title || data.findingId || 'unknown'}`,
+      properties: {
+        findingId: '',
+        title: '',
+        method: 'GET',
+        url: '',
+        reproSteps: [],
+        replayable: true,
+        status: 'proposed',
+        ...data,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+
     this.insertNode(node)
     return node
   }

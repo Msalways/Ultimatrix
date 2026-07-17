@@ -31,6 +31,7 @@ import {
   queryGraph, upsertPage, addAction, addInput,
   addEndpoint, addFinding, getTargetSummary, getEndpointsWithParams,
 } from '../graph/tools'
+import { getGraphSchema, getCaptureOverview, queryRelations } from '../graph/relation-tools'
 import { verifyChainsTool } from '../tools/detect-chains-tool'
 import { loadSkillReference, searchSkillTool, listSkills } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
@@ -91,6 +92,9 @@ function coreTools(p: string): Record<string, any> {
     addFinding: s(addFinding, p),
     getTargetSummary: s(getTargetSummary, p),
     getEndpointsWithParams: s(getEndpointsWithParams, p),
+    getGraphSchema: s(getGraphSchema, p),
+    getCaptureOverview: s(getCaptureOverview, p),
+    queryRelations: s(queryRelations, p),
     writeFinding: s(writeFinding, p),
     recordEvidence: s(recordEvidence, p),
     verifyChains: s(verifyChainsTool, p),

@@ -837,6 +837,55 @@ export async function solve(
     } catch {}
   }
 
+  // ─── Active Chain Planner (P0 force-multiplier) ───────────────────────
+  // After a finding lands, propose + execute the next concrete step that
+  // escalates it into a critical chain (the bug-bounty payout multiplier).
+  // Bounded by maxActiveChainSteps so it never hijacks the turn's budget.
+  if (
+    params.ultimatrixConfig?.engine === "solver" ||
+    params.ultimatrixConfig?.engine === "multi-model"
+  ) {
+    const maxActiveChainSteps =
+      params.ultimatrixConfig?.solver?.maxActiveChainSteps ?? 3;
+    if (maxActiveChainSteps > 0) {
+      try {
+        const { runActiveChaining } = await import(
+          "../intelligence/chain-planner"
+        );
+        const store = getGlobalGraphStore();
+        const findings =
+          (store.queryNodes?.(NodeType.FINDING) as any[]) || [];
+        if (findings.length > 0) {
+          emit({
+            phase: "attack",
+            step: toolCallCount,
+            text: `[chain-planner] proposing escalation steps for ${findings.length} finding(s)...`,
+          });
+          const result = await runActiveChaining(findings, {
+            maxSteps: maxActiveChainSteps,
+          });
+          for (const { step } of result.executed) {
+            board.addFact(
+              `Chain proposed: ${step.rationale} (expected ${step.expectedSeverity})`,
+              "finding",
+            );
+          }
+          if (result.steps.length > 0) {
+            emit({
+              phase: "complete",
+              step: toolCallCount,
+              text: `[chain-planner] ${result.executed.length}/${result.steps.length} escalation step(s) executed`,
+            });
+          }
+        }
+      } catch (err) {
+        log.warn(
+          `[chain-planner] active chaining skipped: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
   emit({ phase: "complete", step: toolCallCount, reason });
 
   // Record usage in global tracker

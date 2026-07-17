@@ -31,6 +31,7 @@ export enum NodeType {
   OUTCOME_FEEDBACK = 'OutcomeFeedback',
   RENDERED_ELEMENT = 'RenderedElement',
   COUNCIL_DEBATE = 'CouncilDebate',
+  EXPLOIT_PROOF = 'ExploitProof',
 }
 
 export enum EdgeType {
@@ -50,6 +51,9 @@ export enum EdgeType {
   REQUIRES_ROLE = 'REQUIRES_ROLE',
   CHAINS_TO = 'CHAINS_TO',
   RENDERED_ON = 'RENDERED_ON',
+  REINGESTS = 'REINGESTS',
+  ORDERED_BEFORE = 'ORDERED_BEFORE',
+  PROVES = 'PROVES',
 }
 
 export interface GraphNodeData {
@@ -111,6 +115,7 @@ export interface EndpointNode extends GraphNodeData {
   properties: {
     url: string
     method: string
+    endpointKey?: string
     description?: string
     params: Array<{ name: string; type: string; in: string; required?: boolean }>
     headers?: Record<string, string>
@@ -121,6 +126,7 @@ export interface EndpointNode extends GraphNodeData {
     source?: string
     useCase?: string
     preconditions?: string[]
+    origin?: 'target' | 'self'
   }
 }
 
@@ -378,13 +384,41 @@ export interface CouncilDebateNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode
+export interface ExploitProofNode extends GraphNodeData {
+  type: NodeType.EXPLOIT_PROOF
+  properties: {
+    findingId: string
+    title: string
+    method: string
+    url: string
+    headers?: Record<string, string>
+    body?: string
+    expectedVulnerableResponse?: string
+    reproSteps: string[]
+    replayable: boolean
+    status: 'proposed' | 'agreed' | 'replayed' | 'confirmed' | 'rejected'
+    resultSummary?: string
+    actorNote?: string
+    /** The business-logic scenario class the proof demonstrates (LLM-defined). */
+    scenario?: string
+    /** The relation type this proof exploits (e.g. REINGESTS). */
+    relation?: string
+    /** The exact request that achieves the exploit. */
+    request?: string
+    /** The exact response proving impact. */
+    response?: string
+    /** Concrete impact achieved. */
+    impact?: string
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode | ExploitProofNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
   [NodeType.ACTION]: ['actionType', 'selector', 'url', 'value', 'naturalLanguage'],
   [NodeType.INPUT]: ['selector', 'inputType', 'name', 'placeholder', 'required', 'maxLength'],
-  [NodeType.ENDPOINT]: ['url', 'method', 'description', 'params', 'headers', 'bodySchema', 'authRequired', 'authType', 'tags', 'source'],
+  [NodeType.ENDPOINT]: ['url', 'method', 'description', 'params', 'headers', 'bodySchema', 'authRequired', 'authType', 'tags', 'source', 'origin'],
   [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload', 'tags', 'expectedResult', 'actualResult'],
   [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote'],
   [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash'],
@@ -403,4 +437,5 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.OUTCOME_FEEDBACK]: ['findingId', 'techniqueId', 'accepted', 'fixed', 'retestHeld', 'severityAdjusted', 'note', 'targetOrigin', 'timestamp'],
   [NodeType.RENDERED_ELEMENT]: ['url', 'method', 'selector', 'tag', 'name', 'inputType', 'value', 'isFormField', 'attributes', 'text', 'payloadHit'],
   [NodeType.COUNCIL_DEBATE]: ['goal', 'round', 'members', 'summary', 'proposedTasks', 'newEvidence', 'complete'],
+  [NodeType.EXPLOIT_PROOF]: ['findingId', 'title', 'method', 'url', 'headers', 'body', 'expectedVulnerableResponse', 'reproSteps', 'replayable', 'status', 'resultSummary', 'actorNote', 'scenario', 'relation', 'request', 'response', 'impact'],
 }

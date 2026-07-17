@@ -11,6 +11,7 @@ import { modelsCommand } from './models'
 import { budgetCommand } from './budget'
 import { ratelimitCommand } from './ratelimit'
 import { toolsCommand } from './tools'
+import { mcpCommand } from './mcp'
 import { log, setPinoLogger } from '../utils/logger'
 import { initLogger, initObservability } from '../observability'
 import { Ultimatrix } from '../sdk'
@@ -241,6 +242,12 @@ function getOutputDir(cliArgs: string[]): string {
     case 'tools': {
       const toolArgs = args.slice(1)
       await toolsCommand(toolArgs)
+      break
+    }
+
+    case 'mcp': {
+      const mcpArgs = args.slice(1)
+      await mcpCommand(mcpArgs)
       break
     }
 

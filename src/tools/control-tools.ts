@@ -1,7 +1,7 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, type FindingNode } from '../graph/schema'
+import { NodeType, EdgeType, type FindingNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { generateFromFinding, type Finding } from '../generation/test-generator'
 import { TestStorage } from '../generation/test-storage'
@@ -153,6 +153,13 @@ export const writeFinding = createTool({
     remediation: z.string().optional(),
     findingKey: z.string().optional().describe('Key matching the evidence buffer to pull previously recorded items from.'),
     observedStatus: z.number().optional().describe('HTTP status you observed that proves this finding. Used for structural evidence verification (no prose scanning).'),
+    exploitProof: z.object({
+      relation: z.string().optional().describe('The relation type this proof exploits (e.g. REINGESTS). Discover via getGraphSchema.'),
+      scenario: z.string().describe('The business-logic scenario class the proof demonstrates (e.g. cross-API trust boundary). Free-form, LLM-defined.'),
+      request: z.string().describe('The exact request that achieves the exploit.'),
+      response: z.string().describe('The exact response proving impact.'),
+      impact: z.string().describe('Concrete impact achieved (e.g. read victim data, escalated role).'),
+    }).optional().describe('If supplied, persist a first-class EXPLOIT_PROOF node proving the finding is exploitable, linked to the finding via a PROVES edge. This is the exploitation-first signal — a finding with a proof is weaponized, not just reported.'),
   }),
   execute: async (args) => {
     const store = getGlobalGraphStore()
@@ -275,7 +282,34 @@ export const writeFinding = createTool({
 
     autoGenerateTest(finding).catch(() => {})
 
-    return { ok: true, value: finding }
+    // L7: Persist a first-class exploit-proof node when the LLM supplies a real
+    // exploit. This is the exploitation-first signal — a finding WITH a proof is
+    // weaponized, not just reported. Linked to the finding via a PROVES edge.
+    let exploitProofNodeId: string | undefined
+    if (args.exploitProof) {
+      const proof = store.addExploitProof({
+        scenario: args.exploitProof.scenario,
+        relation: args.exploitProof.relation,
+        request: args.exploitProof.request,
+        response: args.exploitProof.response,
+        impact: args.exploitProof.impact,
+        findingId: findingNode.id,
+        title: args.exploitProof.scenario,
+        method: args.method ?? 'GET',
+        url: args.endpoint,
+        reproSteps: [args.exploitProof.request, `observe response: ${args.exploitProof.response.slice(0, 200)}`],
+        status: 'proposed',
+      })
+      store.addEdge({
+        type: EdgeType.PROVES,
+        fromId: proof.id,
+        toId: findingNode.id,
+        properties: {},
+      })
+      exploitProofNodeId = proof.id
+    }
+
+    return { ok: true, value: { ...finding, exploitProofNodeId } }
   },
 })
 

@@ -60,6 +60,8 @@ export interface TechniqueContext {
   workflowSteps?: string[]
   /** Optional caller-supplied candidate payloads. */
   payloads?: string[]
+  /** Optional relation-seeded mutation spec (from the relational query seam). */
+  relationSeed?: import('./constraint-mutators').RelationSeed
   /** Optional extra inputs. */
   [key: string]: unknown
 }

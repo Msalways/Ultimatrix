@@ -66,6 +66,24 @@ describe('graph tools', () => {
       const result = await callTool(queryGraph, {})
       expect(result.value).toHaveLength(50)
     })
+
+    it('passes origin filter through to the store query', async () => {
+      const { queryGraph } = await import('../../src/graph/tools')
+      const nodes = [{ id: 'ep1', type: 'Endpoint', properties: { origin: 'target' } }]
+      mockStore.queryNodes.mockReturnValue(nodes)
+
+      const result = await callTool(queryGraph, { type: 'Endpoint', origin: 'target' })
+      expect(result.ok).toBe(true)
+      expect(mockStore.queryNodes).toHaveBeenCalledWith('Endpoint', { origin: 'target' })
+    })
+
+    it('omits origin filter when not provided', async () => {
+      const { queryGraph } = await import('../../src/graph/tools')
+      mockStore.queryNodes.mockReturnValue([])
+
+      await callTool(queryGraph, { type: 'Endpoint' })
+      expect(mockStore.queryNodes).toHaveBeenCalledWith('Endpoint', undefined)
+    })
   })
 
   describe('updateGraph', () => {

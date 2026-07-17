@@ -23,6 +23,7 @@ import type {
   AuthScheme,
 } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
+import { buildReingestEdges } from '../graph/relations'
 import {
   getEndpointsWithHeaders,
   getDataFlows,
@@ -762,6 +763,13 @@ export async function runAnalysis(
   try {
     const flows = buildProvenanceFlows(entries, options?.humanActions)
     const origins = deriveValueOrigins(flows, entries)
+    const reingestInputs: Array<{
+      sourceEndpointUrl?: string
+      sourceKind: string
+      sinkMethod: string
+      sinkUrl: string
+      valueSample: string
+    }> = []
     for (const o of origins) {
       const toId = epIdMap.get(endpointKey(o.sink.method, o.sink.url))
       if (!toId) continue
@@ -772,7 +780,15 @@ export async function runAnalysis(
         type: EdgeType.VALUE_ORIGIN,
         properties: { kind: o.source.kind, valueSample: o.valueSample },
       })
+      reingestInputs.push({
+        sourceEndpointUrl: o.source.endpointUrl,
+        sourceKind: o.source.kind,
+        sinkMethod: o.sink.method,
+        sinkUrl: o.sink.url,
+        valueSample: o.valueSample,
+      })
     }
+    buildReingestEdges(graphStore, reingestInputs)
   } catch (err) {
     log.warn(`[analyser] value-origin analysis failed: ${(err as Error).message}`)
   }

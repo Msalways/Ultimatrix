@@ -9,11 +9,17 @@ const EXPECTED_IDS = new Set([
   'authzMatrix',
   'configTrust',
   'idorSwapper',
+  'bolaFuzzer',
   'ssrfOast',
   'classicInjection',
   'headerInjection',
   'aiTrust',
   'authBypass',
+  'atoChain',
+  'ssrfMetadata',
+  'rceClass',
+  'graphqlBola',
+  'aiAgentAttack',
 ])
 
 describe('primitive registry drift guard', () => {

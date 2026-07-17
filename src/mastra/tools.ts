@@ -24,6 +24,8 @@ import { buildResearchMap, planResearchExperiments, compareResearchResponses, re
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
+import { listToolsTool, loadToolTool } from '../extensions/tool-tools'
+import { getGlobalToolRegistry } from '../extensions/tool-registry'
 import { Logger } from '../utils/logger'
 
 export type ToolRegistry = {
@@ -141,6 +143,10 @@ export type ToolRegistry = {
   runCampaign: typeof runCampaignTool
   // Outcome Feedback (Phase 4 / T4.3)
   recordOutcome: typeof recordOutcomeTool
+
+  // Extension Discovery (Phase 3)
+  listTools: typeof listToolsTool
+  loadTool: typeof loadToolTool
 }
 
 // Centralized tool registry with consistent IDs
@@ -149,7 +155,7 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
   
   log.info('Creating centralized tool registry')
   
-  return {
+  const registry: ToolRegistry = {
     // HTTP Tools
     httpRequest,
     multipartUpload,
@@ -264,7 +270,17 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     runCampaign: runCampaignTool,
     // Outcome Feedback (Phase 4 / T4.3)
     recordOutcome: recordOutcomeTool,
+
+    // Extension Discovery (Phase 3)
+    listTools: listToolsTool,
+    loadTool: loadToolTool,
   }
+
+  // Delegate built-ins into the DynamicToolRegistry so MCP/plugin tools resolve
+  // through the same registry surface (Phase 1.2).
+  getGlobalToolRegistry().registerBuiltins(registry)
+
+  return registry
 }
 
 // Tool ID validation
@@ -341,6 +357,8 @@ export const TOOL_IDS = [
   'runPrimitive',
   'runCampaign',
   'recordOutcome',
+  'listTools',
+  'loadTool',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]
@@ -743,14 +761,18 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   },
   queryGraph: {
     id: 'queryGraph',
-    description: 'Query the knowledge graph for nodes by type and filters. Types: Page, Action, Input, Endpoint, Test, Finding, AuthFlow, RBACRole, Attack.',
+    description:
+      'Query the knowledge graph for nodes by type and filters. Returns the matching nodes (never a truncated summary). ' +
+      'Discover the valid node types via getGraphSchema before filtering by `type`. ' +
+      'When at least one filter is supplied, results are scoped; set `limit: 0` to return the entire scoped result set with no cap. ' +
+      'Use this to pull the full set of nodes you need to reason over; do not rely on a pre-summarized view.',
     category: 'graph',
     inputSchema: z.object({
-      type: z.nativeEnum(NodeType).optional(),
+      type: z.nativeEnum(NodeType).optional().describe('Node type to filter by. Discover valid values via getGraphSchema.'),
       url: z.string().optional(),
       method: z.string().optional(),
       tags: z.array(z.string()).optional(),
-      limit: z.number().optional().default(50),
+      limit: z.number().optional().default(50).describe('Max nodes to return. 0 = unbounded (entire scoped result set).'),
     }),
     outputSchema: z.object({
       ok: z.boolean(),

@@ -41,6 +41,22 @@ import { WorkerPool } from '../workers/pool'
 import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
+import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
+
+/**
+ * Unified capture session: the live CDP-backed capture (preferred) or the
+ * standalone headless Playwright capture (fallback). Both expose a uniform
+ * `stop()` that returns a HAR JSON string (or null).
+ */
+type HarCaptureSession = {
+  kind: 'cdp'
+  handle: CdpCaptureHandle
+  stop: () => Promise<string | null>
+} | {
+  kind: 'headless'
+  handle: HarCapture
+  stop: () => Promise<string | null>
+}
 import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import { ModelSelector } from '../models/selector'
 import { getGlobalQuotaTracker } from '../models/quota-tracker'
@@ -72,7 +88,7 @@ export interface SessionResources {
   memory: Awaited<ReturnType<typeof createMemory>>
   browser: ReturnType<typeof getOrCreateBrowser>
   oastPort: number
-  harCapture: HarCapture | null
+  harCapture: HarCaptureSession | null
   readline: ReadlineInterface
   forensicLog: ForensicLog
   threadId: string
@@ -315,14 +331,39 @@ export class SessionLifecycle {
       log.dim('Browser is headless (set HEADLESS=false to see it)')
     }
 
-    // HAR capture
-    let harCapture: HarCapture | null = null
+    // HAR capture — prefer the live CDP-backed capture (human + spider + agent
+    // in one listener). Fall back to standalone headless capture only when no
+    // Stagehand context exists (e.g. headless `solve`).
+    let harCapture: HarCaptureSession | null = null
     if (target) {
-      try {
-        harCapture = await startHarCapture(target, ['localhost', '127.0.0.1'])
-        log.info('HAR capture started')
-      } catch (err) {
-        log.dim('HAR capture unavailable: ' + (err instanceof Error ? err.message : String(err)))
+      const stagehand = browser?.requireStagehand?.()
+      if (stagehand?.context?.conn) {
+        const handle = attachHarCaptureViaCdp(stagehand, {
+          captureResponseBody: true,
+          captureRequestBody: true,
+        })
+        if (handle.attached) {
+          harCapture = {
+            kind: 'cdp',
+            handle,
+            stop: async () => {
+              const entries = await handle.stop()
+              if (entries.length === 0) return null
+              const archive = { log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }
+              return JSON.stringify(archive, null, 2)
+            },
+          }
+          log.info('Live CDP HAR capture attached')
+        }
+      }
+      if (!harCapture) {
+        try {
+          const headless = await startHarCapture(target, ['localhost', '127.0.0.1'])
+          harCapture = { kind: 'headless', handle: headless, stop: headless.stop }
+          log.info('HAR capture started (headless fallback)')
+        } catch (err) {
+          log.dim('HAR capture unavailable: ' + (err instanceof Error ? err.message : String(err)))
+        }
       }
     }
     this._resources.harCapture = harCapture

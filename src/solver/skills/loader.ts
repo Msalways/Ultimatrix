@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, dirname } from 'path'
 import { load as yamlLoad } from 'js-yaml'
 import { SKILLS_DIR } from '../../lib/project-root'
 
@@ -53,6 +53,18 @@ export interface Skill extends SkillMeta {
 
 let metaCache: Map<string, SkillMeta> | null = null
 let fullCache: Map<string, Skill> | null = null
+
+/** Phase 7.1 — additional user-provided skill directories and exclusions. */
+let extraSkillDirs: string[] = []
+let excludedSkillIds = new Set<string>()
+/** id → absolute file path, so namespaced `user/<id>` skills resolve correctly. */
+let idToPath = new Map<string, string>()
+
+export function configureSkillSources(dirs: string[] = [], exclude: string[] = []): void {
+  extraSkillDirs = dirs
+  excludedSkillIds = new Set(exclude)
+  resetSharedSkillIndex()
+}
 
 function parseFrontmatter(raw: string): { meta: Record<string, unknown>; body: string } {
   // Strip BOM if present
@@ -157,43 +169,52 @@ function loadReferences(skillDir: string): Reference[] {
   return refs
 }
 
-/** Resolve the file path for a skill by ID (across all domain directories). */
+/** Resolve the file path for a skill by ID (uses the index built at init). */
 function resolveSkillPath(id: string): string | null {
-  if (!existsSync(SKILLS_DIR)) return null
-  try {
-    for (const entry of readdirSync(SKILLS_DIR)) {
-      const entryPath = join(SKILLS_DIR, entry)
-      if (!statSync(entryPath).isDirectory()) continue
-      const skillPath = join(entryPath, `${id}.md`)
-      if (existsSync(skillPath)) return skillPath
-    }
-  } catch {}
-  return null
+  return idToPath.get(id) ?? null
 }
 
-function initSkillIndexImpl(): Map<string, SkillMeta> {
-  const cache = new Map<string, SkillMeta>()
-
-  if (!existsSync(SKILLS_DIR)) {
-    return cache
-  }
-
+function scanSkillDir(dir: string, namespace: string | null): void {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return
   try {
-    for (const entry of readdirSync(SKILLS_DIR)) {
-      const entryPath = join(SKILLS_DIR, entry)
-      if (!statSync(entryPath).isDirectory()) continue
-
-      try {
-        const files = readdirSync(entryPath).filter(f => f.endsWith('.md'))
-        for (const file of files) {
-          const meta = parseSkillMeta(join(entryPath, file), entry)
-          if (meta) cache.set(meta.id, meta)
-        }
-      } catch {}
+    const files = readdirSync(dir).filter(f => f.endsWith('.md'))
+    for (const file of files) {
+      const filePath = join(dir, file)
+      const baseId = basename(file, '.md')
+      const id = namespace ? `${namespace}/${baseId}` : baseId
+      const meta = parseSkillMeta(filePath, namespace ?? dir)
+      if (meta) {
+        meta.id = id
+        idToPath.set(id, filePath)
+        if (!excludedSkillIds.has(id)) initSkillIndexImplCache.set(id, meta)
+      }
     }
   } catch {}
+}
 
-  return cache
+let initSkillIndexImplCache = new Map<string, SkillMeta>()
+
+function initSkillIndexImpl(): Map<string, SkillMeta> {
+  initSkillIndexImplCache = new Map<string, SkillMeta>()
+  idToPath = new Map()
+
+  // Bundled skills (no namespace)
+  if (existsSync(SKILLS_DIR)) {
+    try {
+      for (const entry of readdirSync(SKILLS_DIR)) {
+        const entryPath = join(SKILLS_DIR, entry)
+        if (!statSync(entryPath).isDirectory()) continue
+        scanSkillDir(entryPath, null)
+      }
+    } catch {}
+  }
+
+  // Phase7.1 — user-provided skill directories, namespaced as `user/<id>`
+  for (const dir of extraSkillDirs) {
+    scanSkillDir(dir, 'user')
+  }
+
+  return initSkillIndexImplCache
 }
 
 /**
@@ -215,6 +236,8 @@ export function resetSharedSkillIndex(): void {
   sharedMetaCache = null
   metaCache = null
   fullCache = null
+  idToPath = new Map()
+  initSkillIndexImplCache = new Map()
 }
 
 /**
@@ -243,8 +266,8 @@ export function loadSkillBody(id: string): Skill | null {
 
   const skill = parseSkillBody(filePath, meta)
   if (skill) {
-    // Load references if they exist in a refs/ subdirectory
-    const skillDir = join(SKILLS_DIR, meta.domain, id)
+    // Load references if they exist in a refs/ subdirectory next to the skill file
+    const skillDir = dirname(filePath)
     skill.references = loadReferences(skillDir)
 
     // Cache the full skill

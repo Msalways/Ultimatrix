@@ -11,6 +11,7 @@ import { getGlobalGraphStore } from '../graph/store'
 import { getForensicLog } from '../tools/report-tools'
 import { isHtmlBody, traceRender, type RenderTrace } from './render-tracer'
 import { NodeType, type EndpointNode, type RenderedElementNode } from '../graph/schema'
+import { normalizedEndpointKey } from '../graph/relations'
 
 export interface RenderCaptureInput {
   url: string
@@ -34,8 +35,9 @@ export function recordRenderTraceFromResponse(input: RenderCaptureInput): Render
   let endpointId: string | undefined
   let existing: RenderedElementNode[] = []
   if (store) {
+    const key = normalizedEndpointKey(input.method ?? 'GET', input.url)
     endpointId = ((store.queryNodes(NodeType.ENDPOINT) as EndpointNode[] | undefined) ?? []).find(
-      (e) => e.properties.url === input.url,
+      (e) => normalizedEndpointKey(e.properties.method, e.properties.url) === key,
     )?.id
     existing = (store.queryNodes(NodeType.RENDERED_ELEMENT) as RenderedElementNode[] | undefined) ?? []
   }

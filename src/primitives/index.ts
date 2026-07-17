@@ -31,11 +31,17 @@ import { concurrencyHarness } from './concurrencyHarness'
 import { authzMatrix } from './authzMatrix'
 import { configTrust } from './configTrust'
 import { idorSwapper } from './idorSwapper'
+import { bolaFuzzer } from './bolaFuzzer'
 import { ssrfOast } from './ssrfOast'
 import { classicInjection } from './classicInjection'
 import { headerInjection } from './headerInjection'
 import { aiTrust } from './ai-trust'
 import { authBypass } from './authBypass'
+import { atoChain } from './atoChain'
+import { ssrfMetadata } from './ssrfMetadata'
+import { rceClass } from './rceClass'
+import { graphqlBola } from './graphqlBola'
+import { aiAgentAttack } from './aiAgentAttack'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings, recordEvidence, writeFinding } from '../tools/control-tools'
 import { httpRequest } from '../tools/http-tools'
@@ -52,11 +58,17 @@ for (const p of [
   authzMatrix,
   configTrust,
   idorSwapper,
+  bolaFuzzer,
   ssrfOast,
   classicInjection,
   headerInjection,
   aiTrust,
   authBypass,
+  atoChain,
+  ssrfMetadata,
+  rceClass,
+  graphqlBola,
+  aiAgentAttack,
 ]) {
   registerPrimitive(p)
 }
@@ -227,6 +239,12 @@ export const runPrimitiveTool = createTool({
       state: z.record(z.string(), z.any()).optional(),
       authRequired: z.boolean().optional(),
       authType: z.string().optional(),
+      relationSeed: z.object({
+        relationType: z.string().describe('Relation type from queryRelations (e.g. REINGESTS). Discover valid values via getGraphSchema.'),
+        sourceValue: z.string().describe('The captured value flowing from source to sink.'),
+        sinkParam: z.string().describe('The sink parameter/header name that receives it.'),
+        sourceKind: z.string().describe('Where the value originates (response-field / cookie / header / ui-input).'),
+      }).optional().describe('Optional relation-seeded mutation spec discovered via the relational query seam.'),
     }).describe('Target context for the primitive'),
     commit: z.boolean().optional().default(true).describe('If confirmed, write the finding to the knowledge graph'),
   }),

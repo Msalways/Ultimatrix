@@ -40,6 +40,7 @@ import {
 import { verifyChainsTool } from '../tools/detect-chains-tool'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { listSkills } from '../tools/skill-tools'
+import { listToolsTool, loadToolTool, getAcquiredToolMap } from '../extensions/tool-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
@@ -119,6 +120,12 @@ export function createSolverBrain(
     listSkills: sanitizeTool(listSkills, p),
     searchSkills: sanitizeTool(searchSkillTool, p),
     loadSkillReference: sanitizeTool(loadSkillReference, p),
+  }
+
+  // ─── Extension discovery tools (Phase 3) ───────────────────────
+  const discoveryTools: Record<string, any> = {
+    listTools: sanitizeTool(listToolsTool, p),
+    loadTool: sanitizeTool(loadToolTool, p),
   }
 
   // Research tools (v9 bug-bounty brain): workflows -> hypotheses -> experiments -> candidates.
@@ -350,6 +357,7 @@ export function createSolverBrain(
     ...coreTools,
     ...httpTools,
     ...skillTools,
+    ...discoveryTools,
     ...researchTools,
     ...sessionTools,
     ...authTools,
@@ -359,6 +367,15 @@ export function createSolverBrain(
     ...primitiveTools,
     ...campaignTools,
     ...modelSelectionTools,
+  }
+
+  // Phase 1/5 — merge explicitly-acquired extension tools (MCP/plugin) into the
+  // brain's active tool pack. Acquired via the loadTool discovery tool; nothing
+  // is auto-loaded. Resolved tool instances are cached synchronously by loadTool.
+  try {
+    Object.assign(allTools, getAcquiredToolMap())
+  } catch {
+    /* discovery is best-effort; ignore resolution failures */
   }
 
   // ─── Browser tools (wrapped with dialog evidence injection) ─────

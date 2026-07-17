@@ -485,3 +485,260 @@ export function getRequestMethods(entries: HarEntry[]): Record<string, number> {
   }
   return methods
 }
+
+// ─── CDP Network event → HAR entry builder ───────────────────────────────
+// This is the SINGLE owner of HAR assembly from CDP `Network.*` events.
+// Modern CDP splits headers/cookies across two events (`requestWillBeSent` +
+// `requestWillBeSentExtraInfo`, `responseReceived` + `responseReceivedExtraInfo`),
+// so the builder accumulates by `requestId` and merges the ExtraInfo payloads
+// rather than dropping them. No other module assembles HAR from CDP events.
+
+export interface CdpNetworkRequestWillBeSentParams {
+  requestId: string
+  request: {
+    url: string
+    method: string
+    headers?: Record<string, string>
+    postData?: string
+    mixedContentType?: string
+    initialPriority?: string
+  }
+  timestamp: number
+  wallTime?: number
+}
+
+export interface CdpNetworkRequestWillBeSentExtraInfoParams {
+  requestId: string
+  headers?: Record<string, string>
+  cookies?: Array<{ name: string; value: string; path?: string; domain?: string }>
+}
+
+export interface CdpNetworkResponseReceivedParams {
+  requestId: string
+  response: {
+    url: string
+    status: number
+    statusText?: string
+    headers?: Record<string, string>
+    mimeType?: string
+    connectionId?: number
+    remoteIPAddress?: string
+    protocol?: string
+  }
+  timestamp: number
+}
+
+export interface CdpNetworkResponseReceivedExtraInfoParams {
+  requestId: string
+  headers?: Record<string, string>
+  cookies?: Array<{ name: string; value: string; path?: string; domain?: string }>
+}
+
+export interface CdpNetworkLoadingFinishedParams {
+  requestId: string
+  timestamp: number
+  encodedDataLength?: number
+}
+
+export interface CdpNetworkLoadingFailedParams {
+  requestId: string
+  errorText: string
+  timestamp: number
+}
+
+interface PendingEntry {
+  request?: HarRequest
+  response?: HarResponse
+  startedDateTime: string
+  startTime: number
+  endTime?: number
+  bodySize?: number
+}
+
+export interface HarEntryBuilder {
+  /** Merge a `Network.requestWillBeSent` event. */
+  onRequestWillBeSent(params: CdpNetworkRequestWillBeSentParams): void
+  /** Merge a `Network.requestWillBeSentExtraInfo` event (headers + cookies). */
+  onRequestWillBeSentExtraInfo(params: CdpNetworkRequestWillBeSentExtraInfoParams): void
+  /** Merge a `Network.responseReceived` event. */
+  onResponseReceived(params: CdpNetworkResponseReceivedParams): void
+  /** Merge a `Network.responseReceivedExtraInfo` event (headers + cookies). */
+  onResponseReceivedExtraInfo(params: CdpNetworkResponseReceivedExtraInfoParams): void
+  /** Mark `Network.loadingFinished` (with optional body size). */
+  onLoadingFinished(params: CdpNetworkLoadingFinishedParams): void
+  /** Mark `Network.loadingFailed`. */
+  onLoadingFailed(params: CdpNetworkLoadingFailedParams): void
+  /** Attach a fetched body (from `Network.getResponseBody`/`getRequestPostData`). */
+  setRequestBody(requestId: string, body: string): void
+  setResponseBody(requestId: string, body: string, encoding?: string): void
+  /** Returns completed entries (those that reached loadingFinished/failed). */
+  takeCompleted(): HarEntry[]
+  /** All entries seen so far (debug / flush). */
+  entries(): HarEntry[]
+}
+
+function toHeaders(record?: Record<string, string>): Array<{ name: string; value: string }> {
+  if (!record) return []
+  return Object.entries(record).map(([name, value]) => ({ name, value }))
+}
+
+function mergeCookies(
+  existing: Array<{ name: string; value: string; path?: string; domain?: string }>,
+  incoming?: Array<{ name: string; value: string; path?: string; domain?: string }>,
+): Array<{ name: string; value: string; path?: string; domain?: string }> {
+  if (!incoming || incoming.length === 0) return existing
+  const byName = new Map(existing.map((c) => [c.name, c]))
+  for (const c of incoming) byName.set(c.name, c)
+  return Array.from(byName.values())
+}
+
+export function createHarEntryBuilder(): HarEntryBuilder {
+  const pending = new Map<string, PendingEntry>()
+  const completed: HarEntry[] = []
+  // Spanning lookup so body/post-data setters can reach an entry that has
+  // already been finalized (moved out of `pending`) — otherwise they would
+  // create orphan entries and the body would never reach the HAR entry.
+  const byId = new Map<string, PendingEntry>()
+
+  const ensure = (requestId: string): PendingEntry => {
+    let e = byId.get(requestId)
+    if (!e) {
+      e = { startedDateTime: new Date().toISOString(), startTime: Date.now() }
+      pending.set(requestId, e)
+      byId.set(requestId, e)
+    }
+    return e
+  }
+
+  const finalize = (entry: PendingEntry, requestId: string) => {
+    const req = entry.request ?? {
+      method: 'GET',
+      url: '',
+      headers: [],
+      cookies: [],
+      queryString: [],
+      headersSize: -1,
+      bodySize: -1,
+    }
+    const resp = entry.response ?? {
+      status: 0,
+      statusText: '',
+      headers: [],
+      cookies: [],
+      content: {},
+      headersSize: -1,
+      bodySize: -1,
+    }
+    const time = entry.endTime ? Math.max(0, entry.endTime - entry.startTime) : 0
+    const har: HarEntry = {
+      startedDateTime: entry.startedDateTime,
+      time,
+      request: req,
+      response: resp,
+      cache: {},
+      timings: {},
+    }
+    if (entry.bodySize !== undefined) {
+      har.response.content = { ...har.response.content, size: entry.bodySize }
+      har.response.bodySize = entry.bodySize
+    }
+    completed.push(har)
+    pending.delete(requestId)
+  }
+
+  return {
+    onRequestWillBeSent(params) {
+      const e = ensure(params.requestId)
+      const url = new URL(params.request.url)
+      const queryString = Array.from(url.searchParams.entries()).map(([name, value]) => ({ name, value }))
+      e.request = {
+        method: params.request.method,
+        url: params.request.url,
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: toHeaders(params.request.headers),
+        queryString,
+        postData: params.request.postData
+          ? { mimeType: 'application/x-www-form-urlencoded', text: params.request.postData }
+          : undefined,
+        headersSize: -1,
+        bodySize: params.request.postData ? params.request.postData.length : -1,
+      }
+    },
+    onRequestWillBeSentExtraInfo(params) {
+      const e = ensure(params.requestId)
+      if (!e.request) {
+        // ExtraInfo may arrive before requestWillBeSent in rare races; seed a shell.
+        e.request = { method: 'GET', url: '', headers: [], cookies: [], queryString: [], headersSize: -1, bodySize: -1 }
+      }
+      e.request.headers = e.request.headers.concat(toHeaders(params.headers))
+      e.request.cookies = mergeCookies(e.request.cookies, params.cookies)
+    },
+    onResponseReceived(params) {
+      const e = ensure(params.requestId)
+      e.response = {
+        status: params.response.status,
+        statusText: params.response.statusText ?? '',
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: toHeaders(params.response.headers),
+        content: { mimeType: params.response.mimeType ?? 'text/plain', size: -1 },
+        redirectURL: '',
+        headersSize: -1,
+        bodySize: -1,
+      }
+      if (params.response.remoteIPAddress) e['serverIPAddress'] = params.response.remoteIPAddress
+      if (params.response.connectionId !== undefined) e['connection'] = String(params.response.connectionId)
+    },
+    onResponseReceivedExtraInfo(params) {
+      const e = ensure(params.requestId)
+      if (!e.response) {
+        e.response = { status: 0, statusText: '', headers: [], cookies: [], content: {}, headersSize: -1, bodySize: -1 }
+      }
+      e.response.headers = e.response.headers.concat(toHeaders(params.headers))
+      e.response.cookies = mergeCookies(e.response.cookies, params.cookies)
+    },
+    onLoadingFinished(params) {
+      const e = ensure(params.requestId)
+      e.endTime = params.timestamp ? Date.now() : e.endTime
+      if (params.encodedDataLength !== undefined) e.bodySize = params.encodedDataLength
+      if (e.request && e.response) finalize(e, params.requestId)
+    },
+    onLoadingFailed(params) {
+      const e = ensure(params.requestId)
+      e.endTime = params.timestamp ? Date.now() : e.endTime
+      if (e.request && e.response) finalize(e, params.requestId)
+    },
+    setRequestBody(requestId, body) {
+      const e = ensure(requestId)
+      if (!e.request) return
+      e.request.postData = e.request.postData
+        ? { ...e.request.postData, text: body }
+        : { mimeType: 'application/octet-stream', text: body }
+      e.request.bodySize = body.length
+    },
+    setResponseBody(requestId, body, encoding) {
+      const e = ensure(requestId)
+      if (!e.response) return
+      e.response.content = { ...e.response.content, text: body, encoding }
+      e.response.bodySize = body.length
+    },
+    takeCompleted() {
+      const out = completed.splice(0, completed.length)
+      return out
+    },
+    entries() {
+      const out = Array.from(pending.values())
+        .filter((e) => e.request && e.response)
+        .map((e) => ({
+          startedDateTime: e.startedDateTime,
+          time: e.endTime ? Math.max(0, e.endTime - e.startTime) : 0,
+          request: e.request!,
+          response: e.response!,
+          cache: {},
+          timings: {},
+        })) as HarEntry[]
+      return out.concat(completed)
+    },
+  }
+}

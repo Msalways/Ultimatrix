@@ -2,8 +2,6 @@
 import { DEFAULTS } from './config'
 import { detectChains } from './intelligence/chaining'
 import type { FindingNode } from './graph/schema'
-import { resolveSkillsForInput } from './solver/skills/tool-filter'
-import { loadSkill } from './solver/skills/loader'
 import { getGlobalReactionObserver } from './browser/reaction-observer'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
@@ -41,16 +39,11 @@ export async function main(targetUrl?: string) {
       return
     }
 
-    // Dispatch skills based on user input
-    const matchedSkills = resolveSkillsForInput(line)
-    if (matchedSkills.length > 0) {
-      log.dim(`Skills: ${matchedSkills.map(s => s.name).join(', ')}`)
-    }
-
-    // Load full skill bodies for matched skills (progressive disclosure — only load what's needed)
-    const matchedWithInstructions = matchedSkills
-      .map(s => loadSkill(s.id))
-      .filter((s): s is NonNullable<typeof s> => s !== null)
+    // Phase 7.2 — pure-discovery skill selection. Skills are no longer
+    // auto-matched from free-form user input via substring scanning. The brain
+    // and council select skills themselves via the listSkills / searchSkills
+    // tools. No skill instructions are pre-loaded from the REPL line.
+    const matchedWithInstructions: any[] = []
 
     const { config, target, threadId, resourceId } = resources
     const councilMatch = line.match(/^\/council(?:\s+(.*))?$/)

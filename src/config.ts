@@ -118,6 +118,8 @@ export interface SolverConfig {
   maxDurationMs?: number
   maxParallel?: number
   maxRounds?: number
+  /** Max escalation primitives the active chain planner may execute per turn (0 = disabled). */
+  maxActiveChainSteps?: number
 }
 
 export interface SpiderConfig {
@@ -259,6 +261,7 @@ export const DEFAULTS = {
     maxDurationMs: 300_000,
     maxParallel: 1,
     maxRounds: 5,
+    maxActiveChainSteps: 3,
   },
   antiLoop: {
     staleThreshold: 3,
@@ -356,6 +359,39 @@ export interface UltimatrixConfig {
   compression?: CompressionConfig
   truncation?: TruncationConfig
   oast?: OastConfig
+  /** Phase 1/5: MCP server registrations (stdio/http/sse). */
+  mcp?: McpServerConfig[]
+  /** Phase 1/5: code plugin registrations. */
+  plugins?: PluginConfig[]
+  /** Phase 7.1: additional skill directories beyond the bundled src/skills. */
+  skillsDirs?: string[]
+  /** Phase 7.2: skill selection options. */
+  skills?: { exclude?: string[] }
+}
+
+// ─── Extensibility config types (Phase 1 / 5) ─────────────────────────
+
+export interface McpServerConfig {
+  name: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+  type?: 'stdio' | 'http' | 'sse'
+  auth?: {
+    kind: 'oauth' | 'client-credentials'
+    clientId?: string
+    clientSecret?: string
+    scope?: string
+    redirectPort?: number
+  }
+}
+
+export interface PluginConfig {
+  id: string
+  path: string
+  env?: Record<string, string>
 }
 
 // ─── Dynamic memory sizing based on model context window ─────────────
@@ -888,6 +924,10 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     ...(raw.scope ? { scope: raw.scope as ScopeConfig } : {}),
     ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
     ...(raw.oast ? { oast: raw.oast as OastConfig } : {}),
+    ...(Array.isArray(raw.mcp) ? { mcp: raw.mcp as McpServerConfig[] } : {}),
+    ...(Array.isArray(raw.plugins) ? { plugins: raw.plugins as PluginConfig[] } : {}),
+    ...(Array.isArray(raw.skillsDirs) ? { skillsDirs: raw.skillsDirs as string[] } : {}),
+    ...(raw.skills ? { skills: raw.skills as { exclude?: string[] } } : {}),
   }
 }
 
