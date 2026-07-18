@@ -123,6 +123,20 @@ export interface PrimitiveResult {
   severity?: Severity
   finding?: Partial<Finding>
   note?: string
+  /**
+   * W1 — exploitation-first signal. When the oracle can prove the finding is
+   * weaponizable (real request + observed response + concrete impact), it
+   * returns this so the runner persists a first-class EXPLOIT_PROOF node.
+   * Typed fields only — `relation` is LLM/registry-discovered, never a fixed
+   * string list. Absent for detection-only results.
+   */
+  exploitProof?: {
+    scenario: string
+    relation?: string
+    request: string
+    response: string
+    impact: string
+  }
   /** WS-E: render traces captured from HTML responses during this run. */
   renderTraces?: import('../capture/render-tracer').RenderTrace[]
 }

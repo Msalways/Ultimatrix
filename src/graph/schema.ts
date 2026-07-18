@@ -54,6 +54,7 @@ export enum EdgeType {
   REINGESTS = 'REINGESTS',
   ORDERED_BEFORE = 'ORDERED_BEFORE',
   PROVES = 'PROVES',
+  SESSION_REACHES = 'SESSION_REACHES',
 }
 
 export interface GraphNodeData {

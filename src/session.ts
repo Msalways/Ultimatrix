@@ -34,8 +34,23 @@ export async function main(targetUrl?: string) {
     if (line.trim() === '/help') {
       log.info('Commands:')
       log.info('  /council <goal>  — deliberate with the council (strategist / operator / skeptic / analyst)')
+      log.info('  /report [id]     — write a Markdown report (whole engagement, or one finding by id)')
       log.info('  /help            — show this help')
       log.info('  <goal>           — send a goal to the solver brain')
+      return
+    }
+
+    // W-R — on-demand Markdown report. "/report" → whole engagement;
+    // "/report <findingId>" → single finding. Prints the written path to chat.
+    const reportMatch = line.match(/^\/report(?:\s+(\S+))?$/)
+    if (reportMatch) {
+      const { writeOnDemandReport } = await import('./report/on-demand')
+      const res = writeOnDemandReport(reportMatch[1] ? 'finding' : 'engagement', reportMatch[1])
+      if (res.ok) {
+        log.info(`Report written (${res.findingCount} finding(s)): ${res.path}`)
+      } else {
+        log.warn(res.error ?? 'report failed')
+      }
       return
     }
 

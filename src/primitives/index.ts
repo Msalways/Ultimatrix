@@ -201,6 +201,9 @@ export async function runPrimitiveById(
       confidence: result.confidence,
       cwe: result.finding?.cwe,
       remediation: result.finding?.remediation,
+      // W1: when the oracle proved weaponizability, persist a first-class
+      // EXPLOIT_PROOF node (real request/response/impact) via writeFinding.
+      ...(result.exploitProof ? { exploitProof: result.exploitProof } : {}),
     })
   }
 

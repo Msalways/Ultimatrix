@@ -145,11 +145,13 @@ export const authBypass: AttackPrimitive = {
     const evidence: PrimitiveResult['evidence'] = []
     let hit = false
     const techniques: string[] = []
+    let winning: StepExecutionResult | undefined
 
     for (const r of results) {
       const meta = r.step.metadata as AuthStepMeta
       if (successSignal(r)) {
         hit = true
+        if (!winning) winning = r
         if (!techniques.includes(meta.technique)) techniques.push(meta.technique)
         const label =
           meta.technique === 'default-creds'
@@ -169,6 +171,15 @@ export const authBypass: AttackPrimitive = {
       claimFor('auth_bypass', results[0]?.step.request.url, results[0]?.status, results[0]?.step.request.method),
     )
     const confirmed = hit && verified
+    const proof =
+      confirmed && winning
+        ? {
+            scenario: `Authentication bypass via: ${techniques.join(', ')}`,
+            request: `${winning.step.request.method} ${winning.step.request.url}${winning.step.request.body ? `\n\n${winning.step.request.body}` : ''}`,
+            response: `HTTP ${winning.status ?? 0}\n${(winning.body ?? '').slice(0, 800)}`,
+            impact: 'Obtained an authenticated session as a privileged actor without valid credentials.',
+          }
+        : undefined
     return {
       confirmed,
       confidence: confirmed ? 0.9 : hit ? 0.5 : 0.05,
@@ -183,6 +194,7 @@ export const authBypass: AttackPrimitive = {
             cwe: 'CWE-287',
           }
         : undefined,
+      exploitProof: proof,
       note: `hit=${hit} verified=${verified} techniques=${techniques.join(',')}`,
     }
   },

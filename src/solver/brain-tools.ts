@@ -266,6 +266,20 @@ export function createSolverBrain(
     getDialogEvidence: sanitizeTool(getDialogEvidence, p),
     getRecentChanges: sanitizeTool(getRecentChanges, p),
     recordOutcome: sanitizeTool(recordOutcomeTool, p),
+    generateReport: sanitizeTool(createTool({
+      id: 'generateReport',
+      description: 'Write a Markdown report to disk on demand. scope "engagement" covers all findings; scope "finding" (with findingId) reports a single bug. Returns the file path. The report includes real exploit proofs (request/response/impact) when present, so it is a deliverable, not just a list. No vocab enumeration — findings come from the live graph.',
+      inputSchema: z.object({
+        scope: z.enum(['engagement', 'finding']).describe('engagement = whole report; finding = one bug'),
+        findingId: z.string().optional().describe('Required when scope is "finding"'),
+      }),
+      execute: async ({ scope, findingId }) => {
+        const { writeOnDemandReport } = await import('../report/on-demand')
+        const res = writeOnDemandReport(scope, findingId)
+        if (!res.ok) return { ok: false, error: res.error }
+        return { ok: true, path: res.path, findingCount: res.findingCount }
+      },
+    }), p),
   }
 
   // ─── Council request tool (brain suggests council, user decides) ──

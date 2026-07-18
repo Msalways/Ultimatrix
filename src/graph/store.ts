@@ -686,6 +686,12 @@ export class GraphStore {
     return this.nodes.get(id) as AnyNodeData | undefined
   }
 
+  /** First-class accessor for the exploit-proof(s) linked to a finding. */
+  getExploitProof(findingId: string): ExploitProofNode[] {
+    const all = (this.queryNodes(NodeType.EXPLOIT_PROOF) as ExploitProofNode[] | undefined) ?? []
+    return all.filter((p) => p.properties.findingId === findingId)
+  }
+
   deleteNode(id: string): boolean {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.deleteNode(id)
