@@ -32,6 +32,7 @@ export enum NodeType {
   RENDERED_ELEMENT = 'RenderedElement',
   COUNCIL_DEBATE = 'CouncilDebate',
   EXPLOIT_PROOF = 'ExploitProof',
+  THREAT_MODEL = 'ThreatModel',
 }
 
 export enum EdgeType {
@@ -413,7 +414,28 @@ export interface ExploitProofNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode | ExploitProofNode
+/**
+ * W0.5 — a threat-model node for a confirmed finding's flow. Typed fields only:
+ * the assets at risk, the trust boundary crossed, and the highest-impact next
+ * target are LLM/relation-derived (no frozen vocab). Linked to the source
+ * finding via a PROVES/CHAINS_TO edge by the caller.
+ */
+export interface ThreatModelNode extends GraphNodeData {
+  type: NodeType.THREAT_MODEL
+  properties: {
+    findingId: string
+    /** In-scope assets reachable from the compromised flow (endpoint ids/urls). */
+    assetsAtRisk: string[]
+    /** The trust boundary the exploit crosses (e.g. auth, tenant, role). */
+    trustBoundary: string
+    /** Highest-impact next target the loop should pivot to (in-scope). */
+    nextTarget?: string
+    /** Concrete business impact if the chain completes. */
+    businessImpact?: string
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode | ExploitProofNode | ThreatModelNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -439,4 +461,5 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.RENDERED_ELEMENT]: ['url', 'method', 'selector', 'tag', 'name', 'inputType', 'value', 'isFormField', 'attributes', 'text', 'payloadHit'],
   [NodeType.COUNCIL_DEBATE]: ['goal', 'round', 'members', 'summary', 'proposedTasks', 'newEvidence', 'complete'],
   [NodeType.EXPLOIT_PROOF]: ['findingId', 'title', 'method', 'url', 'headers', 'body', 'expectedVulnerableResponse', 'reproSteps', 'replayable', 'status', 'resultSummary', 'actorNote', 'scenario', 'relation', 'request', 'response', 'impact'],
+  [NodeType.THREAT_MODEL]: ['findingId', 'assetsAtRisk', 'trustBoundary', 'nextTarget', 'businessImpact'],
 }

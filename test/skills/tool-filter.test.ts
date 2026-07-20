@@ -32,8 +32,15 @@ describe('resolveToolsForSkills', () => {
 
   it('returns CORE_TOOLS count when no skills specified', () => {
     const tools = resolveToolsForSkills([])
-    // 37 historical core tools + listTools + loadTool discovery tools.
-    expect(tools.length).toBe(39)
+    // No skills → exactly the CORE_TOOLS set (deduped).
+    expect(tools.length).toBe(getCoreTools().length)
+    expect(new Set(tools).size).toBe(tools.length)
+  })
+
+  it('CORE_TOOLS always include held-session reuse tools (W2 cross-cut)', () => {
+    const tools = resolveToolsForSkills([])
+    expect(tools).toContain('useSession')
+    expect(tools).toContain('extractSessionCookie')
   })
 
   it('deduplicates tools from multiple skills', () => {

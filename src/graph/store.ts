@@ -23,6 +23,7 @@ import {
   RenderedElementNode,
   CouncilDebateNode,
   ExploitProofNode,
+  ThreatModelNode,
   AnyNodeData,
 } from './schema'
 
@@ -39,6 +40,8 @@ interface LibSQLGraphStore {
   addTest(actionId: string, testData: Partial<{ testType: string; status: string; endpoint: string; technique: string; payload: string; tags: string[]; expectedResult: string; actualResult: string }>): TestNode
   addFinding(data: Partial<FindingNode['properties']>): FindingNode
   addExploitProof(data: Partial<ExploitProofNode['properties']>): ExploitProofNode
+  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode
+  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode
   addAuthFlow(data: Partial<AuthFlowNode['properties']>): AuthFlowNode
   addRBACRole(data: Partial<RBACRoleNode['properties']>): RBACRoleNode
   addAttack(data: Partial<AttackNode['properties']>): AttackNode
@@ -421,6 +424,28 @@ export class GraphStore {
         reproSteps: [],
         replayable: true,
         status: 'proposed',
+        ...data,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+    return node
+  }
+
+  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addThreatModel(data)
+    }
+    const id = `threatmodel:${data.findingId || 'unknown'}:${Date.now()}`
+    const node: ThreatModelNode = {
+      id,
+      type: NodeType.THREAT_MODEL,
+      label: `ThreatModel: ${data.findingId || 'unknown'}`,
+      properties: {
+        findingId: '',
+        assetsAtRisk: [],
+        trustBoundary: '',
         ...data,
       },
       createdAt: Date.now(),

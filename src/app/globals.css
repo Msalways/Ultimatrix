@@ -58,3 +58,25 @@
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
 }
+
+/* Ultimatrix instrument-panel tokens (co-relating war-room).
+   Anchored in Ben 10 lore: green = Active/Ready, cyan = instrument accent. */
+:root {
+  --ultimatrix-green: #2be08a;
+  --instrument: #36c9e6;
+  --danger-red: #ff4d4d;
+  --suspect-amber: #ffb020;
+}
+.dark {
+  --ultimatrix-green: #2be08a;
+  --instrument: #36c9e6;
+  --danger-red: #ff5c5c;
+  --suspect-amber: #ffc24d;
+}
+
+/* Markdown body scoped to the buddy message (prose formatting only). */
+.ultimatrix-md p { @apply my-1.5 leading-relaxed; }
+.ultimatrix-md ul { @apply my-1.5 list-disc pl-5 space-y-0.5; }
+.ultimatrix-md ol { @apply my-1.5 list-decimal pl-5 space-y-0.5; }
+.ultimatrix-md blockquote { @apply border-l-2 border-[var(--instrument)] pl-3 my-2 text-muted-foreground italic; }
+.ultimatrix-md hr { @apply my-3 border-border; }

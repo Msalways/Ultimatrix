@@ -4,6 +4,7 @@
  */
 
 import type { ModelCapabilities, BudgetPolicy } from '../config'
+import { compactText } from '../output/compaction'
 
 export interface ContextFitParams {
   modelId: string
@@ -191,11 +192,10 @@ export class ContextBudgetManager {
 
 /**
  * Truncate text to approximately the given token budget.
+ * Uses section-aware compaction (head+tail fallback) — never a blind tail-drop.
  */
 function truncateToTokens(text: string, tokenBudget: number): string {
-  if (!text) return ''
-  // Rough chars per token: ~4
-  const charBudget = tokenBudget * 4
-  if (text.length <= charBudget) return text
-  return text.slice(0, charBudget) + '\n... [context truncated to fit]'
+  if (!text || tokenBudget <= 0) return ''
+  const result = compactText(text, { tokenBudget, strategy: 'section-aware' })
+  return result.text
 }

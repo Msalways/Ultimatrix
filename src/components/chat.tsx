@@ -7,6 +7,18 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { ScrollArea } from './ui/scroll-area'
 import { Separator } from './ui/separator'
+import { BuddyMessage } from './BuddyMessage'
+import { createRenderModel } from '../output/render-model'
+
+/**
+ * Adapts a plain assistant content string into the shared RenderModel so the
+ * markdown/highlight renderer is used. Once /api/chat streams SolverStreamMessage
+ * (T4.1), this panel switches to useRenderModel(); the renderer is identical.
+ */
+function BuddyMessageContent({ content }: { content: string }) {
+  const model = { ...createRenderModel(), answer: content, complete: true }
+  return <BuddyMessage model={model} />
+}
 
 const TOOL_LABELS: Record<string, string> = {
   stagehand_navigate: 'Navigating',
@@ -352,7 +364,7 @@ export function ChatPanel() {
             </div>
           )}
 
-          {messages.map(m => (
+           {messages.map(m => (
             <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[80%] rounded-lg px-4 py-2 text-sm ${
                 m.role === 'user'
@@ -362,7 +374,11 @@ export function ChatPanel() {
                 <div className="font-medium text-xs mb-1 opacity-70">
                   {m.role === 'user' ? 'You' : 'Assistant'}
                 </div>
-                <div className="whitespace-pre-wrap">{m.content}</div>
+                {m.role === 'user' ? (
+                  <div className="whitespace-pre-wrap">{m.content}</div>
+                ) : (
+                  <BuddyMessageContent content={m.content} />
+                )}
                 {m.toolInvocations && m.toolInvocations.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {m.toolInvocations.map((inv, i) => (

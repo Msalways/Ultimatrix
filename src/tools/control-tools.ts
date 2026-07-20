@@ -1,7 +1,7 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, EdgeType, type FindingNode } from '../graph/schema'
+import { NodeType, EdgeType, type FindingNode, type ExploitProofNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { generateFromFinding, type Finding } from '../generation/test-generator'
 import { TestStorage } from '../generation/test-storage'
@@ -363,73 +363,125 @@ async function autoGenerateTest(finding: {
 }
 
 /**
- * Maker/Checker: re-verify pending_verification findings by replaying the
- * request. Promotes to 'verified' or downgrades to 'disproven'.
+ * W3 — replay a stored EXPLOIT_PROOF against the live target and decide
+ * whether the demonstrated impact still holds. This is the exploitation-first
+ * verifier: it re-runs the REAL request (method + url + headers + body) the
+ * proof captured, never a synthetic bare GET.
+ *
+ * Comparison is structural: the replayed response must reproduce the stored
+ * vulnerable signal. A proof with no captured request is skipped (not killed),
+ * so a POST+body finding is never "disproven" by a failing GET. When a replay
+ * actually runs and the signal does not reproduce, the finding is marked
+ * 'disproven' (distinct from 'rejected', which means the replay could not run).
+ */
+export async function replayExploitProof(
+  proof: ExploitProofNode,
+  options?: { timeoutMs?: number },
+): Promise<{ ok: boolean; replayed: boolean; status?: number; note: string }> {
+  const timeout = options?.timeoutMs ?? 30_000
+  const method = proof.properties.method || 'GET'
+  const url = proof.properties.url
+  if (!url) return { ok: false, replayed: false, note: 'proof has no target url' }
+
+  const scopeCheck = isUrlInScope(url)
+  if (!scopeCheck.allowed) {
+    return { ok: false, replayed: false, note: `out of scope: ${scopeCheck.reason}` }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    const headers: Record<string, string> = { 'User-Agent': 'Ultimatrix-Verifier/1.0', ...(proof.properties.headers ?? {}) }
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: method !== 'GET' && method !== 'HEAD' ? proof.properties.body : undefined,
+      signal: controller.signal,
+      redirect: 'manual',
+    }).catch(() => null)
+    clearTimeout(timer)
+    if (!res) return { ok: false, replayed: true, note: 'no response (timeout/network)' }
+
+    const body = await res.text().catch(() => '')
+    // Structural check: the previously observed vulnerable signal must persist.
+    // expectedVulnerableResponse is the substring we recorded proving impact.
+    const expected = proof.properties.expectedVulnerableResponse
+    const holds = expected
+      ? body.includes(expected) || String(res.status) === expected
+      : res.status >= 200 && res.status < 500
+    return {
+      ok: holds,
+      replayed: true,
+      status: res.status,
+      note: holds ? 'impact reproduced' : `signal not reproduced (status ${res.status})`,
+    }
+  } catch (e: any) {
+    clearTimeout(timer)
+    return { ok: false, replayed: true, note: `replay error: ${e?.message ?? String(e)}` }
+  }
+}
+
+/**
+ * Maker/Checker: re-verify pending_verification findings by replaying their
+ * stored exploit proof (W3). Promotes to 'verified', downgrades to 'disproven'
+ * when a replay actually runs and the vulnerable signal no longer reproduces,
+ * or leaves pending (skipped) when the replay could not run — never a bare GET
+ * that would wrongly kill a POST+body finding.
  */
 export async function verifyPendingFindings(options?: {
   maxPerRound?: number
   timeoutMs?: number
-}): Promise<{ verified: string[]; disproven: string[]; skipped: string[] }> {
+}): Promise<{ verified: string[]; rejected: string[]; skipped: string[] }> {
   const store = getGlobalGraphStore()
-  const allFindings = store.queryNodes(NodeType.FINDING) as FindingNode[]
+  const allFindings = (store.queryNodes(NodeType.FINDING) as FindingNode[] | undefined) ?? []
   const pending = allFindings.filter(f => f.properties.lifecycleStatus === 'pending_verification')
 
   const max = options?.maxPerRound ?? 5
   const timeout = options?.timeoutMs ?? 30_000
   const verified: string[] = []
-  const disproven: string[] = []
+  const rejected: string[] = []
   const skipped: string[] = []
 
-  const toCheck = pending.slice(0, max)
-
-  for (const finding of toCheck) {
+  for (const finding of pending.slice(0, max)) {
     try {
-      const endpoint = finding.properties.endpoint
-      const scopeCheck = isUrlInScope(endpoint)
-      if (!scopeCheck.allowed) {
-        log.warn(`Verifier: skipping ${finding.id} — ${scopeCheck.reason}`)
+      const proofs = store.getExploitProof(finding.properties.findingId)
+      if (proofs.length === 0) {
+        // No reproducible proof captured yet — keep pending, do not kill.
         skipped.push(finding.id)
+        log.warn(`Verifier: skipping ${finding.id} — no exploit proof to replay`)
         continue
       }
-      const method = (finding.properties.technique?.includes('GET') ? 'GET' : 'GET') as string
-
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeout)
-
-      const response = await fetch(endpoint, {
-        method,
-        signal: controller.signal,
-        redirect: 'manual',
-        headers: { 'User-Agent': 'Ultimatrix-Verifier/1.0' },
-      }).catch(() => null)
-
-      clearTimeout(timer)
-
-      if (response && response.status >= 200 && response.status < 500) {
-        // Endpoint is alive and responsive — finding stands
+      const replay = await replayExploitProof(proofs[0], { timeoutMs: timeout })
+      if (replay.ok) {
         finding.properties.lifecycleStatus = 'verified'
         finding.updatedAt = Date.now()
         verified.push(finding.id)
-        log.info(`Verifier: ${finding.id} → verified (${response.status})`)
-      } else {
-        // Endpoint unreachable or server error — cannot confirm
+        log.info(`Verifier: ${finding.id} → verified (${replay.note})`)
+      } else if (replay.replayed) {
+        // We actually re-ran the captured proof and the vulnerable signal did
+        // not reproduce — the demonstrated impact no longer holds.
         finding.properties.lifecycleStatus = 'disproven'
         finding.properties.evidence = [
           ...(finding.properties.evidence ?? []),
-          `[Verifier] Re-check failed: endpoint returned ${response?.status ?? 'no response'}`,
+          `[Verifier] Replay failed: ${replay.note}`,
         ]
         finding.updatedAt = Date.now()
-        disproven.push(finding.id)
-        log.info(`Verifier: ${finding.id} → disproven (${response?.status ?? 'timeout'})`)
+        rejected.push(finding.id)
+        log.info(`Verifier: ${finding.id} → disproven (${replay.note})`)
+      } else {
+        // Could not run the replay (out of scope / no response) — do not kill
+        // the finding; leave it pending for a later, in-scope re-check.
+        skipped.push(finding.id)
+        log.warn(`Verifier: skipping ${finding.id} — replay not run (${replay.note})`)
       }
     } catch {
       skipped.push(finding.id)
     }
   }
 
-  if (verified.length > 0 || disproven.length > 0) {
+  if (verified.length > 0 || rejected.length > 0) {
     store.save().catch(err => log.error('Graph save failed after verification: ' + String(err)))
   }
 
-  return { verified, disproven, skipped }
+  return { verified, rejected, skipped }
 }

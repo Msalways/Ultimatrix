@@ -18,24 +18,17 @@ import { EvidenceGate } from "../intelligence/evidence-gate";
 import { ReflexionEngine } from "../intelligence/reflexion";
 import { LoopDetector, extractAttackPath } from "../intelligence/anti-loop";
 import { log } from "../utils/logger";
-import { setForensicLog } from "../tools/report-tools";
+import { getForensicLog } from "../tools/report-tools";
 import { saveReflexionState } from "../intelligence/reflexion-store";
 import { getGlobalGraphStore } from "../graph/store";
 import { NodeType } from "../graph/schema";
-import { DEFAULTS, type UltimatrixConfig } from "../config";
+import { DEFAULTS, CONTEXT_WINDOW_MAP, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
+import { compactText } from "../output/compaction";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
-const FALLBACK_CONTEXT_WINDOW: Record<string, number> = {
-  "groq/llama3-8b-8192": 8192,
-  "openai/gpt-4o": 128000,
-  "openai/gpt-4o-mini": 128000,
-  "anthropic/claude-3-5-sonnet": 200000,
-  "anthropic/claude-3-haiku": 200000,
-  "google/gemini-2.0-flash": 1048576,
-  "nvidia/nemotron-ultra-253b": 131072,
-};
+const FALLBACK_CONTEXT_WINDOW: Record<string, number> = CONTEXT_WINDOW_MAP;
 
 function getEnrichedGoalCap(model?: string): number {
   if (!model) return 8000;
@@ -96,13 +89,71 @@ function truncateEnrichedGoal(
       kept.push(section);
       budget -= section.length;
     } else {
-      kept.push(section.slice(0, budget) + "\n... [truncated]");
+      // Compact the overflowing section (head+tail) instead of a blind cut.
+      const tokenBudget = Math.max(1, Math.floor(budget / 4));
+      kept.push(compactText(section, { tokenBudget, strategy: "head-tail" }).text);
       budget = 0;
     }
   }
 
   return goalSection + kept.join("");
 }
+
+/**
+ * Structured solver output contract.
+ *
+ * The streaming layer previously overloaded a single `text` field with both
+ * transient reasoning (thinking) and the deliverable answer, and never awaited
+ * the `stream.text` promise. On reasoning-capable models the final answer was
+ * intermittently lost. This contract separates the two concerns with typed,
+ * ordered, serializable messages — robust to model channel ordering and clean
+ * to render in a future Web UI (reasoning panel, answer stream, tool timeline,
+ * final answer card). Mirrors the council output-contract discipline: structured
+ * typed fields at all seams, no substring detection.
+ */
+
+/** Transient model reasoning (scratch). Never the deliverable. */
+export interface SolverReasoningDelta {
+  text: string;
+  index: number;
+}
+
+/** Deliverable answer delta. The agent's message. */
+export interface SolverAnswerDelta {
+  text: string;
+  index: number;
+}
+
+/** Structured final result — the single source of truth the UI binds to. */
+export interface SolverAnswer {
+  content: string;
+  reasoning: string;
+  findings: Array<{
+    id: string;
+    severity: string;
+    technique: string;
+    endpoint?: string;
+  }>;
+  planSummary?: string;
+  status: SolveResult["reason"];
+  completed: boolean;
+  usage?: { inputTokens: number; outputTokens: number };
+  durationMs: number;
+  steps: number;
+  toolCalls: number;
+}
+
+/**
+ * Streaming message emitted via `onPhase`. Discriminated union keyed by `kind`.
+ * Replaces the ambiguous `PhaseEvent.text + reasoning` shape.
+ */
+export type SolverStreamMessage =
+  | { kind: "reasoning"; text: string; index: number }
+  | { kind: "answer"; text: string; index: number }
+  | { kind: "tool"; name: string; args?: Record<string, unknown> }
+  | { kind: "tool-result"; name: string; ok: boolean; result?: string }
+  | { kind: "phase"; phase: SolverPhase; step: number }
+  | { kind: "done"; answer: SolverAnswer };
 
 export interface SolverConfig {
   maxToolCalls?: number;
@@ -155,7 +206,10 @@ export interface SolveResult {
   facts: number;
   intents: number;
   planSummary?: string;
+  /** @deprecated Use `answer.content`. Retained for back-compat; mirrors it. */
   text?: string;
+  /** Structured final answer — the UI-facing source of truth. */
+  answer?: SolverAnswer;
   error?: string;
 }
 
@@ -180,6 +234,8 @@ export interface SolveParams {
   reflexion?: ReflexionEngine;
   memory?: { thread: string; resource: string };
   onPhase?: (event: PhaseEvent) => void;
+  /** Structured streaming output (preferred). Falls back to `onPhase` adapter if absent. */
+  onMessage?: (message: SolverStreamMessage) => void;
   onToolComplete?: (toolName: string, result?: unknown) => void;
   modelCapabilities?: import("../config").ModelCapabilities;
   budgetPolicy?: import("../config").BudgetPolicy;
@@ -248,18 +304,19 @@ interface CompletionResult {
 function checkCompletion(
   goal: string,
   toolCallCount: number,
-  fullText: string,
+  bodyText: string,
+  reasoningText: string,
 ): CompletionResult {
   const goalLower = (goal || "").toLowerCase();
   const isConversational =
     toolCallCount === 0 &&
-    fullText.length < 500 &&
+    bodyText.length < 500 &&
     ["hi", "hello", "hey", "help", "ping", "test", "who", "what", "how"].some(
       (g) => goalLower.startsWith(g),
     );
 
-  // Nothing happened at all
-  if (toolCallCount === 0 && fullText.length === 0) {
+  // Nothing happened at all (no deliverable answer and no reasoning)
+  if (toolCallCount === 0 && bodyText.length === 0 && reasoningText.length === 0) {
     return { completed: false, reason: "stale" };
   }
 
@@ -300,12 +357,13 @@ export async function solve(
   const evidence = params.evidence || new EvidenceGate();
   const loopDetector = params.loopDetector || new LoopDetector();
   const reflexion = params.reflexion || new ReflexionEngine();
-  const forensicLog = setForensicLog();
+  const forensicLog = getForensicLog();
 
   // Wire EvidenceGate into writeFinding for Maker/Checker split
   const { setEvidenceGateForFindings } = await import("../tools/control-tools");
   setEvidenceGateForFindings(evidence);
   const emit = (event: PhaseEvent) => params.onPhase?.(event);
+  const emitMessage = (message: SolverStreamMessage) => params.onMessage?.(message);
   const startTime = Date.now();
 
   // Seed blackboard (only if fresh)
@@ -524,14 +582,25 @@ export async function solve(
 
   if (caps && params.model && caps[params.model]) {
     const ctxManager = new ContextBudgetManager(caps);
-    const toolSchemasStr =
-      typeof agent.tools === "object"
-        ? JSON.stringify(Object.keys(agent.tools || {}))
-        : "[]";
+    // Mastra Agent exposes instructions/tools via async accessors (getters were
+    // removed). Resolve once for the context-budget estimate.
+    let agentInstructions = "";
+    let toolSchemasStr = "[]";
+    try {
+      agentInstructions = (await agent.getInstructions()) as string;
+    } catch {
+      agentInstructions = "";
+    }
+    try {
+      const toolMap = await agent.listTools();
+      toolSchemasStr = JSON.stringify(Object.keys(toolMap || {}));
+    } catch {
+      toolSchemasStr = "[]";
+    }
 
     const ctxCheck = ctxManager.validateContextFit({
       modelId: params.model,
-      systemPrompt: agent.instructions || "",
+      systemPrompt: agentInstructions,
       toolSchemas: toolSchemasStr,
       conversationHistory: "",
       enrichedGoal,
@@ -555,7 +624,7 @@ export async function solve(
       if (enforcement === "soft") {
         const truncated = ctxManager.truncateToFit({
           modelId: params.model,
-          systemPrompt: agent.instructions || "",
+          systemPrompt: agentInstructions,
           toolSchemas: toolSchemasStr,
           conversationHistory: "",
           enrichedGoal,
@@ -565,14 +634,11 @@ export async function solve(
           `[context] Auto-truncated enriched goal to ${ctxManager.estimateTokens(enrichedGoal)} tokens`,
         );
       }
-      // 'warn' — just log, fall through to legacy truncation
+      // 'warn' — just log; the ContextBudgetManager path owns sizing, so we do
+      // NOT run the legacy truncateEnrichedGoal again (would double-slice).
     }
-
-    // Always ensure basic cap (legacy fallback for models without full caps)
-    const goalCap = getEnrichedGoalCap(params.model);
-    enrichedGoal = truncateEnrichedGoal(enrichedGoal, params.goal, goalCap);
   } else {
-    // No ModelCapabilities configured — use legacy cap
+    // No ModelCapabilities configured — use legacy cap (now CONTEXT_WINDOW_MAP-backed)
     const goalCap = getEnrichedGoalCap(params.model);
     enrichedGoal = truncateEnrichedGoal(enrichedGoal, params.goal, goalCap);
   }
@@ -581,6 +647,11 @@ export async function solve(
 
   let fullText = "";
   let hasReasoningChunks = false;
+  let streamIndex = 0;
+  // Structured capture: answer (deliverable) vs reasoning (transient scratch).
+  // Both channels (text-delta AND the canonical stream.text promise) feed `answerParts`.
+  const answerParts: string[] = [];
+  const reasoningParts: string[] = [];
   let toolCallCount = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -621,26 +692,28 @@ export async function solve(
       switch (chunk.type) {
         case "text-delta":
           fullText += chunk.payload.text;
-          // For reasoning models, text-delta is raw tool output — don't display
-          // For non-reasoning models, text-delta IS the response — display it
-          if (!hasReasoningChunks) {
-            emit({
-              phase: "reason",
-              step: toolCallCount,
-              text: chunk.payload.text,
-              reasoning: false,
-            });
-          }
+          // Live answer channel: streamed deltas are for TRANSIENT display only.
+          // The committed deliverable is resolved from the SDK-canonical
+          // `stream.text` promise after the loop (see final-answer resolution
+          // below) — provider-normalized for every backend, so no provider
+          // specific folding is needed here.
+          answerParts.push(chunk.payload.text);
+          emitMessage({ kind: "answer", text: chunk.payload.text, index: streamIndex++ });
+          emit({
+            phase: "reason",
+            step: toolCallCount,
+            text: chunk.payload.text,
+            reasoning: false,
+          });
           break;
 
         case "reasoning-delta":
           if (chunk.payload.text) {
             hasReasoningChunks = true;
-            // Display reasoning live only. It is NOT appended to `fullText`,
-            // because `fullText` becomes the assistant turn persisted to working
-            // memory — re-injecting the entire reasoning trace into the next
-            // turn's context (token bloat / "reasoning echo"). The graph + tool
-            // results are the durable record, not the scratch reasoning.
+            // Transient scratch: captured for the structured `answer.reasoning`
+            // field and shown live, never treated as the deliverable.
+            reasoningParts.push(chunk.payload.text);
+            emitMessage({ kind: "reasoning", text: chunk.payload.text, index: streamIndex++ });
             emit({
               phase: "reason",
               step: toolCallCount,
@@ -660,6 +733,11 @@ export async function solve(
               toolName: chunk.payload.toolName,
               toolArgs: chunk.payload.args,
             });
+            emitMessage({
+              kind: "tool",
+              name: chunk.payload.toolName,
+              args: chunk.payload.args as Record<string, unknown> | undefined,
+            });
           }
           break;
 
@@ -672,6 +750,8 @@ export async function solve(
 
             // Record tool output in evidence gate
             evidence.recordToolOutput(output);
+
+            emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: true, result: output });
 
             // Track attack paths
             const detectedPath = extractAttackPath(output);
@@ -759,13 +839,13 @@ export async function solve(
             );
 
             // Record failure in reflexion engine
-            reflexion.recordAttempt(
-              chunk.payload.toolName,
-              false,
-              null,
-              chunk.payload.error,
-              "",
-            );
+              reflexion.recordAttempt(
+                chunk.payload.toolName,
+                false,
+                null,
+                chunk.payload.error instanceof Error ? chunk.payload.error.message : String(chunk.payload.error ?? ""),
+                "",
+              );
 
             // Record error in loop detector (counts as no progress)
             loopDetector.recordRound(false);
@@ -774,7 +854,7 @@ export async function solve(
               type: "tool-error",
               agent: "solver-brain",
               tool: chunk.payload.toolName,
-              error: chunk.payload.error,
+              error: chunk.payload.error instanceof Error ? chunk.payload.error.message : String(chunk.payload.error ?? ""),
             });
           }
           break;
@@ -789,6 +869,48 @@ export async function solve(
           }
           break;
       }
+    }
+
+    // CRITICAL: resolve the SDK-canonical final answer and reasoning. The AI SDK
+    // normalizes EVERY provider into two promises:
+    //   - stream.text         → the deliverable answer (deduped, provider-clean)
+    //   - stream.reasoningText → the model's reasoning/thinking (undefined if the
+    //     provider emits none)
+    // These are the single source of truth for the committed result. The raw
+    // `text-delta` / `reasoning-delta` chunks are TRANSIENT display only and must
+    // never become the deliverable — doing so is what let provider reasoning (or
+    // echoed deltas) leak into the answer and duplicate it N×. We fall back to the
+    // accumulated deltas ONLY when the SDK returns empty (e.g. a provider or mock
+    // that resolves the canonical promise late / not at all).
+    let canonicalAnswer = "";
+    let canonicalReasoning = "";
+    try {
+      const resolvedText = (await stream.text) as string | undefined;
+      if (resolvedText && resolvedText.trim().length > 0) {
+        canonicalAnswer = resolvedText;
+      }
+      const resolvedReasoning = (await stream.reasoningText) as string | undefined;
+      if (resolvedReasoning && resolvedReasoning.trim().length > 0) {
+        canonicalReasoning = resolvedReasoning;
+      }
+    } catch {
+      // The canonical promises may reject if the underlying stream errored; the
+      // delta buffers below serve as the fallback.
+    }
+
+    // Commit the canonical answer. When present it supersedes the raw deltas;
+    // otherwise keep what the live channel captured. The canonical answer is
+    // delivered via the `done` event + SolveResult.text, NOT re-emitted as a
+    // live `answer` chunk (that would cause the renderer to print it twice).
+    if (canonicalAnswer) {
+      answerParts.length = 0;
+      answerParts.push(canonicalAnswer);
+    }
+    // Commit the canonical reasoning. When present it supersedes the raw
+    // reasoning-delta chunks; otherwise keep what was captured live.
+    if (canonicalReasoning) {
+      reasoningParts.length = 0;
+      reasoningParts.push(canonicalReasoning);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -812,7 +934,8 @@ export async function solve(
   const { completed, reason } = checkCompletion(
     params.goal,
     toolCallCount,
-    fullText,
+    answerParts.join(""),
+    reasoningParts.join(""),
   );
 
   // Find attack paths (CONCLUDE phase)
@@ -837,51 +960,42 @@ export async function solve(
     } catch {}
   }
 
-  // ─── Active Chain Planner (P0 force-multiplier) ───────────────────────
-  // After a finding lands, propose + execute the next concrete step that
-  // escalates it into a critical chain (the bug-bounty payout multiplier).
-  // Bounded by maxActiveChainSteps so it never hijacks the turn's budget.
+  // ─── Exploitation loop (weaponization spine) ───────────────────────
+  // Single escalation driver: after a finding lands, build exploit proofs,
+  // capture impact, reuse held sessions to pivot within scope, then emit a
+  // deliverable report. Driven by the typed ExploitationTracker agenda
+  // (which folds in relation-seeded chain proposals). Bounded by
+  // maxActiveChainSteps so it never hijacks the turn's budget.
   if (
     params.ultimatrixConfig?.engine === "solver" ||
     params.ultimatrixConfig?.engine === "multi-model"
   ) {
-    const maxActiveChainSteps =
+    const maxExploitSteps =
       params.ultimatrixConfig?.solver?.maxActiveChainSteps ?? 3;
-    if (maxActiveChainSteps > 0) {
+    if (maxExploitSteps > 0) {
       try {
-        const { runActiveChaining } = await import(
-          "../intelligence/chain-planner"
+        const { runExploitationLoop } = await import("./exploitation-loop");
+        board.addIntent(
+          "Escalate confirmed findings into weaponized proofs: build exploit proofs, capture impact, reuse held sessions to pivot within scope, then emit a deliverable report.",
         );
-        const store = getGlobalGraphStore();
-        const findings =
-          (store.queryNodes?.(NodeType.FINDING) as any[]) || [];
-        if (findings.length > 0) {
+        emit({
+          phase: "attack",
+          step: toolCallCount,
+          text: `[exploitation-loop] escalating confirmed findings (max ${maxExploitSteps} steps)...`,
+        });
+        const loopRes = await runExploitationLoop({ maxSteps: maxExploitSteps });
+        for (const note of loopRes.notes) {
+          board.addFact(note, "finding");
+        }
+        if (loopRes.executed > 0) {
           emit({
-            phase: "attack",
+            phase: "complete",
             step: toolCallCount,
-            text: `[chain-planner] proposing escalation steps for ${findings.length} finding(s)...`,
+            text: `[exploitation-loop] ${loopRes.executed} escalation step(s) executed; ${loopRes.proofsBuilt} proof(s) built`,
           });
-          const result = await runActiveChaining(findings, {
-            maxSteps: maxActiveChainSteps,
-          });
-          for (const { step } of result.executed) {
-            board.addFact(
-              `Chain proposed: ${step.rationale} (expected ${step.expectedSeverity})`,
-              "finding",
-            );
-          }
-          if (result.steps.length > 0) {
-            emit({
-              phase: "complete",
-              step: toolCallCount,
-              text: `[chain-planner] ${result.executed.length}/${result.steps.length} escalation step(s) executed`,
-            });
-          }
         }
       } catch (err) {
-        log.warn(
-          `[chain-planner] active chaining skipped: ${(err as Error).message}`,
-        );
+        log.warn(`[exploitation-loop] skipped: ${(err as Error).message}`);
       }
     }
   }
@@ -901,6 +1015,40 @@ export async function solve(
     );
   }
 
+  // Assemble the structured final answer (single source of truth for UI).
+  const answerContent = answerParts.join("").trim();
+  const answerReasoning = reasoningParts.join("").trim();
+  let findingRefs: SolverAnswer["findings"] = [];
+  try {
+    const store = getGlobalGraphStore();
+    const findingNodes = (store.queryNodes?.(NodeType.FINDING) || []) as Array<{
+      properties?: { findingId?: string; severity?: string; technique?: string; endpoint?: string };
+    }>;
+    findingRefs = findingNodes.slice(0, 10).map((f) => ({
+      id: f.properties?.findingId ?? "unknown",
+      severity: f.properties?.severity ?? "unknown",
+      technique: f.properties?.technique ?? "unknown",
+      endpoint: f.properties?.endpoint,
+    }));
+  } catch {
+    // Graph store not available
+  }
+
+  const answer: SolverAnswer = {
+    content: answerContent,
+    reasoning: answerReasoning,
+    findings: findingRefs,
+    planSummary: board.planSummary?.() || undefined,
+    status: reason,
+    completed,
+    usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+    durationMs: Date.now() - startTime,
+    steps: toolCallCount,
+    toolCalls: toolCallCount,
+  };
+
+  emitMessage({ kind: "done", answer });
+
   return {
     completed,
     reason,
@@ -911,7 +1059,8 @@ export async function solve(
     facts: board.facts?.length || 0,
     intents: board.intents?.length || 0,
     planSummary: board.planSummary?.() || "",
-    text: fullText || undefined,
+    text: answerContent || fullText || undefined,
+    answer,
     error: lastError || undefined,
   };
 }

@@ -270,6 +270,13 @@ P0 (chaining planner) → P1.1 (BOLA multi-role) → P1.2 (ATO chain) → P1.3 (
   - Test: `test/extensions/protocol-plugin.test.ts` (registration + lazy resolve).
 
 ### NEXT / OPEN
-- Wire `runActiveChaining` into the solver post-finding hook (guarded budget) — pending, to avoid untested hot-loop behavior. The module + tests are complete and available via `runPrimitive`/`chain-planner` today.
+- `runActiveChaining` (chain-planner) was wired into the solver post-finding hook (guarded budget) AND has since been **retired as a duplicate escalation spine** — superseded by `runExploitationLoop` (weaponization spine, W0.2), which is the single escalation driver. `chain-planner` module + its own unit tests (`test/intelligence/chain-planner.test.ts`) remain intact and available via `runPrimitive`/`chain-planner` directly. The solver no longer double-runs two competing hooks against the same `maxActiveChainSteps` budget (removed the budget-overlap smell).
 - Live MCP subprocess + OAuth browser flow remain integration-tested only via mocks (no real server spawned in CI).
+
+### Remaining optional post-MVP expansions (open, out of current scope)
+- MCP tool *result* caching / rate-limit per external server (transport-level fairness).
+- Plugin sandboxing (load user plugins in isolated context; currently trusted import).
+- Skill merit *decay* over time (techniques that stop producing findings lose weight automatically).
+- Cross-session MCP server discovery persistence (auto-detected servers remembered).
+- Web UI for MCP/plugin management (currently CLI-only).
 

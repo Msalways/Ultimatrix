@@ -1,53 +1,105 @@
-'use client'
+import { Box, Text, useStdout } from "ink";
+import React, { useState } from "react";
+import type { ReactNode } from "react";
 
-import * as React from 'react'
-import * as TabsPrimitive from '@radix-ui/react-tabs'
-import { cn } from '@/lib/utils'
+import { useTheme } from "@/components/ui/theme-provider";
+import { useInput } from "@/hooks/use-input";
+import type { BorderStyle } from "@/components/ui/types";
 
-const Tabs = TabsPrimitive.Root
-const TabsList = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.List>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    className={cn(
-      'inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground',
-      className
-    )}
-    {...props}
-  />
-))
-TabsList.displayName = TabsPrimitive.List.displayName
+export interface Tab {
+  key: string;
+  label: string;
+  content: ReactNode;
+}
 
-const TabsTrigger = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.Trigger
-    ref={ref}
-    className={cn(
-      'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm',
-      className
-    )}
-    {...props}
-  />
-))
-TabsTrigger.displayName = TabsPrimitive.Trigger.displayName
+export interface TabsProps {
+  tabs: Tab[];
+  defaultTab?: string;
+  activeTab?: string;
+  onTabChange?: (key: string) => void;
+  borderColor?: string;
+  borderStyle?: BorderStyle;
+  separator?: string;
+  tabBarPaddingX?: number;
+  paddingX?: number;
+  paddingY?: number;
+}
 
-const TabsContent = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content
-    ref={ref}
-    className={cn(
-      'mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-      className
-    )}
-    {...props}
-  />
-))
-TabsContent.displayName = TabsPrimitive.Content.displayName
+export const Tabs = ({
+  tabs,
+  defaultTab,
+  activeTab: controlledTab,
+  onTabChange,
+  borderColor,
+  borderStyle = "single",
+  separator = " │ ",
+  tabBarPaddingX = 2,
+  paddingX = 1,
+  paddingY = 0,
+}: TabsProps) => {
+  const theme = useTheme();
+  const { stdout } = useStdout();
+  const [internalTab, setInternalTab] = useState(
+    defaultTab ?? tabs[0]?.key ?? ""
+  );
+  const activeKey = controlledTab ?? internalTab;
+  const activeIndex = tabs.findIndex((t) => t.key === activeKey);
 
-export { Tabs, TabsList, TabsTrigger, TabsContent }
+  const resolvedBorderColor = borderColor ?? theme.colors.border;
+
+  const switchTab = (nextKey: string | undefined) => {
+    if (!nextKey || nextKey === activeKey) {
+      return;
+    }
+    stdout.write("\u001B[2J\u001B[H");
+    if (onTabChange) {
+      onTabChange(nextKey);
+    } else {
+      setInternalTab(nextKey);
+    }
+  };
+
+  useInput((input, key) => {
+    if (key.leftArrow || (key.shift && key.tab)) {
+      switchTab(tabs[Math.max(0, activeIndex - 1)]?.key);
+    } else if (key.rightArrow || key.tab) {
+      switchTab(tabs[Math.min(tabs.length - 1, activeIndex + 1)]?.key);
+    }
+  });
+
+  const activeTab = tabs.find((t) => t.key === activeKey);
+
+  return (
+    <Box flexDirection="column">
+      <Box paddingX={tabBarPaddingX} gap={0}>
+        {tabs.map((tab, idx) => {
+          const isActive = tab.key === activeKey;
+          return (
+            <Box key={tab.key}>
+              <Text
+                color={
+                  isActive ? theme.colors.primary : theme.colors.mutedForeground
+                }
+                bold={isActive}
+                underline={isActive}
+              >
+                {tab.label}
+              </Text>
+              {idx < tabs.length - 1 && (
+                <Text color={resolvedBorderColor}>{separator}</Text>
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+      <Box
+        borderStyle={borderStyle}
+        borderColor={resolvedBorderColor}
+        paddingX={paddingX}
+        paddingY={paddingY}
+      >
+        {activeTab?.content}
+      </Box>
+    </Box>
+  );
+};

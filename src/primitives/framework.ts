@@ -65,6 +65,10 @@ export interface TechniqueContext {
   payloads?: string[]
   /** Optional relation-seeded mutation spec (from the relational query seam). */
   relationSeed?: import('./constraint-mutators').RelationSeed
+  /** W0.3 — the response from the immediately-preceding step, so chained
+   *  primitives can adapt (e.g. extract a token from step N to use in step N+1).
+   *  Populated by the framework per-attempt; never a hardcoded parse target. */
+  priorResponse?: { status?: number; headers?: Record<string, string>; body?: string }
   /** Optional extra inputs. */
   [key: string]: unknown
 }
@@ -136,6 +140,32 @@ export interface PrimitiveResult {
     request: string
     response: string
     impact: string
+  }
+  /**
+   * W2 — reusable session artifact. When a primitive confirms an auth/seated
+   * finding and recovers a live session (cookies/headers), it returns this so
+   * the runner persists a first-class AUTH_FLOW node marked reusable. The
+   * exploitation loop then reuses it to pivot into other IN-SCOPE endpoints
+   * (held-session reach), never via a hardcoded role list. Absent when no
+   * session is recovered.
+   */
+  sessionArtifact?: {
+    flowType: 'login' | 'jwt-forgery' | 'default-creds' | 'oauth' | 'session-reuse'
+    social?: boolean
+    reusable: boolean
+    headers: Record<string, string>
+    credentialHash?: string
+  }
+  /**
+   * W2 — captured concrete impact data (exfiltrated file contents, victim's
+   * object, divergent response). Folds into the proof's impact + evidence so a
+   * confirmed finding is demonstrated end-to-end, not just reported. The
+   * `kind` is registry-typed, never a frozen vocabulary enum in a prompt.
+   */
+  dataArtifact?: {
+    kind: 'exfil' | 'victim-data' | 'divergent-response' | 'privilege-escalation'
+    label: string
+    data: string
   }
   /** WS-E: render traces captured from HTML responses during this run. */
   renderTraces?: import('../capture/render-tracer').RenderTrace[]
@@ -250,6 +280,15 @@ export async function runPrimitive(
     ? await Promise.all(steps.map(runOne))
     : await steps.reduce<Promise<StepExecutionResult[]>>(async (accP, step) => {
         const acc = await accP
+        // W0.3 — expose the prior step's response so chained steps adapt.
+        if (acc.length > 0) {
+          const prev = acc[acc.length - 1]
+          ctx.priorResponse = {
+            status: prev.status,
+            headers: prev.headers,
+            body: prev.body,
+          }
+        }
         acc.push(await runOne(step))
         return acc
       }, Promise.resolve([]))

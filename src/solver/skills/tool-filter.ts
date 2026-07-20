@@ -25,6 +25,8 @@ const CORE_TOOLS = [
   'restoreSession',
   'getCapturedHeaders',
   'storeSession',
+  'useSession',
+  'extractSessionCookie',
   'buildResearchMap',
   'planResearchExperiments',
   'compareResearchResponses',

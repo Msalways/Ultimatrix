@@ -1,8 +1,10 @@
 import { compress } from 'headroom-ai'
 import type { UltimatrixConfig } from '../config'
 import { log } from '../utils/logger'
+import { wrapHeadroomResult, compactText, type CompactionResult } from '../output/compaction'
 
 export interface CompressionResult {
+  /** Plain-text compressed output (NEVER an SDK envelope). */
   compressed: string
   wasCompressed: boolean
   wasTruncated: boolean
@@ -11,6 +13,8 @@ export interface CompressionResult {
   originalSize: number
   compressedSize: number
   error?: string
+  /** Provenance of any omitted content. */
+  compaction?: CompactionResult
 }
 
 export interface CompressionOptions {
@@ -30,6 +34,7 @@ export class CompressionService {
   private headroomBudget: number
   private fallbackToTruncation: boolean
   private model: string
+  private enabled: boolean
 
   constructor(config?: UltimatrixConfig, options?: CompressionOptions) {
     const cfg = config?.compression?.headroom ?? {}
@@ -40,6 +45,27 @@ export class CompressionService {
     this.headroomBudget = options?.tokenBudget ?? cfg.tokenBudget ?? DEFAULT_HEADROOM_BUDGET
     this.fallbackToTruncation = options?.fallbackToTruncation ?? cfg.fallbackToTruncation ?? true
     this.model = options?.model ?? cfg.model ?? DEFAULT_MODEL
+    this.enabled = cfg.enabled ?? true
+  }
+
+  /**
+   * Extract plain text from Headroom's returned messages (never an envelope).
+   * Headroom returns OpenAIMessage[] with `.content` (string or parts).
+   */
+  private extractText(messages: Array<{ content?: unknown }>): string {
+    const parts: string[] = []
+    for (const m of messages) {
+      const c = m.content
+      if (typeof c === 'string') parts.push(c)
+      else if (Array.isArray(c)) {
+        for (const p of c) {
+          if (p && typeof p === 'object' && 'text' in p && typeof (p as { text: unknown }).text === 'string') {
+            parts.push((p as { text: string }).text)
+          }
+        }
+      }
+    }
+    return parts.join('\n\n')
   }
 
   async compressResponse(response: string): Promise<CompressionResult> {
@@ -56,19 +82,19 @@ export class CompressionService {
       }
     }
 
+    // Hard cap: if the response exceeds the max we will ever handle, the
+    // local section-aware compaction (or truncation fallback) takes over.
     if (originalSize > this.maxResponseSize) {
-      if (this.fallbackToTruncation) {
-        log.dim(`[compression] ${originalSize} chars exceeds limit ${this.maxResponseSize}, truncating`)
-        return this.truncateResponse(response)
+      if (this.enabled && this.fallbackToTruncation) {
+        log.dim(`[compression] ${originalSize} chars exceeds limit ${this.maxResponseSize}, compacting`)
+        return this.compactOrTruncate(response)
       }
-      return {
-        compressed: response,
-        wasCompressed: false,
-        wasTruncated: false,
-        compressionRatio: 1,
-        originalSize,
-        compressedSize: originalSize,
-      }
+      return this.compactOrTruncate(response)
+    }
+
+    // Headroom disabled (or no key) → local compaction, no network call.
+    if (!this.enabled) {
+      return this.compactOrTruncate(response)
     }
 
     try {
@@ -89,27 +115,30 @@ export class CompressionService {
         tokenBudget: this.headroomBudget,
       })
 
-      const compressedSize = result.messages.reduce((total, msg) => total + msg.content.length, 0)
+      const compressedText = this.extractText(result.messages)
+      const compressedSize = compressedText.length
       const compressionRatio = compressedSize / originalSize
       const tokensSaved = result.tokensBefore - result.tokensAfter
 
       log.dim(`[compression] ${originalSize} → ${compressedSize} chars (${(compressionRatio * 100).toFixed(1)}%), saved ${tokensSaved} tokens`)
 
+      const compaction = wrapHeadroomResult(response, compressedText)
       return {
-        compressed: JSON.stringify(result.messages),
+        compressed: compressedText,
         wasCompressed: true,
         wasTruncated: false,
         compressionRatio,
         tokensSaved,
         originalSize,
         compressedSize,
+        compaction,
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       log.dim(`[compression] Headroom failed: ${errMsg}`)
 
       if (this.fallbackToTruncation) {
-        return this.truncateResponse(response)
+        return this.compactOrTruncate(response, errMsg)
       }
 
       return {
@@ -124,31 +153,19 @@ export class CompressionService {
     }
   }
 
-  private truncateResponse(response: string): CompressionResult {
-    const originalSize = response.length
-    const limit = this.maxResponseSize
-
-    if (originalSize <= limit) {
-      return {
-        compressed: response,
-        wasCompressed: false,
-        wasTruncated: false,
-        compressionRatio: 1,
-        originalSize,
-        compressedSize: originalSize,
-      }
-    }
-
-    const truncated = response.slice(0, limit)
-    const suffix = `\n\n[truncated — showing first ${limit} of ${originalSize} chars total]`
-
+  /** Local fallback: section-aware compaction targeting the char cap. */
+  private compactOrTruncate(response: string, error?: string): CompressionResult {
+    const tokenBudget = Math.max(1, Math.floor(this.maxResponseSize / 4))
+    const res = compactText(response, { tokenBudget, strategy: 'section-aware' })
     return {
-      compressed: truncated + suffix,
+      compressed: res.text,
       wasCompressed: false,
-      wasTruncated: true,
-      compressionRatio: (truncated.length + suffix.length) / originalSize,
-      originalSize,
-      compressedSize: truncated.length + suffix.length,
+      wasTruncated: res.compacted,
+      compressionRatio: res.text.length / response.length || 1,
+      originalSize: response.length,
+      compressedSize: res.text.length,
+      compaction: res,
+      error,
     }
   }
 }

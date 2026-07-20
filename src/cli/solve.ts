@@ -2,6 +2,7 @@ import { loadConfig, DEFAULTS } from '../config'
 import { log } from '../utils/logger'
 import { solve } from '../solver/solver'
 import { createSolverBrain } from '../solver/brain-tools'
+import { createSolverRenderer } from '../session'
 import { getGlobalWorkspace } from '../workspace'
 import { showDisclaimer } from '../authorization'
 import { createMemoryStore, createMemory } from '../workers/registry'
@@ -134,9 +135,9 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   const maxRounds = config.solver?.maxRounds ?? DEFAULTS.solver.maxRounds
   let round = 0
   let lastResult = null
-  let streamedResponse = false
-  let inThinking = false
   const goal = `Perform a comprehensive security assessment of ${target}. Test for SQL injection, XSS, IDOR, authentication bypass, and any other vulnerabilities. Record all findings.`
+
+  const renderMsg = createSolverRenderer({}, {}, { plain: true })
 
   while (round < maxRounds) {
     round++
@@ -156,27 +157,13 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
         staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
         maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
       },
-      onPhase: (event) => {
-        if (event.text) {
-          if (event.reasoning) {
-            if (!inThinking) {
-              process.stdout.write('\x1b[2m[thinking] ')
-              inThinking = true
-            }
-            process.stdout.write(event.text)
-          } else {
-            if (inThinking) {
-              process.stdout.write('\x1b[0m\n')
-              inThinking = false
-            }
-            process.stdout.write(event.text)
-            streamedResponse = true
-          }
-        }
-      },
+      onMessage: renderMsg,
     })
 
     lastResult = result
+
+    // Final clean markdown frame (caret removed, done footer) once streaming ends.
+    renderMsg.final?.()
 
     if (result.completed) {
       log.success(`Goal achieved in round ${round}: ${result.reason}`)
@@ -193,11 +180,6 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
     }
   }
 
-  if (inThinking) {
-    process.stdout.write('\x1b[0m\n')
-    inThinking = false
-  }
-
   const result = lastResult!
 
   log.nl()
@@ -208,9 +190,6 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
   }
   if (result.error) {
     log.error(`Error: ${result.error}`)
-  }
-  if (!streamedResponse && result.text) {
-    process.stdout.write(result.text)
   }
   log.info(`Tool calls: ${result.toolCalls} | Facts: ${result.facts} | Intents: ${result.intents} | Duration: ${result.durationMs}ms`)
 
@@ -228,7 +207,7 @@ export async function solveCommand(target: string, outputDir: string): Promise<v
       timeoutMs: verifierConfig.timeoutMs,
     })
     if (verification.verified.length > 0) log.success(`  Verified: ${verification.verified.length}`)
-    if (verification.disproven.length > 0) log.warn(`  Disproven: ${verification.disproven.length}`)
+    if (verification.rejected.length > 0) log.warn(`  Rejected: ${verification.rejected.length}`)
     if (verification.skipped.length > 0) log.dim(`  Skipped: ${verification.skipped.length}`)
   }
 

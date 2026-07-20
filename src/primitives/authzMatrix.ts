@@ -94,6 +94,23 @@ export const authzMatrix: TechniquePrimitive = {
             cwe: 'CWE-285',
           }
         : undefined,
+      exploitProof: confirmed
+        ? {
+            scenario: `Broken access control: baseline ${baseStatus} vs alternate ${altStatus}`,
+            request: `${alt.step.request.method} ${alt.step.request.url}${alt.step.request.body ? `\n\n${alt.step.request.body}` : ''}`,
+            response: `HTTP ${altStatus}\n${(alt.body ?? '').slice(0, 800)}`,
+            impact: `Actor reached a resource denied to the baseline role (divergence=${cmp.divergence.toFixed(2)}).`,
+          }
+        : undefined,
+      // W2 — when the escalation yielded privileged data, capture it as
+      // concrete impact (privilege-escalation / victim data).
+      dataArtifact: confirmed
+        ? {
+            kind: 'privilege-escalation' as const,
+            label: `Escalated resource returned to actor at ${alt.step.request.url}`,
+            data: (alt.body ?? '').slice(0, 1500),
+          }
+        : undefined,
       note: `baseline=${baseStatus} alt=${altStatus} divergence=${cmp.divergence.toFixed(2)} verified=${verified}`,
     }
   },

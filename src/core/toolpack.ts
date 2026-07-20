@@ -37,6 +37,7 @@ import { loadSkillReference, searchSkillTool, listSkills } from '../tools/skill-
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
+import { useSession, extractSessionCookie } from '../tools/session-tools'
 import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
@@ -122,6 +123,8 @@ function sessionTools(p: string): Record<string, any> {
     storeSession: s(storeSession, p),
     saveSession: s(saveSession, p),
     restoreSession: s(restoreSession, p),
+    useSession: s(useSession, p),
+    extractSessionCookie: s(extractSessionCookie, p),
   }
 }
 

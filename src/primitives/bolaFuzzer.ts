@@ -193,6 +193,16 @@ export const bolaFuzzer: TechniquePrimitive = {
 
     const severity = actionWrite ? 'critical' : fired.length > 0 ? 'high' : undefined
 
+    // W2 — capture the victim's object data returned to the actor as concrete
+    // impact (demonstrates the cross-tenant data disclosure end-to-end).
+    const dataArtifact = confirmed
+      ? {
+          kind: 'victim-data' as const,
+          label: `Victim object ${altObjectId} returned to actor at ${repUrl}`,
+          data: (read.body ?? '').slice(0, 1500),
+        }
+      : undefined
+
     return {
       confirmed,
       confidence: confirmed ? (actionWrite ? 0.9 : 0.8) : fired.length > 0 ? 0.5 : 0.1,
@@ -207,6 +217,15 @@ export const bolaFuzzer: TechniquePrimitive = {
             cwe: 'CWE-639',
           }
         : undefined,
+      exploitProof: confirmed
+        ? {
+            scenario: `BOLA: actor session acted on victim object ${altObjectId} at ${repUrl}`,
+            request: `${read.step.request.method} ${repUrl}${read.step.request.body ? `\n\n${read.step.request.body}` : ''}`,
+            response: `HTTP ${readStatus}\n${(read.body ?? '').slice(0, 800)}`,
+            impact: `Actor accessed/modified a victim's object across tenant boundary (${fired.join(', ')}).`,
+          }
+        : undefined,
+      dataArtifact,
       note: `horizontal=${horizontal} actionWrite=${actionWrite} methodSwitch=${methodSwitch} massAssign=${massAssign} verified=${verified}`,
     }
   },

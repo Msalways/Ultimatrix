@@ -44,6 +44,7 @@ import { listToolsTool, loadToolTool, getAcquiredToolMap } from '../extensions/t
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
+import { useSession, extractSessionCookie } from '../tools/session-tools'
 import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
@@ -144,6 +145,11 @@ export function createSolverBrain(
     storeSession: sanitizeTool(storeSession, p),
     saveSession: sanitizeTool(saveSession, p),
     restoreSession: sanitizeTool(restoreSession, p),
+    // W2 cross-cut: let the brain persist a recovered session (from authBypass's
+    // sessionArtifact) and retrieve it as headers for downstream reuse — the
+    // seam that lets the exploitation loop pivot with a held session.
+    useSession: sanitizeTool(useSession, p),
+    extractSessionCookie: sanitizeTool(extractSessionCookie, p),
   }
 
   // ─── Auth flow tools (autonomous auth detection) ──────────────────

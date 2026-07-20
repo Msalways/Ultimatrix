@@ -198,14 +198,14 @@ That's not a toy. That's a security consultant that works 24/7.
            └───────────────────────────────────────────────────────────────┘
 ```
 
-### Source Layout (228+ TypeScript files, 30K+ LOC)
+### Source Layout (274+ TypeScript files, 30K+ LOC)
 
 ```
 src/
 ├── analysis/          # HAR analyzer, instruction builder, skill loader
-├── browser/           # Playwright/Stagehand, dialog watcher, state bridge
+├── browser/           # Playwright/Stagehand, dialog watcher, state bridge, anti-bot
 ├── campaign/          # Campaign planning, execution, continuity
-├── capture/           # Human observer, HAR parser, network capture
+├── capture/           # Human observer, HAR parser, network capture, JS miner
 ├── cli/               # CLI entry point, command handlers
 ├── compression/       # Headroom compression service
 ├── config/            # Config loader, schema, validation
@@ -223,23 +223,23 @@ src/
 ├── core/              # Unified execution core (runner, strategies, blackboard)
 ├── events/            # Typed event emitter
 ├── generation/        # Test generator, parameterizer, storage
-├── graph/             # Knowledge graph (TypeGraph), store, tools
+├── graph/             # Knowledge graph (TypeGraph), store, tools, relations
 ├── http/              # HTTP client with compression, rate limiting
-├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining
+├── intelligence/      # Evidence gate, reflexion, anti-loop, RBAC, chaining, hypotheses
 ├── logging/           # Forensic event logger, system metrics
 ├── manager/           # Agent manager (legacy supervisor)
 ├── mastra/            # Mastra agent wiring, tool registry
 ├── memory/            # Memory schemas, store
 ├── models/            # Model factory, selector, rate limiter, quota tracker
 ├── oast/              # Out-of-band attack server (blind callback detection)
-├── primitives/        # Security primitives (IDOR, auth bypass, race conditions)
+├── primitives/        # Security primitives (9 oracles: IDOR, auth bypass, race, etc.)
 ├── prompts/           # Core contract, system prompts
 ├── recorder/          # Action recorder, code generator
 ├── replay/            # Test case replayer
 ├── report/            # JSON/HTML/Markdown report generator, case file export
 ├── safety/            # Scope guard, URL validation
-├── session/           # Session lifecycle, engine routing
-├── solver/            # OODA solver engine, brain, blackboard, attack-path
+├── session/           # Session lifecycle, engine routing, HAR capture
+├── solver/            # OODA solver engine, brain, blackboard, attack-path, exploitation-loop, threat-model, skills
 ├── spider/            # Stagehand-based hybrid crawler
 ├── supervisor/        # Legacy supervisor agent
 ├── tools/             # 28+ specialized tools
@@ -1693,7 +1693,7 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (1319 passing)
+# Run all tests (1604 passing)
 npm test
 
 # Run specific test suite
@@ -1720,7 +1720,7 @@ npm run build:cli    # ESM + CJS + DTS
 | Tools (28+ tools) | 130+ | All tool interfaces, flow tools, skill tools, scope guard |
 | Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid, scope enforcement |
 | Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
-| Solver (OODA, blackboard, plan) | 60+ | Full loop, tool chains, composition, attack-path |
+| Solver (OODA, blackboard, plan, exploitation-loop) | 60+ | Full loop, tool chains, composition, attack-path, threat model |
 | Models (rate-limiter, quota, selector, middleware) | 80+ | All providers, 3-layer rate limiting |
 | Session (lifecycle, engine routing) | 15 | Both engines, 6-phase lifecycle |
 | Council (orchestrator, approval, personas, debate-memory, persona-loader) | 60+ | Parallel debate, stance tracking, contradiction detection, file loader |
@@ -1728,6 +1728,8 @@ npm run build:cli    # ESM + CJS + DTS
 | Skills (loader, matcher, registry, tool-filter) | 60+ | 57 skills, progressive disclosure, domain matching |
 | Safety (scope guard) | 15 | Domain matching, wildcard, path prefix, protocol |
 | Campaign (planner, executor, continuity) | 40+ | Coverage planning, auto-replan, outcome feedback |
+| Primitives (weaponize, framework, all 9 oracles) | 40+ | Evidence-gated verification, exploit-proof generation |
+| Components (UI, chat, streaming) | 30+ | Ink TUI, streaming text, markdown rendering |
 
 ---
 
@@ -1745,10 +1747,10 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Metric | Value |
 |--------|-------|
-| Source files | 234+ TypeScript files |
+| Source files | 274+ TypeScript files |
 | Source lines | 30,000+ |
-| Test files | 106 files |
-| Tests passing | 1350 |
+| Test files | 148 files |
+| Tests passing | 1604 / 1605 (1 pre-existing context-manager truncation test) |
 | Skills | 57 (across 10 domains) |
 | Tools | 28+ specialized tools |
 | Engines | 2 active (multi-model default, legacy) + council on-demand |
@@ -1759,6 +1761,20 @@ npm run build:cli    # ESM + CJS + DTS
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
 | Intelligence modules | 9 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard, debate-memory) |
+
+### Audit & Remediation
+
+A comprehensive audit of Ultimatrix v8.4 identified 40 issues across 5 categories (sanitization, unwired logic, triggering failures, logical scope gaps, prompt engineering). The combined audit + remediation plan tracks all findings with exact file locations, anti-bandaid acceptance criteria, and phased implementation:
+
+| Phase | Focus | Tasks | Effort |
+|-------|-------|-------|--------|
+| P0: Security | Credential leakage, regex removal, scope guard | 6 | 16 hrs |
+| P1: Core Wiring | Session store, campaign, evidence gate, intel layers | 5 | 16 hrs |
+| P2: Intelligence | Debate persistence, human flows, skill composition | 5 | 20 hrs |
+| P3: Operational | OAST polling, chain detection, session expiry | 5 | 10 hrs |
+| P4: Hygiene | Input validation, masking, schema docs | 3 | 8 hrs |
+
+See `COMBINED-AUDIT-AND-REMEDIATION-PLAN.md` for the full plan with dependency graph, cross-reference map, and per-task implementation details.
 
 ### Skill Domain Breakdown
 

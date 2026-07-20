@@ -122,6 +122,31 @@ export interface SolverConfig {
   maxActiveChainSteps?: number
 }
 
+/**
+ * Interaction display policy — product-level choices about what the solver
+ * surfaces to the operator. These are preferences, not provider behavior: the
+ * engine still reasons/tests identically regardless of these flags.
+ */
+export interface InteractionConfig {
+  /**
+   * Show the model's reasoning/thinking. Reasoning is the buddy's decision
+   * context (SDK `reasoningText`), normalized across providers. Default: true.
+   */
+  showReasoning?: boolean
+  /**
+   * Show the dim "system events" block (tooling/quota/summary lines) below the
+   * answer card. Default: true.
+   */
+  showSystemEvents?: boolean
+  /**
+   * Use the unified chat-box renderer for `ultimatrix interact` — one session-wide
+   * terminal owner that frames each user message + reply as a chat card, routes the
+   * spider crawl as live activity, and captures log.* as a single system-events block.
+   * When false, falls back to the legacy autonomous-run card (ChatStream). Default: true.
+   */
+  chat?: boolean
+}
+
 export interface SpiderConfig {
   enabled?: boolean
   maxSteps?: number
@@ -367,6 +392,8 @@ export interface UltimatrixConfig {
   skillsDirs?: string[]
   /** Phase 7.2: skill selection options. */
   skills?: { exclude?: string[] }
+  /** Interaction display policy (reasoning visibility, system-event log). */
+  interaction?: InteractionConfig
 }
 
 // ─── Extensibility config types (Phase 1 / 5) ─────────────────────────
@@ -396,7 +423,7 @@ export interface PluginConfig {
 
 // ─── Dynamic memory sizing based on model context window ─────────────
 
-const CONTEXT_WINDOW_MAP: Record<string, number> = {
+export const CONTEXT_WINDOW_MAP: Record<string, number> = {
   'groq/llama3-8b-8192': 8192,
   'groq/llama3-70b-8192': 8192,
   'groq/llama3.1-8b-instant': 131072,

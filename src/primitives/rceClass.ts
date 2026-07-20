@@ -187,6 +187,17 @@ export const rceClass: TechniquePrimitive = {
     const critical = fired.some((f) => f.kind === 'cmd' || f.kind === 'xxe')
     const severity = critical ? 'critical' : 'high'
 
+    // W2 — capture concrete exfiltrated impact (file contents echoed by the
+    // payload) as a typed data artifact folded into the proof's impact.
+    const exfil = fired.find((f) => f.kind === 'cmd' || f.kind === 'xxe')
+    const dataArtifact = exfil
+      ? {
+          kind: 'exfil' as const,
+          label: `RCE-class response (${exfil.kind}) from ${exfil.r.step.request.url}`,
+          data: (exfil.r.body ?? '').slice(0, 1500),
+        }
+      : undefined
+
     const cweMap: Record<string, string> = {
       ssti: 'CWE-94',
       cmd: 'CWE-77',
@@ -220,6 +231,7 @@ export const rceClass: TechniquePrimitive = {
             cwe,
           }
         : undefined,
+      dataArtifact,
       note: `fired=${fired.map((f) => f.kind).join(',')} verified=${verified} severity=${severity}`,
     }
   },

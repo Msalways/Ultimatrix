@@ -284,14 +284,13 @@ discovery + merit arbitration). That plan is **complete** (P0â€“P3 done, 1458 te
 record). What is **pending / not yet started** that this business-logic work depends on or relates
 to:
 
-### 5.1 Directly required by this plan (must be done, not yet started)
-- [ ] **Live HAR capture fix (L1)** â€” currently broken (`page.on('response')` unsupported). This is
-  the foundation; without it L2â€“L8 have no data. **This is the #1 pending item.**
-- [ ] **Relation graph edges (L2)** â€” provenance / reingest / ordering do not exist yet as
-  queryable edges (only prose facts today).
-- [ ] **Relational query tool (L3)** â€” does not exist.
-- [ ] **`hypothesis-engine` regex removal (L4)** â€” file still has regex (verified).
-- [ ] **`ExploitProof` node (L2/L7)** â€” does not exist.
+### 5.1 Directly required by this plan (all DONE â€” verified in prior sessions)
+- [x] **Live HAR capture fix (L1)** â€” CDP-native capture via `src/session/cdp-network-capture.ts`,
+  HAR owned by `har-parser.ts`, full ExtraInfo event set, origin tagging. (Â§8)
+- [x] **Relation graph edges (L2)** â€” `REINGESTS` / `ORDERED_BEFORE` / `PROVES` edges + `EndpointNode.endpointKey`.
+- [x] **Relational query tool (L3)** â€” `queryRelations` in `src/graph/relation-tools.ts`.
+- [x] **`hypothesis-engine` regex removal (L4)** â€” relation-native; `looksLikeId`/secret shapes retained.
+- [x] **`ExploitProof` node (L2/L7)** â€” `NodeType.EXPLOIT_PROOF` + `ExploitProofNode`; emitted by primitives (`runPrimitiveById` seam) and `writeFinding` (`exploitProof` arg + `PROVES` edge).
 
 ### 5.2 Expansion-plan items that remain open (from EXTENSIBILITY-TASK-PLAN, not started)
 > NOTE: The extensibility *framework* (P0â€“P3) is implemented. The items below are the **optional
@@ -344,19 +343,19 @@ to:
 
 ---
 
-## 8. Origin tagging — capture-all, drop the blind localhost exclusion (APPROVED, implemented)
+## 8. Origin tagging ï¿½ capture-all, drop the blind localhost exclusion (APPROVED, implemented)
 
 ### 8.1 Rationale
 The CDP capture previously hard-excluded `['localhost','127.0.0.1']`. Two failures:
 - **False drop:** a user testing a local dev app (`http://localhost:3000`) loses its target traffic
-  from HAR/graph — the LLM never sees the app under test.
+  from HAR/graph ï¿½ the LLM never sees the app under test.
 - **Rigid bandaid:** dropping pre-empts LLM reasoning. Principle = "capture FULL, let the LLM decide."
 
 ### 8.2 Decision
 - Capture **everything** (human + spider + agent + OAST callbacks + local dev target). No hard drop.
 - Classify each `Endpoint` node with a typed `origin: 'target' | 'self'` at graph-ingestion time.
-- Noise is scoped by the LLM via `queryGraph({ origin: 'target' })` — a reversible query, never a
-  destructive drop. No `excludeDomains` param (removed entirely — rigid).
+- Noise is scoped by the LLM via `queryGraph({ origin: 'target' })` ï¿½ a reversible query, never a
+  destructive drop. No `excludeDomains` param (removed entirely ï¿½ rigid).
 
 ### 8.3 Self-origin resolution (platform-owned, no guess)
 `self` origin = the OAST callback host, resolved from `getOastUrl()` (`oast/server.ts`):
@@ -365,16 +364,16 @@ equality match against an entry host+port ? `origin: 'self'`. A localhost DEV TA
 OAST origin) ? `origin: 'target'` (never falsely dropped). External OAST host also caught.
 
 ### 8.4 Changes
-1. `src/session/cdp-network-capture.ts` — remove hardcoded localhost exclusion; capture-all; remove
+1. `src/session/cdp-network-capture.ts` ï¿½ remove hardcoded localhost exclusion; capture-all; remove
    `excludeDomains`/hard-drop `shouldCapture` path.
-2. `src/session/lifecycle.ts` — remove `excludeDomains: ['localhost','127.0.0.1']` from the
+2. `src/session/lifecycle.ts` ï¿½ remove `excludeDomains: ['localhost','127.0.0.1']` from the
    `attachHarCaptureViaCdp` call.
-3. `src/graph/schema.ts` — add `origin?: 'target' | 'self'` to `EndpointNode.properties`; add
+3. `src/graph/schema.ts` ï¿½ add `origin?: 'target' | 'self'` to `EndpointNode.properties`; add
    `'origin'` to `NODE_PROPERTIES[NodeType.ENDPOINT]`.
-4. `src/analysis/har-bridge.ts` — import `getOastUrl`; resolve self host:port once; set `origin` on
+4. `src/analysis/har-bridge.ts` ï¿½ import `getOastUrl`; resolve self host:port once; set `origin` on
    each endpoint node; propagate `origin: 'self'` to secrets/facts derived from a self entry.
-5. `src/graph/relation-tools.ts` `getCaptureOverview` — add `originCounts: { target, self }`.
-6. `src/graph/tools.ts` `queryGraph` — add optional `origin` to inputSchema + filters map.
+5. `src/graph/relation-tools.ts` `getCaptureOverview` ï¿½ add `originCounts: { target, self }`.
+6. `src/graph/tools.ts` `queryGraph` ï¿½ add optional `origin` to inputSchema + filters map.
 
 ### 8.5 Tests
 - `har-capture`/`cdp-har-builder`: localhost dev target captured (regression vs old drop).

@@ -17,6 +17,7 @@ import {
   RenderedElementNode,
   CouncilDebateNode,
   ExploitProofNode,
+  ThreatModelNode,
   AnyNodeData,
 } from './schema'
 
@@ -255,6 +256,25 @@ export class LibSQLGraphStore {
       updatedAt: Date.now(),
     }
 
+    this.insertNode(node)
+    return node
+  }
+
+  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode {
+    const id = `threatmodel:${data.findingId || 'unknown'}:${Date.now()}`
+    const node: ThreatModelNode = {
+      id,
+      type: NodeType.THREAT_MODEL,
+      label: `ThreatModel: ${data.findingId || 'unknown'}`,
+      properties: {
+        findingId: '',
+        assetsAtRisk: [],
+        trustBoundary: '',
+        ...data,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
     this.insertNode(node)
     return node
   }

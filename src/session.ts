@@ -1,10 +1,11 @@
 ﻿import { log } from './utils/logger'
-import { DEFAULTS } from './config'
+import { DEFAULTS, loadConfig } from './config'
 import { detectChains } from './intelligence/chaining'
 import type { FindingNode } from './graph/schema'
 import { getGlobalReactionObserver } from './browser/reaction-observer'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
+import type { SolverStreamMessage } from './solver/solver'
 import { getGlobalWorkspace } from './workspace'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
@@ -13,48 +14,274 @@ import { getGlobalQuotaTracker } from './models/quota-tracker'
 import { askUserConfirm } from './tools/interaction-tools'
 import type { DebateMemory } from './council/types'
 import { getGlobalGraphStore } from './graph/store'
+import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
+import { ChatStream } from './output/layout'
+import type { ChatBox } from './output/chatbox'
+import type { UiStore } from './ui/store'
+import { setLogSink, type LogSink } from './utils/logger'
+import chalk from 'chalk'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
-export async function main(targetUrl?: string) {
-  const lifecycle = new SessionLifecycle()
+/**
+ * Host hooks so the chat-card renderer can coordinate with the REPL's readline
+ * input line. In non-interactive runs (`ultimatrix solve`) these are omitted.
+ */
+export interface SolverRendererHost {
+  /** Pause the input line before cursor manipulation. */
+  pause?: () => void
+  /** Resume the input line after a redraw. */
+  resume?: () => void
+}
 
-  // Initialize: config → resources → browser → infrastructure
+/** Session context rendered into the chat card header / status. */
+export interface SolverRenderContext {
+  engine?: string
+  provider?: string
+  target?: string
+  /** The solver's objective (drives the OODA loop). Engine semantics â€” not a display label. */
+  goal?: string
+  /** What the user actually typed this turn (displayed as the card's prompt line). */
+  prompt?: string
+}
+
+/** Render callback with lifecycle hooks for one interactive turn. */
+export interface SolverRenderer {
+  (msg: SolverStreamMessage): void
+  /** Draw the final card (no live caret). */
+  final: () => void
+  /** Flush buffered system events below the card, then restore the logger. */
+  flush: () => void
+  /** Toggle the collapsed reasoning block open/closed. */
+  toggleReasoning: () => void
+  /** Tear down any TUI state (restores logger sink). */
+  exit: () => void
+}
+
+/**
+ * Renders the structured solver stream to the terminal as inline "chat cards"
+ * (opencode / Claude Code style) via the shared RenderModel + `ChatStream`.
+ * Lives in the normal scrollback (no alternate-screen flicker), so long answers
+ * stay naturally scrollable. TTY-aware: ANSI only on real terminals. The web UI
+ * consumes the same RenderModel through a React reducer ï¿½ single contract.
+ */
+export function createSolverRenderer(
+  host: SolverRendererHost = {},
+  ctx: SolverRenderContext = {},
+  opts: { plain?: boolean; interaction?: { showReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null; uiStore?: UiStore | null } = {},
+): SolverRenderer {
+  const model: RenderModel = createRenderModel()
+  model.engine = ctx.engine
+  model.provider = ctx.provider
+  model.target = ctx.target
+  model.goal = ctx.goal
+
+  // Display policy: config-driven, default on. These are product preferences,
+  // never agent behavior.
+  const showReasoning = opts.interaction?.showReasoning ?? true
+  const showSystemEvents = opts.interaction?.showSystemEvents ?? true
+
+  // Console mode (termcn/Ink): the Ink App owns the entire terminal (alternate
+  // screen), so the renderer must NOT write to stdout. It folds every message
+  // into the UiStore exactly once; the Ink panes read the store. Reversible:
+  // when `uiStore` is absent, the legacy chat-box / plain paths run unchanged.
+  if (opts.uiStore) {
+    const render = (msg: SolverStreamMessage): void => {
+      reduceMessage(model, msg)
+      opts.uiStore.dispatchSolver(msg)
+    }
+    render.final = (): void => {
+      opts.uiStore.commitTurn()
+    }
+    render.flush = (): void => { /* no buffered stdout in console mode */ }
+    render.toggleReasoning = (): void => { /* TODO: console reasoning toggle */ }
+    render.exit = (): void => { /* Ink unmount owned by session */ }
+    return render
+  }
+
+  // Chat-box mode: one session-wide renderer owns all terminal output. The
+  // ChatBox is adapted to the SolverRenderer interface so both solver call
+  // sites stay unchanged. The session owns the sink (installed in `main`),
+  // so this adapter never installs/restores it.
+  if (opts.chatbox) {
+    const cb = opts.chatbox
+    cb.printUserMessage(ctx.prompt ?? ctx.goal ?? '')
+    cb.beginAssistant()
+    const render = (msg: SolverStreamMessage): void => {
+      reduceMessage(model, msg)
+      cb.streamAssistant(msg)
+      // Mirror every folded message into the console store so the Ink UI shows
+      // the same turn the chat box prints. Single fold (reduceMessage) â€” no
+      // double reduction. The store is a pure consumer here.
+      opts.uiStore?.dispatchSolver(msg)
+    }
+    render.final = (): void => {
+      cb.endAssistant()
+      opts.uiStore?.commitTurn()
+    }
+    render.flush = (): void => { /* ChatBox.endAssistant already flushed/cleared sink */ }
+    render.toggleReasoning = (): void => cb.toggleReasoning()
+    render.exit = (): void => { /* sink owned by session */ }
+    return render
+  }
+
+  if (opts.plain) {
+    // Lightweight streaming painter (used by `ultimatrix solve` and the
+    // `--plain` fallback): no card framing, TTY-aware escape-free.
+    const render = (msg: SolverStreamMessage): void => {
+      reduceMessage(model, msg)
+      if (model.answer) process.stdout.write(renderMarkdownPlain(model.answer) + '\n')
+    }
+    render.final = (): void => { /* plain stream already emitted */ }
+    render.flush = (): void => { /* no buffered system events in plain mode */ }
+    render.toggleReasoning = (): void => { /* no card to toggle */ }
+    render.exit = (): void => { /* no TUI to tear down */ }
+    return render
+  }
+
+  const stream = new ChatStream({ showReasoning })
+  stream.begin(ctx.prompt, ctx.goal)
+
+  // Mute `INFO [ts]` noise during the turn so the answer card stays readable.
+  // The sink stays installed until `render.flush()` is called (after the
+  // post-solve logs), so the Steps/Plan/quota lines land in the buffer too and
+  // are emitted as ONE dim `system events` block below the footer â€” never raw.
+  const buffered: string[] = []
+  const sink: LogSink = (level, msg) => {
+    if (level === 'nl') return
+    const tag = tagFor(level)
+    buffered.push(`${chalk.dim('[sys]')} ${tag}${msg}`)
+  }
+  setLogSink(sink)
+
+  const render = (msg: SolverStreamMessage): void => {
+    reduceMessage(model, msg)
+    stream.push(model)
+  }
+  render.final = (): void => {
+    stream.final(model)
+  }
+  // Flush buffered system lines below the card, then restore the logger.
+  // Gated by `showSystemEvents` â€” when off, nothing is emitted and the sink is
+  // simply restored.
+  render.flush = (): void => {
+    setLogSink(null)
+    if (!showSystemEvents) return
+    if (buffered.length) {
+      process.stdout.write(chalk.dim('------ system events ------') + '\n')
+      for (const line of buffered) process.stdout.write(line + '\n')
+      process.stdout.write(chalk.dim('--------------------------') + '\n')
+    }
+  }
+  render.toggleReasoning = (): void => {
+    stream.toggleReasoning(model)
+  }
+  render.exit = (): void => { setLogSink(null) }
+  return render
+}
+
+function tagFor(level: string): string {
+  switch (level) {
+    case 'warn': return chalk.yellow('? ')
+    case 'error': return chalk.red('? ')
+    case 'success': return chalk.green('? ')
+    case 'dim': return ''
+    default: return ''
+  }
+}
+
+function renderMarkdownPlain(text: string): string {
+  // Escape-free streaming for plain/verify mode: reuse the markdown renderer's
+  // TTY-agnostic path (isTTY false ? no escapes).
+  try {
+    // Lazy import kept local to avoid a hard dependency at module load.
+    const { renderMarkdown } = require('./output/terminal') as typeof import('./output/terminal')
+    return renderMarkdown(text, { isTTY: false })
+  } catch {
+    return text
+  }
+}
+
+export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
+  const lifecycle = new SessionLifecycle()
+  /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
+  let lastRenderMsg: SolverRenderer | undefined
+
+  // Native terminal console: the plain `log.*` + streamed-answer path. The
+  // termcn/Ink TUI (src/ui/*) is retained on disk but disabled â€” we do not
+  // construct a ChatBox or UiStore here, so stdin stays owned by readline and
+  // no in-place cursor rewrites can erase the user's typed line.
+  const preCfg = loadConfig().interaction ?? {}
+  const preChat = !opts.plain && (preCfg.chat ?? true)
+
+  // Initialize: config ? resources ? browser ? infrastructure
   const resources = await lifecycle.init(targetUrl)
 
-  // Spider: crawl → HAR bridge
-  await lifecycle.runSpider()
+  const interactionCfg = resources.config?.interaction ?? {}
+  const chatEnabled = !opts.plain && (interactionCfg.chat ?? true)
+
+  // Both renderers are disabled in the native terminal: the REPL uses the
+  // plain `log.*` / stdout streamer and a simple `> ` prompt.
+  const chatbox = null
+
+  // Spider: crawl ? HAR bridge (no activity sink in native terminal)
+  await lifecycle.runSpider(undefined)
 
   // Engine: solver brain or legacy workers
   await lifecycle.setupEngine()
 
   // REPL loop
   await lifecycle.runREPL(async (line: string) => {
+    // Coordinate the in-place markdown painter with the readline input line so
+    // The native terminal owns stdin via readline; there is no ink/card surface
+    // to coordinate with, so the solver stream writes directly to stdout.
+    const rl = resources.readline
+
+    // Activity sink is disabled in the native terminal: all output routes
+    // through `log.*` / stdout below.
+    const sink = undefined
+
     // Commands
     if (line.trim() === '/help') {
-      log.info('Commands:')
-      log.info('  /council <goal>  — deliberate with the council (strategist / operator / skeptic / analyst)')
-      log.info('  /report [id]     — write a Markdown report (whole engagement, or one finding by id)')
-      log.info('  /help            — show this help')
-      log.info('  <goal>           — send a goal to the solver brain')
+      const helpText = [
+        'Commands:',
+        '  /council <goal>  â€” deliberate with the council (strategist / operator / skeptic / analyst)',
+        '  /report [id]     â€” write a Markdown report (whole engagement, or one finding by id)',
+        '  /reasoning (/r)  â€” expand/collapse the last turn\'s reasoning block',
+        '  /help            â€” show this help',
+        '  <goal>           â€” send a goal to the solver brain',
+      ].join('\n')
+      if (sink) sink.printHelp(helpText)
+      else {
+        for (const h of helpText.split('\n')) log.info(h)
+      }
       return
     }
 
-    // W-R — on-demand Markdown report. "/report" → whole engagement;
-    // "/report <findingId>" → single finding. Prints the written path to chat.
+    // Toggle the collapsed reasoning block of the last completed turn.
+    if (line.trim() === '/reasoning' || line.trim() === '/r') {
+      lastRenderMsg?.toggleReasoning()
+      return
+    }
+
+    // W-R ï¿½ on-demand Markdown report. "/report" ? whole engagement;
+    // "/report <findingId>" ? single finding. Prints the written path to chat.
     const reportMatch = line.match(/^\/report(?:\s+(\S+))?$/)
     if (reportMatch) {
       const { writeOnDemandReport } = await import('./report/on-demand')
       const res = writeOnDemandReport(reportMatch[1] ? 'finding' : 'engagement', reportMatch[1])
       if (res.ok) {
-        log.info(`Report written (${res.findingCount} finding(s)): ${res.path}`)
+        if (sink) sink.printReport(`Report written (${res.findingCount} finding(s)): ${res.path}`)
+        else log.info(`Report written (${res.findingCount} finding(s)): ${res.path}`)
       } else {
-        log.warn(res.error ?? 'report failed')
+        if (sink) sink.printReport(res.error ?? 'report failed')
+        else log.warn(res.error ?? 'report failed')
       }
+      sink?.flushSystem()
       return
     }
 
-    // Phase 7.2 — pure-discovery skill selection. Skills are no longer
+    // Phase 7.2 ï¿½ pure-discovery skill selection. Skills are no longer
     // auto-matched from free-form user input via substring scanning. The brain
     // and council select skills themselves via the listSkills / searchSkills
     // tools. No skill instructions are pre-loaded from the REPL line.
@@ -74,7 +301,7 @@ export async function main(targetUrl?: string) {
         return
       }
 
-      // Council path — one debate cycle per REPL turn (not a blocking loop).
+      // Council path ï¿½ one debate cycle per REPL turn (not a blocking loop).
       // The human can interject between turns. Structured output, no text parsing.
       const { debateOnce } = await import('./council/orchestrator')
       const { proposalToWorkerConfig } = await import('./council/types')
@@ -85,7 +312,7 @@ export async function main(targetUrl?: string) {
       // council proposes one of these skills, the worker receives its instructions.
       const matchedById = new Map(matchedWithInstructions.map(s => [s.id, s]))
 
-      // Wire execute callback — proposals actually spawn workers via dispatchSlices
+      // Wire execute callback ï¿½ proposals actually spawn workers via dispatchSlices
       // so multi-model routing, tier selection, concurrency, and tenant isolation apply.
       const execute = async (proposal: import('./council/types').MemberOutput) => {
         if (!proposal.proposal) return 'no proposal'
@@ -120,7 +347,7 @@ export async function main(targetUrl?: string) {
           if (!r) return 'no result'
           const text = typeof r.text === 'string' ? r.text : String(r.text ?? '')
           // B3: accumulate this execution's real result for the next turn's
-          // results debate (carry-over, deterministic — no meaning scanning).
+          // results debate (carry-over, deterministic ï¿½ no meaning scanning).
           resources.councilPreviousResults =
             `${resources.councilPreviousResults ? resources.councilPreviousResults + '\n' : ''}${text}`
           return text
@@ -132,7 +359,7 @@ export async function main(targetUrl?: string) {
         }
       }
 
-      // HITL approval gate — uses askUserConfirm which reads from REPL stdin
+      // HITL approval gate ï¿½ uses askUserConfirm which reads from REPL stdin
       // and returns a boolean. Low/medium impact proposals are auto-approved
       // (governed by council approvalMode in approval.ts).
       const humanApprove = async (proposal: import('./council/types').MemberOutput): Promise<boolean> => {
@@ -205,11 +432,34 @@ export async function main(targetUrl?: string) {
       } catch (err: any) {
         log.dim(`[council] debate persist skipped: ${err.message}`)
       }
+      sink?.flushSystem()
     } else if (target && resources.coreServices) {
-      // B3: Solver bypasses runner — calls solve() directly with real brain agent
+      // B3: Solver bypasses runner ï¿½ calls solve() directly with real brain agent
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
       let streamedResponse = false
-      let inThinking = false
+      let reasoningBuf = ''
+      const flushReasoning = (): void => {
+        if (reasoningBuf) {
+          process.stdout.write('\x1b[2m[thinking] ' + reasoningBuf.trim() + '\x1b[0m\n')
+          reasoningBuf = ''
+        }
+      }
+      const renderMsg = (event: SolverStreamMessage): void => {
+        switch (event.kind) {
+          case 'reasoning':
+            streamedResponse = true
+            reasoningBuf += event.text
+            break
+          case 'answer':
+            streamedResponse = true
+            flushReasoning()
+            process.stdout.write(event.text)
+            break
+          case 'tool':
+            log.dim(`  … ${event.name}`)
+            break
+        }
+      }
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -229,24 +479,8 @@ export async function main(targetUrl?: string) {
         onToolComplete: (_toolName: string, _result?: unknown) => {
           getGlobalWorkspace().getGraphStore()?.scheduleSave()
         },
+        onMessage: renderMsg,
         onPhase: (event) => {
-          if (event.text) {
-            if (event.reasoning) {
-              if (!inThinking) {
-                process.stdout.write('\x1b[2m[thinking] ')
-                inThinking = true
-              }
-              process.stdout.write(event.text)
-            } else {
-              if (inThinking) {
-                process.stdout.write('\x1b[0m\n')
-                inThinking = false
-              }
-              process.stdout.write(event.text)
-              streamedResponse = true
-            }
-          }
-          if (event.toolName) log.dim(`  → ${event.toolName}`)
           resources.forensicLog.log({
             type: 'solver-phase',
             agent: 'solver-brain',
@@ -260,11 +494,10 @@ export async function main(targetUrl?: string) {
           })
         },
       })
-      if (inThinking) {
-        process.stdout.write('\x1b[0m\n')
-        inThinking = false
-      }
-      log.nl()
+
+      flushReasoning()
+      if (streamedResponse) process.stdout.write('\n')
+
       if (result.completed) {
         log.success(`Solver completed: ${result.reason}`)
       } else {
@@ -273,8 +506,13 @@ export async function main(targetUrl?: string) {
       if (result.error) {
         log.error(`Error: ${result.error}`)
       }
-      if (!streamedResponse && result.text) {
-        process.stdout.write(result.text)
+      const finalAnswer = result.answer?.content || result.text
+      if (!streamedResponse && finalAnswer) {
+        // No live stream was shown — render the answer as the final message.
+        if (result.answer?.reasoning) {
+          log.dim('Reasoning: ' + result.answer.reasoning)
+        }
+        process.stdout.write('\x1b[1m' + finalAnswer + '\x1b[0m\n')
       }
       log.info(`Steps: ${result.steps ?? 0} | Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0} | Tool calls: ${result.toolCalls ?? 0}`)
 
@@ -292,7 +530,29 @@ export async function main(targetUrl?: string) {
     } else if (target) {
       // Fallback: solver without pre-built coreServices (backward compat)
       let streamedResponse = false
-      let inThinking = false
+      let reasoningBuf = ''
+      const flushReasoning = (): void => {
+        if (reasoningBuf) {
+          process.stdout.write('\x1b[2m[thinking] ' + reasoningBuf.trim() + '\x1b[0m\n')
+          reasoningBuf = ''
+        }
+      }
+      const renderMsg = (event: SolverStreamMessage): void => {
+        switch (event.kind) {
+          case 'reasoning':
+            streamedResponse = true
+            reasoningBuf += event.text
+            break
+          case 'answer':
+            streamedResponse = true
+            flushReasoning()
+            process.stdout.write(event.text)
+            break
+          case 'tool':
+            log.dim(`  … ${event.name}`)
+            break
+        }
+      }
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -312,24 +572,8 @@ export async function main(targetUrl?: string) {
         onToolComplete: (_toolName: string, _result?: unknown) => {
           getGlobalWorkspace().getGraphStore()?.scheduleSave()
         },
+        onMessage: renderMsg,
         onPhase: (event) => {
-          if (event.text) {
-            if (event.reasoning) {
-              if (!inThinking) {
-                process.stdout.write('\x1b[2m[thinking] ')
-                inThinking = true
-              }
-              process.stdout.write(event.text)
-            } else {
-              if (inThinking) {
-                process.stdout.write('\x1b[0m\n')
-                inThinking = false
-              }
-              process.stdout.write(event.text)
-              streamedResponse = true
-            }
-          }
-          if (event.toolName) log.dim(`  → ${event.toolName}`)
           resources.forensicLog.log({
             type: 'solver-phase',
             agent: 'solver-brain',
@@ -343,11 +587,10 @@ export async function main(targetUrl?: string) {
           })
         },
       })
-      if (inThinking) {
-        process.stdout.write('\x1b[0m\n')
-        inThinking = false
-      }
-      log.nl()
+
+      flushReasoning()
+      if (streamedResponse) process.stdout.write('\n')
+
       if (result.completed) {
         log.success(`Solver completed: ${result.reason}`)
       } else {
@@ -356,8 +599,12 @@ export async function main(targetUrl?: string) {
       if (result.error) {
         log.error(`Error: ${result.error}`)
       }
-      if (!streamedResponse && result.text) {
-        process.stdout.write(result.text)
+      const finalAnswer = result.answer?.content || result.text
+      if (!streamedResponse && finalAnswer) {
+        if (result.answer?.reasoning) {
+          log.dim('Reasoning: ' + result.answer.reasoning)
+        }
+        process.stdout.write('\x1b[1m' + finalAnswer + '\x1b[0m\n')
       }
       log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)
       if (result.planSummary) {
@@ -383,10 +630,14 @@ export async function main(targetUrl?: string) {
       getGlobalWorkspace().getGraphStore()?.save(),
       getGlobalWorkspace().getOastStore()?.save(),
     ])
-  })
+  }, chatbox ?? undefined)
+
+  // Native terminal: stdin is owned by readline throughout; no alternate screen
+  // or logger sink to tear down. (The termcn/Ink TUI, if re-enabled, would own
+  // those — but it is currently disabled.)
 }
 
-// ── Stream consumer (for legacy engine) ────────────────────────────
+// -- Stream consumer (for legacy engine) ----------------------------
 
 async function consumeStream(stream: AsyncIterable<any>, agentId: string, resources: SessionResources) {
   let textBuf: string[] = []
@@ -427,7 +678,7 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
         if (chunk.payload.toolName === 'askUser') break
         if (internalTools.has(chunk.payload.toolName)) break
         flushText(false)
-        log.dim('  → ' + chunk.payload.toolName)
+        log.dim('  ? ' + chunk.payload.toolName)
         lastToolCall = { name: chunk.payload.toolName, args: chunk.payload.args, time: Date.now() }
         forensicLog.log({
           type: 'tool-call',

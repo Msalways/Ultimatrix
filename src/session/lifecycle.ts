@@ -16,7 +16,7 @@ import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createAllWorkers, createMemoryStore, createMemory } from '../workers/registry'
 import { createSupervisor } from '../manager/agent'
-import { userInputEmitter, setReadlineInterface } from '../tools/interaction-tools'
+import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import type { FindingNode } from '../graph/schema'
 import { NodeType } from '../graph/schema'
@@ -42,6 +42,7 @@ import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
 import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
+import type { ActivitySink } from '../ui/types'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
@@ -89,7 +90,16 @@ export interface SessionResources {
   browser: ReturnType<typeof getOrCreateBrowser>
   oastPort: number
   harCapture: HarCaptureSession | null
-  readline: ReadlineInterface
+  /**
+   * Legacy readline interface bound to `process.stdin`. NULL in console mode —
+   * there Ink owns stdin in raw mode, so attaching a readline would create a
+   * second stdin owner and the "typing goes to the terminal" bug. The console
+   * path drives input via the Ink InputBar → `uiGoalEmitter`/`uiInputEmitter`
+   * queues instead. This is the structural single-owner invariant.
+   */
+  readline: ReadlineInterface | null
+  /** True when the Ink full-screen console owns the terminal (stdin + screen). */
+  consoleMode: boolean
   forensicLog: ForensicLog
   threadId: string
   resourceId: string
@@ -137,8 +147,9 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 0: Config + Resources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async init(targetUrl?: string): Promise<SessionResources> {
+  async init(targetUrl?: string, opts: { consoleMode?: boolean } = {}): Promise<SessionResources> {
     this.assertPhase('idle')
+    const consoleMode = Boolean(opts.consoleMode)
 
     // Clear any stale limiter state from previous sessions
     resetAllProviderLimiters()
@@ -202,6 +213,7 @@ export class SessionLifecycle {
     this._resources.threadId = threadId
     this._resources.resourceId = resourceId
     this._resources.forensicLog = forensicLog
+    this._resources.consoleMode = consoleMode
 
     // Activate scope guard from config.
     // If no explicit scope, derive one from config.target so tools are not
@@ -304,7 +316,7 @@ export class SessionLifecycle {
 
   private async startInfrastructure(): Promise<void> {
     this.assertPhase('browser')
-    const { config, target, forensicLog } = this._resources as SessionResources
+    const { config, target, forensicLog, browser } = this._resources as SessionResources
 
     // Human observer â€” deferred 3s for browser to settle
     const observer = getGlobalObserver()
@@ -375,27 +387,35 @@ export class SessionLifecycle {
       })
     }
 
-    // Readline
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
-    setReadlineInterface(rl)
-    this._resources.readline = rl
+    // Readline — ONLY in non-console mode. In console mode the Ink full-screen
+    // console owns `process.stdin` in raw mode (see ui/main.tsx). Attaching a
+    // readline here would create a second stdin owner and reintroduce the
+    // "typing goes to the terminal" bug. The console path routes REPL goals via
+    // `uiGoalEmitter` and askUser/approval answers via `uiInputEmitter` instead.
+    if (this._resources.consoleMode) {
+      this._resources.readline = null
+    } else {
+      const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
+      setReadlineInterface(rl)
+      this._resources.readline = rl
 
-    this.registerCleanup(async () => {
-      rl.close()
-    })
+      this.registerCleanup(async () => {
+        rl.close()
+      })
 
-    // userInputEmitter for askUser tool
-    const onAskUser = (question: string) => {
-      process.stdout.write('\n' + question + ' ')
-      rl.once('line', (answer: string) => {
-        userInputEmitter.emit('askUser-response', answer)
+      // userInputEmitter for askUser tool
+      const onAskUser = (question: string) => {
+        process.stdout.write('\n' + question + ' ')
+        rl.once('line', (answer: string) => {
+          userInputEmitter.emit('askUser-response', answer)
+        })
+      }
+      userInputEmitter.on('askUser-question', onAskUser)
+
+      this.registerCleanup(async () => {
+        userInputEmitter.removeListener('askUser-question', onAskUser)
       })
     }
-    userInputEmitter.on('askUser-question', onAskUser)
-
-    this.registerCleanup(async () => {
-      userInputEmitter.removeListener('askUser-question', onAskUser)
-    })
 
     // SIGINT handler (registered once)
     this.setupSIGINT()
@@ -405,7 +425,7 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 3: Spider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runSpider(): Promise<void> {
+  async runSpider(sink?: ActivitySink): Promise<void> {
     this.assertPhase('infrastructure')
     const { config, target, browser, memory, threadId, resourceId } = this._resources as SessionResources
 
@@ -433,6 +453,8 @@ export class SessionLifecycle {
     }
 
     log.info('Crawling ' + target + '...')
+
+    if (sink) sink.beginActivity(`Spider crawling ${target}`)
 
     try {
       const spiderAgent = createSpiderAgent(config, memory, browser)
@@ -489,11 +511,13 @@ export class SessionLifecycle {
         switch (chunk.type) {
           case 'text-delta':
           case 'reasoning-delta':
-            process.stdout.write(chunk.payload.text)
+            if (sink) sink.updateActivity(chunk.payload.text)
+            else process.stdout.write(chunk.payload.text)
             break
           case 'tool-call':
             if (chunk.payload.toolName !== 'askUser') {
-              log.dim(`  \u2192 ${chunk.payload.toolName}`)
+              if (sink) sink.updateActivity(`\u2192 ${chunk.payload.toolName}`)
+              else log.dim(`  \u2192 ${chunk.payload.toolName}`)
             }
             break
           case 'tool-result': {
@@ -506,7 +530,9 @@ export class SessionLifecycle {
             const newFindings = findingsNow - findingsBefore
             
             if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
-              process.stdout.write(`\n[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings\n`)
+              const progressLine = `[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings`
+              if (sink) sink.updateActivity(progressLine)
+              else process.stdout.write(`\n${progressLine}\n`)
             }
             
             spiderLoopDetector.recordRound(newEndpoints > 0)
@@ -526,6 +552,8 @@ export class SessionLifecycle {
         }
       }
       
+      if (sink) sink.endActivity()
+
       // Post-crawl verification
       const finalSummary = workspace.getGraphStore()?.getTargetSummary()
       if (finalSummary) {
@@ -697,32 +725,62 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 5: REPL loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runREPL(onInput: (line: string) => Promise<void>): Promise<void> {
+  async runREPL(onInput: (line: string) => Promise<void>, sink?: ActivitySink): Promise<void> {
     this.assertPhase('engine')
     this.phase = 'running'
 
-    const { config, target, oastPort, readline: rl } = this._resources as SessionResources
+    const { config, target, oastPort, readline: rl, consoleMode } = this._resources as SessionResources
     const useSolver = config.engine !== 'legacy'
 
-    log.banner(
-      'Ultimatrix v8',
-      'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: :${oastPort}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
-    )
-
-    if (!target) {
-      log.info('No target set. Tell me a URL to investigate.')
+    // Structural invariant: in console mode Ink owns stdin, so NO readline may
+    // be bound to process.stdin. If this fails, the single-owner contract is
+    // broken and "typing goes to the terminal" returns. Fail fast.
+    if (consoleMode && rl !== null) {
+      throw new Error('Console mode requires readline to be null (Ink must own stdin).')
     }
 
-    log.nl()
-    log.dim(useSolver
-      ? `Entering interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
-      : 'Entering interactive mode. Type your message or Ctrl+C to exit.')
-    log.nl()
+    if (sink) {
+      sink.printBanner({
+        version: 'Ultimatrix v8',
+        model: `${config.provider}/${config.model}`,
+        target,
+        engine: useSolver ? config.engine : 'legacy',
+      })
+      if (!target) {
+        sink.printSystem('No target set. Tell me a URL to investigate.')
+      }
+      sink.printSystem(
+        useSolver
+          ? `Interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
+          : 'Interactive mode. Type your message or Ctrl+C to exit.',
+        'dim',
+      )
+    } else {
+      log.banner(
+        'Ultimatrix v8',
+        'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: :${oastPort}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
+      )
+
+      if (!target) {
+        log.info('No target set. Tell me a URL to investigate.')
+      }
+
+      log.nl()
+      log.dim(useSolver
+        ? `Entering interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
+        : 'Entering interactive mode. Type your message or Ctrl+C to exit.')
+      log.nl()
+    }
 
     try {
       for (;;) {
-        process.stdout.write('> ')
-        const line = await getLine(rl)
+        if (!sink) process.stdout.write('> ')
+        // Console mode: Ink owns stdin. The REPL consumes goals from the
+        // `uiGoalEmitter` queue (fed by the Ink InputBar) — NO readline
+        // listener, so there is exactly one owner of stdin. Non-console mode
+        // keeps the legacy readline `getLine` (reversible).
+        // In non-console mode rl is guaranteed non-null (readline was attached).
+        const line = consoleMode ? await getConsoleLine() : await getLine(rl!)
         if (line === null) break
         if (!line.trim()) continue
 
@@ -831,14 +889,40 @@ function getLine(rl: ReadlineInterface): Promise<string | null> {
   return new Promise(resolve => {
     const onLine = (line: string) => {
       rl.removeListener('close', onClose)
+      uiGoalEmitter.removeListener('goal', onGoal)
       resolve(line)
     }
     const onClose = () => {
       rl.removeListener('line', onLine)
+      uiGoalEmitter.removeListener('goal', onGoal)
       resolve(null)
+    }
+    const onGoal = (line: string) => {
+      rl.removeListener('line', onLine)
+      rl.removeListener('close', onClose)
+      resolve(line)
     }
     rl.once('line', onLine)
     rl.once('close', onClose)
+    uiGoalEmitter.once('goal', onGoal)
+  })
+}
+
+/**
+ * Console-mode input source. Resolves ONLY from the Ink InputBar via
+ * `uiGoalEmitter` — it never attaches a readline listener, so `process.stdin`
+ * has exactly one owner (Ink) in console mode. This is the structural fix for
+ * the "typing goes to the terminal" bug: the legacy `getLine` races readline
+ * AND the emitter, keeping readline alive on stdin. Here readline is absent.
+ * Exported for unit testing the single-owner invariant (no readline listener).
+ */
+export function getConsoleLine(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const onGoal = (line: string) => {
+      uiGoalEmitter.removeListener('goal', onGoal)
+      resolve(line)
+    }
+    uiGoalEmitter.once('goal', onGoal)
   })
 }
 

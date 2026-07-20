@@ -188,12 +188,39 @@ export async function runPrimitiveById(
   }
 
   if (result.confirmed && options?.commit !== false) {
+    const store = getGlobalWorkspace().getGraphStore()
+    const findingUrl = result.finding?.request?.url ?? ctx.target ?? ctx.endpoint?.url ?? ''
+
     for (const ev of result.evidence) {
       await (recordEvidence as any).execute({ type: evidenceType(ev.kind), data: ev.data, label: ev.label })
     }
+
+    // W2 — persist a reusable session artifact as a first-class AUTH_FLOW node
+    // so the exploitation loop can pivot (held-session reach) into other
+    // in-scope endpoints. Single persistence seam — no per-primitive graph calls.
+    if (result.sessionArtifact && store) {
+      store.addAuthFlow({
+        flowType: result.sessionArtifact.flowType,
+        reusable: result.sessionArtifact.reusable,
+        credentialHash: result.sessionArtifact.credentialHash,
+        steps: [{ action: 'recovered-session', url: findingUrl }],
+      })
+    }
+
+    // W2 — captured concrete impact data folds into the proof's impact so a
+    // confirmed finding is demonstrated end-to-end (exfil/victim data), not
+    // merely reported. No frozen vocabulary — `kind` is registry-typed.
+    let proof = result.exploitProof
+    if (result.dataArtifact && proof) {
+      proof = {
+        ...proof,
+        impact: `${proof.impact}\n\n[${result.dataArtifact.kind}] ${result.dataArtifact.label}:\n${result.dataArtifact.data.slice(0, 1500)}`,
+      }
+    }
+
     await (writeFinding as any).execute({
       type: result.finding?.category ?? primitive.id,
-      endpoint: result.finding?.request?.url ?? ctx.target ?? ctx.endpoint?.url ?? '',
+      endpoint: findingUrl,
       method: result.finding?.request?.method,
       payload: result.finding?.request?.body,
       description: result.finding?.description ?? `${primitive.name} confirmed`,
@@ -203,7 +230,7 @@ export async function runPrimitiveById(
       remediation: result.finding?.remediation,
       // W1: when the oracle proved weaponizability, persist a first-class
       // EXPLOIT_PROOF node (real request/response/impact) via writeFinding.
-      ...(result.exploitProof ? { exploitProof: result.exploitProof } : {}),
+      ...(proof ? { exploitProof: proof } : {}),
     })
   }
 

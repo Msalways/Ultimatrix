@@ -15,14 +15,56 @@ const ASK_USER_TIMEOUT_MS = 300_000 // 5 minutes
  * or close (fail-safe: never auto-approve).
  */
 export async function askUserConfirm(question: string, timeoutMs = ASK_USER_TIMEOUT_MS): Promise<boolean> {
-  const answer = await waitForInput(timeoutMs)
+  const answer = consoleInputResolver ? await consoleInputResolver(question) : await waitForInput(timeoutMs)
   if (!answer || answer === '__TIMEOUT__') return false
   return answer.trim().toLowerCase().startsWith('y')
 }
 
 export const userInputEmitter = new EventEmitter()
 
-function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS): Promise<string> {
+/**
+ * Carries a goal submitted from the Ink console's InputBar into the REPL loop.
+ * The legacy readline path is untouched; `getLine` races both sources so the
+ * UI can drive the session without a separate input pipe. Reversible: when the
+ * console is disabled, nothing emits on this channel.
+ */
+export const uiGoalEmitter = new EventEmitter()
+
+/**
+ * Carries a free-text ANSWER (askUser tool / HITL confirmation) from the Ink
+ * InputBar back to the awaiting tool. In console mode the readline is absent,
+ * so answers must flow through this channel instead of `process.stdin`. The
+ * InputBar decides at submit time whether the line is a REPL goal (`uiGoalEmitter`)
+ * or an answer to a pending prompt (`uiInputEmitter`) — single input surface,
+ * routed by context.
+ */
+export const uiInputEmitter = new EventEmitter()
+
+/**
+ * Console-mode input resolver. When the Ink full-screen console owns stdin
+ * (console mode), `waitForInput` / `askUserConfirm` delegate to this resolver
+ * instead of the (absent) readline. `setConsoleInputResolver` is called by the
+ * session once the UiStore is live. This keeps `process.stdin` owned by exactly
+ * one system (Ink) — the structural single-owner invariant.
+ */
+let consoleInputResolver: ((question: string) => Promise<string>) | null = null
+
+export function setConsoleInputResolver(fn: ((question: string) => Promise<string>) | null): void {
+  consoleInputResolver = fn
+}
+
+/** True when the console owns input (readline-free path is active). */
+export function isConsoleInputActive(): boolean {
+  return consoleInputResolver !== null
+}
+
+export function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS, question = ''): Promise<string> {
+  if (consoleInputResolver) {
+    // Console mode: readline is absent. The question is shown by the Ink
+    // InputBar (store.pendingInput); the answer arrives via store.resolveInput.
+    // The resolver surfaces `question` to the user. Single stdin owner (Ink).
+    return consoleInputResolver(question).catch(() => '')
+  }
   if (!rl) return Promise.resolve('')
   return new Promise<string>((resolve) => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -89,13 +131,16 @@ export const askUser = createTool({
         '└──────────────────────────────────────────────────┘',
         '',
       ].join('\n')
-      process.stdout.write(banner)
-
-      if (screenshotPath) {
-        log.dim(`📸 Screenshot before: ${screenshotPath}`)
+      // In console mode the question is surfaced by the Ink InputBar
+      // (store.pendingInput), so don't write a raw banner into Ink's screen.
+      if (!isConsoleInputActive()) {
+        process.stdout.write(banner)
+        if (screenshotPath) {
+          log.dim(`📸 Screenshot before: ${screenshotPath}`)
+        }
       }
 
-      const answer = await waitForInput()
+      const answer = await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
 
       const humanActions = observer.getActionsSinceSnapshot()
 
@@ -127,7 +172,7 @@ export const askUser = createTool({
       }
     }
 
-    const answer = await waitForInput()
+    const answer = await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
 
     const pageUrl = page ? page.url() : ''
     const pageTitle = page ? await page.title().catch(() => '') : ''

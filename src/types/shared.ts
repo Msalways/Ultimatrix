@@ -26,6 +26,7 @@ export type FindingLifecycleStatus =
   | 'pending_verification'
   | 'verified'
   | 'rejected'
+  | 'disproven'
   | 'needs_review'
 
 // ─── Research Statuses ─────────────────────────────────────────────
@@ -53,7 +54,7 @@ export type CandidateFindingStatus =
 
 // ─── Auth Flow ─────────────────────────────────────────────────────
 
-export type AuthFlowType = 'login' | 'logout' | 'refresh'
+export type AuthFlowType = 'login' | 'logout' | 'refresh' | 'jwt-forgery' | 'default-creds' | 'oauth' | 'session-reuse'
 
 // ─── HTTP Methods (for request/replay types) ──────────────────────
 

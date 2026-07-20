@@ -36,6 +36,14 @@ export default defineConfig({
   },
   esbuildOptions(options) {
     options.logOverride = { 'empty-import-meta': 'silent' };
+    // The Ink console (`src/ui/*.tsx`) uses the automatic JSX runtime — the
+    // .tsx files never import React. tsconfig sets `jsx: preserve`, so esbuild
+    // would otherwise fall back to the classic `React.createElement` transform
+    // and crash at runtime with "React is not defined". Pin the automatic
+    // runtime here so the bundler emits `jsx()` calls from `react/jsx-runtime`.
+    // Mirrors the vitest config (jsx: automatic, importSource: react).
+    options.jsx = 'automatic';
+    options.jsxImportSource = 'react';
   },
   onSuccess: async () => {
     copyRuntimeAssets('dist');

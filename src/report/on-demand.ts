@@ -50,7 +50,7 @@ function toReportFinding(node: FindingNode, proofs: ExploitProofNode[]): Finding
     reproductionSteps: proof?.properties.reproSteps,
     firstSeen: now,
     lastSeen: now,
-    status: p.lifecycleStatus === 'rejected' ? 'false-positive' : 'open',
+    status: p.lifecycleStatus === 'rejected' || p.lifecycleStatus === 'disproven' ? 'false-positive' : 'open',
   }
 }
 

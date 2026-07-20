@@ -44,7 +44,7 @@ export const idorSwapper: TechniquePrimitive = {
       id: 'idor-baseline',
       description: `Access own object ${ctx.objectId} at ${url}`,
       request: { method, url, headers },
-      metadata: { kind: 'baseline' },
+      metadata: { kind: 'baseline', objectId: ctx.objectId, altObjectId: ctx.altObjectId },
     }
 
     const swappedUrl = swapIdInUrl(url, ctx.objectId!, ctx.altObjectId!)
@@ -55,7 +55,7 @@ export const idorSwapper: TechniquePrimitive = {
       description: `Access OTHER user's object ${ctx.altObjectId} at ${swappedUrl}`,
       request: { method, url: swappedUrl, headers, ...(altBody ? { body: altBody } : {}) },
       expectedSignal: 'server returns the other user\'s object data to the actor',
-      metadata: { kind: 'alt' },
+      metadata: { kind: 'alt', objectId: ctx.objectId, altObjectId: ctx.altObjectId },
     }
 
     return [baseline, alt]
@@ -81,6 +81,16 @@ export const idorSwapper: TechniquePrimitive = {
     )
     const confirmed = idor && verified
 
+    // W2 — capture the victim's object data returned to the actor as concrete
+    // impact (demonstrates the cross-user data disclosure end-to-end).
+    const dataArtifact = confirmed
+      ? {
+          kind: 'victim-data' as const,
+          label: `Victim object ${(alt.step.metadata as any)?.altObjectId} returned to actor at ${alt.step.request.url}`,
+          data: (alt.body ?? '').slice(0, 1500),
+        }
+      : undefined
+
     const evidence = [
       { kind: 'response' as const, label: `baseline (own ${baseline.step.request.url}) → ${baseline.status}`, data: (baseline.body ?? '').slice(0, 1500) },
       { kind: 'response' as const, label: `alt (other ${alt.step.request.url}) → ${altStatus}`, data: (alt.body ?? '').slice(0, 1500) },
@@ -100,6 +110,15 @@ export const idorSwapper: TechniquePrimitive = {
             cwe: 'CWE-639',
           }
         : undefined,
+      exploitProof: confirmed
+        ? {
+            scenario: `IDOR: actor swaps own object ${(baseline.step.metadata as any)?.objectId} for victim object ${(alt.step.metadata as any)?.altObjectId}`,
+            request: `${alt.step.request.method} ${alt.step.request.url}${alt.step.request.body ? `\n\n${alt.step.request.body}` : ''}`,
+            response: `HTTP ${altStatus}\n${(alt.body ?? '').slice(0, 800)}`,
+            impact: `Actor accessed another user's object data without authorization (divergence=${cmp.divergence.toFixed(2)}).`,
+          }
+        : undefined,
+      dataArtifact,
       note: `altAllowed=${altAllowed} divergence=${cmp.divergence.toFixed(2)} verified=${verified}`,
     }
   },
