@@ -359,6 +359,15 @@ export const TOOL_IDS = [
   'recordOutcome',
   'listTools',
   'loadTool',
+  'nuclei',
+  'sqlmap',
+  'ffuf',
+  'nmap',
+  'jwttool',
+  'arjun',
+  'corsy',
+  'subfinder',
+  'gitleaks',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]

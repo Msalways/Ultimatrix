@@ -20,6 +20,18 @@ const EXPECTED_IDS = new Set([
   'rceClass',
   'graphqlBola',
   'aiAgentAttack',
+  'nosqlInjection',
+  'ssrfMultiCloud',
+  'sstiBlind',
+  'boplaOracle',
+  'artifactLifetime',
+  'internalStateDisclosure',
+  'tenantIsolation',
+  'deserialization',
+  'secondOrderSqli',
+  'ldapXpathInjection',
+  'smuggling',
+  'businessLogicAbuse',
 ])
 
 describe('primitive registry drift guard', () => {

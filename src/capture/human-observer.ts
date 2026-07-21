@@ -37,22 +37,9 @@ export interface AuthState {
   formCount: number
 }
 
-const OAUTH_PROVIDER_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
-  { name: 'Google', pattern: /accounts\.google\.com|google.*oauth|google.*sign.?in/i },
-  { name: 'GitHub', pattern: /github\.com\/login|github.*oauth|github.*sign.?in/i },
-  { name: 'Facebook', pattern: /facebook\.com\/.*oauth|facebook.*login|fb.*login/i },
-  { name: 'Microsoft', pattern: /login\.microsoftonline|microsoft.*oauth|microsoft.*sign.?in/i },
-  { name: 'Apple', pattern: /appleid\.apple\.com|apple.*sign.?in/i },
-]
-
 const SAML_PATTERNS = [
   /saml/i, /saml2/i, /sso\/saml/i, /adfs/i, /okta.*saml/i,
   /onelogin.*saml/i, /ping.*federate/i,
-]
-
-const LOGIN_FORM_PATTERNS = [
-  /sign.?in/i, /log.?in/i, /email.*password/i, /username.*password/i,
-  /authenticate/i, /credentials/i,
 ]
 
 export class AuthStateDetector {

@@ -147,6 +147,19 @@ describe('HAR Parser', () => {
       const secrets = getSecrets(entries)
       expect(secrets.some(s => s.location === 'header' || s.location === 'url')).toBe(true)
     })
+
+    it('preserves RAW value for evidence while exposing a maskedValue for display', () => {
+      const archive = parseHarFromObject(validHar)
+      const entries = getEntries(archive)
+      const secrets = getSecrets(entries)
+      const jwt = secrets.find(s => s.type === 'jwt')
+      expect(jwt).toBeDefined()
+      // Raw value must be the full token — the evidence graph must stay precise/lethal.
+      expect(jwt!.value).toBe('Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxfQ.abc123')
+      // Display form is masked and must NOT equal the raw value.
+      expect(jwt!.maskedValue).not.toBe(jwt!.value)
+      expect(jwt!.maskedValue).not.toContain('eyJhbGci')
+    })
   })
 
   describe('getDataFlows', () => {
@@ -155,6 +168,17 @@ describe('HAR Parser', () => {
       const entries = getEntries(archive)
       const flows = getDataFlows(entries)
       expect(flows.some(f => f.type === 'cookie')).toBe(true)
+    })
+
+    it('preserves RAW value for evidence while exposing a maskedValue for display', () => {
+      const archive = parseHarFromObject(validHar)
+      const entries = getEntries(archive)
+      const flows = getDataFlows(entries)
+      const cookieFlow = flows.find(f => f.type === 'cookie')
+      expect(cookieFlow).toBeDefined()
+      // Raw value must be the full captured cookie value, not truncated.
+      expect(cookieFlow!.value).toBe('abc123def456')
+      expect(cookieFlow!.maskedValue).not.toBe(cookieFlow!.value)
     })
   })
 

@@ -18,6 +18,7 @@ import { createAllWorkers, createMemoryStore, createMemory } from '../workers/re
 import { createSupervisor } from '../manager/agent'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
+import { finalizeEngagementMemory } from '../intelligence/cross-engagement'
 import type { FindingNode } from '../graph/schema'
 import { NodeType } from '../graph/schema'
 import { createSpiderAgent } from '../spider/agent'
@@ -227,6 +228,20 @@ export class SessionLifecycle {
         workspace.getGraphStore()?.save(),
         workspace.getOastStore()?.save(),
       ])
+    })
+
+    // Finalize cross-engagement memory (anonymized structural features only)
+    // so future sessions on the same target-origin can reuse technique priors.
+    // Runs at cleanup regardless of how the session ended.
+    const targetOrigin = target ? new URL(target).origin : ''
+    this.registerCleanup(async () => {
+      if (!targetOrigin) return
+      try {
+        const store = workspace.getGraphStore()
+        if (store) await finalizeEngagementMemory(store, targetOrigin)
+      } catch (err) {
+        log.dim(`Cross-engagement finalize skipped: ${err instanceof Error ? err.message : String(err)}`)
+      }
     })
 
     this.phase = 'config'

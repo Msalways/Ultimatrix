@@ -17,6 +17,12 @@ import { buildResearchMap, planResearchExperiments, compareResearchResponses, re
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
+import { useCredential } from './credential-tools'
+import { dualSessionOrchestrator } from './dual-session'
+import { detectMarkerLeak } from './marker-oracle'
+import { rawHttpClient } from './raw-http-client'
+import { shadowApiDiscovery } from './shadow-discovery'
+import { scannerTools } from './scanner-tools'
 
 export {
   httpRequest, multipartUpload, followRedirects, omitHeader,
@@ -38,6 +44,12 @@ export {
   runPrimitiveTool,
   runCampaignTool,
   recordOutcomeTool,
+  useCredential,
+  dualSessionOrchestrator,
+  detectMarkerLeak,
+  rawHttpClient,
+  shadowApiDiscovery,
+  scannerTools,
 }
 
 export function registerAllTools() {
@@ -61,5 +73,19 @@ export function registerAllTools() {
     runPrimitive: runPrimitiveTool,
     runCampaign: runCampaignTool,
     recordOutcome: recordOutcomeTool,
+    useCredential,
+    dualSessionOrchestrator,
+    detectMarkerLeak,
+    rawHttpClient,
+    shadowApiDiscovery,
+    nuclei: scannerTools.nuclei,
+    sqlmap: scannerTools.sqlmap,
+    ffuf: scannerTools.ffuf,
+    nmap: scannerTools.nmap,
+    jwttool: scannerTools.jwttool,
+    arjun: scannerTools.arjun,
+    corsy: scannerTools.corsy,
+    subfinder: scannerTools.subfinder,
+    gitleaks: scannerTools.gitleaks,
   }
 }

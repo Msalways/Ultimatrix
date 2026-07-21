@@ -1,4 +1,4 @@
-# Ultimatrix v8.4
+# Ultimatrix v8.5
 
 **An autonomous security researcher that reasons, learns, and adapts — not another pattern-matching scanner.**
 
@@ -33,6 +33,7 @@ It finds vulnerabilities that pattern-based scanners miss, because it understand
 - [Scope Guard](#scope-guard)
 - [Campaign Autonomy](#campaign-autonomy)
 - [Attack-Path Solver](#attack-path-solver)
+- [External Hacker-Tool Arsenal](#external-hacker-tool-arsenal)
 - [Cross-Engagement Memory](#cross-engagement-memory)
 - [Response Compression (Headroom)](#response-compression-headroom)
 - [Session & Cookie Management](#session--cookie-management)
@@ -65,6 +66,7 @@ Security tools fall into two camps: **signature scanners** that match known patt
 | Attack path discovery | No | Manual | BFS graph traversal |
 | Cross-session learning | No | Manual | Anonymized pattern memory |
 | Campaign coverage | N/A | Manual | Systematic test planning |
+| External tool integration | No | Manual | Evidence-gated adapter layer |
 
 **The key insight:** Observation is the foundation of security testing. Before Ultimatrix attacks anything, it maps your entire attack surface — endpoints, authentication flows, role-based access, technology stack, exposed secrets, JavaScript bundles. It builds a **knowledge graph**. Then it reasons over that graph to decide what's worth testing and how.
 
@@ -159,7 +161,7 @@ That's not a toy. That's a security consultant that works 24/7.
            │  • Evidence Gate (anti-hallucination)           │
            │  • Reflexion Engine (L0-L4 failure class)       │
            │  • Anti-Loop Detector (stale/dead-end detect)   │
-            │  • Knowledge Graph (20 node types, 15 edges)   │
+             │  • Knowledge Graph (24 node types, 19 edges)   │
             │  • Skill Library (57 knowledge-based skills)    │
            │  • Scope Guard (URL/domain enforcement)         │
            │  • Headroom Compression (response compress)     │
@@ -171,14 +173,21 @@ That's not a toy. That's a security consultant that works 24/7.
           └──────────────────────────┬──────────────────────────┘
                                      │
           ┌──────────────────────────▼─────────────────────────────────────┐
-           │  Tool Layer                                │
-           │  ──────────────────────────────────                           │
-           │  28+ specialized tools:                                        │
-           │  httpRequest, browser automation, graph queries,              │
-           │  session restore, skill loading, encode/decode,              │
-           │  finding generation, delegation, OAST callbacks,             │
-           │  scope enforcement, browser auth extraction,                 │
-           │  attack-path analysis, case file export...                   │
+            │  Tool Layer                                │
+            │  ──────────────────────────────────                           │
+            │  37+ specialized tools:                                        │
+            │  httpRequest, browser automation, graph queries,              │
+            │  session restore, skill loading, encode/decode,              │
+            │  finding generation, OAST callbacks,                         │
+            │  scope enforcement, browser auth extraction,                 │
+            │  attack-path analysis, case file export,                     │
+            │  dual-session matrix, raw HTTP client,                       │
+            │  shadow discovery, marker oracle...                          │
+            │                                                              │
+            │  External Hacker-Tool Arsenal (9 adapters):                  │
+            │  nuclei, sqlmap, ffuf, nmap, jwttool,                       │
+            │  arjun, corsy, subfinder, gitleaks                          │
+            │  (evidence-gated before becoming Findings)                   │
           │                                                                │
           │  Response Flow:                                                │
           │  HTTP Response → Headroom Compression → LLM                   │
@@ -232,7 +241,7 @@ src/
 ├── memory/            # Memory schemas, store
 ├── models/            # Model factory, selector, rate limiter, quota tracker
 ├── oast/              # Out-of-band attack server (blind callback detection)
-├── primitives/        # Security primitives (9 oracles: IDOR, auth bypass, race, etc.)
+├── primitives/        # Security primitives (28 oracles: IDOR, auth bypass, race, etc.)
 ├── prompts/           # Core contract, system prompts
 ├── recorder/          # Action recorder, code generator
 ├── replay/            # Test case replayer
@@ -242,7 +251,8 @@ src/
 ├── solver/            # OODA solver engine, brain, blackboard, attack-path, exploitation-loop, threat-model, skills
 ├── spider/            # Stagehand-based hybrid crawler
 ├── supervisor/        # Legacy supervisor agent
-├── tools/             # 28+ specialized tools
+├── tools/             # 37+ specialized tools (28 internal + 9 external adapters)
+│   └── adapters/      # External hacker-tool adapters (nuclei, sqlmap, ffuf, nmap, etc.)
 ├── types/             # Shared TypeScript types
 ├── usage/             # Token/usage tracker
 ├── utils/             # Logger, helpers, output guard
@@ -1051,7 +1061,7 @@ Every finding includes visual proof — screenshots of the vulnerable page, resp
 
 ## Graph-Powered Reasoning
 
-Under the hood, Ultimatrix maintains a knowledge graph with 20 node types and 15 edge types:
+Under the hood, Ultimatrix maintains a knowledge graph with 24 node types and 19 edge types:
 
 ```
                     ┌──────────┐
@@ -1128,6 +1138,7 @@ URL → isUrlInScope(url) → { allowed: boolean, reason?: string }
 - **Recon tools**: `techStack`, `graphqlIntrospect`, `frameworkFingerprint`
 - **Flow tools**: `reproduceFlow` (page.goto)
 - **Control tools**: `verifyPendingFindings`
+- **External adapters**: All 9 external tool adapters (URLs scope-checked before execution)
 
 ### Configuration
 
@@ -1267,6 +1278,61 @@ Agent: "Based on past experience, this target likely has sequential IDs.
         Testing IDOR on /api/users/{id}..."
 Result: IDOR confirmed — pattern validated
 ```
+
+---
+
+## External Hacker-Tool Arsenal
+
+Ultimatrix orchestrates real best-of-breed security binaries through a uniform adapter layer. Rather than reimplementing scanners, it delegates to industry-standard tools and re-verifies every external finding through the Evidence Gate before promoting it to a confirmed Finding.
+
+### Architecture
+
+```
+LLM Brain → runNuclei / runSqlmap / runFfuf / ... (Mastra tools)
+               │
+               ▼
+         buildAdapterTool → ToolAdapter.run()
+               │                │
+               │         execFile (arg-array, no shell)
+               │         scope-guarded URL validation
+               │         binary timeout + stderr capture
+               │
+               ▼
+         bridgeToolResult (bridge.ts)
+               │
+               ├── verifyFinding: re-fetch + scope-guard
+               ├── coreEvidenceLedger.record(...)
+               └── verifyClaimStructured → confirmed | candidate | skip
+```
+
+### 9 External Adapters
+
+| Adapter | Tool | Purpose |
+|---------|------|---------|
+| `nuclei` | ProjectDiscovery Nuclei | Template-based vuln scanner |
+| `sqlmap` | sqlmap | SQL injection detection & exploitation |
+| `ffuf` | ffuf | Web fuzzer (directory, parameter, vhost) |
+| `nmap` | Nmap | Port scanning & service detection |
+| `jwttool` | jwt_tool | JWT token analysis & manipulation |
+| `arjun` | Arjun | HTTP parameter discovery |
+| `corsy` | Corsy | CORS misconfiguration scanner |
+| `subfinder` | Subfinder | Subdomain enumeration |
+| `gitleaks` | Gitleaks | Git secret/credential scanner |
+
+### Evidence-Gated Trust Boundary
+
+Every external tool result passes through `bridgeToolResult()` which:
+
+1. **Scope-checks** every URL the tool proposes as a Finding
+2. **Re-fetches** the endpoint independently to confirm the vulnerability persists
+3. **Records** raw evidence into the Evidence Ledger
+4. **Promotes** only confirmed results to Findings; unverifiable claims become `candidate` findings
+
+External tools are **binary-gated**: if the binary isn't installed, the tool gracefully returns `skip` — no crashes, no hallucinated output.
+
+### Configuration
+
+No special config needed. Adapters auto-detect installed binaries via `isToolAvailable()`. Run `npx nuclei -version` etc. to check availability. Binary paths are resolved from `PATH` with cross-platform support.
 
 ---
 
@@ -1693,7 +1759,7 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (1604 passing)
+# Run all tests (1632 passing)
 npm test
 
 # Run specific test suite
@@ -1717,7 +1783,7 @@ npm run build:cli    # ESM + CJS + DTS
 |--------|-------|----------|
 | Intelligence (evidence-gate, reflexion, anti-loop) | 110+ | Core logic, L0-L4 escalation, zero leniency |
 | Graph (store, tools, schema) | 96 | Full CRUD, 20 node types, 15 edge types |
-| Tools (28+ tools) | 130+ | All tool interfaces, flow tools, skill tools, scope guard |
+| Tools (37+ tools) | 150+ | All tool interfaces, flow tools, skill tools, scope guard, external adapters |
 | Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid, scope enforcement |
 | Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
 | Solver (OODA, blackboard, plan, exploitation-loop) | 60+ | Full loop, tool chains, composition, attack-path, threat model |
@@ -1728,7 +1794,7 @@ npm run build:cli    # ESM + CJS + DTS
 | Skills (loader, matcher, registry, tool-filter) | 60+ | 57 skills, progressive disclosure, domain matching |
 | Safety (scope guard) | 15 | Domain matching, wildcard, path prefix, protocol |
 | Campaign (planner, executor, continuity) | 40+ | Coverage planning, auto-replan, outcome feedback |
-| Primitives (weaponize, framework, all 9 oracles) | 40+ | Evidence-gated verification, exploit-proof generation |
+| Primitives (weaponize, framework, all 28 oracles) | 55+ | Evidence-gated verification, exploit-proof generation, dual-session matrix |
 | Components (UI, chat, streaming) | 30+ | Ink TUI, streaming text, markdown rendering |
 
 ---
@@ -1747,16 +1813,16 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Metric | Value |
 |--------|-------|
-| Source files | 274+ TypeScript files |
-| Source lines | 30,000+ |
-| Test files | 148 files |
-| Tests passing | 1604 / 1605 (1 pre-existing context-manager truncation test) |
+| Source files | 303+ TypeScript files |
+| Source lines | 35,000+ |
+| Test files | 153 files |
+| Tests passing | 1632 / 1632 |
 | Skills | 57 (across 10 domains) |
-| Tools | 28+ specialized tools |
+| Tools | 37+ specialized tools (28 internal + 9 external adapters) |
 | Engines | 2 active (multi-model default, legacy) + council on-demand |
 | Council personas | 8 markdown files (charter, 4 members, protocol, contract, human) |
-| Node types | 20 (graph schema) |
-| Edge types | 15 (graph schema) |
+| Node types | 24 (graph schema) |
+| Edge types | 19 (graph schema) |
 | Providers | 16 supported |
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |

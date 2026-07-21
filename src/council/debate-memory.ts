@@ -64,6 +64,35 @@ export function createDebateMemory(): DebateMemory {
   return { stances: [], failedApproaches: [], provenFindings: [] }
 }
 
+const DEBATE_MEMORY_MARKER = 'DEBATE_MEMORY::'
+
+/**
+ * Serialize a DebateMemory to a string for storage in a graph node.
+ * Wrapped with a marker so legacy plain-text summaries aren't misread as memory.
+ */
+export function serializeDebateMemory(memory: DebateMemory): string {
+  return DEBATE_MEMORY_MARKER + JSON.stringify(memory)
+}
+
+/**
+ * Restore a DebateMemory from a stored summary string.
+ * Returns null if the string isn't a serialized memory (e.g. a legacy summary).
+ */
+export function deserializeDebateMemory(summary: string | undefined): DebateMemory | null {
+  if (!summary || !summary.startsWith(DEBATE_MEMORY_MARKER)) return null
+  try {
+    const parsed = JSON.parse(summary.slice(DEBATE_MEMORY_MARKER.length)) as DebateMemory
+    if (!parsed || !Array.isArray(parsed.stances)) return null
+    return {
+      stances: parsed.stances ?? [],
+      failedApproaches: parsed.failedApproaches ?? [],
+      provenFindings: parsed.provenFindings ?? [],
+    }
+  } catch {
+    return null
+  }
+}
+
 // ─── Extraction ─────────────────────────────────────────────────────────────
 
 /**

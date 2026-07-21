@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { isToolAvailable } from '../../src/tools/traditional-tools'
+import { isToolAvailable } from '../../src/tools/adapters/common'
 
 // Clear cache between tests by reimporting
 describe('isToolAvailable', () => {

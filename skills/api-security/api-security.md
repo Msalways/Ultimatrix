@@ -3,7 +3,7 @@ name: api-security
 description: "REST API security testing covering mass assignment, BOLA, rate limiting bypass, and API versioning attacks"
 category: specialized
 tier: balanced
-toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders, arjun]
 triggers: ["api security testing", "rest api security", "api vulnerability", "mass assignment", "bola", "broken object level authorization", "api rate limit", "api versioning attack", "api enumeration", "api penetration testing"]
 contextBoosts: [api]
 mitreAttack: ["T1190", "T1046"]

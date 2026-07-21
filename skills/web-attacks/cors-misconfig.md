@@ -3,7 +3,7 @@ name: cors-misconfig
 description: "CORS misconfiguration exploitation including null origin, subdomain matching, and wildcard reflection"
 category: specialized
 tier: balanced
-toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, corsy]
 triggers: ["cors misconfiguration", "cors testing", "cross origin", "access control allow origin", "cors vulnerability", "null origin cors", "wildcard cors", "cors header", "same origin policy", "origin reflection"]
 contextBoosts: [auth, api]
 mitreAttack: ["T1189", "T1190"]

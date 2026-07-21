@@ -3,7 +3,7 @@ name: subdomain-takeover
 description: "Subdomain takeover discovery and exploitation via dangling CNAME records and cloud service misconfigurations"
 category: specialized
 tier: balanced
-toolRefs: [httpRequest, parseResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, subfinder, nuclei]
 triggers: ["subdomain takeover", "dangling cname", "subdomain hijack", "cname takeover", "cloud takeover", "expired domain", "abandoned subdomain", "subdomain enumeration", "dns takeover", "virtual host takeover"]
 contextBoosts: [endpoints]
 mitreAttack: ["T1584", "T1583"]

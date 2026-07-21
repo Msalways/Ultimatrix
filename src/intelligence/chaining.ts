@@ -26,16 +26,22 @@ export type { ChainRule, ChainSeverity }
  */
 const PRIMITIVE_TECHNIQUE: Record<string, string[]> = {
   idorSwapper: ['idor'],
+  bolaFuzzer: ['bola', 'idor'],
+  graphqlBola: ['graphql', 'bola'],
   ssrfOast: ['ssrf'],
+  ssrfMetadata: ['ssrf', 'cloud-metadata'],
   classicInjection: ['injection', 'sqli'],
   authzMatrix: ['authorization'],
   configTrust: ['business_logic'],
   headerInjection: ['header-injection'],
   aiTrust: ['prompt-injection', 'ai'],
+  aiAgentAttack: ['ai', 'agent'],
   authBypass: ['auth-bypass', 'jwt', 'sqli-login'],
   concurrencyHarness: ['race_condition'],
   invariantProbe: ['invariant'],
   workflowBypass: ['workflow_bypass'],
+  atoChain: ['ator', 'chain'],
+  rceClass: ['rce', 'injection'],
 }
 
 // Case-insensitive lookup so a lowercased primitive id (e.g. "idorswapper")

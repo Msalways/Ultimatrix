@@ -1086,6 +1086,23 @@ export function loadConfig(): UltimatrixConfig {
   return validateConfig(merged)
 }
 
+let _cachedConfig: UltimatrixConfig | null = null
+
+/**
+ * Cached access to the active session config. `loadConfig` re-reads + re-validates
+ * YAML on every call, which is wasteful for tools that need to read a single field
+ * (e.g. the credential tool). The cache is intentionally module-scoped for the
+ * process lifetime; tests reset it via `resetConfigCache()`.
+ */
+export function getConfig(): UltimatrixConfig {
+  if (!_cachedConfig) _cachedConfig = loadConfig()
+  return _cachedConfig
+}
+
+export function resetConfigCache(): void {
+  _cachedConfig = null
+}
+
 // ─── Save helpers ───────────────────────────────────────────────────
 
 export function saveProvidersConfig(creds: ProviderCredentials): void {

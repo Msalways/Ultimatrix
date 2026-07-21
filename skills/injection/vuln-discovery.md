@@ -3,7 +3,7 @@ name: vuln-discovery
 description: "Systematic identification and verification of security weaknesses in target applications"
 category: core
 tier: balanced
-toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
+toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, sqlmap]
 triggers: ["find vulnerabilities", "security testing", "vulnerability scanning", "weakness identification", "security assessment", "bug hunting", "vuln detection", "security flaws", "test for vulnerabilities", "security issues"]
 contextBoosts: [sqli]
 mitreAttack: ["T1190", "T1195"]

@@ -2,6 +2,7 @@
 import { DEFAULTS, loadConfig } from './config'
 import { detectChains } from './intelligence/chaining'
 import type { FindingNode } from './graph/schema'
+import { NodeType } from './graph/schema'
 import { getGlobalReactionObserver } from './browser/reaction-observer'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
@@ -13,6 +14,7 @@ import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
 import { askUserConfirm } from './tools/interaction-tools'
 import type { DebateMemory } from './council/types'
+import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
 import { getGlobalGraphStore } from './graph/store'
 import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
 import { ChatStream } from './output/layout'
@@ -376,9 +378,20 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
         }
       }
 
-      // Initialize debate memory for this session (accumulates across REPL turns)
+      // Initialize debate memory for this session (accumulates across REPL turns).
+      // On a fresh session, restore any prior-session memory persisted to the graph
+      // for this same goal so the council doesn't repeat failed approaches.
       if (!resources.debateMemory) {
-        resources.debateMemory = { stances: [], failedApproaches: [], provenFindings: [] }
+        const prior = getGlobalGraphStore()
+          .queryNodes(NodeType.COUNCIL_DEBATE, { goal })
+          .filter((n: any) => n.properties?.summary?.startsWith('DEBATE_MEMORY::'))
+          .sort((a: any, b: any) => (b.properties?.round ?? 0) - (a.properties?.round ?? 0))[0]
+        resources.debateMemory =
+          deserializeDebateMemory(prior?.properties?.summary) ?? {
+            stances: [],
+            failedApproaches: [],
+            provenFindings: [],
+          }
       }
 
       const result = await debateOnce({
@@ -419,12 +432,14 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
       }
 
       // B4: persist this debate cycle to the graph for post-session audit.
+      // The full DebateMemory is serialized into `summary` (marker-prefixed)
+      // so subsequent sessions can restore member stances and failed approaches.
       try {
         getGlobalGraphStore().addCouncilDebate({
           goal,
           round: result.messages.length > 0 ? result.messages[result.messages.length - 1].round : 0,
           members: council.members.map(m => m.role),
-          summary: result.summary,
+          summary: serializeDebateMemory(resources.debateMemory),
           proposedTasks: result.proposedTasks.length,
           newEvidence: result.newEvidence,
           complete: result.complete,

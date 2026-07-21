@@ -3,7 +3,7 @@ name: osint-recon
 description: "Open source intelligence gathering from public data sources, social media, and infrastructure records"
 category: specialized
 tier: fast
-toolRefs: [httpRequest, runRecon, graphqlIntrospect, cloudMetadataProbe, updateGraph, writeFinding]
+toolRefs: [httpRequest, runRecon, graphqlIntrospect, cloudMetadataProbe, updateGraph, writeFinding, subfinder, gitleaks]
 triggers: ["osint", "open source intelligence", "intelligence gathering", "social media", "public records", "reconnaissance", "information gathering", "osint recon", "public data", "intelligence collection"]
 mitreAttack: ["T1593", "T1596"]
 owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]

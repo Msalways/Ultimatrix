@@ -3,7 +3,7 @@ name: jwt-advanced
 description: "Advanced JWT exploitation including algorithm confusion, key injection, and token manipulation attacks"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, encodeDecode, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, encodeDecode, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, jwttool]
 triggers: ["jwt attack", "jwt exploitation", "json web token", "jwt algorithm", "jwt confusion", "jwt key injection", "jwt bypass", "jwt manipulation", "token forgery", "jwt security testing"]
 contextBoosts: [auth]
 mitreAttack: ["T1190", "T1550"]

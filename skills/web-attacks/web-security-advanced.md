@@ -4,7 +4,7 @@ description: "Advanced web security testing: CSP bypass, CORS, subdomain takeove
 category: specialized
 tier: powerful
 contextBoosts: [api]
-toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, encodeDecode, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, encodeDecode, getCapturedHeaders, nuclei, ffuf, corsy, subfinder]
 triggers: ["advanced web security", "csp bypass", "cors testing", "subdomain takeover", "cache poisoning", "prototype pollution", "http security headers", "content security policy", "advanced web testing", "security configuration"]
 mitreAttack: ["T1190", "T1046", "T1189"]
 owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]

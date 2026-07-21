@@ -210,7 +210,10 @@ describe('ContextBudgetManager', () => {
       })
       const result = mgr.truncateToFit(params)
       expect(result.enrichedGoal.length).toBeLessThan(largeGoal.length)
-      expect(result.enrichedGoal).toContain('[context truncated to fit]')
+      // Truncation is performed by the section-aware compactor, which emits a
+      // structural omission marker (e.g. "[NNNN chars omitted]") rather than a
+      // free-text banner. Assert on that real signal.
+      expect(result.enrichedGoal).toMatch(/chars omitted/)
     })
 
     it('preserves system prompt and tool schemas', () => {

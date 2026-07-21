@@ -74,6 +74,34 @@ describe('har-bridge origin tagging', () => {
     expect(res.endpointsWritten).toBe(2)
   })
 
+  it('writes RAW secret value into the finding description (evidence stays precise/lethal)', async () => {
+    const jwt = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxfQ.abc123secret'
+    const har = JSON.stringify({
+      log: {
+        version: '1.2',
+        creator: { name: 't', version: '1' },
+        entries: [
+          {
+            request: { method: 'GET', url: 'http://localhost:3000/api/me', headers: [{ name: 'authorization', value: jwt }], queryString: [], cookies: [] },
+            response: { status: 200, statusText: 'OK', headers: [], content: { mimeType: 'application/json', text: '{}', size: 2 }, cookies: [] },
+            startedDateTime: new Date().toISOString(),
+            time: 1,
+            cache: {},
+            timings: {},
+          },
+        ],
+      },
+    })
+    await bridgeHARToGraph(har, 'http://localhost:3000')
+    const secretFinding = (mockStore.addFinding as any).mock.calls.find(
+      (c: any[]) => c[0].technique === 'Secret Exposure: token',
+    )
+    expect(secretFinding).toBeTruthy()
+    // The graph evidence must contain the REAL token, not a mask.
+    expect(secretFinding[0].description).toContain(jwt)
+    expect(secretFinding[0].description).not.toContain('****')
+  })
+
   it('tags secrets found in a self entry as self-traffic', async () => {
     const entries = [
       {

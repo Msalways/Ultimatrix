@@ -124,7 +124,7 @@ function buildHarContext(harData: HarArchive, targetUrl: string): string {
   if (secrets.length > 0) {
     lines.push('', '### Discovered Auth Data')
     for (const s of secrets.slice(0, 15)) {
-      lines.push(`- ${s.type} in ${s.location}: ${s.name} = ${s.value}`)
+      lines.push(`- ${s.type} in ${s.location}: ${s.name} = ${s.maskedValue}`)
     }
   }
 
@@ -141,13 +141,18 @@ function buildHarContext(harData: HarArchive, targetUrl: string): string {
 
 function buildCredentialsSection(credentials: Record<string, { email: string; password: string }>): string {
   const lines = ['# Available Credentials\n']
-  lines.push('The following test accounts are available for testing:\n')
+  lines.push('The following test-account ROLES are configured for this engagement:\n')
 
-  for (const [role, creds] of Object.entries(credentials)) {
-    lines.push(`- **${role}**: ${creds.email} / ${creds.password}`)
+  for (const role of Object.keys(credentials)) {
+    lines.push(`- **${role}**`)
   }
 
-  lines.push('\nUse these to test access control and privilege escalation.')
+  lines.push(
+    '\nCredentials are delivered out-of-band via the `useCredential(role)` tool — the agent never types a' +
+      ' password inline. Use `action="list"` to enumerate roles, `action="reveal"` to see the account email' +
+      ' (password stays masked), and `action="login"` to authenticate in the live browser. This keeps secrets' +
+      ' out of the model prompt and every persisted transcript.',
+  )
   return lines.join('\n')
 }
 

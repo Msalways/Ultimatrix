@@ -130,7 +130,10 @@ export interface Secret {
   location: 'header' | 'body' | 'url' | 'cookie'
   entryIndex: number
   name: string
+  /** Raw captured value — used for EVIDENCE graph nodes and replay. Never masked. */
   value: string
+  /** Display-only masked form — used in prompts / reports. */
+  maskedValue: string
   description: string
 }
 
@@ -145,7 +148,10 @@ export interface DataFlow {
     location: string
     name: string
   }
+  /** Raw captured value — used for EVIDENCE graph nodes. Never masked. */
   value: string
+  /** Display-only masked form — used in prompts / reports. */
+  maskedValue: string
   type: 'token' | 'cookie' | 'header' | 'param'
 }
 
@@ -274,6 +280,20 @@ export function getEndpointsWithHeaders(entries: HarEntry[]): EndpointWithHeader
   return Array.from(endpointMap.values())
 }
 
+/**
+ * Mask a discovered secret value so it can never be echoed verbatim into a
+ * prompt or report. We keep a short structural prefix (first 4 chars) purely
+ * to help the analyst confirm *which* field matched; the remainder is redacted.
+ * Full values are stored only in the (local, out-of-scope) HAR / evidence store,
+ * never in LLM-facing text.
+ */
+export function maskSecret(value: string): string {
+  if (!value) return '<redacted>'
+  const v = value.trim()
+  if (v.length <= 4) return '****'
+  return `${v.slice(0, 4)}${'*'.repeat(Math.min(12, v.length - 4))}`
+}
+
 export function getSecrets(entries: HarEntry[]): Secret[] {
   const secrets: Secret[] = []
   const secretPatterns = [
@@ -297,7 +317,8 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
             location: 'header',
             entryIndex: i,
             name: header.name,
-            value: header.value.substring(0, 50) + (header.value.length > 50 ? '...' : ''),
+            value: header.value,
+            maskedValue: maskSecret(header.value),
             description: `Potential ${type} found in request header`,
           })
         }
@@ -313,7 +334,8 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
             location: 'header',
             entryIndex: i,
             name: header.name,
-            value: header.value.substring(0, 50) + (header.value.length > 50 ? '...' : ''),
+            value: header.value,
+            maskedValue: maskSecret(header.value),
             description: `Potential ${type} found in response header`,
           })
         }
@@ -329,7 +351,8 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
             location: 'cookie',
             entryIndex: i,
             name: cookie.name,
-            value: cookie.value.substring(0, 50) + (cookie.value.length > 50 ? '...' : ''),
+            value: cookie.value,
+            maskedValue: maskSecret(cookie.value),
             description: `Potential ${type} found in cookie`,
           })
         }
@@ -346,7 +369,8 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
             location: 'body',
             entryIndex: i,
             name: type,
-            value: matches[0].substring(0, 50),
+            value: matches[0],
+            maskedValue: maskSecret(matches[0]),
             description: `Potential ${type} found in response body`,
           })
         }
@@ -393,7 +417,8 @@ export function getDataFlows(entries: HarEntry[]): DataFlow[] {
           flows.push({
             source: { entryIndex: source.entryIndex, location: source.location, name: source.name },
             sink: { entryIndex: i, location: 'header', name: header.name },
-            value: header.value.substring(0, 30),
+            value: header.value,
+            maskedValue: maskSecret(header.value),
             type: header.name.toLowerCase() === 'cookie' ? 'cookie' : 'header',
           })
         }
@@ -407,7 +432,8 @@ export function getDataFlows(entries: HarEntry[]): DataFlow[] {
           flows.push({
             source: { entryIndex: source.entryIndex, location: source.location, name: source.name },
             sink: { entryIndex: i, location: 'cookie', name: cookie.name },
-            value: cookie.value.substring(0, 30),
+            value: cookie.value,
+            maskedValue: maskSecret(cookie.value),
             type: 'cookie',
           })
         }

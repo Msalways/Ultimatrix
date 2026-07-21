@@ -67,7 +67,7 @@ describe('Instructions', () => {
       expect(instructions).toContain('https://api.example.com')
     })
 
-    it('should include credentials when provided', () => {
+    it('should list credential roles without leaking plaintext secrets', () => {
       const instructions = buildInstructions({
         skills: [],
         harData: mockHar,
@@ -77,8 +77,39 @@ describe('Instructions', () => {
         },
       })
 
+      // Role is enumerated so the agent knows an account exists...
       expect(instructions).toContain('admin')
-      expect(instructions).toContain('admin@test.com')
+      // ...but the password (and the raw email) must never appear in the prompt.
+      expect(instructions).not.toContain('pass123')
+      expect(instructions).not.toContain('admin@test.com')
+      // Delivery is delegated to the out-of-band useCredential tool.
+      expect(instructions).toContain('useCredential')
+    })
+
+    it('masks discovered secret values in the prompt (display-only)', () => {
+      const jwt = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxfQ.abc123secret'
+      const harWithSecret: HarArchive = {
+        log: {
+          ...mockHar.log,
+          entries: [
+            {
+              ...mockHar.log.entries[0],
+              request: {
+                ...mockHar.log.entries[0].request,
+                headers: [{ name: 'Authorization', value: jwt }],
+              },
+            },
+          ],
+        },
+      }
+      const instructions = buildInstructions({
+        skills: [],
+        harData: harWithSecret,
+        targetUrl: 'https://api.example.com',
+      })
+      // The raw token must NEVER appear in the LLM prompt...
+      expect(instructions).not.toContain(jwt)
+      expect(instructions).not.toContain('eyJhbGci')
     })
 
     it('should handle empty skills', () => {

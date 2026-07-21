@@ -343,7 +343,7 @@ function buildHARContextForLLM(meta: HARMeta): string {
     lines.push('')
     lines.push('### Discovered Secrets')
     for (const s of meta.secrets.slice(0, 10)) {
-      lines.push(`- ${s.type} in ${s.location}: ${s.name} = ${s.value}`)
+      lines.push(`- ${s.type} in ${s.location}: ${s.name} = ${s.maskedValue}`)
     }
   }
 

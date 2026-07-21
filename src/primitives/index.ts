@@ -42,9 +42,22 @@ import { ssrfMetadata } from './ssrfMetadata'
 import { rceClass } from './rceClass'
 import { graphqlBola } from './graphqlBola'
 import { aiAgentAttack } from './aiAgentAttack'
+import { nosqlInjection } from './nosqlInjection'
+import { ssrfMultiCloud } from './ssrfMultiCloud'
+import { sstiBlind } from './sstiBlind'
+import { boplaOracle } from './boplaOracle'
+import { artifactLifetime } from './artifactLifetime'
+import { internalStateDisclosure } from './internalStateDisclosure'
+import { tenantIsolation } from './tenantIsolation'
+import { deserialization } from './deserialization'
+import { secondOrderSqli } from './secondOrderSqli'
+import { ldapXpathInjection } from './ldapXpathInjection'
+import { smuggling } from './smuggling'
+import { businessLogicAbuse } from './businessLogicAbuse'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings, recordEvidence, writeFinding } from '../tools/control-tools'
 import { httpRequest } from '../tools/http-tools'
+import { rawHttpClient } from '../tools/raw-http-client'
 import { getGlobalWorkspace } from '../workspace'
 import { summarizeTrace } from '../capture/render-tracer'
 import { NodeType, type EndpointNode } from '../graph/schema'
@@ -69,6 +82,18 @@ for (const p of [
   rceClass,
   graphqlBola,
   aiAgentAttack,
+  nosqlInjection,
+  ssrfMultiCloud,
+  sstiBlind,
+  boplaOracle,
+  artifactLifetime,
+  internalStateDisclosure,
+  tenantIsolation,
+  deserialization,
+  secondOrderSqli,
+  ldapXpathInjection,
+  smuggling,
+  businessLogicAbuse,
 ]) {
   registerPrimitive(p)
 }
@@ -107,6 +132,16 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
 // ─── Executor: run a step via the HTTP tool (real tool output) ───────────
 
 async function httpExecutor(step: AttackStep): Promise<StepExecutionResult> {
+  // Smuggling/deserialization primitives may request a raw-socket transport
+  // (manual framing that fetch cannot express) via step.metadata.useRaw.
+  if (step.metadata?.useRaw) {
+    try {
+      const r: any = await (rawHttpClient as any).execute({ url: step.request.url, preamble: step.request.body ?? '', timeoutMs: 8000 })
+      return { step, ok: r?.ok ?? false, status: undefined, body: r?.rawResponse, error: r?.error }
+    } catch (e: any) {
+      return { step, ok: false, error: e?.message ?? String(e) }
+    }
+  }
   try {
     const r: any = await (httpRequest as any).execute({
       method: step.request.method,

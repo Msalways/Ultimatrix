@@ -37,6 +37,7 @@ import { loadSkillReference, searchSkillTool, listSkills } from '../tools/skill-
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
+import { scannerTools } from '../tools/scanner-tools'
 import { useSession, extractSessionCookie } from '../tools/session-tools'
 import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
@@ -204,6 +205,20 @@ function campaignTools(config: UltimatrixConfig, p: string): Record<string, any>
   }
 }
 
+function externalTools(p: string): Record<string, any> {
+  return {
+    nuclei: s(scannerTools.nuclei, p),
+    sqlmap: s(scannerTools.sqlmap, p),
+    ffuf: s(scannerTools.ffuf, p),
+    nmap: s(scannerTools.nmap, p),
+    jwttool: s(scannerTools.jwttool, p),
+    arjun: s(scannerTools.arjun, p),
+    corsy: s(scannerTools.corsy, p),
+    subfinder: s(scannerTools.subfinder, p),
+    gitleaks: s(scannerTools.gitleaks, p),
+  }
+}
+
 function modelSelectionTools(
   config: UltimatrixConfig,
   modelSelector?: ModelSelector,
@@ -259,6 +274,7 @@ export function buildToolPack(
     ...skillTools(p),
     ...sessionTools(p),
     ...miscTools(p),
+    ...externalTools(p),
   }
 
   if (includeResearch) Object.assign(tools, researchTools(p))
