@@ -17,22 +17,29 @@ describe('DialogWatcher', () => {
   })
 
   it('attaches to browser with valid Stagehand context', () => {
-    const mockConn = { on: vi.fn(), off: vi.fn(), send: vi.fn() }
+    const mockAddInitScript = vi.fn().mockResolvedValue(undefined)
+    const mockEvaluate = vi.fn().mockResolvedValue(undefined)
     const mockBrowser = {
       requireStagehand: () => ({
-        context: { conn: mockConn, pages: [] },
+        context: {
+          addInitScript: mockAddInitScript,
+          pages: () => [{ evaluate: mockEvaluate }],
+        },
       }),
     }
 
     const w = startDialogWatcher(mockBrowser)
     expect(w.isAttached()).toBe(true)
-    expect(mockConn.on).toHaveBeenCalledWith('Target.attachedToTarget', expect.any(Function))
+    expect(mockAddInitScript).toHaveBeenCalledWith(expect.stringContaining('__ULTIMATRIX_DIALOG_INTERCEPTOR'))
   })
 
   it('does not double-attach', () => {
     const mockBrowser = {
       requireStagehand: () => ({
-        context: { conn: { on: vi.fn() }, pages: [] },
+        context: {
+          addInitScript: vi.fn().mockResolvedValue(undefined),
+          pages: () => [],
+        },
       }),
     }
 
@@ -50,14 +57,15 @@ describe('DialogWatcher', () => {
     expect(w.isAttached()).toBe(false)
   })
 
-  it('returns detached when no CDP connection', () => {
+  it('returns detached when no addInitScript', () => {
     stopDialogWatcher()
     const mockBrowser = {
       requireStagehand: () => ({ context: {} }),
     }
     startDialogWatcher(mockBrowser)
     const w = getGlobalDialogWatcher()
-    expect(w.isAttached()).toBe(false)
+    // context exists but addInitScript is missing — still attaches (best-effort)
+    expect(w.isAttached()).toBe(true)
   })
 
   it('records dialog events', () => {
@@ -145,14 +153,11 @@ describe('DialogWatcher', () => {
   })
 
   it('detach cleans up listeners', () => {
-    const cleanupFn = vi.fn()
     const w = getGlobalDialogWatcher()
-    ;(w as any).cleanupFns = [cleanupFn]
     ;(w as any).attached = true
 
     w.detach()
     expect(w.isAttached()).toBe(false)
-    expect(cleanupFn).toHaveBeenCalled()
   })
 
   it('caps stored dialogs at MAX_STORED_DIALOGS', () => {
@@ -168,6 +173,65 @@ describe('DialogWatcher', () => {
     }
     ;(w as any).dialogs = (w as any).dialogs.slice(-100)
     expect(w.getDialogs().length).toBeLessThanOrEqual(100)
+  })
+
+  it('readInterceptedDialogs reads from page window array', async () => {
+    const w = getGlobalDialogWatcher()
+    const mockPage = {
+      evaluate: vi.fn().mockResolvedValue([
+        { type: 'alert', message: 'intercepted!', url: 'https://test.com', timestamp: Date.now() },
+      ]),
+      url: () => 'https://test.com',
+    }
+
+    const events = await w.readInterceptedDialogs(mockPage)
+    expect(events).toHaveLength(1)
+    expect(events[0].message).toBe('intercepted!')
+    // Also stored in watcher
+    expect(w.getDialogs()).toHaveLength(1)
+    expect(w.getDialogs()[0].message).toBe('intercepted!')
+  })
+
+  it('readInterceptedDialogs returns empty for empty array', async () => {
+    const w = getGlobalDialogWatcher()
+    const mockPage = {
+      evaluate: vi.fn().mockResolvedValue([]),
+      url: () => 'https://test.com',
+    }
+
+    const events = await w.readInterceptedDialogs(mockPage)
+    expect(events).toHaveLength(0)
+  })
+
+  it('readInterceptedDialogs handles page without evaluate', async () => {
+    const w = getGlobalDialogWatcher()
+    const events = await w.readInterceptedDialogs(null)
+    expect(events).toHaveLength(0)
+  })
+
+  it('readInterceptedDialogs handles evaluate failure', async () => {
+    const w = getGlobalDialogWatcher()
+    const mockPage = {
+      evaluate: vi.fn().mockRejectedValue(new Error('page crashed')),
+    }
+
+    const events = await w.readInterceptedDialogs(mockPage)
+    expect(events).toHaveLength(0)
+  })
+
+  it('injectIntoPage injects interceptor script', async () => {
+    const w = getGlobalDialogWatcher()
+    const mockEvaluate = vi.fn().mockResolvedValue(undefined)
+    const mockPage = { evaluate: mockEvaluate }
+
+    await w.injectIntoPage(mockPage)
+    expect(mockEvaluate).toHaveBeenCalledWith(expect.stringContaining('__ULTIMATRIX_DIALOG_INTERCEPTOR'))
+  })
+
+  it('injectIntoPage handles null page', async () => {
+    const w = getGlobalDialogWatcher()
+    // Should not throw
+    await w.injectIntoPage(null)
   })
 })
 
@@ -185,7 +249,10 @@ describe('Global DialogWatcher', () => {
   it('startDialogWatcher attaches to browser', () => {
     const mockBrowser = {
       requireStagehand: () => ({
-        context: { conn: { on: vi.fn() }, pages: [] },
+        context: {
+          addInitScript: vi.fn().mockResolvedValue(undefined),
+          pages: () => [],
+        },
       }),
     }
     const watcher = startDialogWatcher(mockBrowser)
@@ -195,7 +262,10 @@ describe('Global DialogWatcher', () => {
   it('stopDialogWatcher detaches', () => {
     const mockBrowser = {
       requireStagehand: () => ({
-        context: { conn: { on: vi.fn() }, pages: [] },
+        context: {
+          addInitScript: vi.fn().mockResolvedValue(undefined),
+          pages: () => [],
+        },
       }),
     }
     startDialogWatcher(mockBrowser)

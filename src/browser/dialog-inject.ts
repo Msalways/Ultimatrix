@@ -1,32 +1,31 @@
 /**
  * Dialog Evidence Injection — Wraps Stagehand tools to automatically
- * inject dialog evidence into every tool result.
+ * inject dialog evidence + UI reaction detection into every tool result.
  *
  * Root cause: CDP operations have side effects (native dialogs) that aren't
- * communicated back to the caller. The dialog watcher captures these events,
+ * communicated back to the caller. The JS interceptor captures these events,
  * but Stagehand tool results don't include them. The agent has to manually
  * call getDialogEvidence and often forgets, leading to "ungrounded claims".
  *
  * This wrapper establishes a contract: every browser tool call returns both
- * its direct result AND any CDP-level side effects (dialogs). This is not
- * a bandaid — it's a missing abstraction in the agent's execution model.
+ * its direct result AND any CDP-level side effects (dialogs + UI reactions).
  *
- * CdpConnection dispatches events by CDP method name:
- *   - Events WITH sessionId → session.dispatch(method, params)
- *   - Events WITHOUT sessionId → connection-level handlers
- * Page.javascriptDialogOpening always has a sessionId → goes to session only.
- * The dialog watcher registers session.on("Page.javascriptDialogOpening", handler).
- * This wrapper reads the watcher's stored events after each tool call.
+ * The wrapper also:
+ * - Reads intercepted dialogs from window.__ULTIMATRIX_DIALOGS__
+ * - Records intercepted dialogs as human actions (for flow reproduction)
+ * - Runs captureBaseline()/detectReaction() cycle for UI reaction detection
  */
 
 import { createStagehandTools } from '@mastra/stagehand'
 import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
+import { getGlobalReactionObserver, type ReactionResult } from './reaction-observer'
 import { log } from '../utils/logger'
 import { getGlobalGraphStore } from '../graph/store'
 import { isUrlInScope } from '../safety/scope-guard'
 import { recordStructuredEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
 import { wireRenderTrace } from '../capture/render-bridge'
+import { getGlobalObserver } from '../capture/human-observer'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -46,16 +45,23 @@ function buildDialogEvidence(newDialogs: DialogEvent[]): string {
   return `Native dialog(s) fired during this action:\n${lines.join('\n')}`
 }
 
+function buildReactionEvidence(reactionResult: ReactionResult): string {
+  if (!reactionResult.hasChanges || !reactionResult.summary) return ''
+  return `UI reaction(s) after this action:\n${reactionResult.summary}`
+}
+
 /**
- * Wrap all Stagehand tools so every tool result includes dialog evidence.
+ * Wrap all Stagehand tools so every tool result includes dialog evidence
+ * and UI reaction detection.
  *
- * Before execution: snapshot dialog count from the watcher.
- * After execution: if new dialogs appeared, append evidence to the result.
- * The agent ALWAYS sees dialog evidence inline — no manual getDialogEvidence needed.
+ * Before execution: snapshot dialog count + capture reaction baseline.
+ * After execution: read intercepted dialogs, detect UI reactions, append evidence.
  */
 export function wrapStagehandTools(browser: any): Record<string, any> {
   const raw = createStagehandTools(browser)
   const wrapped: Record<string, any> = {}
+  const watcher = getGlobalDialogWatcher()
+  const reactionObserver = getGlobalReactionObserver()
 
   for (const [name, tool] of Object.entries(raw)) {
     if (!STAGEHAND_TOOL_NAMES.includes(name)) {
@@ -92,8 +98,10 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
           }
         }
 
-        const watcher = getGlobalDialogWatcher()
         const before = watcher.getDialogs().length
+
+        // Capture reaction baseline BEFORE tool execution
+        try { await reactionObserver.captureBaseline() } catch {}
 
         const result = await originalExecute(input, context)
 
@@ -111,8 +119,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
                 sessionId: context?.sessionId,
               })
               log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
-              // A3: render-trace every crawled HTML response (spider pages never
-              // pass through NetworkCapture, so wire the live page directly).
+              // Render-trace every crawled HTML response
               wireRenderTrace(page)
               // Structured evidence that this URL was actually visited.
               recordStructuredEvidence({
@@ -134,8 +141,6 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
                   observed: { url: challenge.url },
                 })
 
-                // In headful mode, we can wait for auto-resolution or prompt user
-                // In headless mode, just record and continue (the challenge may persist)
                 const resolved = await botHandler.waitForResolution(page, 10_000)
                 if (resolved) {
                   log.info(`[dialog-inject] Bot challenge resolved automatically`)
@@ -155,13 +160,49 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
           }
         }
 
-        const after = watcher.getDialogs().length
-        if (after > before) {
-          const newDialogs = watcher.getDialogs().slice(before)
-          const evidence = buildDialogEvidence(newDialogs)
-          log.info(`[dialog-inject] ${newDialogs.length} dialog(s) during ${name}: ${newDialogs.map(d => `[${d.type}] "${d.message}"`).join(', ')}`)
+        // Read intercepted dialogs from JS interceptor
+        const page = context?.page
+        let newDialogs: DialogEvent[] = []
+        if (page) {
+          try {
+            newDialogs = await watcher.readInterceptedDialogs(page)
+          } catch {}
+        }
 
-          // Structured evidence: a native dialog is hard proof of XSS/etc.
+        // Also check watcher's legacy count (in case any CDP events still fire)
+        const after = watcher.getDialogs().length
+        if (after > before && newDialogs.length === 0) {
+          newDialogs = watcher.getDialogs().slice(before)
+        }
+
+        // Record intercepted dialogs as human actions (for flow reproduction)
+        if (newDialogs.length > 0) {
+          const humanObserver = getGlobalObserver()
+          for (const d of newDialogs) {
+            humanObserver.record({
+              type: 'click',
+              selector: `dialog:${d.type}`,
+              value: d.message,
+              url: d.url,
+              timestamp: d.timestamp,
+              metadata: { dialogType: d.type, intercepted: true },
+            })
+          }
+        }
+
+        // Detect UI reactions (modals, toasts, errors, etc.)
+        let reactionResult: ReactionResult | null = null
+        try {
+          reactionResult = await reactionObserver.detectReaction()
+        } catch {}
+
+        // Build evidence strings
+        const dialogEvidence = buildDialogEvidence(newDialogs)
+        const reactionEvidence = buildReactionEvidence(reactionResult ?? { reactions: [], hasChanges: false, summary: '', baseline: null, current: null })
+
+        // Log and record structured evidence
+        if (newDialogs.length > 0) {
+          log.info(`[dialog-inject] ${newDialogs.length} dialog(s) during ${name}: ${newDialogs.map(d => `[${d.type}] "${d.message}"`).join(', ')}`)
           for (const d of newDialogs) {
             recordStructuredEvidence({
               type: 'text',
@@ -170,14 +211,23 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
               observed: { url: d.url },
             })
           }
+        }
 
-          if (result && typeof result === 'object') {
-            return {
-              ...result,
-              dialogEvidence: evidence,
-            }
+        if (reactionResult?.hasChanges) {
+          log.info(`[dialog-inject] UI reaction during ${name}: ${reactionResult.summary}`)
+        }
+
+        // Merge evidence into result
+        if ((dialogEvidence || reactionEvidence) && result && typeof result === 'object') {
+          return {
+            ...result,
+            ...(dialogEvidence ? { dialogEvidence } : {}),
+            ...(reactionEvidence ? { reactionEvidence } : {}),
           }
-          return { success: false, dialogEvidence: evidence, rawResult: result }
+        }
+
+        if (dialogEvidence || reactionEvidence) {
+          return { success: false, dialogEvidence, reactionEvidence, rawResult: result }
         }
 
         return result
@@ -186,6 +236,6 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
   }
 
   const toolCount = Object.keys(wrapped).length
-  log.dim(`[dialog-inject] Wrapped ${toolCount} Stagehand tools with dialog evidence injection`)
+  log.dim(`[dialog-inject] Wrapped ${toolCount} Stagehand tools with dialog + reaction injection`)
   return wrapped
 }

@@ -1,13 +1,17 @@
 /**
- * Reaction Observer — DOM-level detection of UI feedback after agent actions
+ * Reaction Observer — Accessibility-tree-based detection of UI feedback after agent actions
  *
  * After every browser action (click, fill, navigate, submit), this observer
- * snapshots the DOM state and diffs it against a pre-action baseline.
+ * snapshots the page via page.snapshot() (accessibility tree) and diffs it
+ * against a pre-action baseline.
+ *
  * Detects: modals, toasts, snackbars, error messages, success messages,
  * notifications, content changes, and native dialogs (via dialog-watcher).
  *
- * The goal: the agent should never have to guess what happened after an action.
- * The system automatically observes and reports reactions.
+ * Uses page.snapshot() (Stagehand V3Page) instead of CSS selectors because:
+ * - CSS selectors miss <dialog> elements, shadow DOM, ARIA-only widgets
+ * - Accessibility tree captures ALL semantic elements regardless of implementation
+ * - Same mechanism screen readers use — ground truth for what's "visible"
  */
 
 import { getActivePage } from './manager'
@@ -23,12 +27,10 @@ export interface Reaction {
 }
 
 export interface ReactionSnapshot {
+  /** Accessibility tree elements (role + text pairs) */
+  axElements: AxElement[]
   /** Visible text content (trimmed, normalized) */
   visibleText: string
-  /** Count of visible overlay/modal elements */
-  overlayCount: number
-  /** Contents of common toast/notification containers */
-  toastTexts: string[]
   /** Active dialog count from dialog-watcher */
   dialogCount: number
   /** URL at snapshot time */
@@ -50,137 +52,98 @@ export interface ReactionResult {
   current: ReactionSnapshot | null
 }
 
+export interface AxElement {
+  role: string
+  text: string
+  name?: string
+  depth: number
+}
+
 const MAX_REACTIONS = 50
 
 /**
- * JavaScript to inject into the page to capture DOM state.
- * Returns a normalized snapshot of the current page state.
+ * Parse Stagehand's formattedTree (accessibility tree text) into structured AxElements.
+ *
+ * Format per line:
+ *   <indent>  <role>  "<text>"  [attr=value] ...
+ * Example:
+ *   root  heading "Welcome" [level=1]
+ *     button "Submit"
+ *     alert "Error: invalid input"
+ *     dialog "Confirm Delete"
+ *       button "OK"
+ *       button "Cancel"
  */
-const SNAPSHOT_SCRIPT = `(function() {
-  var result = {
-    visibleText: '',
-    overlayCount: 0,
-    toastTexts: [],
-    visibleModals: [],
-    visibleErrors: [],
-    visibleSuccesses: [],
-    notifications: [],
-    newAlertElements: [],
-  };
+function parseFormattedTree(tree: string): AxElement[] {
+  if (!tree) return []
+  const elements: AxElement[] = []
+  const lines = tree.split('\n')
 
-  // 1. Visible text — body.innerText (excludes hidden elements)
-  try {
-    result.visibleText = (document.body.innerText || '').trim().slice(0, 5000);
-  } catch(e) {}
+  for (const line of lines) {
+    if (!line.trim()) continue
 
-  // 2. Overlay/modal count
-  var overlaySelectors = [
-    '.modal', '.modal-overlay', '.modal-backdrop', '[role="dialog"]',
-    '.overlay', '.popup', '.lightbox', '.drawer',
-    '[aria-modal="true"]', '.modal.show', '.modal.active',
-  ];
-  for (var i = 0; i < overlaySelectors.length; i++) {
-    try {
-      var els = document.querySelectorAll(overlaySelectors[i]);
-      for (var j = 0; j < els.length; j++) {
-        var style = window.getComputedStyle(els[j]);
-        if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-          result.overlayCount++;
-          break;
-        }
-      }
-    } catch(e) {}
+    // Count leading spaces for depth
+    const stripped = line.replace(/^ */, '')
+    const depth = (line.length - stripped.length) / 2
+
+    // Extract role (first word)
+    const roleMatch = stripped.match(/^(\S+)/)
+    if (!roleMatch) continue
+    const role = roleMatch[1]
+
+    // Extract text in quotes: "..."
+    const textMatch = stripped.match(/"([^"]*)"/)
+    const text = textMatch ? textMatch[1] : ''
+
+    // Extract name after role but before quotes: role name "text"
+    const nameMatch = stripped.match(/^\S+\s+(\S+)\s/)
+    const name = nameMatch && nameMatch[1] !== `"${text}"` ? nameMatch[1] : undefined
+
+    elements.push({ role, text, name, depth })
   }
 
-  // 3. Toast/notification containers
-  var toastSelectors = [
-    '.toast', '.snackbar', '.notification', '.toaster', '.toast-container',
-    '[role="alert"]', '.alert', '.alert-dismissible',
-    '.toast-message', '.snackbar-message', '.notification-message',
-    '.react-toastify', '.notyf', '.noty', '.toastr',
-    '[data-toast]', '[data-notification]',
-  ];
-  for (var i = 0; i < toastSelectors.length; i++) {
+  return elements
+}
+
+/**
+ * Take a snapshot of the current page state via page.snapshot() + dialog-watcher.
+ * Falls back to page.evaluate() body.innerText if snapshot() is unavailable.
+ */
+async function takeSnapshot(page: any): Promise<{ visibleText: string; axElements: AxElement[]; dialogCount: number; url: string }> {
+  const dialogWatcher = getGlobalDialogWatcher()
+  const dialogCount = dialogWatcher.getDialogs().length
+  const url = typeof page.url === 'function' ? page.url() : ''
+
+  let axElements: AxElement[] = []
+  let visibleText = ''
+
+  // Primary: page.snapshot() (Stagehand V3Page — accessibility tree)
+  if (typeof page.snapshot === 'function') {
     try {
-      var els = document.querySelectorAll(toastSelectors[i]);
-      for (var j = 0; j < els.length; j++) {
-        var style = window.getComputedStyle(els[j]);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          var text = (els[j].innerText || '').trim();
-          if (text && text.length > 0 && text.length < 500) {
-            result.toastTexts.push(text);
-          }
-        }
+      const snap = await page.snapshot()
+      if (snap && typeof snap.formattedTree === 'string') {
+        axElements = parseFormattedTree(snap.formattedTree)
+        visibleText = snap.formattedTree
       }
-    } catch(e) {}
+    } catch {
+      // Fall through to evaluate fallback
+    }
   }
 
-  // 4. Error messages
-  var errorSelectors = [
-    '.error', '.error-message', '.error-text', '.error-alert',
-    '.alert-danger', '.alert-error', '.text-danger', '.text-error',
-    '[role="alert"].error', '.has-error', '.field-error',
-    '.validation-error', '.form-error', '.server-error',
-  ];
-  for (var i = 0; i < errorSelectors.length; i++) {
+  // Fallback: page.evaluate for body.innerText (Playwright or snapshot failure)
+  if (!visibleText && typeof page.evaluate === 'function') {
     try {
-      var els = document.querySelectorAll(errorSelectors[i]);
-      for (var j = 0; j < els.length; j++) {
-        var style = window.getComputedStyle(els[j]);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          var text = (els[j].innerText || '').trim();
-          if (text && text.length > 0 && text.length < 500) {
-            result.visibleErrors.push(text);
-          }
-        }
-      }
-    } catch(e) {}
+      visibleText = await page.evaluate(`(function() {
+        try { return (document.body.innerText || '').trim().slice(0, 8000); }
+        catch(e) { return ''; }
+      })()`)
+    } catch {
+      // Page may be blocked by a dialog — that's fine, dialogCount captures it
+    }
   }
 
-  // 5. Success messages
-  var successSelectors = [
-    '.success', '.success-message', '.success-alert',
-    '.alert-success', '.text-success', '.toast-success',
-    '[data-success]', '.flash-success', '.is-success',
-  ];
-  for (var i = 0; i < successSelectors.length; i++) {
-    try {
-      var els = document.querySelectorAll(successSelectors[i]);
-      for (var j = 0; j < els.length; j++) {
-        var style = window.getComputedStyle(els[j]);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          var text = (els[j].innerText || '').trim();
-          if (text && text.length > 0 && text.length < 500) {
-            result.visibleSuccesses.push(text);
-          }
-        }
-      }
-    } catch(e) {}
-  }
-
-  // 6. General notification elements
-  var notifSelectors = [
-    '.notification', '.notify', '.message', '.banner',
-    '.flash-message', '.flash-notice', '.flash-alert',
-    '[role="status"]', '[role="log"]',
-  ];
-  for (var i = 0; i < notifSelectors.length; i++) {
-    try {
-      var els = document.querySelectorAll(notifSelectors[i]);
-      for (var j = 0; j < els.length; j++) {
-        var style = window.getComputedStyle(els[j]);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          var text = (els[j].innerText || '').trim();
-          if (text && text.length > 0 && text.length < 500) {
-            result.notifications.push(text);
-          }
-        }
-      }
-    } catch(e) {}
-  }
-
-  return result;
-})()`
+  return { visibleText, axElements, dialogCount, url }
+}
 
 class ReactionObserver {
   private baseline: ReactionSnapshot | null = null
@@ -195,16 +158,13 @@ class ReactionObserver {
     if (!page) return null
 
     try {
-      const domState = await page.evaluate(SNAPSHOT_SCRIPT)
-      const dialogWatcher = getGlobalDialogWatcher()
-      const dialogCount = dialogWatcher.getDialogs().length
+      const { visibleText, axElements, dialogCount, url } = await takeSnapshot(page)
 
       this.baseline = {
-        visibleText: domState.visibleText || '',
-        overlayCount: domState.overlayCount || 0,
-        toastTexts: domState.toastTexts || [],
+        visibleText,
+        axElements,
         dialogCount,
-        url: page.url?.() || '',
+        url,
         timestamp: Date.now(),
       }
 
@@ -229,23 +189,21 @@ class ReactionObserver {
     }
 
     try {
-      const domState = await page.evaluate(SNAPSHOT_SCRIPT)
-      const dialogWatcher = getGlobalDialogWatcher()
-      const dialogCount = dialogWatcher.getDialogs().length
+      const { visibleText, axElements, dialogCount, url } = await takeSnapshot(page)
 
       const current: ReactionSnapshot = {
-        visibleText: domState.visibleText || '',
-        overlayCount: domState.overlayCount || 0,
-        toastTexts: domState.toastTexts || [],
+        visibleText,
+        axElements,
         dialogCount,
-        url: page.url?.() || '',
+        url,
         timestamp: Date.now(),
       }
 
       const reactions: Reaction[] = []
 
-      // Detect new dialogs (from dialog-watcher)
+      // 1. Detect new dialogs (from dialog-watcher — native JS dialogs)
       if (current.dialogCount > this.baseline.dialogCount) {
+        const dialogWatcher = getGlobalDialogWatcher()
         const recentDialogs = dialogWatcher.getRecentDialogs(5000)
         for (const dialog of recentDialogs) {
           reactions.push({
@@ -257,59 +215,57 @@ class ReactionObserver {
         }
       }
 
-      // Detect new modals/overlays
-      if (current.overlayCount > this.baseline.overlayCount) {
-        reactions.push({
-          type: 'modal',
-          content: `New overlay/modal appeared (count: ${current.overlayCount}, was: ${this.baseline.overlayCount})`,
-          visible: true,
-          timestamp: Date.now(),
-        })
+      // 2. Detect new accessibility tree elements (modals, alerts, toasts, etc.)
+      // Diff: find elements in current that aren't in baseline (by role+text)
+      const baselineKeys = new Set(
+        this.baseline.axElements.map(e => `${e.role}::${e.text}`)
+      )
+
+      const newElements = current.axElements.filter(e => !baselineKeys.has(`${e.role}::${e.text}`))
+
+      for (const el of newElements) {
+        // Classify by ARIA role
+        if (el.role === 'dialog' || el.role === 'alertdialog' || el.role === 'modal') {
+          reactions.push({
+            type: 'modal',
+            content: el.text || `New ${el.role} appeared`,
+            visible: true,
+            timestamp: Date.now(),
+          })
+        } else if (el.role === 'alert' || el.role === 'status') {
+          // Determine if error or success by content heuristics
+          const content = el.text || ''
+          const isError = /error|fail|invalid|denied|forbidden|unauthorized/i.test(content)
+          const isSuccess = /success|saved|created|updated|deleted|completed|welcome/i.test(content)
+          reactions.push({
+            type: isError ? 'error' : isSuccess ? 'success' : 'notification',
+            content,
+            visible: true,
+            timestamp: Date.now(),
+          })
+        } else if (el.role === 'log') {
+          reactions.push({
+            type: 'notification',
+            content: el.text || '',
+            visible: true,
+            timestamp: Date.now(),
+          })
+        } else if (el.role === 'button' && el.text) {
+          // New buttons appearing can indicate toasts with action buttons
+          reactions.push({
+            type: 'new-element',
+            content: `New button: "${el.text}"`,
+            visible: true,
+            timestamp: Date.now(),
+          })
+        }
       }
 
-      // Detect new toasts/snackbars
-      const newToasts = current.toastTexts.filter(t => !this.baseline!.toastTexts.includes(t))
-      for (const toast of newToasts) {
-        const isSnackbar = /snack|bar/i.test(toast)
-        reactions.push({
-          type: isSnackbar ? 'snackbar' : 'toast',
-          content: toast,
-          visible: true,
-          timestamp: Date.now(),
-        })
-      }
-
-      // Detect new error messages
-      const baselineErrors = this.extractErrors(this.baseline.visibleText)
-      const currentErrors = this.extractErrors(current.visibleText)
-      const newErrors = currentErrors.filter(e => !baselineErrors.includes(e))
-      for (const error of newErrors) {
-        reactions.push({
-          type: 'error',
-          content: error,
-          visible: true,
-          timestamp: Date.now(),
-        })
-      }
-
-      // Detect new success messages
-      const baselineSuccesses = this.extractSuccesses(this.baseline.visibleText)
-      const currentSuccesses = this.extractSuccesses(current.visibleText)
-      const newSuccesses = currentSuccesses.filter(s => !baselineSuccesses.includes(s))
-      for (const success of newSuccesses) {
-        reactions.push({
-          type: 'success',
-          content: success,
-          visible: true,
-          timestamp: Date.now(),
-        })
-      }
-
-      // Detect significant text changes (new content appeared)
+      // 3. Detect significant text changes (new content appeared)
       const textDiff = this.computeTextDiff(this.baseline.visibleText, current.visibleText)
       if (textDiff.added.length > 0) {
         for (const added of textDiff.added.slice(0, 5)) {
-          // Avoid duplicating errors/successes/toasts already captured
+          // Avoid duplicating reactions already captured from accessibility tree
           const isDuplicate = reactions.some(r => r.content.includes(added.slice(0, 50)))
           if (!isDuplicate) {
             reactions.push({
@@ -322,7 +278,7 @@ class ReactionObserver {
         }
       }
 
-      // Detect URL changes
+      // 4. Detect URL changes
       if (current.url !== this.baseline.url) {
         reactions.push({
           type: 'new-element',
@@ -404,51 +360,6 @@ class ReactionObserver {
   }
 
   // --- Private helpers ---
-
-  /**
-   * Extract error-like text from visible text using common patterns.
-   */
-  private extractErrors(text: string): string[] {
-    const errorPatterns = [
-      /error[:\s]+(.{10,200})/gi,
-      /failed[:\s]+(.{10,200})/gi,
-      /invalid[:\s]+(.{10,200})/gi,
-      /denied[:\s]+(.{10,200})/gi,
-      /unauthorized[:\s]+(.{10,200})/gi,
-      /forbidden[:\s]+(.{10,200})/gi,
-    ]
-    const errors: string[] = []
-    for (const pattern of errorPatterns) {
-      let match
-      while ((match = pattern.exec(text)) !== null) {
-        errors.push(match[0].trim().slice(0, 200))
-      }
-    }
-    return errors
-  }
-
-  /**
-   * Extract success-like text from visible text using common patterns.
-   */
-  private extractSuccesses(text: string): string[] {
-    const successPatterns = [
-      /success[:\s]+(.{10,200})/gi,
-      /saved[:\s]+(.{10,200})/gi,
-      /created[:\s]+(.{10,200})/gi,
-      /updated[:\s]+(.{10,200})/gi,
-      /deleted[:\s]+(.{10,200})/gi,
-      /completed[:\s]+(.{10,200})/gi,
-      /welcome[:\s]+(.{10,200})/gi,
-    ]
-    const successes: string[] = []
-    for (const pattern of successPatterns) {
-      let match
-      while ((match = pattern.exec(text)) !== null) {
-        successes.push(match[0].trim().slice(0, 200))
-      }
-    }
-    return successes
-  }
 
   /**
    * Compute text diff between two snapshots — what was added/removed.

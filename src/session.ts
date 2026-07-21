@@ -3,7 +3,6 @@ import { DEFAULTS, loadConfig } from './config'
 import { detectChains } from './intelligence/chaining'
 import type { FindingNode } from './graph/schema'
 import { NodeType } from './graph/schema'
-import { getGlobalReactionObserver } from './browser/reaction-observer'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
 import type { SolverStreamMessage } from './solver/solver'
@@ -657,15 +656,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
 async function consumeStream(stream: AsyncIterable<any>, agentId: string, resources: SessionResources) {
   let textBuf: string[] = []
   let lastToolCall: { name: string; args?: unknown; time: number } | null = null
-  let reactionBaseline = false
-  const reactionObserver = getGlobalReactionObserver()
   const { forensicLog } = resources
-
-  const BROWSER_TOOLS = new Set([
-    'stagehand_navigate', 'stagehand_act', 'stagehand_click',
-    'stagehand_extract', 'stagehand_observe', 'stagehand_screenshot',
-    'httpRequest', 'spawnWorker', 'executeDirect',
-  ])
 
   const flushText = (asResponse: boolean) => {
     if (textBuf.length > 0) {
@@ -701,10 +692,6 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
           tool: chunk.payload.toolName,
           args: chunk.payload.args as Record<string, unknown>,
         })
-        if (BROWSER_TOOLS.has(chunk.payload.toolName)) {
-          try { await reactionObserver.captureBaseline() } catch {}
-          reactionBaseline = true
-        }
         break
       case 'tool-result':
         if (internalTools.has(chunk.payload.toolName)) break
@@ -718,24 +705,6 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
           duration: lastToolCall ? Date.now() - lastToolCall.time : undefined,
         })
         lastToolCall = null
-        if (reactionBaseline && BROWSER_TOOLS.has(chunk.payload.toolName)) {
-          try {
-            const reactionResult = await reactionObserver.detectReaction()
-            if (reactionResult.hasChanges && reactionResult.summary) {
-              log.info(`UI reaction: ${reactionResult.summary}`)
-              forensicLog.log({
-                type: 'ui-reaction',
-                agent: agentId,
-                tool: chunk.payload.toolName,
-                args: {
-                  reactions: reactionResult.reactions,
-                  summary: reactionResult.summary,
-                },
-              })
-            }
-          } catch {}
-          reactionBaseline = false
-        }
         break
       case 'tool-error':
         flushText(false)
@@ -747,7 +716,6 @@ async function consumeStream(stream: AsyncIterable<any>, agentId: string, resour
           error: chunk.payload.error,
         })
         lastToolCall = null
-        reactionBaseline = false
         break
       case 'error':
         flushText(false)

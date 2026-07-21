@@ -1,12 +1,18 @@
 /**
- * Dialog Watcher — CDP-level detection of browser-native dialogs
+ * Dialog Watcher — JS interceptor for browser-native dialogs
  *
- * Detects alert(), confirm(), prompt() via Chrome DevTools Protocol.
- * Auto-dismisses dialogs so the page doesn't block, and records them
- * as evidence for the agent (especially useful for XSS proof-of-concept).
+ * Detects alert(), confirm(), prompt() via a JS interceptor injected into
+ * every page via V3Context.addInitScript(). This is the standard mechanism
+ * (same approach Playwright/Puppeteer use internally).
  *
- * Stagehand v3 is CDP-native (not Playwright), so page.on('dialog') doesn't work.
- * Instead, we hook into the CDP Session's event system for Page.javascriptDialogOpening.
+ * The interceptor:
+ * 1. Wraps window.alert/confirm/prompt to record dialog events
+ * 2. Auto-accepts every dialog so the page never blocks
+ * 3. Stores events in window.__ULTIMATRIX_DIALOGS__ for polling
+ *
+ * Stagehand v3 is CDP-native — page.on('dialog') doesn't exist.
+ * addInitScript() runs the interceptor on every new document load.
+ * For the current page, we inject via page.evaluate().
  */
 
 import { log } from "../utils/logger";
@@ -26,6 +32,39 @@ export interface DialogWatcherResult {
 
 const MAX_STORED_DIALOGS = 100;
 
+/**
+ * JS interceptor — injected via addInitScript and page.evaluate.
+ * Wraps window.alert/confirm/prompt to capture + auto-accept dialogs.
+ */
+const INTERCEPTOR_SCRIPT = `(function() {
+  if (window.__ULTIMATRIX_DIALOG_INTERCEPTOR) return;
+  window.__ULTIMATRIX_DIALOG_INTERCEPTOR = true;
+  window.__ULTIMATRIX_DIALOGS__ = [];
+
+  function record(type, args) {
+    window.__ULTIMATRIX_DIALOGS__.push({
+      type: type,
+      message: String(args[0] || ''),
+      defaultValue: type === 'prompt' ? String(args[1] || '') : undefined,
+      url: location.href,
+      timestamp: Date.now(),
+    });
+  }
+
+  var _alert = window.alert;
+  window.alert = function() { record('alert', arguments); };
+  window.confirm = function(msg) { record('confirm', arguments); return true; };
+  window.prompt = function(msg, def) { record('prompt', arguments); return def || ''; };
+
+  if (typeof MutationObserver !== 'undefined') {
+    var origDialog = HTMLDialogElement.prototype.showModal;
+    HTMLDialogElement.prototype.showModal = function() {
+      record('alert', [this.textContent || 'dialog']);
+      return origDialog.apply(this, arguments);
+    };
+  }
+})()`;
+
 class DialogWatcher {
   private dialogs: DialogEvent[] = [];
   private attached = false;
@@ -34,7 +73,8 @@ class DialogWatcher {
 
   /**
    * Attach to a StagehandBrowser instance.
-   * Hooks into CDP events to detect and auto-dismiss native dialogs.
+   * Injects JS interceptor via V3Context.addInitScript() so every page
+   * auto-records + auto-accepts native dialogs.
    */
   attach(browser: any): void {
     if (this.attached) return;
@@ -48,37 +88,24 @@ class DialogWatcher {
       }
 
       const context = stagehand.context;
-      const conn = (context as any).conn;
-      if (!conn) {
-        log.dim("[dialog-watcher] CDP connection not available");
-        return;
-      }
 
-      // Listen for new targets (pages/tabs) being attached
-      const onTargetAttached = (params: any) => {
-        if (params.type === "page" && params.sessionId) {
-          this.wireDialogHandler(
-            conn,
-            params.sessionId,
-            params.targetInfo?.url || "",
-          );
-        }
-      };
-
-      // CDP connection level events
-      if (typeof conn.on === "function") {
-        conn.on("Target.attachedToTarget", onTargetAttached);
-        this.cleanupFns.push(() => {
-          if (typeof conn.off === "function")
-            conn.off("Target.attachedToTarget", onTargetAttached);
+      // Register interceptor for all future document loads
+      if (typeof context.addInitScript === "function") {
+        context.addInitScript(INTERCEPTOR_SCRIPT).catch((err: unknown) => {
+          log.dim(`[dialog-watcher] addInitScript failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
 
-      // Also try to attach to already-open pages
-      this.wireExistingPages(context, conn);
+      // Inject into currently loaded pages
+      const pages = typeof context.pages === "function" ? context.pages() : [];
+      for (const page of pages) {
+        if (typeof page.evaluate === "function") {
+          page.evaluate(INTERCEPTOR_SCRIPT).catch(() => {});
+        }
+      }
 
       this.attached = true;
-      log.dim("[dialog-watcher] Active — monitoring for native dialogs");
+      log.dim("[dialog-watcher] Active — JS interceptor injected for native dialogs");
     } catch (err) {
       log.dim(
         `[dialog-watcher] Failed to attach: ${err instanceof Error ? err.message : String(err)}`,
@@ -87,139 +114,59 @@ class DialogWatcher {
   }
 
   /**
-   * Wire dialog handler to a specific CDP session (page).
-   *
-   * Uses conn.getSession(sessionId) to get the CdpSession, then registers
-   * session.on("Page.javascriptDialogOpening", handler) which fires with (params).
-   *
-   * CdpConnection dispatches events by CDP method name:
-   *   - Events WITH sessionId → session.dispatch(method, params)
-   *   - Events WITHOUT sessionId → connection-level handlers
-   * Page.javascriptDialogOpening always has a sessionId → must use session-level listener.
+   * Read intercepted dialogs from a specific page's window.__ULTIMATRIX_DIALOGS__
+   * and merge them into the watcher's store. Clears the page's array after reading.
    */
-  private wireDialogHandler(
-    conn: any,
-    sessionId: string,
-    pageUrl: string,
-  ): void {
+  async readInterceptedDialogs(page: any): Promise<DialogEvent[]> {
+    if (!page || typeof page.evaluate !== "function") return [];
+
     try {
-      // Get the CdpSession from the connection
-      const session = typeof conn.getSession === "function"
-        ? conn.getSession(sessionId)
-        : undefined;
+      const raw: any[] = await page.evaluate(
+        `(function() {
+          var d = window.__ULTIMATRIX_DIALOGS__ || [];
+          window.__ULTIMATRIX_DIALOGS__ = [];
+          return d;
+        })()`,
+      );
 
-      if (!session || typeof session.on !== "function") return;
+      if (!Array.isArray(raw) || raw.length === 0) return [];
 
-      // Enable Page domain on this session to receive dialog events
-      if (typeof session.send === "function") {
-        session.send("Page.enable").catch(() => {});
+      const events: DialogEvent[] = raw.map((d: any) => ({
+        type: d.type || "alert",
+        message: d.message || "",
+        url: d.url || page.url?.() || "",
+        timestamp: d.timestamp || Date.now(),
+        defaultValue: d.defaultValue,
+      }));
+
+      // Merge into watcher store
+      for (const event of events) {
+        this.dialogs.push(event);
+        log.info(
+          `Dialog detected: [${event.type}] "${event.message}" on ${event.url}`,
+        );
       }
 
-      // Register for the specific CDP event — handler receives (params)
-      const onDialog = (params: any) => {
-        this.handleDialog(params, session, pageUrl);
-      };
-      session.on("Page.javascriptDialogOpening", onDialog);
-      this.cleanupFns.push(() => {
-        if (typeof session.off === "function") {
-          session.off("Page.javascriptDialogOpening", onDialog);
-        }
-      });
-      log.dim(`[dialog-watcher] Wired session ${sessionId.slice(0, 8)}... for dialog events`);
-    } catch (err) {
-      // Best-effort — some CDP connections don't support session-targeted sends
+      // Cap at MAX_STORED_DIALOGS
+      if (this.dialogs.length > MAX_STORED_DIALOGS) {
+        this.dialogs = this.dialogs.slice(-MAX_STORED_DIALOGS);
+      }
+
+      return events;
+    } catch {
+      return [];
     }
   }
 
   /**
-   * Wire into already-open pages via the context.
-   *
-   * Uses session.on("Page.javascriptDialogOpening", handler) on the CdpSession
-   * obtained from page.getSessionForFrame(mainFrameId). The handler receives (params)
-   * matching CdpSession.dispatch(event, params) signature.
+   * Inject the interceptor script into a specific page (for newly created tabs).
    */
-  private wireExistingPages(context: any, conn: any): void {
+  async injectIntoPage(page: any): Promise<void> {
+    if (!page || typeof page.evaluate !== "function") return;
     try {
-      const pages = typeof context.pages === "function" ? context.pages() : (context.pages || []);
-      for (const page of pages) {
-        const mainFrameId =
-          typeof page.mainFrameId === "function" ? page.mainFrameId() : null;
-        if (!mainFrameId) continue;
-
-        const session =
-          typeof page.getSessionForFrame === "function"
-            ? page.getSessionForFrame(mainFrameId)
-            : null;
-        if (!session || typeof session.on !== "function") continue;
-
-        const sessionId = typeof session.id === "string"
-          ? session.id
-          : typeof session.id === "function"
-            ? session.id()
-            : "";
-        if (!sessionId) continue;
-
-        // Enable Page domain on this session to receive dialog events
-        if (typeof session.send === "function") {
-          session.send("Page.enable").catch(() => {});
-        }
-
-        // Register for the specific CDP event — handler receives (params)
-        const onDialog = (params: any) => {
-          this.handleDialog(params, session, page.url?.() || "");
-        };
-        session.on("Page.javascriptDialogOpening", onDialog);
-        this.cleanupFns.push(() => {
-          if (typeof session.off === "function") {
-            session.off("Page.javascriptDialogOpening", onDialog);
-          }
-        });
-        log.dim(`[dialog-watcher] Wired existing page ${page.url?.() || "unknown"} for dialog events`);
-      }
-    } catch (err) {
+      await page.evaluate(INTERCEPTOR_SCRIPT);
+    } catch {
       // Best-effort
-    }
-  }
-
-  /**
-   * Handle a detected dialog — auto-dismiss and record it.
-   */
-  private handleDialog(
-    params: any,
-    session: any,
-    pageUrl: string,
-  ): void {
-    const dialog: DialogEvent = {
-      type: params.type || "alert",
-      message: params.message || "",
-      url: pageUrl,
-      timestamp: Date.now(),
-      defaultValue: params.defaultValue,
-    };
-
-    // Store (cap at MAX_STORED_DIALOGS)
-    this.dialogs.push(dialog);
-    if (this.dialogs.length > MAX_STORED_DIALOGS) {
-      this.dialogs = this.dialogs.slice(-MAX_STORED_DIALOGS);
-    }
-
-    log.info(
-      `Dialog detected: [${dialog.type}] "${dialog.message}" on ${dialog.url}`,
-    );
-
-    // Auto-dismiss via CDP — use session.send() (correct CdpSession API)
-    try {
-      if (typeof session?.send === "function") {
-        const dismissParams = {
-          accept: true,  // Required parameter to dismiss the dialog
-          ...(params.type === "prompt" ? { promptText: "" } : {})
-        };
-        session.send("Page.handleJavaScriptDialog", dismissParams).catch((err: unknown) => {
-          log.dim(`[dialog-watcher] Dismiss failed: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      }
-    } catch (err) {
-      // Best-effort dismiss
     }
   }
 
