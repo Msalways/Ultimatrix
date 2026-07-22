@@ -1,0 +1,11 @@
+{
+  "variants": {
+    "default_creds": ["admin:admin", "admin:password", "root:root", "administrator:administrator", "test:test", "guest:guest", "admin:", "admin:admin123", "admin:Password1", "user:user", "api:api", "operator:operator", "manager:manager", "support:support", "superuser:superuser"]
+  },
+  "payloads": ["admin:admin", "admin:password", "root:root", "administrator:administrator", "test:test", "guest:guest"],
+  "markers": ["dashboard", "welcome", "logout", "profile", "settings", "invalid username", "incorrect password", "authentication failed", "login successful", "session"],
+  "metadata": {
+    "cwe": "CWE-1392",
+    "technique": "Default/weak credential authentication bypass"
+  }
+}

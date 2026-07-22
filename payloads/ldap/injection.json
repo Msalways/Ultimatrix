@@ -1,0 +1,12 @@
+{
+  "variants": {
+    "ldap": ["*)(uid=*))(|(uid=*", "admin)(&)", "*)(uid=*))(|(uid=*", "admin)(|(&", "*)(&", "admin)(&(password=*))", "*)(|(uid=*)"],
+    "xpath": ["' or '1'='1", "'] | //* | //*[", "' or 1=1 or '1'='1", "x' or 1=1 or 'x'='y", "' or count(/node())=0 or '1'='1", "1=1"]
+  },
+  "payloads": ["*)(uid=*))(|(uid=*", "admin)(&)", "' or '1'='1", "'] | //* | //*[1"],
+  "markers": ["LDAPException", "LDAP error", "Invalid DN syntax", "XPath error", "org.xml.sax", "SimpleXMLElement", "XPathException"],
+  "metadata": {
+    "cwe": "CWE-90",
+    "technique": "LDAP/XPath injection"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "single_packet": ["HTTP/2 batching — send multiple requests in a single TCP packet to eliminate timing variance"],
+    "last_byte_sync": ["Hold the last byte of each request, then send all held bytes simultaneously"],
+    "token_reuse": ["Pre-fetch N CSRF tokens, use one per concurrent request"]
+  },
+  "payloads": [],
+  "markers": ["balance", "insufficient", "already", "duplicate", "limit exceeded", "too many"],
+  "metadata": {
+    "cwe": "CWE-362",
+    "technique": "Race condition exploitation",
+    "min_iterations": 20,
+    "default_concurrency": 20
+  }
+}

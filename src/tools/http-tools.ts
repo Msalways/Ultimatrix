@@ -5,6 +5,21 @@ import { getForensicLog } from './report-tools'
 import { CompressionService } from '../compression/headroom-service'
 import { isUrlInScope, getScopeConfig } from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
+import { LoopDetector } from '../intelligence/anti-loop'
+
+const globalLoopDetector = new LoopDetector()
+
+function extractHost(url: string): string | null {
+  try { return new URL(url).hostname } catch { return null }
+}
+
+function checkBlocked(url: string): { ok: false; error: string } | null {
+  const host = extractHost(url)
+  if (host && globalLoopDetector.isTargetBlocked(host)) {
+    return { ok: false, error: `Target blocked by anti-loop: ${host} has repeated failures` }
+  }
+  return null
+}
 
 // --- Target-aware rate limiting ---
 const HOST_DELAY_MS = 200
@@ -113,6 +128,8 @@ export const httpRequest = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
+      const blocked = checkBlocked(url)
+      if (blocked) return blocked
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
@@ -132,15 +149,13 @@ export const httpRequest = createTool({
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
-      // Auto-capture structured evidence for claim verification (typed facts, no prose scanning)
       recordStructuredEvidence({
         type: 'raw_response',
         data: responseBody,
         label: `${method} ${url} → ${raw.status}`,
-        observed: { method, url, status: raw.status, responseHeaders: resHeaders, ...(headers ? { requestHeaders: headers } : {}) },
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, ...(headers ? { requestHeaders: headers } : {}), ...(body ? { requestBody: body } : {}) },
       })
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
-      // LOG-3: Record HTTP request/response with compression info
       getForensicLog()?.log({
         type: 'http-request',
         agent: 'worker',
@@ -160,14 +175,20 @@ export const httpRequest = createTool({
         },
       }
     } catch (e) {
-      log.warn(`httpRequest ${method} ${url} failed: ${(e as Error).message}`, { method, url, error: (e as Error).message, durationMs: performance.now() - start })
+      const errMsg = (e as Error).message
+      log.warn(`httpRequest ${method} ${url} failed: ${errMsg}`, { method, url, error: errMsg, durationMs: performance.now() - start })
+      globalLoopDetector.trackFailedTarget(url, errMsg)
       return {
         ok: false,
-        error: (e as Error).message,
+        error: errMsg,
       }
     }
   },
 })
+
+export function getHttpLoopDetector(): LoopDetector {
+  return globalLoopDetector
+}
 
 export const multipartUpload = createTool({
   id: 'multipartUpload',

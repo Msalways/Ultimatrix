@@ -300,6 +300,22 @@ export interface DebateCycleResult {
   complete: boolean
 }
 
+// ─── Intelligence context (reflexion + anti-loop visibility) ──────────────
+
+/**
+ * Intelligence context injected into council member prompts so the debate has
+ * visibility into the solver's accumulated failure history and loop state.
+ * All fields optional — backward compatible when not supplied.
+ */
+export interface IntelligenceContext {
+  reflexionBlock?: string
+  antiLoopStale?: boolean
+  blockedTargets?: string[]
+  attackPathHistory?: string[]
+  escalationLevel?: number
+  consecutiveFailures?: number
+}
+
 // ─── Legacy result (backward compat) ──────────────────────────────────────
 
 export interface CouncilResult {

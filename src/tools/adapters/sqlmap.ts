@@ -42,10 +42,19 @@ export const sqlmapAdapter: ToolAdapter = {
       return skip('sqlmap', target, installHint('sqlmap'))
 
     const o = opts.options ?? {}
-    const args = ['-u', target, '--batch', '--flush-session', `--output-dir=${tempFile('um-sqli')}`]
+    const requestFile = typeof o.requestFile === 'string' ? o.requestFile : null
+    const args = ['--batch', '--flush-session', `--output-dir=${tempFile('um-sqli')}`]
+    if (requestFile) {
+      args.push('-r', requestFile)
+    } else {
+      args.push('-u', target)
+    }
     if (typeof o.method === 'string') args.push('--method', o.method)
     if (typeof o.data === 'string') args.push('--data', o.data)
     if (typeof o.cookie === 'string') args.push('--cookie', o.cookie)
+    if (o.headers && typeof o.headers === 'object') {
+      for (const [k, v] of Object.entries(o.headers as Record<string, string>)) args.push('--header', `${k}: ${v}`)
+    }
     if (typeof o.level === 'number') args.push('--level', String(o.level))
     if (typeof o.risk === 'number') args.push('--risk', String(o.risk))
     if (typeof o.threads === 'number') args.push('--threads', String(o.threads))

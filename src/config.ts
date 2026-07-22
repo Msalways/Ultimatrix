@@ -224,6 +224,8 @@ export interface ModelCapability {
   contextWindow: number
   maxOutputTokens: number
   maxTokensPerMinute?: number
+  /** Safety margin subtracted from contextWindow when checking fits. Default 1024. */
+  reservedMargin?: number
   strengths: string[]
   supportsStreaming: boolean
   supportsStructuredOutput: boolean
@@ -423,6 +425,10 @@ export interface PluginConfig {
 
 // ─── Dynamic memory sizing based on model context window ─────────────
 
+/**
+ * @deprecated Use `config.modelCapabilities` instead. This hardcoded map
+ * goes stale whenever a provider ships a new model. Will be removed in v9.
+ */
 export const CONTEXT_WINDOW_MAP: Record<string, number> = {
   'groq/llama3-8b-8192': 8192,
   'groq/llama3-70b-8192': 8192,
@@ -441,6 +447,10 @@ export const CONTEXT_WINDOW_MAP: Record<string, number> = {
   'nvidia/nemotron-3-ultra-550b-a55b': 131072,
 }
 
+/**
+ * @deprecated Use `ContextWindowRegistry` instead. This function reads from
+ * the deprecated `CONTEXT_WINDOW_MAP`. Will be removed in v9.
+ */
 export function computeLastMessages(model: string, defaultLastMessages: number): number {
   const ctx = CONTEXT_WINDOW_MAP[model]
   if (!ctx) return defaultLastMessages

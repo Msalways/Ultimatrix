@@ -14,8 +14,12 @@ import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
 import { mutationsFor, type RelationSeed } from './constraint-mutators'
+import { getPayloadStore } from '../payloads/store'
 
-const BYPASS_TOKENS = ['', 'bypass', '0', 'null', 'true', 'admin', '../', '1=1']
+const BYPASS_TOKENS = () => {
+  const tokens = getPayloadStore().getPayloads('authz/bypass-tokens', 'authz_bypass_tokens')
+  return tokens.length > 0 ? tokens : ['', 'bypass', '0', 'null', 'true', 'admin', '../', '1=1']
+}
 
 /** Build a mutated step for one relation-seeded mutation (foreign/omit/boundary). */
 function mutationToStep(seed: RelationSeed, mutation: ReturnType<typeof mutationsFor>[number], url: string, method: string, baseHeaders: Record<string, string>): AttackStep {
@@ -72,7 +76,7 @@ export const invariantProbe: TechniquePrimitive = {
 
     let mutatedUrl = url
     let body: string | undefined
-    const token = BYPASS_TOKENS[0]
+    const token = BYPASS_TOKENS()[0]
     if (param) {
       try {
         const u = new URL(mutatedUrl)

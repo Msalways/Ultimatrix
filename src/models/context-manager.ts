@@ -5,6 +5,7 @@
 
 import type { ModelCapabilities, BudgetPolicy } from '../config'
 import { compactText } from '../output/compaction'
+import type { ContextWindowRegistry } from './context-window-registry'
 
 export interface ContextFitParams {
   modelId: string
@@ -46,9 +47,11 @@ function estimateTokens(text: string): number {
 
 export class ContextBudgetManager {
   private capabilities: ModelCapabilities
+  private registry: ContextWindowRegistry | null
 
-  constructor(capabilities: ModelCapabilities) {
+  constructor(capabilities: ModelCapabilities, registry?: ContextWindowRegistry) {
     this.capabilities = capabilities
+    this.registry = registry ?? null
   }
 
   /**
@@ -177,15 +180,21 @@ export class ContextBudgetManager {
 
   /**
    * Get context window size for a model.
+   * Resolution: registry → capabilities → null (no hardcoded fallback).
    */
   getContextWindow(modelId: string): number {
+    const fromRegistry = this.registry?.getContextWindow(modelId)
+    if (fromRegistry && fromRegistry > 0) return fromRegistry
     return this.capabilities[modelId]?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   }
 
   /**
    * Get max output tokens for a model.
+   * Resolution: registry → capabilities → default.
    */
   getMaxOutput(modelId: string): number {
+    const fromRegistry = this.registry?.getMaxOutput(modelId)
+    if (fromRegistry && fromRegistry > 0) return fromRegistry
     return this.capabilities[modelId]?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT
   }
 }

@@ -1,0 +1,14 @@
+{
+  "variants": {
+    "common": ["admin", "administrator", "root", "superuser", "system", "manager", "operator", "power", "owner", "master"],
+    "numeric": ["0", "-1", "1", "9999", "0x0", "0x1", "NaN", "Infinity", "-Infinity"],
+    "boolean": ["true", "false", "1", "0", "yes", "no", "on", "off", "enabled", "disabled"],
+    "json_types": ["null", "{}", "[]", "\"\"", "0", "false"]
+  },
+  "payloads": ["admin", "root", "0", "-1", "true", "1", "null", "[]", "{}"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-285",
+    "technique": "Privilege escalation via trust field tampering"
+  }
+}

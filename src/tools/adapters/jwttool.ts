@@ -21,12 +21,18 @@ function parseJwtTool(stdout: string): AdapterFinding[] {
   return findings
 }
 
+async function resolveBinary(): Promise<string | null> {
+  if (await isToolAvailable('jwt_tool')) return 'jwt_tool'
+  if (await isToolAvailable('jwttool')) return 'jwttool'
+  return null
+}
+
 export const jwtToolAdapter: ToolAdapter = {
   id: 'jwttool',
   description:
     'JWT attack toolkit. Runs the local jwt_tool binary against a supplied token to test alg:none forgery, RSA->HMAC key confusion, and weak-secret cracking. Requires jwt-tool installed on PATH.',
   async isAvailable() {
-    return isToolAvailable('jwttool')
+    return (await isToolAvailable('jwt_tool')) || isToolAvailable('jwttool')
   },
   async run(opts): Promise<ToolResult> {
     const target = opts.target
@@ -35,7 +41,8 @@ export const jwtToolAdapter: ToolAdapter = {
     if (!token || !token.includes('.')) return skip('jwttool', target, 'A JWT token is required (options.token)')
     const scope = isUrlInScope(scopeTarget(target || 'http://local'))
     if (!scope.allowed) return skip('jwttool', target, `Out of scope: ${scope.reason ?? 'denied'}`)
-    if (!(await isToolAvailable('jwttool'))) return skip('jwttool', target, installHint('jwttool'))
+    const binary = await resolveBinary()
+    if (!binary) return skip('jwttool', target, installHint('jwttool'))
 
     const args = [token]
     if (Array.isArray(o.modes)) args.push(...(o.modes as string[]))
@@ -43,7 +50,7 @@ export const jwtToolAdapter: ToolAdapter = {
     if (typeof o.wordlist === 'string') args.push('-w', o.wordlist)
 
     const start = Date.now()
-    const { stdout, timedOut } = await runBinary('jwttool', args, ((o.timeout as number) || 120) * 1000)
+    const { stdout, timedOut } = await runBinary(binary, args, ((o.timeout as number) || 120) * 1000)
     const findings = parseJwtTool(stdout)
     return {
       tool: 'jwttool',

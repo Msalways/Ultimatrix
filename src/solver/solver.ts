@@ -25,6 +25,7 @@ import { NodeType } from "../graph/schema";
 import { DEFAULTS, CONTEXT_WINDOW_MAP, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
+import { ContextWindowRegistry } from "../models/context-window-registry";
 import { compactText } from "../output/compaction";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
@@ -579,9 +580,13 @@ export async function solve(
   // If ModelCapabilities are provided, use ContextBudgetManager for smarter truncation
   const caps = params.modelCapabilities;
   const budgetPolicy = params.budgetPolicy;
+  const registry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as any);
 
-  if (caps && params.model && caps[params.model]) {
-    const ctxManager = new ContextBudgetManager(caps);
+  // Registry-based lookup: modelCapabilities → null
+  const hasModelConfig = params.model && registry.getContextWindow(params.model) > 0;
+
+  if (hasModelConfig) {
+    const ctxManager = new ContextBudgetManager(caps ?? {}, registry);
     // Mastra Agent exposes instructions/tools via async accessors (getters were
     // removed). Resolve once for the context-budget estimate.
     let agentInstructions = "";

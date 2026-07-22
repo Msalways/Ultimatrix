@@ -26,6 +26,7 @@ import type {
   CouncilMessage,
   DebateCycleResult,
   DebateMemory,
+  IntelligenceContext,
   MemberOutput,
   TaskComplexity,
 } from './types'
@@ -84,16 +85,12 @@ export interface DebateOnceParams {
   blackboard: SharedBlackboard
   goal: string
   config: CouncilConfig
-  /** Evidence ledger for verifying claims and recording results. */
   ledger?: EvidenceLedger
-  /** Previous results from worker execution (for results debate). */
   previousResults?: string
-  /** Host-supplied execution callback. */
   execute?: (proposal: MemberOutput, ctx: CouncilExecuteContext) => Promise<string>
-  /** Human approval gate for HITL / high-impact proposals. */
   humanApprove?: (proposal: MemberOutput) => Promise<boolean>
-  /** Debate memory — mutable, accumulated across REPL turns. */
   debateMemory?: DebateMemory
+  intelligenceContext?: IntelligenceContext
   onPhase?: (phase: string, round: number, text?: string) => void
 }
 
@@ -101,12 +98,13 @@ function byRole(members: CouncilMember[], role: CouncilMemberRole): CouncilMembe
   return members.find(m => m.role === role)
 }
 
-function buildGoalPrompt(
+export function buildGoalPrompt(
   goal: string,
   transcript: string,
   previousResults?: string,
   debateMemory?: DebateMemory,
   role?: CouncilMemberRole,
+  intelligenceContext?: IntelligenceContext,
 ): string {
   const parts = [
     `Goal: ${goal}`,
@@ -115,11 +113,32 @@ function buildGoalPrompt(
     transcript || '(none yet)',
   ]
 
-  // Inject debate memory — per-role view
   if (debateMemory && role) {
     const memorySection = buildMemoryPrompt(debateMemory, role)
     if (memorySection) {
       parts.push('', memorySection)
+    }
+  }
+
+  if (intelligenceContext) {
+    const intelParts: string[] = []
+    if (intelligenceContext.reflexionBlock) {
+      intelParts.push('### Failure History', intelligenceContext.reflexionBlock)
+    }
+    if (intelligenceContext.antiLoopStale) {
+      intelParts.push('### Loop Detection', '- Stale: true — agent has been repeating the same approach. Switch strategy.')
+    }
+    if (intelligenceContext.blockedTargets?.length) {
+      intelParts.push(`- Blocked targets: ${intelligenceContext.blockedTargets.join(', ')}`)
+    }
+    if (intelligenceContext.attackPathHistory?.length) {
+      intelParts.push(`- Attack paths attempted: ${intelligenceContext.attackPathHistory.join(', ')}`)
+    }
+    if (intelligenceContext.escalationLevel !== undefined && intelligenceContext.escalationLevel > 0) {
+      intelParts.push(`- Escalation level: L${intelligenceContext.escalationLevel}`)
+    }
+    if (intelParts.length > 0) {
+      parts.push('', '## Intelligence Context', ...intelParts)
     }
   }
 
@@ -161,6 +180,7 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
     execute,
     humanApprove,
     debateMemory,
+    intelligenceContext,
     onPhase,
   } = params
 
@@ -173,17 +193,16 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
   onPhase?.('debate', round)
   const transcript = bus.transcript(20)
 
-  // Build role-specific prompts with debate memory injection
   const promptMap = new Map<CouncilMemberRole, string>()
   for (const m of llmMembers) {
-    promptMap.set(m.role, buildGoalPrompt(goal, transcript, previousResults, debateMemory, m.role))
+    promptMap.set(m.role, buildGoalPrompt(goal, transcript, previousResults, debateMemory, m.role, intelligenceContext))
   }
 
   const respondMs = config.respondTimeoutMs ?? DEFAULT_RESPOND_TIMEOUT_MS
   const outputs = await Promise.all(
     llmMembers.map(async (m) => {
       try {
-        const prompt = promptMap.get(m.role) ?? buildGoalPrompt(goal, transcript, previousResults)
+        const prompt = promptMap.get(m.role) ?? buildGoalPrompt(goal, transcript, previousResults, undefined, undefined, intelligenceContext)
         return await withTimeout(m.respond(prompt), respondMs, `council-respond:${m.role}`)
       } catch (err: any) {
         return {

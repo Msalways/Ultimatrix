@@ -39,37 +39,42 @@ export interface TechniqueContext {
     params?: Array<{ name: string; type?: string; in?: string; required?: boolean }>
     authRequired?: boolean
     authType?: string
-    /** Typed use-case assigned by the analyser (single source of endpoint semantics). */
     useCase?: string
     tags?: string[]
   }
-  /** The specific parameter under test (e.g. a query/body field name). */
   param?: string
-  /** The role/session currently acting. */
   role?: string
-  /** Candidate alternate roles (for authz matrix). */
   roles?: string[]
-  /** Captured session headers for the actor. */
   sessionHeaders?: Record<string, string>
-  /** Captured session headers for an alternate actor (for authz/idor). */
   altSessionHeaders?: Record<string, string>
-  /** Object identifier owned by the actor. */
   objectId?: string
-  /** Object identifier owned by a different actor. */
   altObjectId?: string
-  /** Arbitrary workflow/state captured for the target. */
   state?: Record<string, unknown>
-  /** Ordered workflow steps for workflow-bypass reasoning. */
   workflowSteps?: string[]
-  /** Optional caller-supplied candidate payloads. */
   payloads?: string[]
-  /** Optional relation-seeded mutation spec (from the relational query seam). */
   relationSeed?: import('./constraint-mutators').RelationSeed
-  /** W0.3 — the response from the immediately-preceding step, so chained
-   *  primitives can adapt (e.g. extract a token from step N to use in step N+1).
-   *  Populated by the framework per-attempt; never a hardcoded parse target. */
   priorResponse?: { status?: number; headers?: Record<string, string>; body?: string }
-  /** Optional extra inputs. */
+  variant?: string
+  dbms?: string
+  oastHost?: string
+  requestTemplate?: {
+    method: string
+    url: string
+    headers: Record<string, string>
+    body?: string
+  }
+  mutationStrategy?: {
+    type: 'shape' | 'enumeration' | 'boundary' | 'type-confusion'
+    options?: Record<string, unknown>
+  }
+  payloadSet?: {
+    category: string
+    variant?: string
+    limit?: number
+  }
+  multiParam?: boolean
+  concurrency?: number
+  maxAttempts?: number
   [key: string]: unknown
 }
 
@@ -239,7 +244,7 @@ export async function runPrimitive(
       type: 'raw_request',
       data: step.request.body ?? '',
       label: `${step.request.method} ${step.request.url}`,
-      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers },
+      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '' },
     })
     if (res.status !== undefined) {
       evidenceGate.recordToolOutput(
@@ -255,6 +260,8 @@ export async function runPrimitive(
           url: step.request.url,
           status: res.status,
           responseHeaders: res.headers,
+          responseBody: res.body ?? '',
+          responseTimeMs: res.durationMs,
         },
       })
     }
@@ -307,15 +314,25 @@ export async function runPrimitive(
  * Pass the same url/status recorded for that step so the claim co-occurs with a
  * recorded evidence item.
  */
+export interface BodySignature {
+  type: 'contains' | 'regex' | 'timing' | 'not-contains' | 'status-differs'
+  pattern: string
+  threshold?: number
+}
+
 export function claimFor(
   type: string,
   url?: string,
   status?: number,
   method?: string,
+  bodySignature?: BodySignature,
 ): FindingClaim {
   const claim: FindingClaim = { type, endpoint: url ?? '' }
   if (method) claim.method = method
-  if (status !== undefined) claim.observed = { status }
+  const observed: Record<string, unknown> = {}
+  if (status !== undefined) observed.status = status
+  if (bodySignature) observed.bodySignature = bodySignature
+  if (Object.keys(observed).length > 0) claim.observed = observed as FindingClaim['observed']
   return claim
 }
 

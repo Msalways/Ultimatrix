@@ -1,0 +1,11 @@
+{
+  "variants": {
+    "authz_bypass_tokens": ["", "bypass", "0", "null", "true", "admin", "../", "1=1", "undefined", "root", "owner", "superuser", "*", "%2e%2e", "superuser"]
+  },
+  "payloads": ["", "admin", "0", "null", "true", "../", "1=1", "undefined"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-285",
+    "technique": "Constraint mutation bypass tokens for invariant probing"
+  }
+}

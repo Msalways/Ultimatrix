@@ -9,6 +9,7 @@ import { readFileSync } from 'fs'
 import { initSkillIndex, type SkillMeta } from '../solver/skills/loader'
 import type { ChainSeverity } from '../types/shared'
 import { REGISTRY_PATH } from '../lib/project-root'
+import { getPayloadStore } from '../payloads/store'
 
 // ─── Config types ───────────────────────────────────────────────────
 
@@ -508,6 +509,22 @@ export class TechniqueRegistry {
   /** Conversational goal signals */
   getConversationalGoals(): string[] {
     return this.config.conversationalGoals
+  }
+
+  getPayloads(techniqueId: string, variant?: string): string[] {
+    return getPayloadStore().getPayloads(techniqueId, variant)
+  }
+
+  getVariants(techniqueId: string): string[] {
+    return getPayloadStore().listVariants(techniqueId)
+  }
+
+  getMarkers(techniqueId: string): string[] {
+    return getPayloadStore().getMarkers(techniqueId)
+  }
+
+  listPayloadCategories(): string[] {
+    return getPayloadStore().listCategories()
   }
 
   // ─── Public API: Skill queries ─────────────────────────────────

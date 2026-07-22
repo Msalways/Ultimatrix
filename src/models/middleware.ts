@@ -6,6 +6,8 @@ import { getForensicLog } from '../tools/report-tools'
 import { getGlobalUsageTracker } from '../usage/tracker'
 import { createProviderLimiter, getProviderFromModelId } from './limiter-factory'
 import { getGlobalQuotaTracker } from './quota-tracker'
+import { ContextWindowRegistry } from './context-window-registry'
+import { withOverflowRecovery } from './overflow-handler'
 
 function isRateLimitError(err: any): boolean {
   const msg = String(err?.message || err || '')
@@ -82,100 +84,112 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
         const modelIdStr = args?.model || args?.modelId || (target as any).modelId || 'unknown'
         const provider = getProviderFromModelId(String(modelIdStr))
 
-        // Get per-provider limiter
-        const providerLimiter = createProviderLimiter(provider, config)
+        // Overflow recovery: wraps the entire call (including semaphore + rate-limit retry)
+        // so that compaction + retry re-enters the full call chain.
+        const registry = new ContextWindowRegistry(config)
 
-        // Acquire both window slot and concurrency permit
-        const releaseSemaphore = await providerLimiter.acquire()
-        try {
-          const start = performance.now()
-          let lastError: any = null
-          const attempts = rl.retryOnLimit ? rl.maxRetries + 1 : 1
+        return withOverflowRecovery(
+          async (compactedArgs) => {
+            // Get per-provider limiter
+            const providerLimiter = createProviderLimiter(provider, config)
 
-          for (let attempt = 0; attempt < attempts; attempt++) {
+            // Acquire both window slot and concurrency permit
+            const releaseSemaphore = await providerLimiter.acquire()
             try {
-              const result = await originalMethod.call(target, args)
+              const start = performance.now()
+              let lastError: any = null
+              const attempts = rl.retryOnLimit ? rl.maxRetries + 1 : 1
 
-              const duration = Math.round(performance.now() - start)
-              getForensicLog()?.log({
-                type: 'tool-result',
-                agent: provider,
-                tool: String(prop),
-                duration,
-              })
+              for (let attempt = 0; attempt < attempts; attempt++) {
+                try {
+                  const result = await originalMethod.call(target, compactedArgs)
 
-              // Sync from response headers if available
-              if (result?.headers && typeof result.headers === 'object') {
-                providerLimiter.syncFromHeaders(result.headers)
-              }
+                  const duration = Math.round(performance.now() - start)
+                  getForensicLog()?.log({
+                    type: 'tool-result',
+                    agent: provider,
+                    tool: String(prop),
+                    duration,
+                  })
 
-              // Record request in quota tracker
-              getGlobalQuotaTracker().recordRequest(provider)
+                  // Sync from response headers if available
+                  if (result?.headers && typeof result.headers === 'object') {
+                    providerLimiter.syncFromHeaders(result.headers)
+                  }
 
-              // Capture token usage from doGenerate responses
-              let inputTokens = 0
-              let outputTokens = 0
-              if (prop === 'doGenerate' && result?.usage) {
-                inputTokens = result.usage.inputTokens ?? 0
-                outputTokens = result.usage.outputTokens ?? 0
-                if (inputTokens > 0 || outputTokens > 0) {
-                  const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
-                  getGlobalUsageTracker().record(prov, model, inputTokens, outputTokens)
+                  // Record request in quota tracker
+                  getGlobalQuotaTracker().recordRequest(provider)
+
+                  // Capture token usage from doGenerate responses
+                  let inputTokens = 0
+                  let outputTokens = 0
+                  if (prop === 'doGenerate' && result?.usage) {
+                    inputTokens = result.usage.inputTokens ?? 0
+                    outputTokens = result.usage.outputTokens ?? 0
+                    if (inputTokens > 0 || outputTokens > 0) {
+                      const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
+                      getGlobalUsageTracker().record(prov, model, inputTokens, outputTokens)
+                    }
+                  }
+
+                  // Forensic model-call: record which model actually served the request
+                  // so every dispatched task is attributable to a concrete modelId/tier.
+                  getForensicLog()?.log({
+                    type: 'model-call',
+                    agent: provider,
+                    tool: String(prop),
+                    duration,
+                    metadata: {
+                      provider,
+                      modelId: String(modelIdStr),
+                      inputTokens,
+                      outputTokens,
+                      totalTokens: inputTokens + outputTokens,
+                    },
+                  })
+
+                  return result
+                } catch (err: any) {
+                  lastError = err
+
+                  // Rate limit or cumulative quota — retry with provider-specific backoff
+                  if ((isRateLimitError(err) || isCumulativeQuotaExhausted(err)) && attempt < attempts - 1) {
+                    const backoffMs = computeBackoff(attempt, rl)
+                    const label = isCumulativeQuotaExhausted(err) ? 'Quota exhausted' : 'Rate limited'
+                    log.warn(`${label} [${provider}], retry ${attempt + 1}/${rl.maxRetries} in ${backoffMs}ms`)
+                    await new Promise(r => setTimeout(r, backoffMs))
+                    continue
+                  }
+
+                  // Cumulative quota — activate cooldown for provider
+                  if (isCumulativeQuotaExhausted(err)) {
+                    providerLimiter.recordExhaustion()
+                    getGlobalQuotaTracker().recordExhaustion(provider)
+                  }
+
+                  const duration = Math.round(performance.now() - start)
+                  getForensicLog()?.log({
+                    type: 'tool-error',
+                    agent: provider,
+                    tool: String(prop),
+                    error: err?.message || String(err),
+                    duration,
+                  })
+
+                  throw err
                 }
               }
 
-              // Forensic model-call: record which model actually served the request
-              // so every dispatched task is attributable to a concrete modelId/tier.
-              getForensicLog()?.log({
-                type: 'model-call',
-                agent: provider,
-                tool: String(prop),
-                duration,
-                metadata: {
-                  provider,
-                  modelId: String(modelIdStr),
-                  inputTokens,
-                  outputTokens,
-                  totalTokens: inputTokens + outputTokens,
-                },
-              })
-
-              return result
-            } catch (err: any) {
-              lastError = err
-
-              // Rate limit or cumulative quota — retry with provider-specific backoff
-              if ((isRateLimitError(err) || isCumulativeQuotaExhausted(err)) && attempt < attempts - 1) {
-                const backoffMs = computeBackoff(attempt, rl)
-                const label = isCumulativeQuotaExhausted(err) ? 'Quota exhausted' : 'Rate limited'
-                log.warn(`${label} [${provider}], retry ${attempt + 1}/${rl.maxRetries} in ${backoffMs}ms`)
-                await new Promise(r => setTimeout(r, backoffMs))
-                continue
-              }
-
-              // Cumulative quota — activate cooldown for provider
-              if (isCumulativeQuotaExhausted(err)) {
-                providerLimiter.recordExhaustion()
-                getGlobalQuotaTracker().recordExhaustion(provider)
-              }
-
-              const duration = Math.round(performance.now() - start)
-              getForensicLog()?.log({
-                type: 'tool-error',
-                agent: provider,
-                tool: String(prop),
-                error: err?.message || String(err),
-                duration,
-              })
-
-              throw err
+              throw lastError
+            } finally {
+              releaseSemaphore()
             }
-          }
-
-          throw lastError
-        } finally {
-          releaseSemaphore()
-        }
+          },
+          args,
+          String(modelIdStr),
+          registry,
+          config,
+        )
       }
     },
   }) as LanguageModelV2

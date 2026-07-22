@@ -126,6 +126,16 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (Array.isArray(input.workflowSteps)) ctx.workflowSteps = input.workflowSteps
   if (Array.isArray(input.payloads)) ctx.payloads = input.payloads
   if (input.state) ctx.state = input.state
+  if (input.variant) ctx.variant = input.variant
+  if (input.dbms) ctx.dbms = input.dbms
+  if (input.oastHost) ctx.oastHost = input.oastHost
+  if (input.requestTemplate) ctx.requestTemplate = input.requestTemplate
+  if (input.mutationStrategy) ctx.mutationStrategy = input.mutationStrategy
+  if (input.payloadSet) ctx.payloadSet = input.payloadSet
+  if (input.multiParam !== undefined) ctx.multiParam = input.multiParam
+  if (input.concurrency !== undefined) ctx.concurrency = input.concurrency
+  if (input.maxAttempts !== undefined) ctx.maxAttempts = input.maxAttempts
+  if (input.relationSeed) ctx.relationSeed = input.relationSeed
   return ctx
 }
 
@@ -314,6 +324,23 @@ export const runPrimitiveTool = createTool({
         sinkParam: z.string().describe('The sink parameter/header name that receives it.'),
         sourceKind: z.string().describe('Where the value originates (response-field / cookie / header / ui-input).'),
       }).optional().describe('Optional relation-seeded mutation spec discovered via the relational query seam.'),
+      variant: z.string().optional().describe('Technique variant (e.g. "union", "boolean-blind", "time-based", "oob"). Discover available variants via listPrimitiveCapabilities.'),
+      dbms: z.string().optional().describe('Target DBMS hint (e.g. "mysql", "postgresql", "mssql", "oracle", "sqlite")'),
+      oastHost: z.string().optional().describe('Override OAST callback host for out-of-band primitives'),
+      requestTemplate: z.object({
+        method: z.string(),
+        url: z.string(),
+        headers: z.record(z.string(), z.string()),
+        body: z.string().optional(),
+      }).optional().describe('Captured request to replay with mutations (full headers/body)'),
+      payloadSet: z.object({
+        category: z.string(),
+        variant: z.string().optional(),
+        limit: z.number().optional(),
+      }).optional().describe('Explicit payload selection from the PayloadStore'),
+      multiParam: z.boolean().optional().describe('Test all params, not just ctx.param'),
+      concurrency: z.number().optional().describe('Override default concurrency for race tests'),
+      maxAttempts: z.number().optional().describe('Override default attempt count'),
     }).describe('Target context for the primitive'),
     commit: z.boolean().optional().default(true).describe('If confirmed, write the finding to the knowledge graph'),
   }),
@@ -325,6 +352,29 @@ export const runPrimitiveTool = createTool({
       reason: res.reason,
       available: res.available,
       result: res.result,
+    }
+  },
+})
+
+export const listPrimitiveCapabilitiesTool = createTool({
+  id: 'listPrimitiveCapabilities',
+  description: 'List all available technique primitives, their variants, and supported options. Use this to discover what attack variants are available before selecting one via runPrimitive.',
+  inputSchema: z.object({
+    primitiveId: z.string().optional().describe('If provided, return capabilities for this primitive only. Otherwise list all primitives.'),
+  }),
+  execute: async ({ primitiveId }: any) => {
+    const { getPayloadStore } = await import('../payloads/store')
+    const store = getPayloadStore()
+    const primitives = primitiveId ? listPrimitives().filter(p => p.id === primitiveId) : listPrimitives()
+    return {
+      primitives: primitives.map(p => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        technique: p.technique,
+        variants: store.listVariants(p.id),
+      })),
+      payloadCategories: store.listCategories(),
     }
   },
 })

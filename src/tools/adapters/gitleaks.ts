@@ -1,3 +1,4 @@
+import { readFileSync, unlinkSync } from 'node:fs'
 import { isToolAvailable, installHint, runBinary, tempFile } from './common'
 import type { AdapterFinding, ToolAdapter, ToolResult } from './types'
 
@@ -52,7 +53,19 @@ export const gitleaksAdapter: ToolAdapter = {
     const args = ['detect', '--source', source, '--report-format', 'json', '--report-path', outJson, '--no-banner', '--redact']
     const start = Date.now()
     const { stdout, timedOut } = await runBinary('gitleaks', args, ((o.timeout as number) || 180) * 1000)
-    const findings = parseGitleaks(stdout)
+    let reportContent = ''
+    try {
+      reportContent = readFileSync(outJson, 'utf-8')
+    } catch {
+      reportContent = stdout
+    }
+    if (!reportContent.trim()) reportContent = stdout
+    try {
+      unlinkSync(outJson)
+    } catch {
+      // cleanup best-effort
+    }
+    const findings = parseGitleaks(reportContent)
     return {
       tool: 'gitleaks',
       target: source,

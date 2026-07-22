@@ -30,6 +30,16 @@ export interface ObservedFacts {
   status?: number
   requestHeaders?: Record<string, string>
   responseHeaders?: Record<string, string>
+  requestBody?: string
+  responseBody?: string
+  responseTimeMs?: number
+}
+
+/** Body signature assertion for independent gate verification. */
+export interface BodySignature {
+  type: 'contains' | 'regex' | 'timing' | 'not-contains' | 'status-differs'
+  pattern: string
+  threshold?: number
 }
 
 /** A single structured evidence record captured by a tool. */
@@ -40,7 +50,6 @@ export interface EvidenceItem {
   label: string
   timestamp: number
   session?: string
-  /** Typed observed facts. Absent for items that carry no structured signal. */
   observed?: ObservedFacts
 }
 
@@ -49,10 +58,8 @@ export interface FindingClaim {
   type: string
   endpoint: string
   param?: string
-  /** Claimed HTTP method (optional; only checked when asserted). */
   method?: string
-  /** Claimed observed facts (optional; only checked when asserted). */
-  observed?: ObservedFacts
+  observed?: ObservedFacts & { bodySignature?: BodySignature }
 }
 
 export interface VerificationResult {
@@ -95,16 +102,38 @@ function urlMatches(claimEndpoint: string, itemUrl?: string): boolean {
  * No substring scanning of claim prose. The only containment is URL-based
  * (host/path), which is a structured locator comparison, not free-text matching.
  */
+function checkBodySignature(sig: BodySignature, item: EvidenceItem): boolean {
+  const body = item.data ?? ''
+  const time = item.observed?.responseTimeMs
+  const status = item.observed?.status
+  switch (sig.type) {
+    case 'contains':
+      return body.toLowerCase().includes(sig.pattern.toLowerCase())
+    case 'not-contains':
+      return !body.toLowerCase().includes(sig.pattern.toLowerCase())
+    case 'regex':
+      try { return new RegExp(sig.pattern, 'i').test(body) } catch { return false }
+    case 'timing':
+      return time != null && sig.threshold != null && time >= sig.threshold
+    case 'status-differs':
+      return status != null && sig.threshold != null && status !== sig.threshold
+    default:
+      return false
+  }
+}
+
 export function verifyFindingClaim(
   claim: FindingClaim,
   items: EvidenceItem[],
 ): VerificationResult {
   const needMethod = claim.method?.toLowerCase()
   const needStatus = claim.observed?.status
+  const needBodySig = (claim.observed as any)?.bodySignature as BodySignature | undefined
 
   let endpointFound = false
   let methodFound = false
   let statusFound = false
+  let bodySigFound = false
   const supporting: string[] = []
 
   for (const item of items) {
@@ -120,10 +149,17 @@ export function verifyFindingClaim(
       needStatus != null && obs?.status != null && obs.status === needStatus
     if (statusMatch) statusFound = true
 
+    let bodySigMatch = true
+    if (needBodySig) {
+      bodySigMatch = checkBodySignature(needBodySig, item)
+      if (bodySigMatch) bodySigFound = true
+    }
+
     const fullySupports =
       epMatch &&
       (needMethod == null || obs?.method?.toLowerCase() === needMethod) &&
-      (needStatus == null || obs?.status === needStatus)
+      (needStatus == null || obs?.status === needStatus) &&
+      (!needBodySig || bodySigMatch)
 
     if (fullySupports) supporting.push(item.id)
   }
@@ -132,6 +168,7 @@ export function verifyFindingClaim(
   if (!endpointFound) missing.push(`endpoint:${claim.endpoint}`)
   if (needMethod && !methodFound) missing.push(`method:${claim.method}`)
   if (needStatus != null && !statusFound) missing.push(`status:${needStatus}`)
+  if (needBodySig && !bodySigFound) missing.push(`bodySignature:${needBodySig.type}:${needBodySig.pattern}`)
 
   return {
     verified: missing.length === 0,

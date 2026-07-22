@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "tokenrouter/z-ai/glm-5.2-free",
+  "provider": {
+    "tokenrouter": {
+      "name": "TokenRouter",
+      "api": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://api.tokenrouter.com/v1",
+        "apiKey": "sk-1Srn0clakZD3wlbE5zlqApNmeojzrleJtDmPIafTHnyCsdCb"
+      },
+      "models": {
+        "z-ai/glm-5.2-free": {
+          "name": "GLM 5.2 Free",
+          "family": "glm",
+          "tool_call": true,
+          "attachment": true
+          // "limit": {
+          //   "context": 128000,
+          //   "output": 4096
+          // }
+        }
+      }
+    }
+  }
+}

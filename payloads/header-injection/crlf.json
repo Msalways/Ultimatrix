@@ -1,0 +1,13 @@
+{
+  "variants": {
+    "crlf": ["\r\n", "%0d%0a", "\n", "%0a", "\r", "%0d"],
+    "cookie_inject": ["pwned=1", "admin=true; Path=/", "session=; expires=Thu, 01 Jan 1970 00:00:00 GMT"],
+    "header_inject": ["X-Injected: yes", "Set-Cookie: admin=true", "Location: http://evil.example"]
+  },
+  "payloads": ["\r\nSet-Cookie: pwned=1\r\n", "%0d%0aSet-Cookie: admin=true%0d%0a"],
+  "markers": ["pwned", "admin=true", "Set-Cookie", "X-Injected", "Location:"],
+  "metadata": {
+    "cwe": "CWE-93",
+    "technique": "CRLF / HTTP header injection"
+  }
+}

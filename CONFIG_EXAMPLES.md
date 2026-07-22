@@ -153,3 +153,37 @@ antiLoop:
 | Anthropic | claude-3-5-sonnet | 200000 | 50 | Largest context |
 | Google | gemini-2.0-flash | 1048576 | 100 | Huge context |
 | NVIDIA | nemotron-3-ultra | 131072 | 50 | Large context |
+
+## Model Capabilities + Context Overflow Fallback
+
+`modelCapabilities` is the single source of truth for model limits. The system uses it for:
+- Pre-send context validation
+- Context overflow recovery (auto-compact + retry)
+- Model selection scoring
+
+```yaml
+modelCapabilities:
+  groq/llama3-8b-8192:
+    contextWindow: 8192
+    maxOutputTokens: 2048
+    reservedMargin: 512        # optional, default 1024 — safety buffer
+    strengths: [speed]
+    supportsStreaming: true
+    supportsStructuredOutput: false
+  openai/gpt-4o:
+    contextWindow: 128000
+    maxOutputTokens: 16384
+    strengths: [reasoning, coding]
+    supportsStreaming: true
+    supportsStructuredOutput: true
+  anthropic/claude-3-5-sonnet:
+    contextWindow: 200000
+    maxOutputTokens: 8192
+    strengths: [reasoning, analysis]
+    supportsStreaming: true
+    supportsStructuredOutput: true
+```
+
+**`reservedMargin`**: Safety buffer subtracted from `contextWindow` when checking if prompts fit. Default 1024. Increase for models with tight token counting (e.g., `reservedMargin: 2048` for small-context models).
+
+**Unknown models**: When a model is not in `modelCapabilities`, the system returns `null` for context window lookups. The reactive overflow handler catches HTTP 400 errors and attempts compaction anyway — no hardcoded fallback map.

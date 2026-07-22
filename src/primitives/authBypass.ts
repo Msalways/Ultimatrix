@@ -19,6 +19,7 @@ import type {
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { claimFor, assessAccess } from './framework'
 import { isAuthEndpoint, hasTarget } from './routing'
+import { getPayloadStore } from '../payloads/store'
 
 interface AuthStepMeta {
   technique: 'sqli-login' | 'default-creds' | 'jwt-none'
@@ -27,14 +28,16 @@ interface AuthStepMeta {
   pass?: string
 }
 
-const DEFAULT_CREDS: Array<[string, string]> = [
-  ['admin', 'admin'],
-  ['admin', 'password'],
-  ['root', 'root'],
-  ['administrator', 'administrator'],
-  ['test', 'test'],
-  ['guest', 'guest'],
-]
+const DEFAULT_CREDS = (): Array<[string, string]> => {
+  const raw = getPayloadStore().getPayloads('auth/default-creds', 'default_creds')
+  if (raw.length === 0) {
+    return [['admin', 'admin'], ['admin', 'password'], ['root', 'root'], ['administrator', 'administrator'], ['test', 'test'], ['guest', 'guest']]
+  }
+  return raw.map((entry) => {
+    const parts = entry.split(':')
+    return [parts[0] ?? 'admin', parts[1] ?? ''] as [string, string]
+  })
+}
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -119,7 +122,7 @@ export const authBypass: TechniquePrimitive = {
     })
 
     // 2. Default credentials.
-    DEFAULT_CREDS.forEach(([u, p], i) => {
+    DEFAULT_CREDS().forEach(([u, p], i) => {
       out.push({
         id: `default-creds-${i}`,
         description: `Default credentials ${u}:${p}`,

