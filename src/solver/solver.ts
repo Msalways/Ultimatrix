@@ -290,6 +290,42 @@ function detectPhase(toolName?: string): SolverPhase {
   return "reason";
 }
 
+const PRIMITIVE_TO_VULN_TYPE: Record<string, string> = {
+  classicInjection: "sqli",
+  secondOrderSqli: "sqli",
+  nosqlInjection: "nosql-injection",
+  sstiBlind: "ssti",
+  ssrfMultiCloud: "ssrf",
+  ssrfOast: "ssrf",
+  authBypass: "auth-bypass",
+  authzMatrix: "authz",
+  idorSwapper: "idor",
+  invariantProbe: "invariant-bypass",
+  workflowBypass: "workflow-bypass",
+  configTrust: "config-trust",
+  ldapXpathInjection: "ldap-injection",
+  rceClass: "rce",
+  headerInjection: "header-injection",
+  concurrencyHarness: "race-condition",
+  aiTrust: "ai-prompt-injection",
+};
+
+function extractVulnType(
+  toolName: string | undefined,
+  args: Record<string, unknown> | undefined,
+): string {
+  if (!toolName) return "";
+  const upper = toolName.toUpperCase();
+  if (upper === "RUNPRIMITIVE" && args) {
+    const primitiveId = String(args.primitiveId ?? args.primitive ?? "");
+    return PRIMITIVE_TO_VULN_TYPE[primitiveId] ?? primitiveId ?? "";
+  }
+  if (upper === "RUNCAMPAIGN" && args) {
+    return String(args.technique ?? args.vulnType ?? "");
+  }
+  return "";
+}
+
 interface CompletionResult {
   completed: boolean;
   reason: SolveResult["reason"];
@@ -574,6 +610,19 @@ export async function solve(
     if (reflexionBlock) {
       enrichedGoal += `\n\n## Strategy Adjustment\n${reflexionBlock}`;
     }
+    const reflectionPrompt = reflexion.toReflectionPrompt();
+    if (reflectionPrompt) {
+      enrichedGoal += `\n\n${reflectionPrompt}`;
+    }
+    const escalationLevel = reflexion.getEscalationLevel();
+    if (escalationLevel >= 3) {
+      const hints = reflexion.getEscalationHints();
+      if (hints.length > 0) {
+        enrichedGoal += `\n\n## L${escalationLevel} Escalation — Mandatory Strategy Switch`;
+        enrichedGoal += `\nYou MUST switch to a different vulnerability class or attack surface. Do not retry the same approach.`;
+        enrichedGoal += `\nBypass hints:\n${hints.map((h) => `- ${h}`).join("\n")}`;
+      }
+    }
   }
 
   // Truncate enriched goal to fit model context budget
@@ -693,6 +742,9 @@ export async function solve(
 
     const stream = await Promise.race([streamPromise, timeoutPromise]);
 
+    let lastToolCallArgs: Record<string, unknown> | undefined;
+    let lastToolCallName: string | undefined;
+
     for await (const chunk of stream.fullStream) {
       switch (chunk.type) {
         case "text-delta":
@@ -731,6 +783,8 @@ export async function solve(
         case "tool-call":
           if (chunk.payload.toolName && chunk.payload.toolName !== "askUser") {
             toolCallCount++;
+            lastToolCallName = chunk.payload.toolName;
+            lastToolCallArgs = chunk.payload.args as Record<string, unknown> | undefined;
 
             emit({
               phase: detectPhase(chunk.payload.toolName),
@@ -819,12 +873,13 @@ export async function solve(
             ) {
               const result = chunk.payload.result as any;
               if (result.error || result.status === "failed") {
+                const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
                 reflexion.recordAttempt(
                   chunk.payload.toolName,
                   false,
                   null,
                   result.error || String(result),
-                  "",
+                  vulnType,
                 );
               }
             }
@@ -844,12 +899,13 @@ export async function solve(
             );
 
             // Record failure in reflexion engine
+              const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
               reflexion.recordAttempt(
                 chunk.payload.toolName,
                 false,
                 null,
                 chunk.payload.error instanceof Error ? chunk.payload.error.message : String(chunk.payload.error ?? ""),
-                "",
+                vulnType,
               );
 
             // Record error in loop detector (counts as no progress)

@@ -1,4 +1,4 @@
-# Ultimatrix v8.5
+# Ultimatrix v8.6
 
 **An autonomous security researcher that reasons, learns, and adapts — not another pattern-matching scanner.**
 
@@ -67,6 +67,11 @@ Security tools fall into two camps: **signature scanners** that match known patt
 | Cross-session learning | No | Manual | Anonymized pattern memory |
 | Campaign coverage | N/A | Manual | Systematic test planning |
 | External tool integration | No | Manual | Evidence-gated adapter layer |
+| Payload management | Hardcoded | Manual | JSON payload store, 22 files |
+| Body-content verification | No | Manual | Structured body signatures |
+| Reflexion escalation gate | No | Manual | L3+ forced strategy switch |
+| Time-based blind detection | Single sample | Manual | Multi-iteration median timing |
+| Council intelligence context | No | Manual | Reflexion + anti-loop injected |
 
 **The key insight:** Observation is the foundation of security testing. Before Ultimatrix attacks anything, it maps your entire attack surface — endpoints, authentication flows, role-based access, technology stack, exposed secrets, JavaScript bundles. It builds a **knowledge graph**. Then it reasons over that graph to decide what's worth testing and how.
 
@@ -158,18 +163,20 @@ That's not a toy. That's a security consultant that works 24/7.
           ┌──────────────▼───────────────────────▼──────────┐
            │  Shared Intelligence Layer                      │
            │  ─────────────────────────────────────────────  │
-           │  • Evidence Gate (anti-hallucination)           │
-           │  • Reflexion Engine (L0-L4 failure class)       │
-           │  • Anti-Loop Detector (stale/dead-end detect)   │
-             │  • Knowledge Graph (24 node types, 19 edges)   │
-            │  • Skill Library (57 knowledge-based skills)    │
-           │  • Scope Guard (URL/domain enforcement)         │
-           │  • Headroom Compression (response compress)     │
-           │  • Session Manager (cookie expiry handling)     │
-           │  • Cross-Engagement Memory (pattern learning)   │
-           │  • Attack-Path Solver (BFS vulnerability chains) │
-           │  • Campaign Autonomy (coverage planning)        │
-           │  • Debate Memory (stance tracking for council)  │
+            │  • Evidence Gate (body signatures + anti-halluc) │
+            │  • Reflexion Engine (L0-L4 + escalation gate)   │
+            │  • Anti-Loop Detector (stale + HTTP target block)│
+              │  • Knowledge Graph (24 node types, 19 edges)   │
+             │  • Skill Library (57 knowledge-based skills)    │
+            │  • Payload Store (22 JSON files, 18 categories)  │
+            │  • Scope Guard (URL/domain enforcement)         │
+            │  • Headroom Compression (response compress)     │
+            │  • Session Manager (cookie expiry handling)     │
+            │  • Cross-Engagement Memory (pattern learning)   │
+            │  • Attack-Path Solver (BFS vulnerability chains) │
+            │  • Campaign Autonomy (coverage planning)        │
+            │  • Debate Memory (stance tracking for council)  │
+            │  • Council Intel Context (reflexion + anti-loop) │
           └──────────────────────────┬──────────────────────────┘
                                      │
           ┌──────────────────────────▼─────────────────────────────────────┐
@@ -207,7 +214,7 @@ That's not a toy. That's a security consultant that works 24/7.
            └───────────────────────────────────────────────────────────────┘
 ```
 
-### Source Layout (274+ TypeScript files, 30K+ LOC)
+### Source Layout (304+ TypeScript files, 35K+ LOC)
 
 ```
 src/
@@ -241,6 +248,7 @@ src/
 ├── memory/            # Memory schemas, store
 ├── models/            # Model factory, selector, rate limiter, quota tracker
 ├── oast/              # Out-of-band attack server (blind callback detection)
+├── payloads/          # 22 JSON payload files across 18 categories (PayloadStore)
 ├── primitives/        # Security primitives (28 oracles: IDOR, auth bypass, race, etc.)
 ├── prompts/           # Core contract, system prompts
 ├── recorder/          # Action recorder, code generator
@@ -670,23 +678,29 @@ What makes Ultimatrix different from "LLM in a loop" is its intelligence layer �
 ### Evidence Gate
 The agent can't hallucinate findings. Every claim it makes must be backed by actual tool output. If it says "SQL injection found," it must show you the HTTP response that proves it. No proof = no finding. This is enforced at the architecture level, not as a prompt suggestion.
 
+**Body signature verification:** The gate independently verifies body content via `BodySignature` types (`contains`, `regex`, `timing`, `not-contains`, `status-differs`), not just URL co-occurrence. `ObservedFacts` include `requestBody`, `responseBody`, and `responseTimeMs` — the gate checks claim signatures against the structured ledger, not text buffers.
+
 **Zero tolerance policy:** Truncated evidence is automatically rejected — an unverifiable claim is treated the same as a hallucination. The gate uses structured `CompressionResult` types (never string scanning) to determine if evidence was truncated.
 
 ### Reflexion Engine
-When an attack fails, Ultimatrix doesn't just move on. It classifies the failure and escalates:
+When an attack fails, Ultimatrix doesn't just move on. It classifies the failure, tracks vulnType-specific fail counts, and escalates:
 
 | Level | Classification | Action |
 |-------|---------------|--------|
 | L0 | Bad luck / transient | Retry with variation |
 | L1 | Wrong tool | Switch tool |
 | L2 | Wrong strategy | Change approach |
-| L3 | Wrong model | Escalate to stronger model |
+| L3 | Wrong model | Escalate to stronger model + force strategy switch |
 | L4 | Fundamental gap | Extract lesson for future |
+
+The solver now wires the full escalation chain: `shouldReflect()` injects `toPromptBlock()` + `toReflectionPrompt()` into the goal; at L3+, mandatory strategy-switch directives and escalation hints are injected. The `recordAttempt()` call sites pass real `vulnType` (extracted from `runPrimitive` tool args via a `PRIMITIVE_TO_VULN_TYPE` mapping), so vulnType-fail tracking works correctly. Reflections are auto-recorded when thresholds cross, enabling `shouldEscalate()` to fire.
 
 Over a session, it gets progressively smarter about *your* specific target.
 
 ### Anti-Loop Detector
 LLMs love to repeat themselves. The anti-loop system detects when the agent is stuck — trying the same approach with slight variations — and forces it down unexplored paths. It also extracts structured attack paths from the conversation, tracking what was tried, what worked, and what failed.
+
+**HTTP target blocking:** `isTargetBlocked()` + `trackFailedTarget()` are wired into every `httpRequest` call — failed targets (connection refused, DNS failure, timeouts) are automatically blocked from retry, preventing wasted tool-call rounds on dead endpoints.
 
 ### Blackboard (OODA Solver)
 A shared state-space where the solver tracks **Facts** (what it knows) and **Intents** (what it plans to do). Every observation updates the blackboard. Every decision reads from it. This prevents redundant work and enables compound reasoning:
@@ -697,6 +711,13 @@ Fact: /api/users/123 returns full profile (no auth check)
 Intent: Test IDOR on /api/users/{id} with role escalation
 Result: IDOR confirmed — swapped to /api/users/456, got different profile
 ```
+
+### Payload Store
+All attack payloads are stored as JSON files, not hardcoded in TypeScript source. The `PayloadStore` singleton lazy-loads `payloads/*.json` and caches in memory. The brain discovers available variants via the `listPrimitiveCapabilities` tool — never from a frozen string.
+
+**22 payload files across 18 categories:** sqli (error-based, union-based, boolean-blind, time-based, oob, waf-bypass, second-order), xss (reflected), ssrf (cloud-metadata, protocol-smuggling, ip-encodings), ssti (generic, engines, blind-engines), xxe (oob), jwt (alg-none), request-smuggling (cl-te), prototype-pollution (client), nosql (mongo-operators), command-injection (unix), graphql (introspection), ldap (injection), deserialization (java), auth (default-creds), authz (privilege-values, bypass-tokens), header-injection (crlf), race-conditions (single-packet), ai (prompt-injection), wordlists (common.txt, params.txt).
+
+The `TechniqueRegistry` exposes `getPayloads()`, `getVariants()`, `getMarkers()`, and `listPayloadCategories()` — all delegating to the PayloadStore. No primitive source file contains hardcoded payload arrays.
 
 ---
 
@@ -1759,7 +1780,7 @@ creds:
 ## Testing
 
 ```bash
-# Run all tests (1632 passing)
+# Run all tests (1735 passing)
 npm test
 
 # Run specific test suite
@@ -1769,6 +1790,8 @@ npx vitest run test/solver/solver.test.ts
 npx vitest run test/safety/scope-guard.test.ts
 npx vitest run test/council/debate-memory.test.ts
 npx vitest run test/council/persona-loader.test.ts
+npx vitest run test/payloads/store.test.ts
+npx vitest run test/solver/reflexion-wiring.test.ts
 
 # Watch mode
 npm run test:watch
@@ -1781,20 +1804,21 @@ npm run build:cli    # ESM + CJS + DTS
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| Intelligence (evidence-gate, reflexion, anti-loop) | 110+ | Core logic, L0-L4 escalation, zero leniency |
+| Intelligence (evidence-gate, reflexion, anti-loop) | 130+ | Core logic, L0-L4 escalation, body signatures, HTTP target blocking, escalation gate |
 | Graph (store, tools, schema) | 96 | Full CRUD, 20 node types, 15 edge types |
 | Tools (37+ tools) | 150+ | All tool interfaces, flow tools, skill tools, scope guard, external adapters |
 | Browser (dialog-watcher, state-bridge, reactions) | 55 | CDP integration, Stagehand hybrid, scope enforcement |
 | Config (validation, multi-provider) | 42 | All scenarios, alias resolution |
-| Solver (OODA, blackboard, plan, exploitation-loop) | 60+ | Full loop, tool chains, composition, attack-path, threat model |
+| Solver (OODA, blackboard, plan, exploitation-loop, reflexion-wiring) | 70+ | Full loop, tool chains, composition, attack-path, threat model, vulnType extraction, escalation gate |
 | Models (rate-limiter, quota, selector, middleware) | 80+ | All providers, 3-layer rate limiting |
 | Session (lifecycle, engine routing) | 15 | Both engines, 6-phase lifecycle |
-| Council (orchestrator, approval, personas, debate-memory, persona-loader) | 60+ | Parallel debate, stance tracking, contradiction detection, file loader |
+| Council (orchestrator, approval, personas, debate-memory, persona-loader, intel-context) | 70+ | Parallel debate, stance tracking, contradiction detection, file loader, intelligence context |
 | Recorder (code gen, interaction) | 57 | Full pipeline, action capture |
 | Skills (loader, matcher, registry, tool-filter) | 60+ | 57 skills, progressive disclosure, domain matching |
 | Safety (scope guard) | 15 | Domain matching, wildcard, path prefix, protocol |
 | Campaign (planner, executor, continuity) | 40+ | Coverage planning, auto-replan, outcome feedback |
-| Primitives (weaponize, framework, all 28 oracles) | 55+ | Evidence-gated verification, exploit-proof generation, dual-session matrix |
+| Primitives (weaponize, framework, all 28 oracles, timing executor) | 60+ | Evidence-gated verification, exploit-proof generation, dual-session matrix, multi-iteration timing |
+| Payloads (store, 22 JSON files) | 21 | Lazy-load, cache, category listing, variant retrieval |
 | Components (UI, chat, streaming) | 30+ | Ink TUI, streaming text, markdown rendering |
 
 ---
@@ -1815,9 +1839,10 @@ npm run build:cli    # ESM + CJS + DTS
 |--------|-------|
 | Source files | 303+ TypeScript files |
 | Source lines | 35,000+ |
-| Test files | 153 files |
-| Tests passing | 1632 / 1632 |
+| Test files | 161 files |
+| Tests passing | 1735 / 1735 |
 | Skills | 57 (across 10 domains) |
+| Payload files | 22 JSON files across 18 categories |
 | Tools | 37+ specialized tools (28 internal + 9 external adapters) |
 | Engines | 2 active (multi-model default, legacy) + council on-demand |
 | Council personas | 8 markdown files (charter, 4 members, protocol, contract, human) |
@@ -1826,21 +1851,19 @@ npm run build:cli    # ESM + CJS + DTS
 | Providers | 16 supported |
 | Model tiers | 3 (fast, balanced, powerful) |
 | Rate limit layers | 3 (sliding window, semaphore, provider-aware) |
-| Intelligence modules | 9 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard, debate-memory) |
+| Intelligence modules | 12 (evidence-gate, reflexion, anti-loop, blackboard, cross-engagement, attack-path, campaign, scope-guard, debate-memory, payload-store, body-signatures, council-intel-context) |
 
-### Audit & Remediation
+### Depth-Plan Infrastructure (v8.6)
 
-A comprehensive audit of Ultimatrix v8.4 identified 40 issues across 5 categories (sanitization, unwired logic, triggering failures, logical scope gaps, prompt engineering). The combined audit + remediation plan tracks all findings with exact file locations, anti-bandaid acceptance criteria, and phased implementation:
+The depth-plan infrastructure work expanded Ultimatrix's intelligence and payload layers:
 
-| Phase | Focus | Tasks | Effort |
-|-------|-------|-------|--------|
-| P0: Security | Credential leakage, regex removal, scope guard | 6 | 16 hrs |
-| P1: Core Wiring | Session store, campaign, evidence gate, intel layers | 5 | 16 hrs |
-| P2: Intelligence | Debate persistence, human flows, skill composition | 5 | 20 hrs |
-| P3: Operational | OAST polling, chain detection, session expiry | 5 | 10 hrs |
-| P4: Hygiene | Input validation, masking, schema docs | 3 | 8 hrs |
-
-See `COMBINED-AUDIT-AND-REMEDIATION-PLAN.md` for the full plan with dependency graph, cross-reference map, and per-task implementation details.
+| Phase | Focus | Status |
+|-------|-------|--------|
+| P1: Payload Store | 22 JSON payload files, PayloadStore singleton, technique-registry API, hardcoded arrays removed from all 10 primitives | Complete |
+| P2: Technique Context | Extended TechniqueContext (variant, dbms, oastHost, payloadSet, etc.), expanded runPrimitive schema, `listPrimitiveCapabilities` tool | Complete |
+| P3: Evidence Gate | ObservedFacts extended (requestBody, responseBody, responseTimeMs), BodySignature verification, `claimFor` accepts body signatures | Complete |
+| P4: Intelligence Gating | Anti-loop wired into HTTP tools, reflexion vulnType extraction, escalation gate (L3+ strategy switch), timing executor (multi-iteration median), council intelligence context | Complete |
+| P7: Adapter Fixes | gitleaks reads report file, jwttool tries jwt_tool then jwttool, sqlmap supports --header and -r | Complete |
 
 ### Skill Domain Breakdown
 

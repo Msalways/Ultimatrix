@@ -127,6 +127,17 @@ export class ReflexionEngine {
         this.constraints.push(details)
       }
     }
+
+    // When reflection threshold is crossed, record a reflection entry so
+    // shouldEscalate() can fire after enough reflections accumulate.
+    if (this.shouldReflect()) {
+      this.reflections.push({
+        oldPath: path,
+        newPath: '',
+        reasoning: details || `${this.vulnTypeFailCount} same-type failures (${vulnType || 'unknown'})`,
+        timestamp: new Date().toISOString(),
+      })
+    }
   }
 
   shouldReflect(): boolean {

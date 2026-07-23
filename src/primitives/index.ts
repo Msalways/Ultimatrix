@@ -141,7 +141,7 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
 
 // ─── Executor: run a step via the HTTP tool (real tool output) ───────────
 
-async function httpExecutor(step: AttackStep): Promise<StepExecutionResult> {
+async function executeOnce(step: AttackStep): Promise<StepExecutionResult> {
   // Smuggling/deserialization primitives may request a raw-socket transport
   // (manual framing that fetch cannot express) via step.metadata.useRaw.
   if (step.metadata?.useRaw) {
@@ -172,6 +172,46 @@ async function httpExecutor(step: AttackStep): Promise<StepExecutionResult> {
     }
   } catch (e: any) {
     return { step, ok: false, error: e?.message ?? String(e) }
+  }
+}
+
+async function httpExecutor(step: AttackStep): Promise<StepExecutionResult> {
+  const kind = String(step.metadata?.kind ?? '')
+  const isTimeBased = kind.includes('-time')
+
+  if (!isTimeBased) {
+    return executeOnce(step)
+  }
+
+  const iterations = step.metadata?.timingIterations
+    ? Number(step.metadata.timingIterations)
+    : 3
+  const samples: number[] = []
+  let lastResult: StepExecutionResult | undefined
+
+  for (let i = 0; i < iterations; i++) {
+    const res = await executeOnce(step)
+    lastResult = res
+    if (res.durationMs !== undefined) {
+      samples.push(res.durationMs)
+    }
+  }
+
+  if (samples.length === 0 || !lastResult) {
+    return { step, ok: false, error: 'no timing samples collected' }
+  }
+
+  samples.sort((a, b) => a - b)
+  const median = samples[Math.floor(samples.length / 2)]
+
+  return {
+    ...lastResult,
+    durationMs: median,
+    extra: {
+      ...(lastResult.extra ?? {}),
+      timingSamples: samples,
+      timingMedian: median,
+    },
   }
 }
 
