@@ -43,6 +43,16 @@ export interface TechniqueEffectiveness {
   validated: boolean
 }
 
+export interface PayloadOutcome {
+  payload: string
+  vulnType: string
+  source: 'static' | 'llm' | 'mutation'
+  worked: boolean
+  context?: { dbms?: string; waf?: string; framework?: string }
+  targetOrigin?: string
+  timestamp: string
+}
+
 function deriveOrigin(target: string | null): string | undefined {
   if (!target) return undefined
   try {
@@ -92,6 +102,7 @@ function recomputeStats(
 
 export class OutcomeFeedbackStore {
   private outcomes: Map<string, FindingOutcome> = new Map()
+  private payloadOutcomes: PayloadOutcome[] = []
 
   /**
    * Record whether a reported finding was accepted by the client and whether
@@ -116,6 +127,33 @@ export class OutcomeFeedbackStore {
     this.syncToRegistry()
     saveOutcomeFeedback([record], origin)
     return record
+  }
+
+  /**
+   * Record per-payload effectiveness: which specific payload worked or failed,
+   * its source (static/llm/mutation), and the target context at the time.
+   */
+  recordPayloadOutcome(outcome: Omit<PayloadOutcome, 'timestamp'>): PayloadOutcome {
+    const origin = outcome.targetOrigin ?? deriveOrigin(getGlobalWorkspace().getCurrentTarget())
+    const record: PayloadOutcome = {
+      ...outcome,
+      targetOrigin: origin,
+      timestamp: new Date().toISOString(),
+    }
+    this.payloadOutcomes.push(record)
+    return record
+  }
+
+  /**
+   * Get payload effectiveness for a vuln type: which payloads worked, which
+   * didn't, grouped by source. Used by the brain to see what's historically
+   * effective on similar targets.
+   */
+  getPayloadEffectiveness(vulnType?: string): PayloadOutcome[] {
+    if (vulnType) {
+      return this.payloadOutcomes.filter(o => o.vulnType === vulnType)
+    }
+    return [...this.payloadOutcomes]
   }
 
   /**

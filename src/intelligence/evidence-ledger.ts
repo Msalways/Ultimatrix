@@ -33,6 +33,7 @@ export interface ObservedFacts {
   requestBody?: string
   responseBody?: string
   responseTimeMs?: number
+  payloadSource?: string
 }
 
 /** Body signature assertion for independent gate verification. */

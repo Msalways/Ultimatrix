@@ -412,6 +412,7 @@ export const listPrimitiveCapabilitiesTool = createTool({
         name: p.name,
         description: p.description,
         technique: p.technique,
+        adaptsTo: p.adaptsTo ?? [],
         variants: store.listVariants(p.id),
       })),
       payloadCategories: store.listCategories(),

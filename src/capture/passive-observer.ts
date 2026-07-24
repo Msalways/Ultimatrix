@@ -83,7 +83,7 @@ export class PassiveObserver {
     }
 
     for (const [key, ep] of observedEndpoints) {
-      store.addEndpoint({
+      store.mergeEndpoint({
         url: ep.url,
         method: ep.method,
         headers: Object.entries(ep.headers).map(([name, value]) => ({ name, value })),

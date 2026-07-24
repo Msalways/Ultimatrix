@@ -249,6 +249,28 @@ const SOLVER_DEFAULTS: Required<SolverConfig> = {
   maxParallel: DEFAULTS.solver.maxParallel,
 };
 
+const PRIMITIVE_TO_VULN_TYPE: Record<string, string> = {
+  classicInjection: "sqli",
+  secondOrderSqli: "sqli",
+  nosqlInjection: "nosql-injection",
+  sstiBlind: "ssti",
+  ssrfMultiCloud: "ssrf",
+  ssrfOast: "ssrf",
+  authBypass: "auth-bypass",
+  authzMatrix: "authz",
+  idorSwapper: "idor",
+  invariantProbe: "invariant-bypass",
+  workflowBypass: "workflow-bypass",
+  configTrust: "config-trust",
+  ldapXpathInjection: "ldap-injection",
+  rceClass: "rce",
+  headerInjection: "header-injection",
+  concurrencyHarness: "race-condition",
+  aiTrust: "ai-prompt-injection",
+};
+
+let previousTurnSnapshot: { endpoints: number; findings: number; tests: number; authFlows: number; untestedActions: number } | undefined;
+
 function detectPhase(toolName?: string): SolverPhase {
   if (!toolName) return "reason";
 
@@ -289,26 +311,6 @@ function detectPhase(toolName?: string): SolverPhase {
 
   return "reason";
 }
-
-const PRIMITIVE_TO_VULN_TYPE: Record<string, string> = {
-  classicInjection: "sqli",
-  secondOrderSqli: "sqli",
-  nosqlInjection: "nosql-injection",
-  sstiBlind: "ssti",
-  ssrfMultiCloud: "ssrf",
-  ssrfOast: "ssrf",
-  authBypass: "auth-bypass",
-  authzMatrix: "authz",
-  idorSwapper: "idor",
-  invariantProbe: "invariant-bypass",
-  workflowBypass: "workflow-bypass",
-  configTrust: "config-trust",
-  ldapXpathInjection: "ldap-injection",
-  rceClass: "rce",
-  headerInjection: "header-injection",
-  concurrencyHarness: "race-condition",
-  aiTrust: "ai-prompt-injection",
-};
 
 function extractVulnType(
   toolName: string | undefined,
@@ -514,6 +516,42 @@ export async function solve(
       }
       enrichedGoal += "\n" + graphContext.join("\n");
     }
+  } catch {
+    // Graph store not available
+  }
+
+  // Inject recent discoveries (diff from previous turn's snapshot)
+  try {
+    const store = getGlobalGraphStore();
+    const currentSummary = store.getTargetSummary();
+    if (previousTurnSnapshot) {
+      const newEndpoints = currentSummary.totalEndpoints - previousTurnSnapshot.endpoints;
+      const newFindings = currentSummary.totalFindings - previousTurnSnapshot.findings;
+      const newTests = currentSummary.totalTests - previousTurnSnapshot.tests;
+      const newAuthFlows = currentSummary.authFlows - previousTurnSnapshot.authFlows;
+      const newUntested = currentSummary.untestedActions - previousTurnSnapshot.untestedActions;
+      if (newEndpoints > 0 || newFindings > 0 || newTests > 0 || newAuthFlows > 0) {
+        const discoveries: string[] = [];
+        if (newEndpoints > 0) discoveries.push(`- New endpoints: ${newEndpoints}`);
+        if (newFindings > 0) {
+          const newFindingNodes = (store.queryNodes(NodeType.FINDING) as any[])
+            .slice(-newFindings)
+            .map((n: any) => `${n.properties.technique} on ${n.properties.endpoint} [${n.properties.severity}]`);
+          discoveries.push(`- New findings: ${newFindings} (${newFindingNodes.join(', ')})`);
+        }
+        if (newTests > 0) discoveries.push(`- New tests: ${newTests}`);
+        if (newAuthFlows > 0) discoveries.push(`- New auth flows: ${newAuthFlows}`);
+        if (newUntested > 0) discoveries.push(`- New untested actions: ${newUntested}`);
+        enrichedGoal += `\n\n## Recent Discoveries (since last turn)\n${discoveries.join('\n')}`;
+      }
+    }
+    previousTurnSnapshot = {
+      endpoints: currentSummary.totalEndpoints,
+      findings: currentSummary.totalFindings,
+      tests: currentSummary.totalTests,
+      authFlows: currentSummary.authFlows,
+      untestedActions: currentSummary.untestedActions,
+    };
   } catch {
     // Graph store not available
   }

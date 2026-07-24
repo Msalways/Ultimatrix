@@ -111,7 +111,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
             const page = context?.page
             if (page) {
               const store = getGlobalGraphStore()
-              store.upsertPage(page.url(), {
+              store.mergePage(page.url(), {
                 title: await page.title(),
                 contentType: 'text/html',
                 contentLength: 0,

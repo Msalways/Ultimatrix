@@ -12,7 +12,7 @@ import { mkdirSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
 import { askUserConfirm } from './tools/interaction-tools'
-import type { DebateMemory } from './council/types'
+import type { DebateMemory, IntelligenceContext } from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
 import { getGlobalGraphStore } from './graph/store'
 import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
@@ -23,6 +23,89 @@ import { setLogSink, type LogSink } from './utils/logger'
 import chalk from 'chalk'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
+
+function buildCouncilIntelligenceContext(resources: SessionResources): IntelligenceContext | undefined {
+  const ctx: IntelligenceContext = {}
+  const reflexion = resources.coreServices?.reflexion
+  const loopDetector = resources.coreServices?.loopDetector
+
+  if (reflexion) {
+    if (reflexion.getAttemptCount() > 0) {
+      const block = reflexion.toPromptBlock()
+      if (block) ctx.reflexionBlock = block
+      ctx.escalationLevel = reflexion.getEscalationLevel()
+      ctx.consecutiveFailures = reflexion.getConsecutiveFailures()
+    }
+  }
+
+  if (loopDetector) {
+    ctx.antiLoopStale = loopDetector.isStale(3)
+    if (loopDetector.blockedTargets.size > 0) {
+      ctx.blockedTargets = [...loopDetector.blockedTargets]
+    }
+  }
+
+  try {
+    const store = getGlobalGraphStore()
+    const summary = store.getTargetSummary()
+    if (summary.totalEndpoints > 0 || summary.totalFindings > 0) {
+      ctx.graphState = {
+        totalEndpoints: summary.totalEndpoints,
+        totalFindings: summary.totalFindings,
+        findingsBySeverity: summary.findingsBySeverity,
+        totalTests: summary.totalTests,
+        authFlows: summary.authFlows,
+        rbacRoles: summary.rbacRoles,
+        untestedActions: summary.untestedActions,
+        totalCapturedHeaders: summary.totalCapturedHeaders,
+        endpoints: summary.endpoints,
+      }
+    }
+
+    const edges = store.queryEdges()
+    const endpoints = store.queryNodes(NodeType.ENDPOINT) as Array<{ properties: Record<string, unknown>; id: string }>
+    if (endpoints.length > 0) {
+      const methodCounts: Record<string, number> = {}
+      const originCounts: Record<string, number> = { target: 0, self: 0 }
+      const edgeTypeCounts: Record<string, number> = {}
+      for (const e of edges) edgeTypeCounts[e.type] = (edgeTypeCounts[e.type] ?? 0) + 1
+
+      const endpointSummaries = endpoints.map((ep) => {
+        const p = ep.properties
+        const method = String(p.method ?? 'UNKNOWN')
+        methodCounts[method] = (methodCounts[method] ?? 0) + 1
+        const origin = String(p.origin ?? 'target')
+        if (origin === 'self') originCounts.self += 1
+        else originCounts.target += 1
+        const outgoing = edges.filter((e) => e.fromId === ep.id)
+        const incoming = edges.filter((e) => e.toId === ep.id)
+        return {
+          id: ep.id,
+          method,
+          url: String(p.url ?? ''),
+          origin,
+          paramNames: Array.isArray(p.params) ? (p.params as Array<{ name: string }>).map((x) => x.name) : [],
+          outgoingEdgeTypes: outgoing.map((e) => e.type),
+          incomingEdgeTypes: incoming.map((e) => e.type),
+        }
+      })
+
+      ctx.captureOverview = {
+        endpointCount: endpoints.length,
+        methodCounts,
+        originCounts,
+        edgeTypeCounts,
+        endpoints: endpointSummaries,
+        truncated: false,
+      }
+    }
+  } catch {
+    // Graph store not available
+  }
+
+  const hasAny = ctx.reflexionBlock || ctx.graphState || ctx.captureOverview || ctx.antiLoopStale || ctx.blockedTargets?.length || ctx.escalationLevel
+  return hasAny ? ctx : undefined
+}
 
 /**
  * Host hooks so the chat-card renderer can coordinate with the REPL's readline
@@ -404,6 +487,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
         humanApprove,
         previousResults: resources.councilPreviousResults,
         debateMemory: resources.debateMemory,
+        intelligenceContext: buildCouncilIntelligenceContext(resources),
         onPhase: (phase, round, text) => {
           if (phase === 'execute') {
             log.success(text ?? '')

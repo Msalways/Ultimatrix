@@ -16,7 +16,7 @@ export function persistStagehandResult(toolName: string, result: unknown): void 
       case 'stagehand_navigate': {
         const r = result as { url?: string; success?: boolean }
         if (r?.url) {
-          store.upsertPage(r.url, { method: 'GET', tags: ['stagehand'] })
+          store.mergePage(r.url, { method: 'GET', tags: ['stagehand'] })
         }
         break
       }
@@ -25,14 +25,14 @@ export function persistStagehandResult(toolName: string, result: unknown): void 
         if (r?.data && typeof r.data === 'object') {
           const data = r.data
           if (data.url && typeof data.url === 'string') {
-            store.upsertPage(data.url, { tags: ['stagehand-extract'] })
+            store.mergePage(data.url, { tags: ['stagehand-extract'] })
           }
           if (Array.isArray(data.links)) {
             for (const link of data.links) {
               if (typeof link === 'string' && link.startsWith('http')) {
                 try {
                   const u = new URL(link)
-                  store.addEndpoint({
+                  store.mergeEndpoint({
                     url: u.toString(),
                     method: 'GET',
                     source: 'stagehand-extract',

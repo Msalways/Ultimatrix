@@ -75,6 +75,7 @@ export interface TechniqueContext {
   multiParam?: boolean
   concurrency?: number
   maxAttempts?: number
+  mergedPayloads?: string[]
   [key: string]: unknown
 }
 
@@ -184,6 +185,8 @@ export interface TechniquePrimitive {
   description: string
   /** Optional link to a TechniqueRegistry attack-path keyword (for traceability). */
   technique?: string
+  /** Context signals this primitive adapts to (e.g. 'dbms', 'waf', 'framework'). Declared per-primitive. */
+  adaptsTo?: string[]
   /** Decide whether this primitive is relevant to the given context. */
   appliesTo(ctx: TechniqueContext): boolean
   /** Produce concrete attack steps to execute. */
@@ -228,23 +231,58 @@ export async function runPrimitive(
   executor: StepExecutor,
   evidenceGate: EvidenceGate,
 ): Promise<PrimitiveResult> {
+  // Merge LLM-crafted payloads (ctx.payloads) with static defaults.
+  // The primitive reads from ctx.mergedPayloads if present; otherwise it
+  // falls back to its own payload loading logic (backward compatible).
+  if (ctx.payloads && ctx.payloads.length > 0) {
+    const existing = ctx.mergedPayloads ?? []
+    const seen = new Set(existing.map(p => p.trim().toLowerCase()))
+    const llmPayloads = ctx.payloads.filter(p => {
+      const key = p.trim().toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    ctx.mergedPayloads = [...existing, ...llmPayloads]
+  }
+
   const steps = await primitive.generate(ctx)
+
+  // Tag each step's payload source for provenance tracking.
+  // Steps whose payload matches a ctx.payloads entry are tagged 'llm';
+  // all others are tagged 'static' (loaded from PayloadStore).
+  if (ctx.payloads && ctx.payloads.length > 0) {
+    const llmSet = new Set(ctx.payloads.map(p => p.trim().toLowerCase()))
+    for (const step of steps) {
+      const payload = String(step.metadata?.payload ?? '').trim().toLowerCase()
+      if (payload && llmSet.has(payload)) {
+        step.metadata = { ...step.metadata, payloadSource: 'llm' }
+      } else if (!step.metadata?.payloadSource) {
+        step.metadata = { ...step.metadata, payloadSource: 'static' }
+      }
+    }
+  } else {
+    for (const step of steps) {
+      if (!step.metadata?.payloadSource) {
+        step.metadata = { ...step.metadata, payloadSource: 'static' }
+      }
+    }
+  }
+
   const concurrent = steps.some(s => s.metadata?.concurrent === true)
 
     const runOne = async (step: AttackStep): Promise<StepExecutionResult> => {
     const res = await executor(step)
-    // Record REAL tool output into the proof layer (request + response).
+    const payloadSource = String(step.metadata?.payloadSource ?? 'static')
     evidenceGate.recordToolOutput(
       `[${step.request.method} ${step.request.url}] request` +
         (step.request.body ? ` body=${step.request.body}` : ''),
     )
-    // Populate the STRUCTURED ledger (the layer verifyClaim actually checks).
-    // Without this, confirmations can never be verified against recorded facts.
     evidenceGate.recordObserved({
       type: 'raw_request',
       data: step.request.body ?? '',
       label: `${step.request.method} ${step.request.url}`,
-      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '' },
+      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '', payloadSource },
     })
     if (res.status !== undefined) {
       evidenceGate.recordToolOutput(
@@ -262,6 +300,7 @@ export async function runPrimitive(
           responseHeaders: res.headers,
           responseBody: res.body ?? '',
           responseTimeMs: res.durationMs,
+          payloadSource,
         },
       })
     }

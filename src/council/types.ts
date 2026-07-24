@@ -314,6 +314,25 @@ export interface IntelligenceContext {
   attackPathHistory?: string[]
   escalationLevel?: number
   consecutiveFailures?: number
+  graphState?: {
+    totalEndpoints: number
+    totalFindings: number
+    findingsBySeverity: Record<string, number>
+    totalTests: number
+    authFlows: number
+    rbacRoles: number
+    untestedActions: number
+    totalCapturedHeaders: number
+    endpoints: Array<{ id: string; url: string; method: string; params: number; authRequired?: boolean; headerCount: number }>
+  }
+  captureOverview?: {
+    endpointCount: number
+    methodCounts: Record<string, number>
+    originCounts: Record<string, number>
+    edgeTypeCounts: Record<string, number>
+    endpoints: Array<{ id: string; method: string; url: string; origin: string; paramNames: string[]; outgoingEdgeTypes: string[]; incomingEdgeTypes: string[] }>
+    truncated: boolean
+  }
 }
 
 // ─── Legacy result (backward compat) ──────────────────────────────────────

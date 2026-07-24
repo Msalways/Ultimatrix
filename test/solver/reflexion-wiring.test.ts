@@ -193,7 +193,7 @@ describe('P4.5 — timing executor for time-based steps', () => {
       },
       param: 'q',
       variant: 'error-based',
-    })
+    }, { commit: false })
 
     // Should not run multiple iterations for non-time-based
     // (classicInjection generates both error-based and time-based steps)

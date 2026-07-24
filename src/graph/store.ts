@@ -146,6 +146,41 @@ export class GraphStore {
     return node
   }
 
+  /**
+   * Non-destructive page merge: reads existing page by url, merges only fields
+   * that are absent or empty. Capture modules use this to avoid overwriting
+   * richer data (title, contentLength, contentType) that was discovered earlier.
+   */
+  mergePage(url: string, data?: Partial<PageNode['properties']>): PageNode {
+    const id = `page:${url}`
+    const existing = this.nodes.get(id)
+    if (!existing) {
+      return this.upsertPage(url, data)
+    }
+
+    const props = existing.properties as PageNode['properties']
+    const newData = data ?? {}
+    const merged: Record<string, unknown> = {}
+
+    if (newData.title && !props.title) merged.title = newData.title
+    if (newData.contentType && !props.contentType) merged.contentType = newData.contentType
+    if (newData.contentLength && (!props.contentLength || props.contentLength === 0)) merged.contentLength = newData.contentLength
+    if (newData.sessionId && !props.sessionId) merged.sessionId = newData.sessionId
+    if (newData.timestamp && !props.timestamp) merged.timestamp = newData.timestamp
+
+    const existingTags = props.tags ?? []
+    const newTags = newData.tags ?? []
+    const mergedTags = [...new Set([...existingTags, ...newTags])]
+    if (mergedTags.length > existingTags.length) merged.tags = mergedTags
+
+    if (Object.keys(merged).length > 0) {
+      Object.assign(props, merged)
+      existing.updatedAt = Date.now()
+    }
+
+    return existing as PageNode
+  }
+
   addAction(pageId: string, actionData: Partial<ActionNode['properties']>): ActionNode {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.addAction(pageId, actionData)
@@ -300,6 +335,65 @@ export class GraphStore {
     }
     this.nodes.set(id, node)
     return node
+  }
+
+  /**
+   * Non-destructive merge: reads existing endpoint by url+method, merges only
+   * fields that are absent or empty in the existing node. Capture modules use
+   * this instead of addEndpoint to avoid overwriting richer data (auth type,
+   * params, use-case) that was discovered by other sources.
+   */
+  mergeEndpoint(data: Partial<EndpointNode['properties']> & { url: string; method: string }): EndpointNode {
+    const existing = Array.from(this.nodes.values()).find(
+      n => n.type === NodeType.ENDPOINT &&
+        (n.properties as EndpointNode['properties']).url === data.url &&
+        (n.properties as EndpointNode['properties']).method?.toUpperCase() === data.method.toUpperCase()
+    )
+
+    if (!existing) {
+      return this.addEndpoint(data)
+    }
+
+    const props = existing.properties as EndpointNode['properties']
+    const newHeaders = data.headers ?? []
+    const existingHeaders = props.headers ?? []
+    const headerNames = new Set(existingHeaders.map(h => h.name.toLowerCase()))
+    const mergedHeaders = [
+      ...existingHeaders,
+      ...newHeaders.filter(h => !headerNames.has(h.name.toLowerCase())),
+    ]
+
+    const existingParams = props.params ?? []
+    const newParams = data.params ?? []
+    const paramNames = new Set(existingParams.map(p => p.name.toLowerCase()))
+    const mergedParams = [
+      ...existingParams,
+      ...newParams.filter(p => !paramNames.has(p.name.toLowerCase())),
+    ]
+
+    const existingTags = props.tags ?? []
+    const newTags = data.tags ?? []
+    const mergedTags = [...new Set([...existingTags, ...newTags])]
+
+    const existingSources = String(props.source ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    const newSource = data.source ?? ''
+    if (newSource && !existingSources.includes(newSource)) {
+      existingSources.push(newSource)
+    }
+
+    Object.assign(props, {
+      ...(mergedHeaders.length > existingHeaders.length ? { headers: mergedHeaders } : {}),
+      ...(mergedParams.length > existingParams.length ? { params: mergedParams } : {}),
+      ...(mergedTags.length > existingTags.length ? { tags: mergedTags } : {}),
+      ...(existingSources.length > 0 ? { source: existingSources.join(', ') } : {}),
+      ...(data.authRequired !== undefined && props.authRequired === undefined ? { authRequired: data.authRequired } : {}),
+      ...(data.authType && !props.authType ? { authType: data.authType } : {}),
+      ...(data.bodySchema && !props.bodySchema ? { bodySchema: data.bodySchema } : {}),
+      ...(data.description && !props.description ? { description: data.description } : {}),
+    })
+
+    existing.updatedAt = Date.now()
+    return existing as EndpointNode
   }
 
   getTargetSummary(): {

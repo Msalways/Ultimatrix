@@ -140,6 +140,56 @@ export function buildGoalPrompt(
     if (intelParts.length > 0) {
       parts.push('', '## Intelligence Context', ...intelParts)
     }
+
+    if (intelligenceContext.graphState) {
+      const gs = intelligenceContext.graphState
+      const graphLines: string[] = [
+        '',
+        '## Current Target State',
+        `- ${gs.totalEndpoints} endpoints discovered (${gs.totalCapturedHeaders} with captured headers)`,
+        `- ${gs.totalFindings} findings: ${
+          Object.entries(gs.findingsBySeverity)
+            .map(([s, c]) => `${s}=${c}`)
+            .join(', ') || 'none'
+        }`,
+        `- ${gs.totalTests} tests run`,
+        `- ${gs.authFlows} auth flows, ${gs.rbacRoles} RBAC roles`,
+        `- ${gs.untestedActions} untested actions`,
+      ]
+      if (gs.endpoints.length > 0) {
+        graphLines.push('Top endpoints:')
+        for (const ep of gs.endpoints.slice(0, 10)) {
+          graphLines.push(
+            `  - ${ep.method} ${ep.url} (params: ${ep.params}, auth: ${ep.authRequired ? 'yes' : 'no'}, headers: ${ep.headerCount})`,
+          )
+        }
+      }
+      parts.push(...graphLines)
+    }
+
+    if (intelligenceContext.captureOverview) {
+      const co = intelligenceContext.captureOverview
+      const coLines: string[] = [
+        '',
+        '## Structural Overview',
+        `- ${co.endpointCount} endpoints, ${Object.values(co.edgeTypeCounts).reduce((a, b) => a + b, 0)} edges`,
+      ]
+      const edgeEntries = Object.entries(co.edgeTypeCounts)
+      if (edgeEntries.length > 0) {
+        coLines.push(`- Edge types: ${edgeEntries.map(([t, c]) => `${t}=${c}`).join(', ')}`)
+      }
+      if (co.endpoints.length > 0) {
+        coLines.push('Endpoints with relations:')
+        for (const ep of co.endpoints.slice(0, 10)) {
+          const outTypes = ep.outgoingEdgeTypes.length > 0 ? `→ [${[...new Set(ep.outgoingEdgeTypes)].join(',')}]` : ''
+          const inTypes = ep.incomingEdgeTypes.length > 0 ? `← [${[...new Set(ep.incomingEdgeTypes)].join(',')}]` : ''
+          if (outTypes || inTypes) {
+            coLines.push(`  - ${ep.method} ${ep.url} ${outTypes} ${inTypes}`.trim())
+          }
+        }
+      }
+      parts.push(...coLines)
+    }
   }
 
   if (previousResults) {
