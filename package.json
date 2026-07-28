@@ -63,7 +63,6 @@
   "author": "Shanthosh",
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/react": "^1.2.12",
     "@inquirer/prompts": "^8.5.2",
     "@libsql/client": "^0.17.3",
     "@mastra/ai-sdk": "^1.4.5",
