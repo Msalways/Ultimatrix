@@ -366,44 +366,437 @@ Learns across sessions. Anonymized vulnerability patterns are saved and automati
 
 ## Configuration
 
-<details>
-<summary><strong>Full configuration example</strong></summary>
+Ultimatrix uses a single `ultimatrix.yaml` file. **Only `provider` and `model` are required** — everything else has sensible defaults. Mix and match sections as needed.
+
+### Minimal Config
 
 ```yaml
-# ultimatrix.yaml
 provider: groq
 model: llama3-8b-8192
-target: https://your-app.com
-engine: multi-model
+```
 
-modelTiers:
-  fast: groq/llama3-8b-8192
-  balanced: openai/gpt-4o-mini
-  powerful: anthropic/claude-3.5-sonnet
+### Full Config Reference
 
-council:
-  approvalMode: hitl
-  maxRounds: 8
+<details>
+<summary><strong>Core Settings</strong></summary>
 
-solver:
-  maxToolCalls: 50
-  maxTokens: 100000
-  maxDurationMs: 300000
-
-scope:
-  allowedDomains: [your-app.com, *.your-app.com]
-  enforcement: hard
-
-campaign:
-  auto: true
-  maxSlices: 20
-  maxConcurrency: 3
-
-browser:
-  headless: false
+```yaml
+provider: groq                    # LLM provider (groq, openai, anthropic, google, etc.)
+model: llama3-8b-8192             # Model ID for the provider
+target: https://your-app.com      # Target URL to test
+engine: multi-model               # 'multi-model' (default) | 'legacy'
+depth: 3                          # Crawl depth (1-5)
+timeout: 30000                    # Global request timeout (ms)
+requireCapableModel: false        # Refuse sub-16K models for complex goals
 ```
 
 </details>
+
+<details>
+<summary><strong>Model Tiers — Dynamic Per-Task Routing</strong></summary>
+
+Route cheap models for recon, powerful models for exploitation. The `selectModel` tool scores candidates by capability, budget, rate limits, and success history.
+
+```yaml
+modelTiers:
+  fast: groq/llama3-8b-8192              # Recon, simple checks
+  balanced: openai/gpt-4o-mini           # General testing
+  powerful: anthropic/claude-3.5-sonnet  # Deep reasoning, exploitation
+```
+
+</details>
+
+<details>
+<summary><strong>Council — On-Demand LLM Debate</strong></summary>
+
+4 LLM specialists debate what to test. Invoked via `/council <goal>` in any multi-model session.
+
+```yaml
+council:
+  enabled: true
+  approvalMode: hitl          # 'autonomous' | 'hitl' | 'both'
+  maxRounds: 8                # Max debate cycles per session
+  budgetPerRound: 20000       # Token budget per round (advisory)
+  respondTimeoutMs: 90000     # Per-member LLM timeout (ms)
+  executeTimeoutMs: 120000    # Per-proposal worker timeout (ms)
+  members:                    # Which roles to include
+    - strategist
+    - operator
+    - skeptic
+    - analyst
+  personas:                   # Optional persona file overrides
+    strategist: ./custom-strategist.md
+```
+
+</details>
+
+<details>
+<summary><strong>Solver — OODA Loop Tuning</strong></summary>
+
+```yaml
+solver:
+  maxToolCalls: 50            # Max tool-call rounds per turn
+  maxDurationMs: 300000       # Wall-clock timeout per turn (5 min)
+  maxParallel: 1              # Parallel solver instances
+  maxRounds: 20               # Max reasoning rounds
+  maxActiveChainSteps: 5      # Max escalation primitives per chain (0 = disabled)
+```
+
+</details>
+
+<details>
+<summary><strong>Browser — Playwright/Stagehand Control</strong></summary>
+
+```yaml
+browser:
+  headless: false             # Show browser window (recommended for debugging)
+  viewport:
+    width: 1280
+    height: 720
+  domSettleTimeout: 3000      # Wait for DOM to settle (ms)
+  selfHeal: true              # Auto-recover from selector failures
+  verbose: 0                  # Verbosity level (0-3)
+```
+
+</details>
+
+<details>
+<summary><strong>Scope Guard — URL Enforcement</strong></summary>
+
+Every network request passes through scope guard. When `allowedDomains` is omitted, all requests are allowed (free-for-all default).
+
+```yaml
+scope:
+  allowedDomains:
+    - your-app.com
+    - *.your-app.com           # Wildcard support
+  allowedPaths:
+    - /app/                    # Only test under /app/
+  allowedProtocols:
+    - https                    # Default: https only
+  enforcement: hard            # 'hard' (block) | 'warn' (log + allow)
+```
+
+</details>
+
+<details>
+<summary><strong>Rate Limiting — 3-Layer Protection</strong></summary>
+
+Sliding window + semaphore + per-provider awareness with header sync.
+
+```yaml
+rateLimit:
+  requestsPerMinute: 15
+  tokensPerMinute: 100000
+  maxConcurrent: 2            # Max parallel requests
+  retryOnLimit: true
+  maxRetries: 3
+  backoffStrategy: stepped    # 'exponential' | 'stepped' | 'fixed'
+  backoffSteps: [5000, 15000, 30000]
+  baseBackoffMs: 2000
+  maxBackoffMs: 30000
+  useHeaders: true            # Read x-ratelimit-* headers from API responses
+  headerMapping:              # Custom header names (provider-specific)
+    remaining: x-ratelimit-remaining
+    reset: x-ratelimit-reset
+    retryAfter: retry-after
+```
+
+</details>
+
+<details>
+<summary><strong>Budget Policy — Cost Control</strong></summary>
+
+```yaml
+budgetPolicy:
+  enforcement: soft           # 'hard' (throw) | 'soft' (graceful stop) | 'warn'
+  scope: session              # 'turn' | 'session'
+  resetOn: turn               # 'turn' | 'never'
+  allocation:
+    brain: 0.30               # 30% of budget to reasoning
+    workers: 0.60             # 60% to worker execution
+    spider: 0.10              # 10% to crawling
+  maxModelCallsPerTask: 15
+  maxTokensPerSession: 500000
+  trackTokens: true
+```
+
+</details>
+
+<details>
+<summary><strong>Intelligence — Reflexion, Anti-Loop, Verifier</strong></summary>
+
+```yaml
+reflexion:
+  enabled: true
+  maxSameVulnFails: 3         # Fails before escalating vulnType strategy
+  maxTotalNoProgress: 5       # Total fails before forced strategy switch
+  escalationMaxLevel: 4       # Max escalation level (L0-L4)
+
+antiLoop:
+  staleThreshold: 3           # Repeats before forcing new path
+  maxFailedTarget: 5          # Fails before blocking target entirely
+
+verifier:
+  enabled: true
+  maxPerRound: 10             # Max findings to re-verify per round
+  timeoutMs: 15000            # Per-verification timeout
+```
+
+</details>
+
+<details>
+<summary><strong>Campaign — Systematic Coverage</strong></summary>
+
+```yaml
+campaign:
+  auto: true                  # Auto-plan at start of solver goal
+  maxSlices: 20               # Max test slices per campaign
+  maxConcurrency: 3           # Parallel slice execution
+```
+
+</details>
+
+<details>
+<summary><strong>Compression & Truncation</strong></summary>
+
+```yaml
+compression:
+  headroom:
+    enabled: true
+    tokenBudget: 100000       # Headroom compression budget
+    fallbackToTruncation: true
+    maxResponseSize: 200000   # Max response size (chars)
+
+truncation:
+  maxResponseSize: 50000      # Hard truncation limit
+  fallbackEnabled: true
+```
+
+</details>
+
+<details>
+<summary><strong>Spider — Crawling Control</strong></summary>
+
+```yaml
+spider:
+  enabled: true
+  maxSteps: 50                # Max crawl steps
+  maxDurationMs: 60000        # Crawl timeout (ms)
+```
+
+</details>
+
+<details>
+<summary><strong>OAST — Out-of-Band Attack Testing</strong></summary>
+
+```yaml
+oast:
+  externalHost: oast.pro      # External callback host (interact.sh, burp collaborator)
+  callbackTtlMs: 3600000      # Callback TTL (1 hour default)
+```
+
+</details>
+
+<details>
+<summary><strong>Interaction — Display Policy</strong></summary>
+
+```yaml
+interaction:
+  showReasoning: true         # Show LLM reasoning/thinking
+  showSystemEvents: true      # Show tooling/quota/summary events
+  chat: true                  # Use chat-box renderer for interact
+```
+
+</details>
+
+<details>
+<summary><strong>Memory — Context Management</strong></summary>
+
+```yaml
+memory:
+  lastMessages: 20            # Messages to keep in working memory
+  semanticRecall: true        # Enable semantic memory recall
+  workingMemory: true         # Enable working memory scratchpad
+
+context:
+  maxInputTokens: 128000      # Context window budget
+  reservedMargin: 1024        # Safety margin from context window limit
+```
+
+</details>
+
+<details>
+<summary><strong>MCP Servers — External Tool Integration</strong></summary>
+
+Connect external MCP (Model Context Protocol) servers for additional capabilities.
+
+```yaml
+mcp:
+  - name: my-tools
+    command: node
+    args: [./my-mcp-server.js]
+    env:
+      API_KEY: ${MY_API_KEY}
+    type: stdio                # 'stdio' | 'http' | 'sse'
+    auth:
+      kind: oauth
+      clientId: xxx
+      clientSecret: yyy
+      scope: read write
+```
+
+</details>
+
+<details>
+<summary><strong>Plugins — Code Extensions</strong></summary>
+
+```yaml
+plugins:
+  - id: my-scanner
+    path: ./plugins/my-scanner.js
+    env:
+      SCANNER_MODE: strict
+```
+
+</details>
+
+<details>
+<summary><strong>Skills — Custom Skill Directories</strong></summary>
+
+```yaml
+skillsDirs:
+  - ./custom-skills           # Additional skill directories
+  - /shared/skills            # Shared skill library
+
+skills:
+  exclude:
+    - ctf-misc                # Skip specific skills
+    - ssl-stripping
+```
+
+</details>
+
+<details>
+<summary><strong>Credentials — Multi-Provider Auth</strong></summary>
+
+API keys can be set via environment variables or the config file. The Web UI auto-masks keys.
+
+```yaml
+# Environment variables (preferred)
+# GROQ_API_KEY=gsk_...
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+# GOOGLE_GENERATIVE_AI_API_KEY=...
+# NVIDIA_API_KEY=nvapi-...
+
+# Or in config (auto-masked in Web UI)
+creds:
+  groq:
+    apiKey: gsk_...
+  openai:
+    apiKey: sk-...
+  azure:
+    apiKey: ...
+    endpoint: https://your-instance.openai.azure.com/
+    deployment: your-deployment
+  bedrock:
+    accessKeyId: AKIA...
+    secretAccessKey: ...
+    region: us-east-1
+
+# Test account credentials (used by agent for login flows)
+credentials:
+  admin:
+    email: admin@example.com
+    password: secure123
+  user:
+    email: user@example.com
+    password: test456
+```
+
+</details>
+
+<details>
+<summary><strong>Per-Provider Rate Limits</strong></summary>
+
+Override rate limits for specific providers.
+
+```yaml
+providerRateLimits:
+  groq:
+    requestsPerMinute: 30
+    maxConcurrent: 5
+  openai:
+    requestsPerMinute: 10
+    tokensPerMinute: 80000
+  anthropic:
+    requestsPerMinute: 5
+    maxRetries: 5
+```
+
+</details>
+
+<details>
+<summary><strong>Model Capabilities — Custom Model Metadata</strong></summary>
+
+Override or add model capability metadata for models not in the built-in registry.
+
+```yaml
+modelCapabilities:
+  my-custom-model:
+    contextWindow: 32000
+    maxOutputTokens: 4096
+    maxTokensPerMinute: 50000
+    reservedMargin: 2048
+    strengths: [coding, reasoning]
+    supportsStreaming: true
+    supportsStructuredOutput: true
+    supportsVision: false
+```
+
+</details>
+
+<details>
+<summary><strong>Authorization — Scope Declaration</strong></summary>
+
+Declares the legal authorization for testing. This is a metadata field — it does not bypass any safety checks.
+
+```yaml
+authorization:
+  confirmed: true
+  method: bounty              # 'bounty' | 'pentest-contract' | 'written-permission' | 'self-owned' | 'lab'
+  target: https://your-app.com
+  timestamp: 2026-01-01T00:00:00Z
+```
+
+</details>
+
+### Environment Variables
+
+```bash
+# Provider API keys (set one)
+export GROQ_API_KEY=gsk_...
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export GOOGLE_GENERATIVE_AI_API_KEY=...
+export NVIDIA_API_KEY=nvapi-...
+export TOGETHER_API_KEY=...
+export DEEPSEEK_API_KEY=...
+export MISTRAL_API_KEY=...
+export XAI_API_KEY=...
+export PERPLEXITY_API_KEY=...
+export CEREBRAS_API_KEY=...
+export DEEPINFRA_API_KEY=...
+export OPENROUTER_API_KEY=...
+export AZURE_API_KEY=...
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+# Debug & diagnostics
+export ULTIMATRIX_LLM_DEBUG=1
+export ULTIMATRIX_LLM_STREAM=1
+```
 
 ### Supported Providers
 
