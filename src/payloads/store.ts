@@ -17,6 +17,22 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { PROJECT_ROOT } from '../lib/project-root'
 
+/**
+ * Resolve the payloads directory path. Tries multiple candidate locations.
+ * @internal Private implementation used by PayloadStore internally.
+ */
+function resolvePayloadsDir(): string {
+  const candidates = [
+    join(PROJECT_ROOT, 'payloads'),
+    join(moduleDirname(), '..', '..', 'payloads'),
+    join(process.cwd(), 'payloads'),
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return join(PROJECT_ROOT, 'payloads')
+}
+
 export interface PayloadFile {
   payloads?: string[]
   markers?: string[]
@@ -43,18 +59,6 @@ function moduleDirname(): string {
     if (typeof d === 'string' && d.length > 0) return d
   } catch { /* ignore */ }
   return process.cwd()
-}
-
-function resolvePayloadsDir(): string {
-  const candidates = [
-    join(PROJECT_ROOT, 'payloads'),
-    join(moduleDirname(), '..', '..', 'payloads'),
-    join(process.cwd(), 'payloads'),
-  ]
-  for (const c of candidates) {
-    if (existsSync(c) && statSync(c).isDirectory()) return c
-  }
-  return candidates[0]
 }
 
 export class PayloadStore {
@@ -169,11 +173,93 @@ export class PayloadStore {
   }
 
   /**
+   * Merge LLM-crafted payloads with static payloads.
+   * Returns structured object with all payloads, plus breakdown by source.
+   */
+  mergePayloads(staticPayloads: string[], llmPayloads: string[], dedup: boolean = true): {
+    all: string[]
+    bySource: { static: string[]; llm: string[]; merged: string[] }
+    uniqueIds: string[]
+  } {
+    const seen = new Set<string>()
+    const staticSet = new Set<string>()
+    const llmSet = new Set<string>()
+
+    // Load static payloads from PayloadStore
+    const staticList = staticPayloads.length > 0 ? staticPayloads : this.getPayloadsForCategory()
+
+    // Deduplicate both lists
+    for (const payload of staticList) {
+      if (typeof payload !== 'string') continue
+      const key = payload.trim().toLowerCase()
+      if (dedup && seen.has(key)) continue
+      seen.add(key)
+      staticSet.add(payload)
+    }
+
+    for (const payload of llmPayloads) {
+      if (typeof payload !== 'string') continue
+      const key = payload.trim().toLowerCase()
+      if (dedup && seen.has(key)) continue
+      seen.add(key)
+      llmSet.add(payload)
+    }
+
+    return {
+      all: [...seen],
+      bySource: {
+        static: [...staticSet],
+        llm: [...llmSet],
+        merged: [...seen]
+      },
+      uniqueIds: [...seen],
+    }
+  }
+
+  private getPayloadsForCategory(): string[] {
+    this.ensureLoaded()
+    const categories = this.cache.values()
+    const allPayloads: string[] = []
+    for (const cat of categories) {
+      allPayloads.push(...cat.defaultPayloads)
+      for (const variants of cat.variants.values()) {
+        allPayloads.push(...variants)
+      }
+    }
+    return allPayloads
+  }
+
+  /**
    * List all available payload categories.
    */
   listCategories(): string[] {
     this.ensureLoaded()
     return [...this.cache.keys()].sort()
+  }
+
+  /**
+   * Get static payloads for a specific vulnerability type.
+   * Returns flat array of payload strings.
+   */
+  loadPayloadsForVulnType(vulnType: string, payloadSet?: PayloadSet): string[] {
+    this.ensureLoaded()
+    const cat = this.cache.get(vulnType)
+    if (!cat) return []
+
+    // If payloadSet specified, filter variants based on it
+    if (payloadSet) {
+      const variantKeys = Object.keys(payloadSet as Record<string, unknown>)
+      for (const key of variantKeys) {
+        const variant = (payloadSet as Record<string, unknown>)[key]
+        if (variant) {
+          const v = cat.variants.get(key)
+          if (v) return [...v]
+        }
+      }
+    }
+
+    // Return default payloads if no variant selected
+    return [...cat.defaultPayloads]
   }
 
   /**
@@ -203,6 +289,12 @@ export class PayloadStore {
   }
 }
 
+export type PayloadSet = { category: string; variant?: string; limit?: number }
+
+/**
+ * Resolve the payloads directory path. Tries multiple candidate locations.
+ */
 export function getPayloadStore(): PayloadStore {
   return PayloadStore.getInstance()
 }
+

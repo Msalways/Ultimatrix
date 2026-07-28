@@ -22,7 +22,7 @@ import { getForensicLog } from "../tools/report-tools";
 import { saveReflexionState } from "../intelligence/reflexion-store";
 import { getGlobalGraphStore } from "../graph/store";
 import { NodeType } from "../graph/schema";
-import { DEFAULTS, CONTEXT_WINDOW_MAP, type UltimatrixConfig } from "../config";
+import { DEFAULTS, CONTEXT_WINDOW_MAP, getConfig, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
 import { ContextWindowRegistry } from "../models/context-window-registry";
@@ -147,12 +147,15 @@ export interface SolverAnswer {
 /**
  * Streaming message emitted via `onPhase`. Discriminated union keyed by `kind`.
  * Replaces the ambiguous `PhaseEvent.text + reasoning` shape.
+ *
+ * Tool/tool-result variants carry optional worker context fields so the UI
+ * can attribute tool calls to specific swarm workers.
  */
 export type SolverStreamMessage =
   | { kind: "reasoning"; text: string; index: number }
   | { kind: "answer"; text: string; index: number }
-  | { kind: "tool"; name: string; args?: Record<string, unknown> }
-  | { kind: "tool-result"; name: string; ok: boolean; result?: string }
+  | { kind: "tool"; name: string; args?: Record<string, unknown>; workerId?: string; workerName?: string }
+  | { kind: "tool-result"; name: string; ok: boolean; result?: string; workerId?: string; workerName?: string }
   | { kind: "phase"; phase: SolverPhase; step: number }
   | { kind: "done"; answer: SolverAnswer };
 
@@ -190,6 +193,10 @@ export interface PhaseEvent {
     pending: number;
   };
   interruptPrompt?: string;
+  /** Worker context — present when the event originates from a spawned worker. */
+  workerId?: string;
+  workerName?: string;
+  workerSkill?: string;
 }
 
 export interface SolveResult {
@@ -524,6 +531,9 @@ export async function solve(
   try {
     const store = getGlobalGraphStore();
     const currentSummary = store.getTargetSummary();
+    const config = getConfig()
+    const maxPerLine = config.context?.maxFindingsPerTurn || 20
+
     if (previousTurnSnapshot) {
       const newEndpoints = currentSummary.totalEndpoints - previousTurnSnapshot.endpoints;
       const newFindings = currentSummary.totalFindings - previousTurnSnapshot.findings;
@@ -534,10 +544,22 @@ export async function solve(
         const discoveries: string[] = [];
         if (newEndpoints > 0) discoveries.push(`- New endpoints: ${newEndpoints}`);
         if (newFindings > 0) {
+          // Only take last maxPerLine findings (not ALL new findings)
           const newFindingNodes = (store.queryNodes(NodeType.FINDING) as any[])
             .slice(-newFindings)
-            .map((n: any) => `${n.properties.technique} on ${n.properties.endpoint} [${n.properties.severity}]`);
-          discoveries.push(`- New findings: ${newFindings} (${newFindingNodes.join(', ')})`);
+            .slice(-maxPerLine)
+
+          const findingText = newFindingNodes.map((n: any) =>
+            n.properties.technique + ' on ' + n.properties.endpoint + ' [' + n.properties.severity + ']'
+          ).join(', ')
+
+          discoveries.push(`- New findings: ${newFindings} (${findingText})`)
+
+          // If there are more findings than maxPerLine, add a note
+          if (newFindings > maxPerLine) {
+            const remaining = newFindings - maxPerLine
+            discoveries.push(`  - ... and ${remaining} more findings (not shown)`)
+          }
         }
         if (newTests > 0) discoveries.push(`- New tests: ${newTests}`);
         if (newAuthFlows > 0) discoveries.push(`- New auth flows: ${newAuthFlows}`);
@@ -676,13 +698,13 @@ export async function solve(
     const ctxManager = new ContextBudgetManager(caps ?? {}, registry);
     // Mastra Agent exposes instructions/tools via async accessors (getters were
     // removed). Resolve once for the context-budget estimate.
-    let agentInstructions = "";
-    let toolSchemasStr = "[]";
+    let agentInstructions: string;
     try {
       agentInstructions = (await agent.getInstructions()) as string;
     } catch {
       agentInstructions = "";
     }
+    let toolSchemasStr: string;
     try {
       const toolMap = await agent.listTools();
       toolSchemasStr = JSON.stringify(Object.keys(toolMap || {}));
@@ -691,7 +713,7 @@ export async function solve(
     }
 
     const ctxCheck = ctxManager.validateContextFit({
-      modelId: params.model,
+      modelId: params.model ?? "",
       systemPrompt: agentInstructions,
       toolSchemas: toolSchemasStr,
       conversationHistory: "",
@@ -700,7 +722,7 @@ export async function solve(
 
     // Log context validation
     log.dim(
-      `[context] ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(params.model)} tokens (${ctxCheck.severity})`,
+      `[context] ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(params.model ?? "")} tokens (${ctxCheck.severity})`,
     );
 
     if (ctxCheck.severity === "critical") {
@@ -715,7 +737,7 @@ export async function solve(
 
       if (enforcement === "soft") {
         const truncated = ctxManager.truncateToFit({
-          modelId: params.model,
+          modelId: params.model ?? "",
           systemPrompt: agentInstructions,
           toolSchemas: toolSchemasStr,
           conversationHistory: "",

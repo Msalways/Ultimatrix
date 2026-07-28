@@ -127,12 +127,13 @@ export class ContextBudgetManager {
     if (overflow <= 0) return suggestions
 
     // Biggest contributor first
-    const entries: Array<[string, number]> = [
+    const raw: [string, number][] = [
       ['history', breakdown.history],
       ['goal', breakdown.goal],
       ['tools', breakdown.tools],
       ['system', breakdown.system],
-    ].sort((a, b) => b[1] - a[1])
+    ]
+    const entries = raw.sort((a, b) => b[1] - a[1])
 
     let remaining = overflow
     for (const [key, tokens] of entries) {

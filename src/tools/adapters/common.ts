@@ -14,7 +14,8 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, readFile, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir, tmpdir, platform } from 'node:os'
 import { verifyClaimStructured } from '../control-tools'

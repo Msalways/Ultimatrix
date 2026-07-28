@@ -7,12 +7,8 @@
  * response headers AND the claim is verified by the EvidenceGate.
  */
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor } from './framework'
+import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { getPayloadStore } from '../payloads/store'
-
-const CRLF = () => (getPayloadStore().getPayloads('header-injection/crlf', 'crlf'))[0] ?? '\r\n'
-const INJECTED_COOKIE = () => (getPayloadStore().getPayloads('header-injection/crlf', 'cookie_inject'))[0] ?? 'pwned=1'
 
 export const headerInjection: TechniquePrimitive = {
   id: 'headerInjection',
@@ -22,13 +18,18 @@ export const headerInjection: TechniquePrimitive = {
   appliesTo(ctx: TechniqueContext): boolean {
     return !!(ctx.endpoint || ctx.target)
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'GET'
     const baseHeaders = { ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name
-    const crlf = CRLF()
-    const injectedCookie = INJECTED_COOKIE()
+
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+
+    // Get CRLF and cookie payloads (fallback to defaults if empty)
+    const crlf = payloadResult.bySource.static[0] ?? '\r\n'
+    const injectedCookie = payloadResult.bySource.static[1] ?? 'pwned=1'
     const steps: AttackStep[] = []
 
     steps.push({
@@ -62,10 +63,11 @@ export const headerInjection: TechniquePrimitive = {
     }
     return steps
   },
-  async oracle(results: StepExecutionResult[], evidenceGate: EvidenceGate): Promise<PrimitiveResult> {
+   async oracle(results: StepExecutionResult[], evidenceGate: EvidenceGate): Promise<PrimitiveResult> {
     const evidence: PrimitiveResult['evidence'] = []
     let hit = false
-    const injectedCookie = INJECTED_COOKIE()
+    const payloadResult = loadPayloads({ payloads: [] })
+    const injectedCookie = payloadResult.bySource.static[1] ?? 'pwned=1'
     for (const r of results) {
       const headers = r.headers ?? {}
       const cookie = headers['set-cookie'] ?? headers['Set-Cookie']

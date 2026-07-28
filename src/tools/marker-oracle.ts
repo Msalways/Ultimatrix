@@ -29,14 +29,6 @@ export const detectMarkerLeak = createTool({
       .describe('Optional response headers the attacker received (checked for leaked markers too).'),
     caseSensitive: z.boolean().optional().default(false).describe('Match case-sensitively. Defaults to case-insensitive.'),
   }),
-  outputSchema: z.object({
-    ok: z.boolean(),
-    leaked: z.boolean(),
-    where: z.enum(['body', 'header', 'none']),
-    headerName: z.string().optional(),
-    snippet: z.string().optional(),
-    confidence: z.enum(['high', 'medium', 'low']),
-  }),
   execute: async (ctx) => {
     const { victimMarker, attackerResponseBody, attackerResponseHeaders, caseSensitive } = ctx
     const normalize = (s: string) => (caseSensitive ? s : s.toLowerCase())

@@ -18,7 +18,7 @@ import { getGlobalGraphStore } from './graph/store'
 import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
 import { ChatStream } from './output/layout'
 import type { ChatBox } from './output/chatbox'
-import type { UiStore } from './ui/store'
+
 import { setLogSink, type LogSink } from './utils/logger'
 import chalk from 'chalk'
 
@@ -152,7 +152,7 @@ export interface SolverRenderer {
 export function createSolverRenderer(
   host: SolverRendererHost = {},
   ctx: SolverRenderContext = {},
-  opts: { plain?: boolean; interaction?: { showReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null; uiStore?: UiStore | null } = {},
+  opts: { plain?: boolean; interaction?: { showReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null } = {},
 ): SolverRenderer {
   const model: RenderModel = createRenderModel()
   model.engine = ctx.engine
@@ -165,24 +165,6 @@ export function createSolverRenderer(
   const showReasoning = opts.interaction?.showReasoning ?? true
   const showSystemEvents = opts.interaction?.showSystemEvents ?? true
 
-  // Console mode (termcn/Ink): the Ink App owns the entire terminal (alternate
-  // screen), so the renderer must NOT write to stdout. It folds every message
-  // into the UiStore exactly once; the Ink panes read the store. Reversible:
-  // when `uiStore` is absent, the legacy chat-box / plain paths run unchanged.
-  if (opts.uiStore) {
-    const render = (msg: SolverStreamMessage): void => {
-      reduceMessage(model, msg)
-      opts.uiStore.dispatchSolver(msg)
-    }
-    render.final = (): void => {
-      opts.uiStore.commitTurn()
-    }
-    render.flush = (): void => { /* no buffered stdout in console mode */ }
-    render.toggleReasoning = (): void => { /* TODO: console reasoning toggle */ }
-    render.exit = (): void => { /* Ink unmount owned by session */ }
-    return render
-  }
-
   // Chat-box mode: one session-wide renderer owns all terminal output. The
   // ChatBox is adapted to the SolverRenderer interface so both solver call
   // sites stay unchanged. The session owns the sink (installed in `main`),
@@ -194,14 +176,9 @@ export function createSolverRenderer(
     const render = (msg: SolverStreamMessage): void => {
       reduceMessage(model, msg)
       cb.streamAssistant(msg)
-      // Mirror every folded message into the console store so the Ink UI shows
-      // the same turn the chat box prints. Single fold (reduceMessage) â€” no
-      // double reduction. The store is a pure consumer here.
-      opts.uiStore?.dispatchSolver(msg)
     }
     render.final = (): void => {
       cb.endAssistant()
-      opts.uiStore?.commitTurn()
     }
     render.flush = (): void => { /* ChatBox.endAssistant already flushed/cleared sink */ }
     render.toggleReasoning = (): void => cb.toggleReasoning()
@@ -279,6 +256,7 @@ function renderMarkdownPlain(text: string): string {
   // TTY-agnostic path (isTTY false ? no escapes).
   try {
     // Lazy import kept local to avoid a hard dependency at module load.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { renderMarkdown } = require('./output/terminal') as typeof import('./output/terminal')
     return renderMarkdown(text, { isTTY: false })
   } catch {
@@ -289,7 +267,7 @@ function renderMarkdownPlain(text: string): string {
 export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
   const lifecycle = new SessionLifecycle()
   /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
-  let lastRenderMsg: SolverRenderer | undefined
+  let lastRenderMsg: SolverRenderer | undefined  // eslint-disable-line no-unassigned-vars
 
   // Native terminal console: the plain `log.*` + streamed-answer path. The
   // termcn/Ink TUI (src/ui/*) is retained on disk but disabled â€” we do not
@@ -309,7 +287,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
   const chatbox = null
 
   // Spider: crawl ? HAR bridge (no activity sink in native terminal)
-  await lifecycle.runSpider(undefined)
+  await lifecycle.runSpider()
 
   // Engine: solver brain or legacy workers
   await lifecycle.setupEngine()
@@ -323,7 +301,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
 
     // Activity sink is disabled in the native terminal: all output routes
     // through `log.*` / stdout below.
-    const sink = undefined
+    const sink: ChatBox | null = null as ChatBox | null
 
     // Commands
     if (line.trim() === '/help') {
@@ -469,7 +447,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
           .filter((n: any) => n.properties?.summary?.startsWith('DEBATE_MEMORY::'))
           .sort((a: any, b: any) => (b.properties?.round ?? 0) - (a.properties?.round ?? 0))[0]
         resources.debateMemory =
-          deserializeDebateMemory(prior?.properties?.summary) ?? {
+          deserializeDebateMemory((prior?.properties as any)?.summary) ?? {
             stances: [],
             failedApproaches: [],
             provenFindings: [],
@@ -728,7 +706,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
       getGlobalWorkspace().getGraphStore()?.save(),
       getGlobalWorkspace().getOastStore()?.save(),
     ])
-  }, chatbox ?? undefined)
+  })
 
   // Native terminal: stdin is owned by readline throughout; no alternate screen
   // or logger sink to tear down. (The termcn/Ink TUI, if re-enabled, would own

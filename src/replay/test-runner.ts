@@ -86,6 +86,7 @@ export class TestRunner {
   }
 
   private async runAllSequential(testDir: string, timeout: number): Promise<RunResults> {
+    const startTime = Date.now()
 
     try {
       const { stdout } = await execAsync(

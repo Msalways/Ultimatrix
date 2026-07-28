@@ -22,11 +22,11 @@ export function inferNameFromUrl(url: string): string {
   try {
     const parsed = new URL(url)
     const segments = parsed.pathname.split('/').filter(Boolean)
-    const meaningful = segments.findLast(s => !/^\d+$/.test(s) && !/^[0-9a-f-]{8,}$/i.test(s))
+    const meaningful = [...segments].reverse().find((s: string) => !/^\d+$/.test(s) && !/^[0-9a-f-]{8,}$/i.test(s))
     return meaningful || parsed.hostname
   } catch {
     const segments = url.split('/').filter(Boolean)
-    return segments.findLast(s => !/^\d+$/.test(s)) || url
+    return [...segments].reverse().find((s: string) => !/^\d+$/.test(s)) || url
   }
 }
 

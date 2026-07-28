@@ -10,7 +10,9 @@ import type { EvidenceLedger, FindingClaim, VerificationResult } from '../intell
 import type { LoopDetector } from '../intelligence/anti-loop'
 import type { ReflexionEngine } from '../intelligence/reflexion'
 import type { Blackboard } from './blackboard'
-import type { ApprovalMode } from './approval'
+import type { ApprovalMode } from '../council/types'
+
+export type { ApprovalMode }
 
 // ─── Execution strategy ────────────────────────────────────────────────
 

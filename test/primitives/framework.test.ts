@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EvidenceGate } from '../../src/intelligence/evidence-gate'
-import { getPrimitive, runPrimitive, claimFor, type AttackStep, type StepExecutionResult, type TechniquePrimitive } from '../../src/primitives/framework'
+import * as frameworkMod from '../../src/primitives/framework'
+import { getPrimitive, runPrimitive, claimFor, loadPayloads, type AttackStep, type StepExecutionResult, type TechniquePrimitive } from '../../src/primitives/framework'
 import { classicInjection } from '../../src/primitives/classicInjection'
 import { headerInjection } from '../../src/primitives/headerInjection'
 
@@ -88,18 +89,27 @@ describe('primitives: confirmation now backed by structured ledger (fix)', () =>
       target: 'https://t.example/app',
       endpoint: { url: 'https://t.example/app', method: 'GET' },
     }
-    const ex = async (step: AttackStep): Promise<StepExecutionResult> => {
-      const hasCrlf = JSON.stringify(step.request.headers ?? {}).includes('\\r\\n')
-      return {
-        step,
-        ok: true,
-        status: 200,
-        headers: hasCrlf ? { 'set-cookie': 'pwned=1' } : {},
-        body: '',
+    const spy = vi.spyOn(frameworkMod, 'loadPayloads').mockReturnValue({
+      all: ['\r\n', 'pwned=1'],
+      bySource: { static: ['\r\n', 'pwned=1'], llm: [], merged: ['\r\n', 'pwned=1'] },
+      uniqueIds: [],
+    } as any)
+    try {
+      const ex = async (step: AttackStep): Promise<StepExecutionResult> => {
+        const hasCrlf = JSON.stringify(step.request.headers ?? {}).includes('\\r\\n')
+        return {
+          step,
+          ok: true,
+          status: 200,
+          headers: hasCrlf ? { 'set-cookie': 'pwned=1' } : {},
+          body: '',
+        }
       }
+      const res = await runPrimitive(primitive, ctx, ex, gate)
+      expect(res.confirmed).toBe(true)
+    } finally {
+      spy.mockRestore()
     }
-    const res = await runPrimitive(primitive, ctx, ex, gate)
-    expect(res.confirmed).toBe(true)
   })
 
   it('claimFor produces a structured FindingClaim', () => {

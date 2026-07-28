@@ -67,14 +67,14 @@ export function generateCaseFile(
 
   const decisions: CaseFileDecision[] = []
   if (forensicLog) {
-    const entries = forensicLog.getEntries?.() ?? []
+    const entries = forensicLog.getEvents?.() ?? []
     for (const entry of entries) {
       if (entry.type === 'solver-phase' || entry.type === 'tool-call') {
         decisions.push({
           timestamp: entry.timestamp ?? Date.now(),
-          phase: entry.phase ?? entry.type,
+          phase: (entry as any).phase ?? entry.type,
           toolName: entry.tool,
-          reason: entry.reason,
+          reason: (entry as any).reason,
         })
       }
     }

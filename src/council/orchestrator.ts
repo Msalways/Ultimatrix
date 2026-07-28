@@ -377,7 +377,7 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
     // Snapshot ledger length so we only read back evidence recorded DURING this
     // execution (ledger readback) — never fabricate a status.
     const ledgerStart = ledger ? ledger.all().length : 0
-    blackboard.claimIntent('operator', proposal.proposal!.action)
+    blackboard.councilClaimIntent('operator', proposal.proposal!.action)
     bus.post('operator', 'execute', `Executing: ${proposal.proposal!.action}`, { round })
 
     let result = 'executed'
@@ -429,8 +429,8 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
       newEvidence += bridgeWorkerEvidence(toolCalls, ledger)
     }
 
-    blackboard.concludeIntent(
-      blackboard.getIntents().find(i => i.status === 'claimed')?.id ?? '',
+    blackboard.councilConcludeIntent(
+      blackboard.getCouncilIntents().find(i => i.status === 'claimed')?.id ?? '',
     )
   }
 

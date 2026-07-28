@@ -1477,7 +1477,7 @@ export function validateTool(toolId: string, tool: any): boolean {
 }
 
 // Get all tools by category
-export function getToolsByCategory(category: typeof TOOL_METADATA[ToolId]['category']): ToolId[] {
+export function getToolsByCategory(category: 'http' | 'observation' | 'session' | 'control' | 'graph' | 'app-model' | 'recon' | 'interaction' | 'oast' | 'research'): ToolId[] {
   return Object.entries(TOOL_METADATA)
     .filter(([_, meta]) => meta.category === category)
     .map(([id]) => id as ToolId)
@@ -1514,7 +1514,7 @@ export {
   loadSkillReference, searchSkillTool, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
   detectReactions, getDialogEvidence, getRecentChanges,
-  runPrimitive,
-  runCampaign,
+  runPrimitiveTool,
+  runCampaignTool,
   recordOutcomeTool,
 }

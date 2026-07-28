@@ -5,6 +5,7 @@ import { Providers } from './providers'
 export const metadata: Metadata = {
   title: 'Ultimatrix Security Assistant',
   description: 'AI-powered security research agent',
+  icons: { icon: '/favicon.svg' },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

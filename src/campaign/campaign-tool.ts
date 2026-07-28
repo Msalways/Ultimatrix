@@ -39,7 +39,7 @@ function defaultCampaignConfig(): UltimatrixConfig {
     browser: DEFAULTS.browser,
     memory: DEFAULTS.memory,
     agent: DEFAULTS.agent,
-    rateLimit: DEFAULTS.rateLimit,
+    rateLimit: { ...DEFAULTS.rateLimit, backoffSteps: [...DEFAULTS.rateLimit.backoffSteps] },
     engine: DEFAULTS.engine,
     budgetPolicy: DEFAULTS.budgetPolicy as unknown as BudgetPolicy,
   }

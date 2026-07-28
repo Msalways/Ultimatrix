@@ -50,8 +50,8 @@ export function getResearchSnapshot(store: GraphStore): ResearchSnapshot {
   return {
     workflows: (store.queryNodes(NodeType.WORKFLOW) as WorkflowNode[]).map(n => ({ id: n.id, ...n.properties })),
     entities: (store.queryNodes(NodeType.ENTITY) as EntityNode[]).map(n => ({ id: n.id, ...n.properties })),
-    hypotheses: (store.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]).map(n => ({ id: n.id, ...n.properties })),
-    experiments: (store.queryNodes(NodeType.EXPERIMENT) as ExperimentNode[]).map(n => ({ id: n.id, ...n.properties })),
+    hypotheses: (store.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]).map(n => ({ id: n.id, ...n.properties } as any as ResearchHypothesis)),
+    experiments: (store.queryNodes(NodeType.EXPERIMENT) as ExperimentNode[]).map(n => ({ id: n.id, ...n.properties } as any as ResearchExperiment)),
     candidates: (store.queryNodes(NodeType.CANDIDATE_FINDING) as CandidateFindingNode[]).map(n => ({ id: n.id, ...n.properties } as FindingCandidate)),
   }
 }

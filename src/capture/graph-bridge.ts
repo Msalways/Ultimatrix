@@ -20,31 +20,61 @@ export function persistStagehandResult(toolName: string, result: unknown): void 
         }
         break
       }
-      case 'stagehand_extract': {
-        const r = result as { data?: Record<string, unknown>; url?: string }
-        if (r?.data && typeof r.data === 'object') {
-          const data = r.data
-          if (data.url && typeof data.url === 'string') {
-            store.mergePage(data.url, { tags: ['stagehand-extract'] })
-          }
-          if (Array.isArray(data.links)) {
-            for (const link of data.links) {
-              if (typeof link === 'string' && link.startsWith('http')) {
-                try {
-                  const u = new URL(link)
-                  store.mergeEndpoint({
-                    url: u.toString(),
-                    method: 'GET',
-                    source: 'stagehand-extract',
-                    tags: ['auto-discovered'],
-                  })
-                } catch {}
-              }
-            }
-          }
-        }
-        break
-      }
+       case 'stagehand_extract': {
+         const r = result as { data?: Record<string, unknown>; url?: string }
+         if (r?.data && typeof r.data === 'object') {
+           const data = r.data
+           if (data.url && typeof data.url === 'string') {
+             store.mergePage(data.url, { tags: ['stagehand-extract'] })
+           }
+        if (Array.isArray(data.links)) {
+              // Wrap in transaction if store supports it
+              if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
+                store.beginTransaction().then(async () => {
+                  try {
+                    for (const link of data.links as unknown[]) {
+                      if (typeof link === 'string' && link.startsWith('http')) {
+                        try {
+                          const u = new URL(link)
+                          if ('mergeEndpoint' in store && typeof store.mergeEndpoint === 'function') {
+                            store.mergeEndpoint({
+                              url: u.toString(),
+                              method: 'GET',
+                              source: 'stagehand-extract',
+                              tags: ['auto-discovered'],
+                            })
+                          }
+                        } catch {}
+                      }
+                    }
+                    await (store as any).commitTransaction()
+                  } catch (error) {
+                    await (store as any).rollbackTransaction()
+                    throw error
+                  }
+                })
+              } else {
+                // GraphStore - no transaction support
+                for (const link of data.links as unknown[]) {
+                 if (typeof link === 'string' && link.startsWith('http')) {
+                   try {
+                     const u = new URL(link)
+                     if ('mergeEndpoint' in store && typeof store.mergeEndpoint === 'function') {
+                       store.mergeEndpoint({
+                         url: u.toString(),
+                         method: 'GET',
+                         source: 'stagehand-extract',
+                         tags: ['auto-discovered'],
+                       })
+                     }
+                   } catch {}
+                 }
+               }
+             }
+           }
+         }
+         break
+       }
       case 'stagehand_observe': {
         const r = result as { elements?: Array<{ type?: string; text?: string; selector?: string }> }
         if (r?.elements && Array.isArray(r.elements)) {

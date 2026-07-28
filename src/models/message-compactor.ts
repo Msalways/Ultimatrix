@@ -164,7 +164,6 @@ export function compactMessages(
     if (tokensSaved > 0) {
       current = afterL3
       passes.push({ strategy: 'goal-context', label: 'L3', compactedTokens: tokensSaved })
-      passCount++
     }
   }
 

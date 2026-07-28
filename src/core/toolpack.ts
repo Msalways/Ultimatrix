@@ -16,7 +16,7 @@ import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
-import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
@@ -77,7 +77,7 @@ export interface ToolPackDeps {
 
 function s(tool: any, provider?: string): any {
   if (tool?.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
-    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, provider) }
+    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider) }
   }
   return tool
 }

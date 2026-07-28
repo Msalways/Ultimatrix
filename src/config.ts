@@ -353,6 +353,19 @@ export const DEFAULTS = {
   },
 } as const
 
+// ─── Context window config types (Phase 1 gap fix) ───────────────────────
+
+export interface ContextConfig {
+  /** Maximum number of endpoints included in graph summaries sent to LLM. Default: 10. */
+  maxEndpointsInSummary?: number
+  /** Maximum number of findings displayed per discovery line. Default: 20. */
+  maxFindingsPerTurn?: number
+  /** Maximum number of facts in blackboard before pruning. Default: 100. */
+  maxBlackboardFactsInSummary?: number
+}
+
+// ─── Config interface ───────────────────────────────────────────────
+
 export interface UltimatrixConfig {
   provider: string
   model: string
@@ -396,6 +409,10 @@ export interface UltimatrixConfig {
   skills?: { exclude?: string[] }
   /** Interaction display policy (reasoning visibility, system-event log). */
   interaction?: InteractionConfig
+  /** Phase 1 gap fix: Context window management. */
+  context?: ContextConfig
+  /** Test account credentials keyed by role name (e.g. { admin: { email, password } }). */
+  credentials?: Record<string, { email: string; password: string }>
 }
 
 // ─── Extensibility config types (Phase 1 / 5) ─────────────────────────
@@ -791,7 +808,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
         // Backward compat: "provider/model" string → TierConfig
         const slashIdx = val.indexOf('/')
         parsedTiers[tier] = {
-          provider: slashIdx !== -1 ? val.slice(0, slashIdx) : provider,
+          provider: slashIdx !== -1 ? val.slice(0, slashIdx) : provider ?? 'groq',
           model: slashIdx !== -1 ? val.slice(slashIdx + 1) : val,
         }
       } else if (val && typeof val === 'object' && 'provider' in val && 'model' in val) {
@@ -895,7 +912,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       maxConcurrent: Number(rateLimitRaw.maxConcurrent ?? DEFAULTS.rateLimit.maxConcurrent),
       retryOnLimit: rateLimitRaw.retryOnLimit != null ? Boolean(rateLimitRaw.retryOnLimit) : DEFAULTS.rateLimit.retryOnLimit,
       maxRetries: Number(rateLimitRaw.maxRetries ?? DEFAULTS.rateLimit.maxRetries),
-      backoffStrategy: String(rateLimitRaw.backoffStrategy ?? DEFAULTS.rateLimit.backoffStrategy),
+      backoffStrategy: (String(rateLimitRaw.backoffStrategy ?? DEFAULTS.rateLimit.backoffStrategy) as RateLimitConfig['backoffStrategy']),
       backoffSteps: Array.isArray(rateLimitRaw.backoffSteps) ? rateLimitRaw.backoffSteps.map(Number) : [...DEFAULTS.rateLimit.backoffSteps],
       baseBackoffMs: Number(rateLimitRaw.baseBackoffMs ?? DEFAULTS.rateLimit.baseBackoffMs),
       maxBackoffMs: Number(rateLimitRaw.maxBackoffMs ?? DEFAULTS.rateLimit.maxBackoffMs),
@@ -1153,6 +1170,11 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
     timeout: config.timeout,
   }
 
+  // Engine
+  if (config.engine && config.engine !== DEFAULTS.engine) {
+    output.engine = config.engine
+  }
+
   if (config.modelTiers && Object.keys(config.modelTiers).length > 0) {
     const tiers: Record<string, { provider: string; model: string }> = {}
     for (const [tier, tierCfg] of Object.entries(config.modelTiers)) {
@@ -1241,6 +1263,96 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   // Write modelCapabilities if set
   if (config.modelCapabilities && Object.keys(config.modelCapabilities).length > 0) {
     output.modelCapabilities = config.modelCapabilities
+  }
+
+  // Write requireCapableModel if set
+  if (config.requireCapableModel !== undefined) {
+    output.requireCapableModel = config.requireCapableModel
+  }
+
+  // Write authorization if set
+  if (config.authorization) {
+    output.authorization = config.authorization
+  }
+
+  // Write solver if set
+  if (config.solver) {
+    output.solver = config.solver
+  }
+
+  // Write spider if set
+  if (config.spider) {
+    output.spider = config.spider
+  }
+
+  // Write antiLoop if set
+  if (config.antiLoop) {
+    output.antiLoop = config.antiLoop
+  }
+
+  // Write reflexion if set
+  if (config.reflexion) {
+    output.reflexion = config.reflexion
+  }
+
+  // Write verifier if set
+  if (config.verifier) {
+    output.verifier = config.verifier
+  }
+
+  // Write interaction if set
+  if (config.interaction) {
+    output.interaction = config.interaction
+  }
+
+  // Write campaign if set
+  if (config.campaign) {
+    output.campaign = config.campaign
+  }
+
+  // Write oast if set
+  if (config.oast) {
+    output.oast = config.oast
+  }
+
+  // Write compression if set
+  if (config.compression) {
+    output.compression = config.compression
+  }
+
+  // Write truncation if set
+  if (config.truncation) {
+    output.truncation = config.truncation
+  }
+
+  // Write council if set
+  if (config.council) {
+    output.council = config.council
+  }
+
+  // Write context if set
+  if (config.context) {
+    output.context = config.context
+  }
+
+  // Write MCP servers if set
+  if (config.mcp && config.mcp.length > 0) {
+    output.mcp = config.mcp
+  }
+
+  // Write plugins if set
+  if (config.plugins && config.plugins.length > 0) {
+    output.plugins = config.plugins
+  }
+
+  // Write skillsDirs if set
+  if (config.skillsDirs && config.skillsDirs.length > 0) {
+    output.skillsDirs = config.skillsDirs
+  }
+
+  // Write skills config if set
+  if (config.skills) {
+    output.skills = config.skills
   }
 
   writeFileSync(path, dump(output), 'utf-8')

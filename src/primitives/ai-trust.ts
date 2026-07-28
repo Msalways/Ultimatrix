@@ -186,7 +186,7 @@ export const aiTrust: TechniquePrimitive = {
               ? `Prompt injection → tool/function abuse confirmed on ${abuseResponse?.step.request.url ?? oastHit.url}: AI agent fired an out-of-band request to ${oastHit.url} (source ${oastHit.sourceIp}) after injection.`
               : `Prompt injection → tool/function abuse confirmed on ${abuseResponse!.step.request.url}: response shows the injected instruction was executed (tool-call evidence / canary OAST URL echoed).`,
             request: (abuseResponse ?? results[0])?.step.request,
-            response: { status: (abuseResponse ?? results[0])?.status, body: (abuseResponse ?? results[0])?.body?.slice(0, 1000) },
+            response: { status: (abuseResponse ?? results[0])?.status ?? 0, body: (abuseResponse ?? results[0])?.body?.slice(0, 1000) },
             cwe: 'CWE-1427',
           }
         : undefined,

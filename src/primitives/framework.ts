@@ -16,6 +16,26 @@ import type { Finding } from '../generation/test-generator'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import type { FindingClaim } from '../intelligence/evidence-ledger'
 import { traceRender } from '../capture/render-tracer'
+import { PayloadStore } from '../payloads/store'
+import { join } from 'path'
+import { existsSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { PROJECT_ROOT } from '../lib/project-root'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = fileURLToPath(new URL('.', import.meta.url))
+
+function resolvePayloadsDir(): string {
+  const candidates = [
+    join(PROJECT_ROOT, 'payloads'),
+    join(__dirname, '..', '..', 'payloads'),
+    join(process.cwd(), 'payloads'),
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return join(PROJECT_ROOT, 'payloads')
+}
 
 function looksRenderable(body: string): boolean {
   if (!body) return false
@@ -77,6 +97,51 @@ export interface TechniqueContext {
   maxAttempts?: number
   mergedPayloads?: string[]
   [key: string]: unknown
+}
+
+/**
+ * Load and merge payloads for a given context.
+ * Combines static payloads (from PayloadStore) with LLM-crafted payloads.
+ * 
+ * @param ctx - TechniqueContext with optional payloadSet or payloads
+ * @param dedup - Whether to deduplicate merged payloads (default: true)
+ * @returns Object with merged payloads and breakdown by source
+ */
+export function loadPayloads(
+  ctx: TechniqueContext,
+  dedup: boolean = true
+): {
+  all: string[]
+  bySource: { static: string[]; llm: string[]; merged: string[] }
+  uniqueIds: string[]
+} {
+  // Get LLM-crafted payloads from context
+  const llmPayloads = ctx.payloads || []
+  const category = ctx.payloadSet?.category
+  const variant = ctx.payloadSet?.variant
+
+  // Determine which category to load payloads from
+  let staticPayloads: string[]
+  if (category) {
+    // Load from specified category
+    const payloadStore = PayloadStore.getInstance()
+    staticPayloads = payloadStore.getPayloads(category, variant)
+  } else {
+    // No category specified - try common categories
+    const payloadStore = PayloadStore.getInstance()
+    staticPayloads = []
+    // Try loading from a few common injection categories
+    const commonCategories = ['injection', 'sql-injection', 'sqli', 'xss', 'cmd-injection', 'nosql-injection']
+    for (const cat of commonCategories) {
+      if (payloadStore.hasCategory(cat)) {
+        staticPayloads = payloadStore.getPayloads(cat, variant)
+        break
+      }
+    }
+  }
+
+  // Merge payloads
+  return PayloadStore.getInstance().mergePayloads(staticPayloads, llmPayloads, dedup)
 }
 
 // ─── Attack step + execution result ─────────────────────────────────────

@@ -11,6 +11,7 @@ vi.mock('../../src/graph/store', () => ({
 }))
 vi.mock('../../src/graph/schema', () => ({
   NodeType: { FINDING: 'finding' },
+  validateNodeProperties: vi.fn(() => ({ valid: true, errors: [] })),
 }))
 vi.mock('../../src/workspace', () => ({
   getGlobalWorkspace: () => ({ getCurrentTarget: () => null, getTargetDir: () => '/tmp' }),

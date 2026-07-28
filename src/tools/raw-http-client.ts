@@ -56,7 +56,7 @@ export const rawHttpClient = createTool({
         try { socket.destroy() } catch { /* ignore */ }
         resolve(out)
       }
-      socket.setTimeout(ctx.timeoutMs, () => finish({ ok: false, error: 'timeout', socketClosed: true }))
+      socket.setTimeout(ctx.timeoutMs ?? 8000, () => finish({ ok: false, error: 'timeout', socketClosed: true }))
       socket.on('error', (e) => finish({ ok: false, error: e.message }))
       socket.on('data', (d) => { buf += d.toString('latin1'); if (buf.includes('\r\n\r\n')) finish({ ok: true, rawResponse: buf }) })
       socket.on('close', () => { if (!settled) finish({ ok: buf.length > 0, rawResponse: buf, socketClosed: true }) })

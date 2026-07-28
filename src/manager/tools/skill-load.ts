@@ -20,26 +20,23 @@ export function createSkillLoadTool(skillRegistry: SkillRegistry) {
         instructions: z.string(),
       }).nullable(),
     }),
-    execute: async ({ skillId }) => {
+    execute: async ({ skillId }, _context) => {
       const meta = skillRegistry.get(skillId)
       if (!meta) {
-        return { ok: true, value: { skill: null } }
+        return { skill: null }
       }
 
       // Load full body on demand (progressive disclosure)
       const fullSkill = loadSkill(skillId)
 
       return {
-        ok: true,
-        value: {
-          skill: {
-            id: meta.id,
-            name: meta.name,
-            description: meta.description,
-            category: meta.category,
-            tier: meta.tier,
-            instructions: fullSkill?.instructions ?? '',
-          },
+        skill: {
+          id: meta.id,
+          name: meta.name,
+          description: meta.description,
+          category: meta.category,
+          tier: meta.tier,
+          instructions: fullSkill?.instructions ?? '',
         },
       }
     },

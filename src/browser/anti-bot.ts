@@ -191,7 +191,7 @@ export class BotDetectionHandler {
         // Check for iframes that might contain challenges
         const iframes = document.querySelectorAll('iframe')
         const challengeIframes: string[] = []
-        for (const iframe of iframes) {
+        for (const iframe of Array.from(iframes)) {
           const src = iframe.src || ''
           if (src.includes('datadome') || src.includes('challenges.cloudflare.com') || src.includes('captcha')) {
             challengeIframes.push(src)
@@ -222,8 +222,8 @@ export class BotDetectionHandler {
       if (!result.detected && info.challengeIframes.length > 0) {
         result.detected = true
         result.challengeType = 'iframe-challenge'
-        if (info.challengeIframes.some(s => s.includes('cloudflare'))) result.vendor = 'cloudflare'
-        else if (info.challengeIframes.some(s => s.includes('datadome'))) result.vendor = 'datadome'
+        if (info.challengeIframes.some((s: string) => s.includes('cloudflare'))) result.vendor = 'cloudflare'
+        else if (info.challengeIframes.some((s: string) => s.includes('datadome'))) result.vendor = 'datadome'
         else result.vendor = 'unknown'
       }
     } catch {

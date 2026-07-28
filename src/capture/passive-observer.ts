@@ -82,14 +82,39 @@ export class PassiveObserver {
       }
     }
 
-    for (const [key, ep] of observedEndpoints) {
-      store.mergeEndpoint({
-        url: ep.url,
-        method: ep.method,
-        headers: Object.entries(ep.headers).map(([name, value]) => ({ name, value })),
-        source: 'passive-observer',
-        tags: ['auto-discovered'],
+    // Wrap in transaction for persistent stores
+    if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
+      // LibSQLGraphStore - use transactions
+      store.beginTransaction().then(async () => {
+        try {
+          for (const [key, ep] of observedEndpoints) {
+            if ('mergeEndpoint' in store && typeof store.mergeEndpoint === 'function') {
+              store.mergeEndpoint({
+                url: ep.url,
+                method: ep.method,
+                headers: Object.fromEntries(Object.entries(ep.headers)),
+                source: 'passive-observer',
+                tags: ['auto-discovered'],
+              } as any)
+            }
+          }
+          await (store as any).commitTransaction()
+        } catch (error) {
+          await (store as any).rollbackTransaction()
+          throw error
+        }
       })
+    } else {
+      // GraphStore - no transaction support, but still merge
+      for (const [key, ep] of observedEndpoints) {
+        store.mergeEndpoint({
+          url: ep.url,
+          method: ep.method,
+          headers: Object.fromEntries(Object.entries(ep.headers)),
+          source: 'passive-observer',
+          tags: ['auto-discovered'],
+        } as any)
+      }
     }
 
     const endpointCount = observedEndpoints.size

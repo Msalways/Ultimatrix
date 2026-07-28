@@ -157,7 +157,7 @@ export const Table = <
     if (!sortKey) {
       return data;
     }
-    return [...data].toSorted((a, b) => {
+    return [...data].sort((a: T, b: T) => {
       const cmp = String(a[sortKey]).localeCompare(String(b[sortKey]));
       return sortDir === "asc" ? cmp : -cmp;
     });
@@ -223,7 +223,7 @@ export const Table = <
         skeleton={BORDER.separator}
         color={resolvedBorderColor}
       />
-      {visible.map((row, rowIdx) => {
+      {visible.map((row: T, rowIdx: number) => {
         const isActive = rowIdx === activeRow && selectable;
         const rowCells = columns.map((col) => ({
           align: col.align ?? ("left" as const),

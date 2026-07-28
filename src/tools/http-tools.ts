@@ -140,7 +140,7 @@ export const httpRequest = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs ?? 10000),
       }
-      if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+      if (body !== undefined && method !== 'GET') {
         fetchOpts.body = body
       }
       const raw = await fetchWithBackoff(url, fetchOpts)
@@ -362,7 +362,7 @@ export const omitHeader = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       }
-      if (body !== undefined && method !== 'GET' && method !== 'HEAD') {
+      if (body !== undefined && method !== 'GET') {
         fetchOpts.body = body
       }
       const raw = await fetchWithBackoff(url, fetchOpts)

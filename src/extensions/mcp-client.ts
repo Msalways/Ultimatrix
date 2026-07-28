@@ -17,8 +17,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import type { McpClient, McpClientFactory, McpServerConfig } from './types.js'
-import { defaultTokenStore, type TokenStore } from './token-store.js'
+import type { McpClient, McpClientFactory, McpServerConfig } from './types'
+import { defaultTokenStore, type TokenStore } from './token-store'
 
 function transportFor(config: McpServerConfig): StdioClientTransport | StreamableHTTPClientTransport {
   if (config.type === 'http' || config.type === 'sse' || config.url) {
@@ -39,7 +39,7 @@ function transportFor(config: McpServerConfig): StdioClientTransport | Streamabl
   return t
 }
 
-function oauthProvider(config: McpServerConfig, store: TokenStore): OAuthClientProvider {
+function oauthProvider(config: McpServerConfig, store: TokenStore) {
   const port = config.auth?.redirectPort ?? 8765
   return {
     get redirectUrl() {
@@ -52,7 +52,7 @@ function oauthProvider(config: McpServerConfig, store: TokenStore): OAuthClientP
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
-      }
+      } as Record<string, unknown>
     },
     async clientInformation() {
       if (config.auth?.clientId) {
@@ -89,8 +89,8 @@ function oauthProvider(config: McpServerConfig, store: TokenStore): OAuthClientP
     redirectToAuthorization(authorizationUrl: URL) {
       // Best-effort: open the browser. In headless/test mode this is a no-op.
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { exec } = require('node:child_process')
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { exec } = require('node:child_process') as typeof import('node:child_process')
         const cmd = process.platform === 'win32' ? `start "" "${authorizationUrl.href}"` : `open "${authorizationUrl.href}"`
         exec(cmd)
       } catch {

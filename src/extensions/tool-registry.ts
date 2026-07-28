@@ -12,7 +12,7 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { ToolRegistry } from '../mastra/tools.js'
+import type { ToolRegistry } from '../mastra/tools'
 import type {
   LoadedPlugin,
   McpClient,
@@ -20,9 +20,9 @@ import type {
   McpServerConfig,
   ToolInfo,
   ToolSource,
-} from './types.js'
-import { defaultMcpClientFactory } from './mcp-client.js'
-import { resolveEnvVars } from './resolve-env.js'
+} from './types'
+import { defaultMcpClientFactory } from './mcp-client'
+import { resolveEnvVars } from './resolve-env'
 
 type PluginFactory = () => LoadedPlugin | Promise<LoadedPlugin>
 
@@ -72,8 +72,8 @@ export class DynamicToolRegistry {
   }
 
   async registerPluginFromPath(id: string, path: string, env: Record<string, string> = {}): Promise<void> {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require(path)
+    // Dynamic plugin loading — runtime path resolution, not static analysis
+    const mod = await import(/* webpackIgnore: true */ path) as Record<string, unknown>
     const factory: PluginFactory = () => (typeof mod.register === 'function' ? mod.register() : (mod.tools as LoadedPlugin))
     this.registerPlugin(id, factory, env)
   }
@@ -215,7 +215,7 @@ function wrapPluginTool(id: string, def: unknown) {
       id,
       description: (def as { description?: string }).description ?? id,
       inputSchema: wrapSchema((def as { inputSchema?: unknown }).inputSchema) as never,
-      execute: (def as { execute: (input: Record<string, unknown>) => unknown }).execute,
+      execute: async (inputData: never, context: unknown) => (def as { execute: (input: Record<string, unknown>) => unknown }).execute(inputData as Record<string, unknown>),
     })
   }
   return createTool({

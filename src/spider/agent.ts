@@ -1,7 +1,7 @@
 import type { MastraMemory } from '@mastra/core/memory'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { wrapStagehandTools } from '../browser/dialog-inject'
-import { createAgent } from '../mastra/index.js'
+import { createAgent } from '../mastra/index'
 import { spiderInstructions } from './instructions'
 import {
   queryGraph, getTargetSummary, getEndpointsWithParams,
@@ -69,12 +69,12 @@ export function createSpiderAgent(
     browser,
     memory: memory as any,
     tier: 'fast',
-    tools: spiderTools,
+    tools: spiderTools as any,
   })
 
   agent.id = 'spider-agent'
   agent.name = 'Spider Crawler'
-  agent.instructions = spiderInstructions
+  ;(agent as any).instructions = spiderInstructions
 
   return agent
 }

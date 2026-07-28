@@ -10,18 +10,11 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor } from './framework'
+import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
 import { mutationsFor, type RelationSeed } from './constraint-mutators'
-import { getPayloadStore } from '../payloads/store'
 
-const BYPASS_TOKENS = () => {
-  const tokens = getPayloadStore().getPayloads('authz/bypass-tokens', 'authz_bypass_tokens')
-  return tokens.length > 0 ? tokens : ['', 'bypass', '0', 'null', 'true', 'admin', '../', '1=1']
-}
-
-/** Build a mutated step for one relation-seeded mutation (foreign/omit/boundary). */
 function mutationToStep(seed: RelationSeed, mutation: ReturnType<typeof mutationsFor>[number], url: string, method: string, baseHeaders: Record<string, string>): AttackStep {
   let target = url
   let body: string | undefined
@@ -53,11 +46,20 @@ export const invariantProbe: TechniquePrimitive = {
   appliesTo(ctx: TechniqueContext): boolean {
     return !!(ctx.endpoint || ctx.target)
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'GET'
     const baseHeaders = { ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param
+
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+
+    // Get bypass token from merged payloads (fallback to default list if empty)
+    const bypassTokens = payloadResult.bySource.static.length > 0
+      ? payloadResult.bySource.static
+      : ['', 'bypass', '0', 'null', 'true', 'admin', '../', '1=1']
+    const token = bypassTokens[0]
 
     const baseline: AttackStep = {
       id: 'invariant-baseline',
@@ -76,7 +78,6 @@ export const invariantProbe: TechniquePrimitive = {
 
     let mutatedUrl = url
     let body: string | undefined
-    const token = BYPASS_TOKENS()[0]
     if (param) {
       try {
         const u = new URL(mutatedUrl)

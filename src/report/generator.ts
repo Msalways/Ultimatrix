@@ -152,7 +152,7 @@ function generateHtml(findings: Finding[], results: TestResult[], options: Repor
       <h3>${escapeHtml(f.title)} ${severityBadge(f.severity)}</h3>
       <div class="finding-meta">
         ${f.cwe ? `CWE: ${escapeHtml(f.cwe)} | ` : ''}
-        Confidence: ${(f.confidence || 0).toFixed(2)} | Status: ${f.status}
+        Confidence: ${((f as any).confidence || 0).toFixed(2)} | Status: ${f.status}
       </div>
 
       <div class="description">
@@ -388,7 +388,7 @@ function generateMarkdown(findings: Finding[], results: TestResult[], options: R
       lines.push(`### ${i + 1}. ${f.title} [${f.severity.toUpperCase()}]`)
       lines.push('')
       if (f.cwe) lines.push(`**CWE:** ${f.cwe}`)
-      lines.push(`**Confidence:** ${(f.confidence || 0).toFixed(2)} | **Status:** ${f.status}`)
+      lines.push(`**Confidence:** ${((f as any).confidence || 0).toFixed(2)} | **Status:** ${f.status}`)
       lines.push('')
       lines.push(f.description || 'No description provided.')
       lines.push('')

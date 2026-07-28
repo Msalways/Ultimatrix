@@ -37,7 +37,7 @@ export const internalStateDisclosure: TechniquePrimitive = {
     const method = ctx.endpoint?.method ?? 'GET'
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const valid = ctx.objectId ?? '1'
-    const invalid = ctx.state?.invalidId ?? '00000000-0000-0000-0000-000000000000'
+    const invalid = String(ctx.state?.invalidId ?? '00000000-0000-0000-0000-000000000000')
     const steps: AttackStep[] = [
       { id: 'state-valid', description: `Valid id request to ${url}`, request: { method, url: urlWithId(url, valid), headers }, metadata: { kind: 'valid' } },
       { id: 'state-invalid', description: `Invalid id request to ${url}`, request: { method, url: urlWithId(url, invalid), headers }, metadata: { kind: 'invalid' } },
@@ -51,7 +51,7 @@ export const internalStateDisclosure: TechniquePrimitive = {
     const cmp = await observeCompare({ body: valid.body ?? '', status: valid.status ?? 0 }, { body: invalid.body ?? '', status: invalid.status ?? 0 })
     const lower = (invalid.body ?? '').toLowerCase()
     const leaked = STATE_MARKERS.some((m) => lower.includes(m))
-    const observed = leaked && (cmp.divergent || (invalid.status ?? 0) >= 500)
+    const observed = leaked && (!!cmp.divergence || (invalid.status ?? 0) >= 500)
     const { verified } = evidenceGate.verifyClaim(claimFor('internal_state_disclosure', invalid.step.request.url, invalid.status, invalid.step.request.method))
     const confirmed = observed && verified
     return {
@@ -59,7 +59,7 @@ export const internalStateDisclosure: TechniquePrimitive = {
       evidence: confirmed ? [{ kind: 'response', label: `invalid-id response leaks internal state ${invalid.step.request.url} → ${invalid.status}`, data: (invalid.body ?? '').slice(0, 1500) }] : [],
       severity: confirmed ? 'medium' : undefined,
       finding: confirmed ? { category: 'information_disclosure', description: `Internal state disclosed on invalid identifier at ${invalid.step.request.url}.`, cwe: 'CWE-209' } : undefined,
-      note: `divergent=${cmp.divergent} leaked=${leaked} verified=${verified}`,
+      note: `divergence=${cmp.divergence} leaked=${leaked} verified=${verified}`,
     }
   },
 }

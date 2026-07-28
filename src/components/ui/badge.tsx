@@ -1,79 +1,31 @@
-import { Box, Text } from "ink";
+import * as React from 'react'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
 
-import { useTheme } from "@/components/ui/theme-provider";
-import type { BorderStyle } from "@/components/ui/types";
+const badgeVariants = cva(
+  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+  {
+    variants: {
+      variant: {
+        default: 'border-transparent bg-primary text-primary-foreground hover:bg-primary/80',
+        secondary: 'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80',
+        destructive: 'border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80',
+        outline: 'text-foreground',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  }
+)
 
-export type BadgeVariant =
-  | "default"
-  | "success"
-  | "warning"
-  | "error"
-  | "info"
-  | "secondary";
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
 
-export interface BadgeProps {
-  children: string;
-  variant?: BadgeVariant;
-  color?: string;
-  bold?: boolean;
-  bordered?: boolean;
-  borderStyle?: BorderStyle;
-  paddingX?: number;
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return <div className={cn(badgeVariants({ variant }), className)} {...props} />
 }
 
-export const Badge = ({
-  children,
-  variant = "default",
-  color,
-  bold = false,
-  bordered = true,
-  borderStyle = "round",
-  paddingX = 1,
-}: BadgeProps) => {
-  const theme = useTheme();
-
-  const variantColor =
-    color ??
-    (() => {
-      switch (variant) {
-        case "success": {
-          return theme.colors.success;
-        }
-        case "warning": {
-          return theme.colors.warning;
-        }
-        case "error": {
-          return theme.colors.error;
-        }
-        case "info": {
-          return theme.colors.info;
-        }
-        case "secondary": {
-          return theme.colors.secondary;
-        }
-        default: {
-          return theme.colors.primary;
-        }
-      }
-    })();
-
-  if (!bordered) {
-    return (
-      <Text color={variantColor} bold={bold}>
-        {children}
-      </Text>
-    );
-  }
-
-  return (
-    <Box
-      borderStyle={borderStyle}
-      borderColor={variantColor}
-      paddingX={paddingX}
-    >
-      <Text color={variantColor} bold={bold}>
-        {children}
-      </Text>
-    </Box>
-  );
-};
+export { Badge, badgeVariants }
+export type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline'

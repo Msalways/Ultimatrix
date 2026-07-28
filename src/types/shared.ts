@@ -54,7 +54,7 @@ export type CandidateFindingStatus =
 
 // ─── Auth Flow ─────────────────────────────────────────────────────
 
-export type AuthFlowType = 'login' | 'logout' | 'refresh' | 'jwt-forgery' | 'default-creds' | 'oauth' | 'session-reuse'
+export type AuthFlowType = 'login' | 'logout' | 'refresh' | 'jwt-forgery' | 'default-creds' | 'oauth' | 'session-reuse' | 'form-fill' | 'navigation' | 'custom'
 
 // ─── HTTP Methods (for request/replay types) ──────────────────────
 

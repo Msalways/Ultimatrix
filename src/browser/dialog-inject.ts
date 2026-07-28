@@ -105,20 +105,44 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
 
         const result = await originalExecute(input, context)
 
-        // Auto-record page after navigation
-        if (name === 'stagehand_navigate' && result && result.success) {
-          try {
-            const page = context?.page
-            if (page) {
-              const store = getGlobalGraphStore()
-              store.mergePage(page.url(), {
-                title: await page.title(),
-                contentType: 'text/html',
-                contentLength: 0,
-                timestamp: Date.now(),
-                sessionId: context?.sessionId,
-              })
-              log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
+         // Auto-record page after navigation
+         if (name === 'stagehand_navigate' && result && result.success) {
+           try {
+             const page = context?.page
+             if (page) {
+               const store = getGlobalGraphStore()
+               // Wrap in transaction if store supports it
+                if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
+                  store.beginTransaction().then(async () => {
+                    try {
+                      if ('mergePage' in store && typeof store.mergePage === 'function') {
+                        store.mergePage(page.url(), {
+                          title: await page.title(),
+                          contentType: 'text/html',
+                          contentLength: 0,
+                          timestamp: Date.now(),
+                          sessionId: context?.sessionId,
+                        })
+                      }
+                      await (store as any).commitTransaction()
+                    } catch (error) {
+                      await (store as any).rollbackTransaction()
+                      throw error
+                    }
+                  })
+                } else {
+                  // GraphStore - no transaction support
+                  if ('mergePage' in store && typeof store.mergePage === 'function') {
+                    store.mergePage(page.url(), {
+                      title: await page.title(),
+                      contentType: 'text/html',
+                      contentLength: 0,
+                      timestamp: Date.now(),
+                      sessionId: context?.sessionId,
+                    })
+                  }
+                }
+               log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
               // Render-trace every crawled HTML response
               wireRenderTrace(page)
               // Structured evidence that this URL was actually visited.

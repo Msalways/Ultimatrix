@@ -59,8 +59,7 @@
   }
 }
 
-/* Ultimatrix instrument-panel tokens (co-relating war-room).
-   Anchored in Ben 10 lore: green = Active/Ready, cyan = instrument accent. */
+/* Ultimatrix semantic tokens */
 :root {
   --ultimatrix-green: #2be08a;
   --instrument: #36c9e6;
@@ -74,9 +73,50 @@
   --suspect-amber: #ffc24d;
 }
 
-/* Markdown body scoped to the buddy message (prose formatting only). */
+/* Markdown body */
 .ultimatrix-md p { @apply my-1.5 leading-relaxed; }
 .ultimatrix-md ul { @apply my-1.5 list-disc pl-5 space-y-0.5; }
 .ultimatrix-md ol { @apply my-1.5 list-decimal pl-5 space-y-0.5; }
 .ultimatrix-md blockquote { @apply border-l-2 border-[var(--instrument)] pl-3 my-2 text-muted-foreground italic; }
 .ultimatrix-md hr { @apply my-3 border-border; }
+
+/* Minimal animations retained for status indicators */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px var(--ultimatrix-green)); }
+  50% { filter: drop-shadow(0 0 12px var(--ultimatrix-green)); }
+}
+
+.animate-spin-slow { animation: spin-slow 2s ease-in-out infinite; }
+.animate-pulse-glow { animation: pulse-glow 1.5s ease-in-out infinite; }
+
+/* Legacy class compat — minimal definitions for surviving components */
+.panel-holographic {
+  background: rgba(10, 11, 15, 0.8);
+  border: 1px solid rgba(43, 224, 138, 0.1);
+}
+.panel-holographic:hover {
+  border-color: rgba(43, 224, 138, 0.2);
+}
+
+@keyframes glyph-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-glyph-pulse { animation: glyph-pulse 2s ease-in-out infinite; }
+
+@keyframes glyph-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-glyph-spin { animation: glyph-spin 1.5s linear infinite; }
+
+@keyframes ripple {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2); opacity: 0; }
+}
+.animate-ripple { animation: ripple 0.6s ease-out forwards; }

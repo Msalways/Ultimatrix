@@ -1,28 +1,21 @@
 import { NextRequest } from 'next/server'
+import { targetManager } from '@/web/target-manager'
 
 export async function GET(_req: NextRequest) {
   try {
-    const { AgentManager } = await import('@/lib/agent-manager')
-    const manager = AgentManager.getInstance()
-    const initialized = manager.isInitialized()
-
-    const browserReady = initialized ? manager.getBrowser() !== null : false
-    const oastPort = initialized ? manager.getOastPort() : null
-
-    const initErrors = manager.getInitErrors()
+    const engine = targetManager.getEngine('') || null
+    const targets = await targetManager.listTargets()
+    const activeTarget = targets.length > 0 ? targets[targets.length - 1] : null
 
     return Response.json({
       ok: true,
-      initialized,
-      browserReady,
-      oastPort,
-      initError: initErrors.length > 0 ? initErrors.join('; ') : null,
+      targets: targets.map(t => t.target),
+      activeTarget: activeTarget?.target ?? null,
+      initialized: activeTarget?.initialized ?? false,
+      running: activeTarget?.running ?? false,
       uptime: process.uptime(),
       deployed: process.env.DEPLOYED === 'true',
-      model: initialized ? manager.getConfig().model : null,
-      target: initialized ? manager.getConfig().target : null,
-      findings: initialized ? (await manager.getFindings()).length : 0,
-      phase: initialized ? (browserReady ? 'ready' : 'starting') : 'off',
+      targetCount: targets.length,
     })
   } catch (err) {
     return Response.json({ ok: false, error: String(err) }, { status: 500 })

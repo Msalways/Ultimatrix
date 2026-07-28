@@ -685,7 +685,7 @@ export function createHarEntryBuilder(): HarEntryBuilder {
         headers: toHeaders(params.request.headers),
         queryString,
         postData: params.request.postData
-          ? { mimeType: 'application/x-www-form-urlencoded', text: params.request.postData }
+          ? { params: [], mimeType: 'application/x-www-form-urlencoded', text: params.request.postData }
           : undefined,
         headersSize: -1,
         bodySize: params.request.postData ? params.request.postData.length : -1,
@@ -713,8 +713,8 @@ export function createHarEntryBuilder(): HarEntryBuilder {
         headersSize: -1,
         bodySize: -1,
       }
-      if (params.response.remoteIPAddress) e['serverIPAddress'] = params.response.remoteIPAddress
-      if (params.response.connectionId !== undefined) e['connection'] = String(params.response.connectionId)
+      if (params.response.remoteIPAddress) (e as unknown as Record<string, unknown>)['serverIPAddress'] = params.response.remoteIPAddress
+      if (params.response.connectionId !== undefined) (e as unknown as Record<string, unknown>)['connection'] = String(params.response.connectionId)
     },
     onResponseReceivedExtraInfo(params) {
       const e = ensure(params.requestId)
@@ -740,7 +740,7 @@ export function createHarEntryBuilder(): HarEntryBuilder {
       if (!e.request) return
       e.request.postData = e.request.postData
         ? { ...e.request.postData, text: body }
-        : { mimeType: 'application/octet-stream', text: body }
+        : { params: [], mimeType: 'application/octet-stream', text: body }
       e.request.bodySize = body.length
     },
     setResponseBody(requestId, body, encoding) {

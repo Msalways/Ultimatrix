@@ -9,6 +9,8 @@ import { corsyAdapter } from './corsy'
 import { subfinderAdapter } from './subfinder'
 import { gitleaksAdapter } from './gitleaks'
 
+export type { ToolAdapter } from './types'
+
 /** All orchestrated external-tool adapters (in registration order). */
 export const ALL_ADAPTERS: ToolAdapter[] = [
   nucleiAdapter,

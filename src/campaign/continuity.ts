@@ -13,7 +13,7 @@
 
 import { createHash } from 'node:crypto'
 import { NodeType } from '../graph/schema'
-import type { EndpointNode, AuthSchemeNode, FindingNode, GraphNodeData } from '../graph/schema'
+import type { EndpointNode, AuthSchemeNode, FindingNode, GraphNodeData, FactNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { UltimatrixConfig } from '../config'
 import { runCampaign } from './executor'

@@ -11,7 +11,7 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { Blackboard, PlanTask, TaskStatus } from '../blackboard'
+import type { Blackboard, PlanTask, TaskStatus } from '../core/blackboard'
 
 const PlanTaskSchema = z.object({
   endpoint: z.string().describe('Endpoint path or URL (e.g. "/api/users", "https://target.com/login")'),
@@ -65,7 +65,7 @@ RULES:
         const key = board.makeTestedKey(t.endpoint, t.technique)
         if (!seen.has(key) && !board.isTested(t.endpoint, t.technique)) {
           seen.add(key)
-          unique.push(t)
+          unique.push({ ...t, priority: t.priority ?? 5 })
         }
       }
 
@@ -155,7 +155,7 @@ export function createGetPlanTool(board: Blackboard) {
     inputSchema: z.object({}),
     outputSchema: z.object({
       total: z.number(),
-      counts: z.record(z.number()),
+      counts: z.record(z.string(), z.number()),
       nextTask: z.object({
         id: z.string(),
         endpoint: z.string(),

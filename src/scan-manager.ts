@@ -1,6 +1,7 @@
-import { mkdir, existsSync, stat } from 'fs/promises'
+import { mkdir, stat } from 'fs/promises'
+import { existsSync } from 'fs'
 import { join } from 'path'
-import { Logger } from './utils/logger.js'
+import { Logger } from './utils/logger'
 
 export interface ScanManagerConfig {
   scansDir: string
@@ -83,7 +84,7 @@ export class ScanManager {
         target: scanJson.target
       }
     } catch (error) {
-      this.logger.error(`Failed to read scan info for ${scanId}:`, error)
+      this.logger.error(`Failed to read scan info for ${scanId}:`, error as Record<string, unknown>)
       return null
     }
   }
@@ -141,7 +142,7 @@ export class ScanManager {
         }
       }
     } catch (error) {
-      this.logger.error('Failed to list scans:', error)
+      this.logger.error('Failed to list scans:', error as Record<string, unknown>)
     }
 
     return scans.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())

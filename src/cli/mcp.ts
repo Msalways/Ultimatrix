@@ -116,7 +116,7 @@ export async function mcpCommand(args: string[]): Promise<void> {
         const found = parsed.mcpServers ?? {}
         const added: string[] = []
         for (const [name, cfg] of Object.entries(found)) {
-          const server: McpServerConfig = { name, ...cfg }
+          const server: McpServerConfig = { ...cfg, name }
           if (!servers.some((s) => s.name === name)) {
             servers.push(server)
             added.push(name)

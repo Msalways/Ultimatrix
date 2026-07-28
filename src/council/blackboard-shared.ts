@@ -37,9 +37,7 @@ export class SharedBlackboard extends Blackboard {
   /** Create a SharedBlackboard, optionally wrapping an existing Blackboard instance. */
   constructor(inner?: Blackboard) {
     if (inner) {
-      // Initialize with the inner blackboard's origin/goal, then copy state
       super({ origin: (inner as any).origin ?? 'shared', goal: (inner as any).goal ?? '' })
-      // Re-copy facts and intents to preserve sequential IDs
       for (const fact of inner.getFactStrings()) {
         super.addFact(fact, 'shared')
       }
@@ -57,29 +55,29 @@ export class SharedBlackboard extends Blackboard {
   }
 
   /** Council: a member claims an intent before acting. */
-  claimIntent(owner: string, summary: string): CouncilIntent {
+  councilClaimIntent(owner: string, summary: string): CouncilIntent {
     const intent = this.claimBy(owner, summary)
     return toCouncilIntent(intent)
   }
 
   /** Council: skeptic blocks a proposal. */
-  blockIntent(summary: string, by: string): CouncilIntent {
+  councilBlockIntent(summary: string, by: string): CouncilIntent {
     const intent = super.blockIntent(summary, by)
     return toCouncilIntent(intent)
   }
 
   /** Council: conclude an intent without creating a fact. */
-  concludeIntent(id: string): void {
+  councilConcludeIntent(id: string): void {
     this.concludeByMember(id)
   }
 
   /** Council: get all intents as CouncilIntent[]. */
-  getIntents(): CouncilIntent[] {
+  getCouncilIntents(): CouncilIntent[] {
     return this.getAllIntents().map(toCouncilIntent)
   }
 
   /** Council: get intents that are open or claimed. */
-  openIntents(): CouncilIntent[] {
+  openCouncilIntents(): CouncilIntent[] {
     return this.openOrClaimed().map(toCouncilIntent)
   }
 }

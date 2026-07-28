@@ -57,6 +57,12 @@ vi.mock('../../src/graph/store', () => ({
   NodeType: { FINDING: 'FINDING', ENDPOINT: 'ENDPOINT' },
 }))
 
+vi.mock('../../src/config', () => ({
+  getConfig: () => ({ context: { maxFindingsPerTurn: 20 } }),
+  DEFAULTS: { solver: { maxToolCalls: 50, maxDurationMs: 300000, maxParallel: 1 }, antiLoop: { staleThreshold: 3 } },
+  CONTEXT_WINDOW_MAP: {},
+}))
+
 import { solve } from '../../src/solver/solver'
 
 function createMockAgent(textChunks: string[]) {

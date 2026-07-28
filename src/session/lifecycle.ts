@@ -13,6 +13,7 @@ import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
+import { emitSessionInit, emitSessionError, emitSessionComplete, emitSpiderStart, emitSpiderComplete, emitSpiderError } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createAllWorkers, createMemoryStore, createMemory } from '../workers/registry'
 import { createSupervisor } from '../manager/agent'
@@ -43,7 +44,6 @@ import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
 import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
-import type { ActivitySink } from '../ui/types'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
@@ -253,6 +253,7 @@ export class SessionLifecycle {
     // Phase 2: Infrastructure
     await this.startInfrastructure()
 
+    emitSessionInit(target || '', 'solver', config.model, [])
     return this._resources as SessionResources
   }
 
@@ -363,7 +364,7 @@ export class SessionLifecycle {
     // Stagehand context exists (e.g. headless `solve`).
     let harCapture: HarCaptureSession | null = null
     if (target) {
-      const stagehand = browser?.requireStagehand?.()
+      const stagehand = (browser as any)?.requireStagehand?.()
       if (stagehand?.context?.conn) {
         const handle = attachHarCaptureViaCdp(stagehand, {
           captureResponseBody: true,
@@ -440,7 +441,7 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 3: Spider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runSpider(sink?: ActivitySink): Promise<void> {
+  async runSpider(): Promise<void> {
     this.assertPhase('infrastructure')
     const { config, target, browser, memory, threadId, resourceId } = this._resources as SessionResources
 
@@ -469,7 +470,8 @@ export class SessionLifecycle {
 
     log.info('Crawling ' + target + '...')
 
-    if (sink) sink.beginActivity(`Spider crawling ${target}`)
+    const spiderStartMs = Date.now()
+    emitSpiderStart(target, config.spider?.maxSteps ?? 100, config.spider?.maxDurationMs ?? 120_000)
 
     try {
       const spiderAgent = createSpiderAgent(config, memory, browser)
@@ -526,13 +528,11 @@ export class SessionLifecycle {
         switch (chunk.type) {
           case 'text-delta':
           case 'reasoning-delta':
-            if (sink) sink.updateActivity(chunk.payload.text)
-            else process.stdout.write(chunk.payload.text)
+            process.stdout.write(chunk.payload.text)
             break
           case 'tool-call':
             if (chunk.payload.toolName !== 'askUser') {
-              if (sink) sink.updateActivity(`\u2192 ${chunk.payload.toolName}`)
-              else log.dim(`  \u2192 ${chunk.payload.toolName}`)
+              log.dim(`  \u2192 ${chunk.payload.toolName}`)
             }
             break
           case 'tool-result': {
@@ -546,8 +546,7 @@ export class SessionLifecycle {
             
             if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
               const progressLine = `[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings`
-              if (sink) sink.updateActivity(progressLine)
-              else process.stdout.write(`\n${progressLine}\n`)
+              process.stdout.write(`\n${progressLine}\n`)
             }
             
             spiderLoopDetector.recordRound(newEndpoints > 0)
@@ -566,8 +565,6 @@ export class SessionLifecycle {
             break
         }
       }
-      
-      if (sink) sink.endActivity()
 
       // Post-crawl verification
       const finalSummary = workspace.getGraphStore()?.getTargetSummary()
@@ -585,8 +582,13 @@ export class SessionLifecycle {
       }
       
       await workspace.getGraphStore()?.save()
+      const spiderDurationMs = Date.now() - spiderStartMs
+      const finalEndpoints = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
+      const finalPages = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
+      emitSpiderComplete(finalPages, finalEndpoints, spiderDurationMs)
     } catch (err) {
       log.error(err instanceof Error ? err.message : String(err))
+      emitSpiderError(target, err instanceof Error ? err.message : String(err))
       workspace.getGraphStore()?.save().catch(() => {})
     }
 
@@ -740,7 +742,7 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 5: REPL loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runREPL(onInput: (line: string) => Promise<void>, sink?: ActivitySink): Promise<void> {
+  async runREPL(onInput: (line: string) => Promise<void>): Promise<void> {
     this.assertPhase('engine')
     this.phase = 'running'
 
@@ -754,42 +756,24 @@ export class SessionLifecycle {
       throw new Error('Console mode requires readline to be null (Ink must own stdin).')
     }
 
-    if (sink) {
-      sink.printBanner({
-        version: 'Ultimatrix v8',
-        model: `${config.provider}/${config.model}`,
-        target,
-        engine: useSolver ? config.engine : 'legacy',
-      })
-      if (!target) {
-        sink.printSystem('No target set. Tell me a URL to investigate.')
-      }
-      sink.printSystem(
-        useSolver
-          ? `Interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
-          : 'Interactive mode. Type your message or Ctrl+C to exit.',
-        'dim',
-      )
-    } else {
-      log.banner(
-        'Ultimatrix v8',
-        'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: :${oastPort}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
-      )
+    log.banner(
+      'Ultimatrix v8',
+      'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: :${oastPort}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
+    )
 
-      if (!target) {
-        log.info('No target set. Tell me a URL to investigate.')
-      }
-
-      log.nl()
-      log.dim(useSolver
-        ? `Entering interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
-        : 'Entering interactive mode. Type your message or Ctrl+C to exit.')
-      log.nl()
+    if (!target) {
+      log.info('No target set. Tell me a URL to investigate.')
     }
+
+    log.nl()
+    log.dim(useSolver
+      ? `Entering interactive mode (${config.engine} engine). Type your goal or /council <goal> or Ctrl+C to exit.`
+      : 'Entering interactive mode. Type your message or Ctrl+C to exit.')
+    log.nl()
 
     try {
       for (;;) {
-        if (!sink) process.stdout.write('> ')
+        process.stdout.write('> ')
         // Console mode: Ink owns stdin. The REPL consumes goals from the
         // `uiGoalEmitter` queue (fed by the Ink InputBar) — NO readline
         // listener, so there is exactly one owner of stdin. Non-console mode
@@ -839,6 +823,7 @@ export class SessionLifecycle {
     if (this.phase === 'done') return
     this.phase = 'done'
 
+    emitSessionComplete(0, 0, 0, 0)
     log.info('Shutting down gracefully...')
 
     // Run cleanups in reverse order (LIFO)

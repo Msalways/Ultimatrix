@@ -424,7 +424,7 @@ export class TechniqueRegistry {
 
     // Check each failure category
     for (const [category, patterns] of Object.entries(this.config.failurePatterns)) {
-      if (patterns.some(p => combined.includes(p.toLowerCase()))) {
+      if (patterns.some((p: string) => combined.includes(p.toLowerCase()))) {
         return category as 'envConstraint' | 'pathError' | 'paramError' | 'infoNeeded'
       }
     }

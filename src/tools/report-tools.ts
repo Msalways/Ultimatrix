@@ -1,6 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import type { ForensicLog } from '../logging/forensic-log'
+import type { FindingNode, EndpointNode } from '../graph/schema'
 
 let _forensicLog: ForensicLog | null = null
 
@@ -50,7 +51,7 @@ export const readReportTool = createTool({
 
       case 'findings': {
         const allNodes = store?.queryNodes() || []
-        const findings = allNodes.filter(n => n.type === 'Finding')
+        const findings = allNodes.filter(n => n.type === 'Finding') as FindingNode[]
         return {
           ok: true,
           value: {
@@ -89,7 +90,7 @@ export const readReportTool = createTool({
 
       case 'endpoints': {
         const allNodes = store?.queryNodes() || []
-        const endpoints = allNodes.filter(n => n.type === 'Endpoint')
+        const endpoints = allNodes.filter(n => n.type === 'Endpoint') as EndpointNode[]
         return {
           ok: true,
           value: {
@@ -100,7 +101,7 @@ export const readReportTool = createTool({
               params: e.properties.params,
               authRequired: e.properties.authRequired,
               authType: e.properties.authType,
-              headerCount: e.properties.headers?.length || 0,
+              headerCount: e.properties.headers ? Object.keys(e.properties.headers).length : 0,
             })),
             count: endpoints.length,
           },
@@ -110,8 +111,8 @@ export const readReportTool = createTool({
       case 'all': {
         const idx = _forensicLog.getIndex()
         const allNodes = store?.queryNodes() || []
-        const findings = allNodes.filter(n => n.type === 'Finding')
-        const endpoints = allNodes.filter(n => n.type === 'Endpoint')
+        const findings = allNodes.filter(n => n.type === 'Finding') as FindingNode[]
+        const endpoints = allNodes.filter(n => n.type === 'Endpoint') as EndpointNode[]
         const timeline = _forensicLog.getEvents({ limit: 200 })
 
         return {

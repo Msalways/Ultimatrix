@@ -9,7 +9,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor, assessAccess } from './framework'
+import { claimFor, assessAccess, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeCompare } from './observers'
 import { getPayloadStore } from '../payloads/store'
@@ -27,14 +27,22 @@ export const ldapXpathInjection: TechniquePrimitive = {
     if (!(ctx.endpoint || ctx.target)) return false
     return !!(ctx.param || ctx.endpoint?.params?.length)
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'GET'
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'user'
     const headers = { ...(ctx.sessionHeaders ?? {}) }
+
     const steps: AttackStep[] = []
-    const ldapPayloads = ctx.payloadSet ?? getPayloadStore().getPayloads('ldap/injection', 'ldap')
-    const xpathPayloads = getPayloadStore().getPayloads('ldap/injection', 'xpath')
+
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+    const ldapPayloads = payloadResult.bySource.static.length > 0
+      ? payloadResult.bySource.static
+      : []
+    const xpathPayloads = payloadResult.bySource.static.length > 1
+      ? payloadResult.bySource.static.slice(1, 10)
+      : []
     const ldapErrors = getPayloadStore().getMarkers('ldap/injection')
     ldapPayloads.forEach((p, i) => {
       steps.push({ id: `ldap-${i}`, description: `LDAP bypass into ${param}`, request: { method, url: urlWithParam(url, param, p), headers }, expectedSignal: 'auth bypass / directory error', metadata: { kind: 'ldap', param, payload: p } })
@@ -49,19 +57,19 @@ export const ldapXpathInjection: TechniquePrimitive = {
     let ldapHit = false
     let xpathHit = false
     const evidence: PrimitiveResult['evidence'] = []
+    const ldapErrors = getPayloadStore().getMarkers('ldap/injection')
     for (const r of results) {
       const kind = r.step.metadata?.kind
       const lower = (r.body ?? '').toLowerCase()
       if (kind === 'ldap') {
         const access = assessAccess({ status: r.status, body: r.body, grantsOn2xx: true })
-        const err = ldapErrors.some((m) => lower.includes(m))
+        const err = ldapErrors.some((m: string) => lower.includes(m))
         if ((access.granted && !access.denied) || err) {
           ldapHit = true
           evidence.push({ kind: 'response', label: `LDAP injection ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1000) })
         }
       } else if (kind === 'xpath') {
-        const xpathErrors = getPayloadStore().getMarkers('ldap/injection')
-        const err = xpathErrors.some((m) => lower.includes(m))
+        const err = ldapErrors.some((m: string) => lower.includes(m))
         if (err) {
           xpathHit = true
           evidence.push({ kind: 'response', label: `XPath injection error ${r.step.request.method} ${r.step.request.url} → ${r.status}`, data: (r.body ?? '').slice(0, 1000) })
@@ -72,7 +80,7 @@ export const ldapXpathInjection: TechniquePrimitive = {
     const xT = results.filter((r) => r.step.metadata?.kind === 'xpath')
     if (xT.length >= 2) {
       const cmp = await observeCompare({ body: xT[0].body ?? '', status: xT[0].status ?? 0 }, { body: xT[1].body ?? '', status: xT[1].status ?? 0 })
-      if (cmp.divergent) { xpathHit = true; evidence.push({ kind: 'response', label: `XPath blind differential divergence=${(cmp.divergence ?? 0).toFixed(2)}`, data: '' }) }
+      if (cmp.divergence) { xpathHit = true; evidence.push({ kind: 'response', label: `XPath blind differential divergence=${(cmp.divergence ?? 0).toFixed(2)}`, data: '' }) }
     }
     const observed = ldapHit || xpathHit
     const rep = results[0]

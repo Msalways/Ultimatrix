@@ -12,7 +12,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -84,7 +84,7 @@ export class TokenStore {
     const file = fileFor(server)
     if (existsSync(file)) {
       try {
-        require('node:fs').unlinkSync(file)
+        unlinkSync(file)
       } catch {
         /* ignore */
       }

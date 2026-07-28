@@ -6,10 +6,10 @@
 import { readFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { Logger } from '../utils/logger.js'
-import { GraphStore } from '../graph/store.js'
-import { getGlobalGraphStore } from '../graph/store.js'
-import { FindingNode } from '../graph/schema.js'
+import { Logger } from '../utils/logger'
+import { GraphStore } from '../graph/store'
+import { getGlobalGraphStore } from '../graph/store'
+import { FindingNode } from '../graph/schema'
 
 export interface AppModel {
   target: string
@@ -107,7 +107,7 @@ export class ContextReader {
   }
 
   async initialize(): Promise<void> {
-    this.logger.info('Initializing context reader for scan', this.config.scanId)
+    this.logger.info('Initializing context reader for scan', { scanId: this.config.scanId } as Record<string, unknown>)
     
     // Load graph store
     const graphPath = join(this.getContextPath(), 'graph.json')
@@ -132,7 +132,7 @@ export class ContextReader {
       this.logger.success(`Read app model from ${filePath}`)
       return data
     } catch (error) {
-      this.logger.error(`Failed to read app model:`, error)
+      this.logger.error(`Failed to read app model:`, error as Record<string, unknown>)
       return null
     }
   }
@@ -150,7 +150,7 @@ export class ContextReader {
       this.logger.success(`Read ${data.length} findings from ${filePath}`)
       return data
     } catch (error) {
-      this.logger.error(`Failed to read findings:`, error)
+      this.logger.error(`Failed to read findings:`, error as Record<string, unknown>)
       return []
     }
   }
@@ -167,12 +167,12 @@ export class ContextReader {
       const data = await this.readJsonFile<Trace[]>(filePath)
       const tracesWithDates = data.map(trace => ({
         ...trace,
-        timestamp: new Date(trace.timestamp)
+        timestamp: typeof trace.timestamp === 'string' ? trace.timestamp : new Date(trace.timestamp).toISOString()
       }))
       this.logger.success(`Read ${tracesWithDates.length} traces from ${filePath}`)
-      return tracesWithDates
+      return tracesWithDates as Trace[]
     } catch (error) {
-      this.logger.error(`Failed to read traces:`, error)
+      this.logger.error(`Failed to read traces:`, error as Record<string, unknown>)
       return []
     }
   }
@@ -188,8 +188,8 @@ export class ContextReader {
 
     const contextData: ContextData = {
       appModel,
-      findings,
-      traces
+      findings: findings as any,
+      traces: traces as any
     }
 
     this.logger.success(`Read context: appModel=${appModel ? 'present' : 'missing'}, findings=${findings.length}, traces=${traces.length}`)
@@ -208,14 +208,15 @@ export class ContextReader {
   }
 
   getContextPath(): string {
+    const { dirname } = require('path') as typeof import('path')
     const scanManagerPath = import.meta.url.includes('file:') 
       ? new URL(import.meta.url).pathname 
       : process.cwd()
     
     // Assuming scan-manager.ts is in the same directory as this file
-    const scanManagerModule = await import('../scan-manager.js')
-    const scanManager = new scanManagerModule.ScanManager({ 
-      scansDir: join(scanManagerModule.dirname(scanManagerPath), 'scans') 
+    const { ScanManager: ScanManagerClass } = require('../scan-manager') as typeof import('../scan-manager')
+    const scanManager = new ScanManagerClass({ 
+      scansDir: join(dirname(scanManagerPath), 'scans') 
     })
     
     return scanManager.getContextPath(this.config.scanId)

@@ -6,6 +6,7 @@ import type { UltimatrixConfig } from '../../config'
 import { getGlobalGraphStore } from '../../graph/store'
 import { EndpointNode } from '../../graph/schema'
 import { getActiveBrowser } from '../../browser/manager'
+import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
 
 export function createSpawnWorkerTool(
   config: UltimatrixConfig,
@@ -37,7 +38,7 @@ export function createSpawnWorkerTool(
         findingsAdded: z.number(),
       }).optional(),
     }),
-    execute: async ({ skillId, task, endpointId, tier, modelId, tokenBudget }) => {
+    execute: async ({ skillId, task, endpointId, tier, modelId, tokenBudget }, _context) => {
 
       // SUPERVISOR-1: Snapshot graph before spawning
       const store = getGlobalGraphStore()
@@ -73,13 +74,31 @@ export function createSpawnWorkerTool(
         }
       }
 
+      const startTime = Date.now()
       try {
         const worker = workerPool.spawn({ skillId, task: informedTask, tier, modelId, tokenBudget, browser: getActiveBrowser() || undefined })
+        const workerName = (worker as any).name ?? `${skillId} Specialist`
+
+        // Emit lifecycle events
+        emitWorkerSpawned(worker.id, workerName, skillId, task, { endpointId, tier, modelId, tokenBudget })
+        emitWorkerStarted(worker.id, workerName, skillId, task)
+
         const result = await worker.generate(informedTask)
+        const durationMs = Date.now() - startTime
 
         // SUPERVISOR-1: Snapshot graph after worker completes
         const nodesAfter = store.queryNodes().length
         const findingsAfter = store.queryNodes(undefined, { type: 'Finding' } as any).length
+        const graphDiff = {
+          nodesBefore,
+          nodesAfter,
+          nodesAdded: nodesAfter - nodesBefore,
+          findingsBefore,
+          findingsAfter,
+          findingsAdded: findingsAfter - findingsBefore,
+        }
+
+        emitWorkerCompleted(worker.id, workerName, skillId, task, 'completed', { result, durationMs, graphDiff: { nodesAdded: graphDiff.nodesAdded, findingsAdded: graphDiff.findingsAdded } })
 
         return {
           ok: true,
@@ -87,26 +106,23 @@ export function createSpawnWorkerTool(
             workerId: worker.id,
             status: 'spawned',
             result,
-            graphDiff: {
-              nodesBefore,
-              nodesAfter,
-              nodesAdded: nodesAfter - nodesBefore,
-              findingsBefore,
-              findingsAfter,
-              findingsAdded: findingsAfter - findingsBefore,
-            },
+            graphDiff,
           },
-        }
+        } as any
       } catch (error) {
+        const durationMs = Date.now() - startTime
         const nodesAfter = store.queryNodes().length
         const findingsAfter = store.queryNodes(undefined, { type: 'Finding' } as any).length
+        const errorMsg = error instanceof Error ? error.message : String(error)
+
+        emitWorkerError('', `${skillId} Specialist`, skillId, task, errorMsg, durationMs)
 
         return {
           ok: false,
           value: {
             workerId: '',
             status: 'failed',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMsg,
             graphDiff: {
               nodesBefore,
               nodesAfter,
@@ -116,7 +132,7 @@ export function createSpawnWorkerTool(
               findingsAdded: findingsAfter - findingsBefore,
             },
           },
-        }
+        } as any
       }
     },
   })

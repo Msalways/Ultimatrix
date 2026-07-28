@@ -13,7 +13,7 @@ export const getFullContext = createTool({
       const store = getGlobalGraphStore()
       const endpoints = store.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
       const findings = store.queryNodes(NodeType.FINDING) as FindingNode[]
-      const summary = store.getTargetSummary()
+      const summary = (store as any).getTargetSummary()
 
       const endpointDetails = endpoints.map(e => ({
         id: e.id,
@@ -22,7 +22,7 @@ export const getFullContext = createTool({
         params: e.properties.params || [],
         authRequired: e.properties.authRequired,
         authType: e.properties.authType,
-        headers: (e.properties.headers || []).slice(0, 10),
+        headers: ((e.properties as any).headers || []).slice(0, 10),
         tags: e.properties.tags || [],
       }))
 
@@ -32,7 +32,7 @@ export const getFullContext = createTool({
         technique: f.properties.technique,
         severity: f.properties.severity,
         confidence: f.properties.confidence,
-        description: f.properties.description,
+        description: (f.properties as any).description,
       }))
 
       return {

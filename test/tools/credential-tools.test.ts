@@ -29,7 +29,7 @@ vi.mock('../../src/config', () => ({
 
 async function callTool(args: any) {
   const { useCredential } = await import('../../src/tools/credential-tools')
-  return useCredential.execute({ context: args }, {} as any)
+  return useCredential.execute(args, {} as any)
 }
 
 describe('useCredential tool', () => {
@@ -72,7 +72,7 @@ describe('useCredential tool', () => {
     vi.resetModules()
     vi.doMock('../../src/config', () => ({ getConfig: () => ({ credentials: {} }) }))
     const { useCredential } = await import('../../src/tools/credential-tools')
-    const res = await useCredential.execute({ context: { action: 'list' } }, {} as any)
+    const res = await useCredential.execute({ action: 'list' }, {} as any)
     expect(res.ok).toBe(false)
     expect(res.roles).toEqual([])
     vi.doMock('../../src/config', () => ({ getConfig: () => mockConfig }))

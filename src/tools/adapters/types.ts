@@ -16,7 +16,7 @@
  * which adapter to call; adapters only normalize their own tool's stdout.
  */
 
-import type { VerificationResult } from '../intelligence/evidence-ledger'
+import type { VerificationResult } from '../../intelligence/evidence-ledger'
 
 export type AdapterSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 

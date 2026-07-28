@@ -10,6 +10,7 @@ export type ForensicEventType =
   | 'tool-token-record' | 'config-mismatch'
   | 'model-selection' | 'context-validation'
   | 'solver-phase' | 'ui-reaction' | 'council-timeout'
+  | 'render-trace'
 
 export interface ForensicEventMetadata {
   provider?: string
@@ -25,6 +26,10 @@ export interface ForensicEventMetadata {
   contextFit?: 'ok' | 'warning' | 'critical'
   enforcement?: 'hard' | 'soft' | 'warn'
   durationMs?: number
+  tier?: string
+  phase?: string
+  tokensSaved?: number
+  strategies?: string[]
 }
 
 export interface ForensicEvent {

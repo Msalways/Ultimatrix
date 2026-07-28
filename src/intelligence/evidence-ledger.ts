@@ -16,6 +16,8 @@
  * `skeptic` and `writeFinding` both use it. `EvidenceGate` delegates to it.
  */
 
+import { emitEvidenceRecorded } from '../events/emitter'
+
 export type EvidenceItemType =
   | 'text'
   | 'screenshot'
@@ -34,6 +36,10 @@ export interface ObservedFacts {
   responseBody?: string
   responseTimeMs?: number
   payloadSource?: string
+  filename?: string
+  contentType?: string
+  hops?: number
+  omittedHeader?: string
 }
 
 /** Body signature assertion for independent gate verification. */
@@ -200,6 +206,7 @@ export class EvidenceLedger {
       ...(item.observed ? { observed: item.observed } : {}),
     }
     this.items.push(recorded)
+    emitEvidenceRecorded(recorded.id, recorded.type)
     return recorded
   }
 

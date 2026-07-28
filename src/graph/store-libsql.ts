@@ -8,6 +8,7 @@ import {
   PageNode,
   ActionNode,
   InputNode,
+  EndpointNode,
   FindingNode,
   AuthFlowNode,
   RBACRoleNode,
@@ -20,6 +21,7 @@ import {
   ThreatModelNode,
   AnyNodeData,
 } from './schema'
+import { log } from '../utils/logger'
 
 interface SerializedGraph {
   nodes: GraphNodeData[]
@@ -29,17 +31,62 @@ interface SerializedGraph {
 export class LibSQLGraphStore {
   private db: ReturnType<typeof createClient>
   private readonly dbPath: string
+  private currentTransaction: number | null = null
 
   constructor(dbPath?: string) {
     this.dbPath = dbPath || resolve('output', 'graph.db')
     this.db = createClient({
       url: `file:${this.dbPath}`
     })
-    
+
     this.initializeDatabase()
   }
 
-  private async initializeDatabase(): Promise<void> {
+  /**
+   * Begin a transaction. All subsequent database operations until commit/rollback
+   * are grouped into this transaction.
+   */
+  async beginTransaction(): Promise<void> {
+    const txId = Date.now()
+    this.currentTransaction = txId
+    await this.db.execute(`SAVEPOINT libsql_tx_${txId}`)
+    log.dim(`[libsql] Transaction ${txId} begun`)
+  }
+
+  /**
+   * Commit the current transaction. All pending changes are made permanent.
+   */
+  async commitTransaction(): Promise<void> {
+    if (this.currentTransaction === null) {
+      throw new Error('No active transaction to commit')
+    }
+    const txId = this.currentTransaction
+    await this.db.execute(`RELEASE SAVEPOINT libsql_tx_${txId}`)
+    log.dim(`[libsql] Transaction ${txId} committed`)
+    this.currentTransaction = null
+  }
+
+  /**
+   * Rollback the current transaction. All pending changes are discarded.
+   */
+  async rollbackTransaction(): Promise<void> {
+    if (this.currentTransaction === null) {
+      throw new Error('No active transaction to rollback')
+    }
+    const txId = this.currentTransaction
+    await this.db.execute(`ROLLBACK TO SAVEPOINT libsql_tx_${txId}`)
+    log.dim(`[libsql] Transaction ${txId} rolled back`)
+    this.currentTransaction = null
+  }
+
+  /**
+   * Get the current transaction ID if active.
+   */
+  getTransactionId(): number | null {
+    return this.currentTransaction
+  }
+
+  async initializeDatabase(): Promise<void> {
     // Create tables if they don't exist
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS nodes (
@@ -82,15 +129,41 @@ export class LibSQLGraphStore {
   upsertPage(url: string, data?: Partial<PageNode['properties']>): PageNode {
     const id = `page:${url}`
     const existing = this.getNode(id)
-    
+
     if (existing) {
-      const updatedNode = {
-        ...existing,
-        properties: { ...existing.properties, ...data },
-        updatedAt: Date.now()
+      const props = existing.properties as PageNode['properties']
+      const newData = data ?? {}
+      const merged: Record<string, unknown> = {}
+
+      // Only merge fields that are absent or empty
+      if (newData.title && !props.title) merged.title = newData.title
+      if (newData.contentType && !props.contentType) merged.contentType = newData.contentType
+      if (newData.contentLength && (!props.contentLength || props.contentLength === 0)) merged.contentLength = newData.contentLength
+      if (newData.sessionId && !props.sessionId) merged.sessionId = newData.sessionId
+      if (newData.timestamp && !props.timestamp) merged.timestamp = newData.timestamp
+
+      const existingTags = props.tags ?? []
+      const newTags = newData.tags ?? []
+      const mergedTags = [...new Set([...existingTags, ...newTags])]
+      if (mergedTags.length > existingTags.length) merged.tags = mergedTags
+
+      if (Object.keys(merged).length > 0) {
+        this.executeWithTransaction(async () => {
+          await this.updateNode({
+            id,
+            type: NodeType.PAGE,
+            label: existing.label,
+            properties: {
+              ...props,
+              ...merged,
+            },
+            createdAt: existing.createdAt,
+            updatedAt: Date.now(),
+          })
+        })
       }
-      this.updateNode(updatedNode)
-      return updatedNode as PageNode
+
+      return existing as PageNode
     }
 
     const node: PageNode = {
@@ -106,9 +179,85 @@ export class LibSQLGraphStore {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
-    
+
     this.insertNode(node)
-    return node
+     return node
+    }
+
+  /**
+    * Non-destructive merge: reads existing endpoint by url+method, merges only
+    * fields that are absent or empty in the existing node. Capture modules use
+    * this instead of addEndpoint to avoid overwriting richer data (auth type,
+    * params, use-case) that was discovered by other sources.
+    */
+  mergeEndpoint(data: Partial<EndpointNode['properties']> & { url: string; method: string }): EndpointNode {
+    const id = `endpoint:${data.url}:${data.method}`
+    const existing = this.getNode(id)
+
+    if (!existing) {
+      const { url: _url, method: _method, ...rest } = data
+      return this.upsertNode({
+        id,
+        type: NodeType.ENDPOINT,
+        label: `Endpoint: ${data.method} ${data.url}`,
+        properties: {
+          url: data.url,
+          method: data.method,
+          params: [],
+          ...rest,
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }) as EndpointNode
+    }
+
+    const props = existing.properties as EndpointNode['properties']
+    const newHeaders: any = data.headers
+    const existingHeaders: any = props.headers ?? (Array.isArray(newHeaders) ? [] : {})
+    const mergedHeaders: any = Array.isArray(newHeaders)
+      ? [...(Array.isArray(existingHeaders) ? existingHeaders : []), ...newHeaders.filter((h: any) => !(Array.isArray(existingHeaders) ? existingHeaders : []).some((eh: any) => eh.name?.toLowerCase() === h.name?.toLowerCase()))]
+      : (Array.isArray(existingHeaders) ? existingHeaders : { ...(existingHeaders as Record<string, string>), ...(newHeaders as Record<string, string>) })
+
+    const existingParams = props.params ?? []
+    const newParams = data.params ?? []
+    const paramNames = new Set(existingParams.map((p: { name: string }) => p.name.toLowerCase()))
+    const mergedParams = [
+      ...existingParams,
+      ...newParams.filter((p: { name: string }) => !paramNames.has(p.name.toLowerCase())),
+    ]
+
+    const existingTags = props.tags ?? []
+    const newTags = data.tags ?? []
+    const mergedTags = [...new Set([...existingTags, ...newTags])]
+
+    const existingSources = String(props.source ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    const newSource = data.source ?? ''
+    if (newSource && !existingSources.includes(newSource)) {
+      existingSources.push(newSource)
+    }
+
+    this.executeWithTransaction(async () => {
+      await this.updateNode({
+        id,
+        type: NodeType.ENDPOINT,
+        label: existing.label,
+        properties: {
+          ...props,
+          ...(Array.isArray(mergedHeaders) ? (mergedHeaders.length > (Array.isArray(existingHeaders) ? existingHeaders.length : 0) ? { headers: mergedHeaders } : {}) : (Object.keys(mergedHeaders).length > Object.keys(existingHeaders).length ? { headers: mergedHeaders } : {})),
+          ...(mergedParams.length > existingParams.length ? { params: mergedParams } : {}),
+          ...(mergedTags.length > existingTags.length ? { tags: mergedTags } : {}),
+          ...(existingSources.length > 0 ? { source: existingSources.join(', ') } : {}),
+          ...(data.authRequired !== undefined && props.authRequired === undefined ? { authRequired: data.authRequired } : {}),
+          ...(data.authType && !props.authType ? { authType: data.authType } : {}),
+          ...(data.bodySchema && !props.bodySchema ? { bodySchema: data.bodySchema } : {}),
+          ...(data.description && !props.description ? { description: data.description } : {}),
+        },
+        createdAt: existing.createdAt,
+        updatedAt: Date.now(),
+      })
+    })
+
+    return existing as EndpointNode
   }
 
   addAction(pageId: string, actionData: Partial<ActionNode['properties']>): ActionNode {
@@ -204,7 +353,7 @@ export class LibSQLGraphStore {
       id,
       type: NodeType.TEST,
       label: `Test: ${testData.testType}`,
-      properties: testData,
+      properties: testData as TestNode['properties'],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
@@ -226,6 +375,9 @@ export class LibSQLGraphStore {
         endpoint: '',
         evidence: [],
         confidence: 0,
+        lifecycleStatus: 'candidate',
+        evidenceLevel: 'L1',
+        findingId: `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}`,
         ...data,
       },
       createdAt: Date.now(),
@@ -375,26 +527,98 @@ export class LibSQLGraphStore {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
-    this.upsertNode(node)
-    return node
+     this.upsertNode(node)
+     return node
+   }
+
+  /**
+   * Non-destructive page merge: reads existing page by url, merges only fields
+   * that are absent or empty. Capture modules use this to avoid overwriting
+   * richer data (title, contentLength, contentType) that was discovered earlier.
+   */
+  mergePage(url: string, data?: Partial<PageNode['properties']>): PageNode {
+    const id = `page:${url}`
+    const existing = this.getNode(id)
+
+    if (!existing) {
+      return this.upsertPage(url, data)
+    }
+
+    const props = existing.properties as PageNode['properties']
+    const newData = data ?? {}
+    const merged: Record<string, unknown> = {}
+
+    if (newData.title && !props.title) merged.title = newData.title
+    if (newData.contentType && !props.contentType) merged.contentType = newData.contentType
+    if (newData.contentLength && (!props.contentLength || props.contentLength === 0)) merged.contentLength = newData.contentLength
+    if (newData.sessionId && !props.sessionId) merged.sessionId = newData.sessionId
+    if (newData.timestamp && !props.timestamp) merged.timestamp = newData.timestamp
+
+    const existingTags = props.tags ?? []
+    const newTags = newData.tags ?? []
+    const mergedTags = [...new Set([...existingTags, ...newTags])]
+    if (mergedTags.length > existingTags.length) merged.tags = mergedTags
+
+    if (Object.keys(merged).length > 0) {
+      this.executeWithTransaction(async () => {
+        await this.updateNode({
+          id,
+          type: NodeType.PAGE,
+          label: existing.label,
+          properties: {
+            ...props,
+            ...merged,
+          },
+          createdAt: existing.createdAt,
+          updatedAt: Date.now(),
+        })
+      })
+    }
+
+    return existing as PageNode
   }
 
   chainFindings(fromId: string, toId: string): void {
     this.addEdge({ fromId, toId, type: EdgeType.CHAINED_FROM })
   }
 
+  /**
+   * Execute a database operation within the current transaction if one is active.
+   * If no transaction is active, executes directly.
+   */
+  private async executeWithTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.currentTransaction !== null) {
+      // Use SAVEPOINT within the transaction
+      await this.db.execute(`SAVEPOINT libsql_tx_${this.currentTransaction}_ops`)
+      try {
+        const result = await fn()
+        // Keep transaction open, don't release SAVEPOINT
+        return result
+      } catch (error) {
+        // Rollback to the SAVEPOINT on error
+        await this.db.execute(`ROLLBACK TO SAVEPOINT libsql_tx_${this.currentTransaction}_ops`)
+        throw error
+      }
+    } else {
+      // No transaction active, execute directly
+      return await fn()
+    }
+  }
+
   private insertNode(node: GraphNodeData): void {
-    this.db.execute(`
-      INSERT INTO nodes (id, type, label, properties, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [
-      node.id,
-      node.type,
-      node.label,
-      JSON.stringify(node.properties),
-      node.createdAt,
-      node.updatedAt
-    ])
+    this.executeWithTransaction(async () => {
+      await this.db.execute(`
+        INSERT INTO nodes (id, type, label, properties, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        node.id,
+        node.type,
+        node.label,
+        JSON.stringify(node.properties),
+        node.createdAt,
+        node.updatedAt
+      ])
+    })
   }
 
   upsertNode(node: AnyNodeData): AnyNodeData {
@@ -421,17 +645,19 @@ export class LibSQLGraphStore {
   }
 
   updateNode(node: GraphNodeData): void {
-    this.db.execute(`
-      UPDATE nodes 
-      SET type = ?, label = ?, properties = ?, updated_at = ?
-      WHERE id = ?
-    `, [
-      node.type,
-      node.label,
-      JSON.stringify(node.properties),
-      node.updatedAt,
-      node.id
-    ])
+    this.executeWithTransaction(async () => {
+      await this.db.execute(`
+        UPDATE nodes
+        SET type = ?, label = ?, properties = ?, updated_at = ?
+        WHERE id = ?
+      `, [
+        node.type,
+        node.label,
+        JSON.stringify(node.properties),
+        node.updatedAt,
+        node.id
+      ])
+    })
   }
 
   getNode(id: string): AnyNodeData | undefined {
@@ -439,14 +665,14 @@ export class LibSQLGraphStore {
       SELECT id, type, label, properties, created_at, updated_at
       FROM nodes
       WHERE id = ?
-    `, [id])
+    `, [id]) as unknown as { rows: Array<{ id: string; type: string; label: string; properties: string; created_at: number; updated_at: number }> }
 
     if (result.rows.length === 0) return undefined
 
     const row = result.rows[0]
     return {
       id: row.id,
-      type: row.type,
+      type: row.type as NodeType,
       label: row.label,
       properties: JSON.parse(row.properties),
       createdAt: row.created_at,
@@ -457,21 +683,21 @@ export class LibSQLGraphStore {
   deleteNode(id: string): boolean {
     const existing = this.getNode(id)
     if (!existing) return false
-    this.db.execute('DELETE FROM edges WHERE from_id = ? OR to_id = ?', [id, id])
-    this.db.execute('DELETE FROM nodes WHERE id = ?', [id])
+    this.executeWithTransaction(async () => {
+      await this.db.execute('DELETE FROM edges WHERE from_id = ? OR to_id = ?', [id, id])
+      await this.db.execute('DELETE FROM nodes WHERE id = ?', [id])
+    })
     return true
   }
 
   addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData {
     const id = `edge:${edgeData.fromId}:${edgeData.toId}:${edgeData.type}`
-    
-    // Check if edge already exists
-    const existing = this.db.execute(`
-      SELECT id FROM edges WHERE id = ?
-    `, [id])
 
-    if (existing.rows.length > 0) {
-      return existing.rows[0] as GraphEdgeData
+    // Check if edge already exists
+    const existing = this.getNode(id)
+
+    if (existing) {
+      return existing as unknown as GraphEdgeData
     }
 
     const edge: GraphEdgeData = {
@@ -483,19 +709,57 @@ export class LibSQLGraphStore {
       createdAt: Date.now(),
     }
 
-    this.db.execute(`
-      INSERT INTO edges (id, from_id, to_id, type, properties, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [
-      edge.id,
-      edge.fromId,
-      edge.toId,
-      edge.type,
-      JSON.stringify(edge.properties),
-      edge.createdAt
-    ])
+    this.executeWithTransaction(async () => {
+      await this.db.execute(`
+        INSERT INTO edges (id, from_id, to_id, type, properties, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        edge.id,
+        edge.fromId,
+        edge.toId,
+        edge.type,
+        JSON.stringify(edge.properties),
+        edge.createdAt
+      ])
+    })
 
     return edge
+  }
+
+  queryEdges(filters?: { fromId?: string; toId?: string; type?: EdgeType }): GraphEdgeData[] {
+    let query = 'SELECT id, from_id, to_id, type, properties, created_at FROM edges'
+    const conditions: string[] = []
+    const params: any[] = []
+
+    if (filters?.fromId) {
+      conditions.push('from_id = ?')
+      params.push(filters.fromId)
+    }
+    if (filters?.toId) {
+      conditions.push('to_id = ?')
+      params.push(filters.toId)
+    }
+    if (filters?.type) {
+      conditions.push('type = ?')
+      params.push(filters.type)
+    }
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ')
+    }
+
+    const result = this.db.execute(query, params) as unknown as { rows: Array<{ id: string; from_id: string; to_id: string; type: string; properties: string; created_at: number }> }
+    return result.rows.map((row: { id: string; from_id: string; to_id: string; type: string; properties: string; created_at: number }) => ({
+      id: row.id,
+      fromId: row.from_id,
+      toId: row.to_id,
+      type: row.type as EdgeType,
+      properties: JSON.parse(row.properties),
+      createdAt: row.created_at
+    })) as GraphEdgeData[]
+  }
+
+  getAllEdges(): GraphEdgeData[] {
+    return this.queryEdges()
   }
 
   queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[] {
@@ -507,16 +771,16 @@ export class LibSQLGraphStore {
       params.push(type)
     }
 
-    const result = this.db.execute(query, params)
+    const result = this.db.execute(query, params) as unknown as { rows: Array<{ id: string; type: string; label: string; properties: string; created_at: number; updated_at: number }> }
     
-    return result.rows.map(row => ({
+    return result.rows.map((row: { id: string; type: string; label: string; properties: string; created_at: number; updated_at: number }) => ({
       id: row.id,
-      type: row.type,
+      type: row.type as NodeType,
       label: row.label,
       properties: JSON.parse(row.properties),
       createdAt: row.created_at,
       updatedAt: row.updated_at
-    }))
+    })) as AnyNodeData[]
   }
 
   getTestCoverage(endpointId: string): TestNode[] {
@@ -527,12 +791,11 @@ export class LibSQLGraphStore {
 
   getUntestedActions(): ActionNode[] {
     const actions = this.queryNodes(NodeType.ACTION) as ActionNode[]
-    const testedActionIds = new Set(
-      this.db.execute(`
-        SELECT from_id FROM edges WHERE type = ?
-      `, [EdgeType.HAS_TEST]).rows.map(row => row.from_id)
-    )
-    
+    const edgeResult = this.db.execute(`
+      SELECT from_id FROM edges WHERE type = ?
+    `, [EdgeType.HAS_TEST]) as unknown as { rows: Array<{ from_id: string }> }
+    const testedActionIds = new Set(edgeResult.rows.map((row: { from_id: string }) => row.from_id))
+
     return actions.filter(a => !testedActionIds.has(a.id))
   }
 
@@ -565,9 +828,9 @@ export class LibSQLGraphStore {
       if (visited.has(currentId)) continue
       visited.add(currentId)
 
-      const incoming = this.db.execute(`
+      const incoming = (this.db.execute(`
         SELECT from_id FROM edges WHERE to_id = ? AND type = ?
-      `, [currentId, EdgeType.CHAINED_FROM]).rows
+      `, [currentId, EdgeType.CHAINED_FROM]) as unknown as { rows: Array<{ from_id: string }> }).rows
 
       for (const row of incoming) {
         const parent = this.getNode(row.from_id)
@@ -598,11 +861,12 @@ export class LibSQLGraphStore {
 
   exportToJson(): SerializedGraph {
     const nodes = this.queryNodes()
-    const edges = this.db.execute('SELECT * FROM edges').rows.map(row => ({
+    const edgesResult = this.db.execute('SELECT * FROM edges') as unknown as { rows: Array<{ id: string; from_id: string; to_id: string; type: string; properties: string; created_at: number }> }
+    const edges = edgesResult.rows.map((row: { id: string; from_id: string; to_id: string; type: string; properties: string; created_at: number }) => ({
       id: row.id,
       fromId: row.from_id,
       toId: row.to_id,
-      type: row.type,
+      type: row.type as EdgeType,
       properties: JSON.parse(row.properties),
       createdAt: row.created_at
     }))
@@ -611,16 +875,18 @@ export class LibSQLGraphStore {
   }
 
   importFromJson(data: SerializedGraph): void {
-    // Clear existing data
-    this.db.execute('DELETE FROM edges')
-    this.db.execute('DELETE FROM nodes')
+    // Clear existing data - transactional
+    this.executeWithTransaction(async () => {
+      await this.db.execute('DELETE FROM edges')
+      await this.db.execute('DELETE FROM nodes')
+    })
 
-    // Import nodes
+    // Import nodes - transactional
     for (const node of data.nodes) {
       this.insertNode(node)
     }
 
-    // Import edges
+    // Import edges - transactional
     for (const edge of data.edges) {
       this.addEdge({
         fromId: edge.fromId,

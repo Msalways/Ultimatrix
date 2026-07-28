@@ -20,6 +20,7 @@ import { EvidenceGate } from '../intelligence/evidence-gate'
 import { claimFor, assessAccess } from './framework'
 import { isAuthEndpoint, hasTarget } from './routing'
 import { getPayloadStore } from '../payloads/store'
+import { createHash } from 'node:crypto'
 
 interface AuthStepMeta {
   technique: 'sqli-login' | 'default-creds' | 'jwt-none'
@@ -68,7 +69,7 @@ function metaKind(r: StepExecutionResult): 'login' | 'jwt-forgery' | 'default-cr
 function hashCreds(body?: string): string | undefined {
   if (!body) return undefined
   try {
-    const h = require('node:crypto').createHash('sha256')
+    const h = createHash('sha256')
     h.update(body)
     return h.digest('hex').slice(0, 16)
   } catch {

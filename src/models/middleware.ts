@@ -113,8 +113,8 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                   })
 
                   // Sync from response headers if available
-                  if (result?.headers && typeof result.headers === 'object') {
-                    providerLimiter.syncFromHeaders(result.headers)
+                  if ((result as any)?.headers && typeof (result as any).headers === 'object') {
+                    providerLimiter.syncFromHeaders((result as any).headers)
                   }
 
                   // Record request in quota tracker
@@ -123,9 +123,9 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                   // Capture token usage from doGenerate responses
                   let inputTokens = 0
                   let outputTokens = 0
-                  if (prop === 'doGenerate' && result?.usage) {
-                    inputTokens = result.usage.inputTokens ?? 0
-                    outputTokens = result.usage.outputTokens ?? 0
+                  if (prop === 'doGenerate' && (result as any)?.usage) {
+                    inputTokens = (result as any).usage.inputTokens ?? 0
+                    outputTokens = (result as any).usage.outputTokens ?? 0
                     if (inputTokens > 0 || outputTokens > 0) {
                       const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
                       getGlobalUsageTracker().record(prov, model, inputTokens, outputTokens)

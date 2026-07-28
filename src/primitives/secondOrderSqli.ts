@@ -36,7 +36,9 @@ export const secondOrderSqli: TechniquePrimitive = {
     const triggerParam = String(ctx.state?.triggerParam ?? 'id')
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const steps: AttackStep[] = []
-    const payloads = ctx.payloadSet ?? getPayloadStore().getPayloads('sqli/second-order')
+    const payloads = ctx.payloadSet
+      ? getPayloadStore().getPayloads(ctx.payloadSet.category, ctx.payloadSet.variant)
+      : getPayloadStore().getPayloads('sqli/second-order')
     for (const p of payloads) {
       // Stage 1: store payload.
       steps.push({

@@ -12,7 +12,7 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { getGlobalToolRegistry } from './tool-registry.js'
+import { getGlobalToolRegistry } from './tool-registry'
 
 const acquired = new Map<string, unknown>()
 

@@ -4,7 +4,7 @@
  * backward compatibility with legacy v6/v7 context reader/writer workflows.
  */
 import { z } from 'zod'
-import { NodeType, EdgeType } from '../graph/schema.js'
+import { NodeType, EdgeType } from '../graph/schema'
 
 // HAR-related schemas
 export const HarEntrySchema = z.object({
@@ -49,8 +49,8 @@ export const HarLogSchema = z.object({
 export const EndpointSchema = z.object({
   url: z.string(),
   method: z.string(),
-  params: z.record(z.string()),
-  headers: z.record(z.string())
+  params: z.record(z.string(), z.string()),
+  headers: z.record(z.string(), z.string())
 })
 
 // Form field schema
@@ -108,12 +108,12 @@ export const TraceSchema = z.object({
   request: z.object({
     method: z.string(),
     url: z.string(),
-    headers: z.record(z.string()),
+    headers: z.record(z.string(), z.string()),
     body: z.string().optional()
   }),
   response: z.object({
     status: z.number(),
-    headers: z.record(z.string()),
+    headers: z.record(z.string(), z.string()),
     body: z.string(),
     duration: z.number()
   }),
@@ -166,7 +166,7 @@ export const GraphNodeDataSchema = z.object({
   id: z.string(),
   type: z.nativeEnum(NodeType),
   label: z.string(),
-  properties: z.record(z.unknown()),
+  properties: z.record(z.string(), z.unknown()),
   createdAt: z.number(),
   updatedAt: z.number()
 })
@@ -176,7 +176,7 @@ export const GraphEdgeDataSchema = z.object({
   fromId: z.string(),
   toId: z.string(),
   type: z.nativeEnum(EdgeType),
-  properties: z.record(z.unknown()),
+  properties: z.record(z.string(), z.unknown()),
   createdAt: z.number()
 })
 
@@ -210,7 +210,7 @@ export const ScanConfigSchema = z.object({
 export const ErrorResponseSchema = z.object({
   ok: z.literal(false),
   error: z.string(),
-  details: z.record(z.unknown()).optional()
+  details: z.record(z.string(), z.unknown()).optional()
 })
 
 // Success response schema

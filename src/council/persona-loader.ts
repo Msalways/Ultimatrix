@@ -132,7 +132,6 @@ function parseFrontmatter(content: string): { metadata: Record<string, unknown>;
       }
 
       const [, key, value] = kvMatch
-      currentKey = key
 
       const trimmedValue = value.trim()
       if (trimmedValue === '>' || trimmedValue === '|') {

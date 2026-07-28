@@ -16,7 +16,7 @@ export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry:
       result: z.string(),
       error: z.string().optional(),
     }),
-    execute: async ({ task, skillId }) => {
+    execute: async ({ task, skillId }, _context) => {
 
       try {
         let skillContext = ''
@@ -37,47 +37,35 @@ export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry:
         const urlMatch = task.match(/(https?:\/\/[^\s]+)/i)
         if (urlMatch) {
           const url = urlMatch[1]
-          const response = await httpRequest.execute({
+          const response = await (httpRequest as any).execute({
             method: 'GET',
             url,
             timeoutMs: 10000,
-          })
+          }) as any
 
           if (response.ok) {
-            const { status, headers, body } = response.value
-            const headerStr = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n')
+            const { status, headers, body } = response.value as any
+            const headerStr = Object.entries(headers as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join('\n')
             return {
-              ok: true,
-              value: {
-                result: `[execute-direct] ${task}\n\nStatus: ${status}\nHeaders:\n${headerStr}\n\nBody (first 2000 chars):\n${body.substring(0, 2000)}${skillContext}`,
-                error: undefined,
-              },
+              result: `[execute-direct] ${task}\n\nStatus: ${status}\nHeaders:\n${headerStr}\n\nBody (first 2000 chars):\n${(body as string).substring(0, 2000)}${skillContext}`,
+              error: undefined,
             }
           } else {
             return {
-              ok: true,
-              value: {
-                result: `[execute-direct] ${task}\n\nRequest failed with status: ${response.value?.status || 'unknown'}${skillContext}`,
-                error: undefined,
-              },
+              result: `[execute-direct] ${task}\n\nRequest failed with status: ${(response.value as any)?.status || 'unknown'}${skillContext}`,
+              error: undefined,
             }
           }
         }
 
         return {
-          ok: true,
-          value: {
-            result: `[execute-direct] Task accepted: ${task}${skillContext ? '\n(Skill context loaded)' : ''}. No URL found in task — use httpRequest tool for direct requests.`,
-            error: undefined,
-          },
+          result: `[execute-direct] Task accepted: ${task}${skillContext ? '\n(Skill context loaded)' : ''}. No URL found in task — use httpRequest tool for direct requests.`,
+          error: undefined,
         }
       } catch (error) {
         return {
-          ok: false,
-          value: {
-            result: '',
-            error: error instanceof Error ? error.message : String(error),
-          },
+          result: '',
+          error: error instanceof Error ? error.message : String(error),
         }
       }
     },

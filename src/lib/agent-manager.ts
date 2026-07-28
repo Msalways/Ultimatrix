@@ -165,9 +165,9 @@ export class AgentManager {
       type: f.type,
       label: f.label,
       properties: f.properties,
-      createdAt: new Date(f.createdAt),
-      updatedAt: new Date(f.updatedAt),
-    }))
+      createdAt: String(f.createdAt),
+      updatedAt: String(f.updatedAt),
+    })) as Finding[]
   }
 
   async getTraces(): Promise<Trace[]> {
@@ -177,17 +177,17 @@ export class AgentManager {
 
   async writeAppModel(appModel: AppModel): Promise<void> {
     if (!this.contextWriter) throw new Error('ContextWriter not initialized')
-    await this.contextWriter.writeAppModel(appModel)
+    await this.contextWriter.writeAppModel(appModel as any)
   }
 
   async writeFindings(findings: Finding[]): Promise<void> {
     if (!this.contextWriter) throw new Error('ContextWriter not initialized')
-    await this.contextWriter.writeFindings(findings)
+    await this.contextWriter.writeFindings(findings as any)
   }
 
   async writeTraces(traces: Trace[]): Promise<void> {
     if (!this.contextWriter) throw new Error('ContextWriter not initialized')
-    await this.contextWriter.writeTraces(traces)
+    await this.contextWriter.writeTraces(traces as any)
   }
 
   async chat(messages: any[], threadId?: string): Promise<any> {
@@ -458,14 +458,14 @@ export class AgentManager {
       const findings = await this.getFindings()
       const traces = await this.getTraces()
 
-      if (appModel) await this.contextWriter.writeAppModel(appModel)
-      if (findings.length > 0) await this.contextWriter.writeFindings(findings)
-      if (traces.length > 0) await this.contextWriter.writeTraces(traces)
+      if (appModel) await this.contextWriter.writeAppModel(appModel as any)
+      if (findings.length > 0) await this.contextWriter.writeFindings(findings as any)
+      if (traces.length > 0) await this.contextWriter.writeTraces(traces as any)
 
       await getGlobalGraphStore().save()
       log.info(`Saved context for scan ${this.currentScanId}`)
     } catch (error) {
-      log.error(`Failed to save context:`, error)
+      log.error(`Failed to save context:`, error as Record<string, unknown>)
       throw error
     }
   }

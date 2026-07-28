@@ -34,7 +34,7 @@ export const sstiBlind: TechniquePrimitive = {
     const headers = { ...(ctx.sessionHeaders ?? {}) }
     const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'q'
     // frameworkFingerprint result (if any) selects the engine; else try all.
-    const engine = (ctx.state?.templateEngine as string) || ctx.fingerprint || 'generic'
+    const engine: string = ((ctx.state?.templateEngine as string) || ctx.fingerprint || 'generic') as string
     const steps: AttackStep[] = []
     const timeVariants = getPayloadStore().listVariants('ssti/blind-engines')
     const engines = timeVariants.filter((e) => e !== 'generic_time' && !e.endsWith('_time'))

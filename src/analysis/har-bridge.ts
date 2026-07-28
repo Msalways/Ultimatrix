@@ -108,7 +108,7 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       params: ep.params,
       headers: ep.headers,
       authRequired: ep.authType !== null,
-      authType: ep.authType,
+      authType: ep.authType ?? undefined,
       tags: origin === 'self' ? ['har-capture', 'self-traffic', 'oast'] : ['har-capture'],
       source: 'har-bridge',
       origin,
@@ -133,7 +133,6 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       tags: secretOrigin === 'self'
         ? ['har-bridge', 'secret', secret.type, 'self-traffic']
         : ['har-bridge', 'secret', secret.type],
-      source: 'har-bridge',
     })
     secretsWritten++
   }
@@ -166,7 +165,7 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
     url: ep.url,
     host: ep.host,
     path: ep.path,
-    queryParams: Object.fromEntries(Object.entries(ep.params || {}).map(p => [p.name, ''])),
+    queryParams: Object.fromEntries(Object.entries(ep.params || {}).map(p => [p[0], ''])),
     requestCount: 1,
     avgResponseTime: 0,
   }))

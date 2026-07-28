@@ -123,7 +123,7 @@ export const aiAgentAttack: TechniquePrimitive = {
     })()
 
     const firedKind = toolPoisoned ? 'tool-poison' : argInjected ? 'arg-inject' : tipHonored ? 'tip' : undefined
-    const rep = (toolPoisoned && toolPoison) || (argInjected && argInject) || (tipHonored && tip)
+    const rep = (toolPoisoned ? toolPoison : undefined) || (argInjected ? argInject : undefined) || (tipHonored ? tip : undefined)
 
     // Representative evidence-backed claim so confirmed is gated by real tool output.
     let verified = false
@@ -168,7 +168,7 @@ export const aiAgentAttack: TechniquePrimitive = {
             category: 'ai_agent_abuse',
             description: `AI-agent abuse confirmed on ${rep!.step.request.url} (${firedKind}): the agent honored the injected instruction/command/exfil payload.`,
             request: rep!.step.request,
-            response: { status: rep!.status, body: (rep!.body ?? '').slice(0, 1000) },
+            response: { status: rep!.status ?? 0, body: (rep!.body ?? '').slice(0, 1000) },
             cwe,
             remediation:
               'Treat all tool definitions, tool outputs, and retrieved content as untrusted; enforce strict allow-lists on agent-executable commands and sandbox tool execution.',

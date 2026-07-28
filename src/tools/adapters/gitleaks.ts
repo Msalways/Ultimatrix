@@ -53,7 +53,7 @@ export const gitleaksAdapter: ToolAdapter = {
     const args = ['detect', '--source', source, '--report-format', 'json', '--report-path', outJson, '--no-banner', '--redact']
     const start = Date.now()
     const { stdout, timedOut } = await runBinary('gitleaks', args, ((o.timeout as number) || 180) * 1000)
-    let reportContent = ''
+    let reportContent: string;
     try {
       reportContent = readFileSync(outJson, 'utf-8')
     } catch {

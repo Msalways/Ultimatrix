@@ -24,8 +24,9 @@ import { wrapStagehandTools } from '../browser/dialog-inject'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from './skills/registry'
 import type { WorkerPool } from '../workers/pool'
-import type { StandardSchemaV1 } from '@mastra/schema-compat/schema'
+import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
+import { getActivePage } from '../browser/manager'
 import { log } from '../utils/logger'
 
 // ─── Focused tool imports ───────────────────────────────────────────
@@ -70,7 +71,7 @@ export interface SolverBrainOptions {
 
 function sanitizeTool(tool: any, provider?: string): any {
   if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
-    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaV1, provider) }
+    return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider) }
   }
   return tool
 }
@@ -160,7 +161,7 @@ export function createSolverBrain(
       url: z.string().optional().describe('URL to navigate to before scanning (optional — scans current page if omitted)'),
     }),
     execute: async ({ url }) => {
-      const page = options.browser?.page?.()
+      const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
 
       try {
@@ -198,7 +199,7 @@ export function createSolverBrain(
       protectedPaths: z.array(z.string()).optional().describe('Paths that require auth (e.g. ["/dashboard", "/api/me"])'),
     }),
     execute: async ({ testUrl, protectedPaths }) => {
-      const page = options.browser?.page?.()
+      const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
 
       const targetUrl = testUrl || config.target || ''

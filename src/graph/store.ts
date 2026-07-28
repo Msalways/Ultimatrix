@@ -2,6 +2,8 @@ import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
+import { emitGraphFindingAdded, emitGraphAttackAdded, emitGraphNodeAdded, emitGraphEdgeAdded } from '../events/emitter'
+import { getConfig } from '../config'
 import {
   GraphNodeData,
   GraphEdgeData,
@@ -32,42 +34,7 @@ interface SerializedGraph {
   edges: GraphEdgeData[]
 }
 
-interface LibSQLGraphStore {
-  initializeDatabase(): Promise<void>
-  upsertPage(url: string, data?: Partial<PageNode['properties']>): PageNode
-  addAction(pageId: string, actionData: Partial<ActionNode['properties']>): ActionNode
-  addInput(actionId: string, inputData: Partial<InputNode['properties']>): InputNode
-  addTest(actionId: string, testData: Partial<{ testType: string; status: string; endpoint: string; technique: string; payload: string; tags: string[]; expectedResult: string; actualResult: string }>): TestNode
-  addFinding(data: Partial<FindingNode['properties']>): FindingNode
-  addExploitProof(data: Partial<ExploitProofNode['properties']>): ExploitProofNode
-  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode
-  addThreatModel(data: Partial<ThreatModelNode['properties']>): ThreatModelNode
-  addAuthFlow(data: Partial<AuthFlowNode['properties']>): AuthFlowNode
-  addRBACRole(data: Partial<RBACRoleNode['properties']>): RBACRoleNode
-  addAttack(data: Partial<AttackNode['properties']>): AttackNode
-  addOutcome(data: { findingId: string; techniqueId: string; accepted?: boolean; fixed?: boolean; retestHeld?: boolean; severityAdjusted?: string; note?: string; targetOrigin?: string; timestamp?: string }): OutcomeFeedbackNode
-  addRenderedElement(endpointId: string | undefined, data: Partial<RenderedElementNode['properties']>): RenderedElementNode
-  addCouncilDebate(data: Partial<CouncilDebateNode['properties']> & { goal: string }): CouncilDebateNode
-  upsertNode(node: AnyNodeData): AnyNodeData
-  updateNode(node: GraphNodeData): void
-  getNode(id: string): AnyNodeData | undefined
-  deleteNode(id: string): boolean
-  chainFindings(fromId: string, toId: string): void
-  addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData
-  queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[]
-  queryEdges(filters?: { fromId?: string; toId?: string; type?: EdgeType }): GraphEdgeData[]
-  getAllEdges(): GraphEdgeData[]
-  getTestCoverage(endpointId: string): TestNode[]
-  getUntestedActions(): ActionNode[]
-  getAuthFlows(): AuthFlowNode[]
-  getRBACMatrix(): { role: string; endpoints: string[] }[]
-  getAttackPath(findingId: string): AnyNodeData[]
-  save(): Promise<void>
-  load(): Promise<void>
-  close(): Promise<void>
-  exportToJson(): SerializedGraph
-  importFromJson(data: SerializedGraph): void
-}
+import type { LibSQLGraphStore } from './store-libsql'
 
 export class GraphStore {
   private nodes: Map<string, GraphNodeData> = new Map()
@@ -97,6 +64,11 @@ export class GraphStore {
       this.save().catch(() => {})
     }, GraphStore.SAVE_DEBOUNCE_MS)
   }
+
+  /** Transaction stubs for GraphStore (no-op; real impl in LibSQLGraphStore). */
+  async beginTransaction(): Promise<void> {}
+  async commitTransaction(): Promise<void> {}
+  async rollbackTransaction(): Promise<void> {}
 
   private contentHash(str: string): string {
     return createHash('sha256').update(str).digest('hex').slice(0, 12)
@@ -292,7 +264,7 @@ export class GraphStore {
       id,
       type: NodeType.TEST,
       label: `Test: ${testData.testType}`,
-      properties: testData,
+      properties: testData as TestNode['properties'],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
@@ -355,20 +327,18 @@ export class GraphStore {
     }
 
     const props = existing.properties as EndpointNode['properties']
-    const newHeaders = data.headers ?? []
-    const existingHeaders = props.headers ?? []
-    const headerNames = new Set(existingHeaders.map(h => h.name.toLowerCase()))
-    const mergedHeaders = [
-      ...existingHeaders,
-      ...newHeaders.filter(h => !headerNames.has(h.name.toLowerCase())),
-    ]
+    const newHeaders: any = data.headers
+    const existingHeaders: any = props.headers ?? (Array.isArray(newHeaders) ? [] : {})
+    const mergedHeaders: any = Array.isArray(newHeaders)
+      ? [...(Array.isArray(existingHeaders) ? existingHeaders : []), ...newHeaders.filter((h: any) => !(Array.isArray(existingHeaders) ? existingHeaders : []).some((eh: any) => eh.name?.toLowerCase() === h.name?.toLowerCase()))]
+      : (Array.isArray(existingHeaders) ? existingHeaders : { ...(existingHeaders as Record<string, string>), ...(newHeaders as Record<string, string>) })
 
     const existingParams = props.params ?? []
     const newParams = data.params ?? []
-    const paramNames = new Set(existingParams.map(p => p.name.toLowerCase()))
+    const paramNames = new Set(existingParams.map((p: { name: string }) => p.name.toLowerCase()))
     const mergedParams = [
       ...existingParams,
-      ...newParams.filter(p => !paramNames.has(p.name.toLowerCase())),
+      ...newParams.filter((p: { name: string }) => !paramNames.has(p.name.toLowerCase())),
     ]
 
     const existingTags = props.tags ?? []
@@ -382,7 +352,7 @@ export class GraphStore {
     }
 
     Object.assign(props, {
-      ...(mergedHeaders.length > existingHeaders.length ? { headers: mergedHeaders } : {}),
+      ...(Array.isArray(mergedHeaders) ? (mergedHeaders.length > (Array.isArray(existingHeaders) ? existingHeaders.length : 0) ? { headers: mergedHeaders } : {}) : (Object.keys(mergedHeaders).length > Object.keys(existingHeaders).length ? { headers: mergedHeaders } : {})),
       ...(mergedParams.length > existingParams.length ? { params: mergedParams } : {}),
       ...(mergedTags.length > existingTags.length ? { tags: mergedTags } : {}),
       ...(existingSources.length > 0 ? { source: existingSources.join(', ') } : {}),
@@ -421,21 +391,36 @@ export class GraphStore {
     const inputs = this.queryNodes(NodeType.INPUT) as InputNode[]
     const untested = this.getUntestedActions()
 
+    const config = getConfig()
+    const maxEndpointsInSummary = config.context?.maxEndpointsInSummary || 10
+
+    // Cap endpoints list
+    const limitedEndpoints = endpoints.slice(0, maxEndpointsInSummary)
+
+    // Cap findings by severity (keep top N per severity)
     const findingsBySeverity: Record<string, number> = {}
     for (const f of findings) {
       const sev = f.properties.severity || 'unknown'
       findingsBySeverity[sev] = (findingsBySeverity[sev] || 0) + 1
     }
 
+    // Cap findingsBySeverity to maxFindingsPerTurn
+    const maxFindingsPerTurn = config.context?.maxFindingsPerTurn || 20
+    const limitedFindingsBySeverity: Record<string, number> = {}
+    for (const [severity, count] of Object.entries(findingsBySeverity)) {
+      const topN = Math.min(count, maxFindingsPerTurn)
+      limitedFindingsBySeverity[severity] = topN
+    }
+
     let totalCapturedHeaders = 0
-    for (const e of endpoints) {
+    for (const e of limitedEndpoints) {
       const h = e.properties.headers || {}
       totalCapturedHeaders += Array.isArray(h) ? h.length : Object.keys(h).length
     }
 
     return {
-      totalEndpoints: endpoints.length,
-      endpoints: endpoints.map(e => {
+      totalEndpoints: limitedEndpoints.length,
+      endpoints: limitedEndpoints.map(e => {
         const h = e.properties.headers || {}
         const headerKeys = Array.isArray(h) ? h : Object.keys(h)
         return {
@@ -448,8 +433,8 @@ export class GraphStore {
           headerCount: headerKeys.length,
         }
       }),
-      totalFindings: findings.length,
-      findingsBySeverity,
+      totalFindings: 0, // Not actual total - use findingsBySeverity for display
+      findingsBySeverity: limitedFindingsBySeverity,
       totalTests: tests.length,
       authFlows: authFlows.length,
       rbacRoles: rbacRoles.length,
@@ -491,12 +476,16 @@ export class GraphStore {
         endpoint: '',
         evidence: [],
         confidence: 0,
+        lifecycleStatus: 'candidate',
+        evidenceLevel: 'L1',
+        findingId: `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}`,
         ...data,
       },
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
     this.nodes.set(id, node)
+    emitGraphFindingAdded(id, node.properties.severity, node.properties.technique, node.properties.endpoint)
     return node
   }
 
@@ -639,6 +628,7 @@ export class GraphStore {
       updatedAt: Date.now(),
     }
     this.nodes.set(id, node)
+    emitGraphAttackAdded(id, node.properties.technique, data.endpointId || '')
     return node
   }
 
@@ -845,6 +835,7 @@ export class GraphStore {
       createdAt: Date.now(),
     }
     this.edges.push(edge)
+    emitGraphEdgeAdded(edgeData.type, edgeData.fromId, edgeData.toId)
     return edge
   }
 

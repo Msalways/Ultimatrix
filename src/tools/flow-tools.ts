@@ -192,7 +192,7 @@ export const restoreSession = createTool({
     const page = getActivePage()
     if (page && Object.keys(localStorage).length > 0) {
       for (const [key, value] of Object.entries(localStorage)) {
-        await page.evaluate((k: string, v: string) => localStorage.setItem(k, v), key, value).catch(() => {})
+        await page.evaluate((k: string, v: string) => window.localStorage.setItem(k, v), key, value).catch(() => {})
       }
     }
 

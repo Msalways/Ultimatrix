@@ -66,14 +66,12 @@ export function recordRenderTraceFromResponse(input: RenderCaptureInput): Render
 
   forensic?.log({
     type: 'render-trace',
-    url: input.url,
-    method: input.method,
-    status: input.status,
-    formFields: trace.formFields.length,
-    inlineHandlers: trace.inlineHandlers.length,
-    payloadHits: trace.payloadHits.length,
-    nodes,
-  })
+    agent: 'render-bridge',
+    tool: 'recordRenderTrace',
+    metadata: {
+      phase: `formFields=${trace.formFields.length} payloadHits=${trace.payloadHits.length} nodes=${nodes}`,
+    },
+  } as any)
 
   return trace
 }

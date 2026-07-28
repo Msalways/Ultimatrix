@@ -9,6 +9,7 @@ import type { ModelSelector, WorkerTask } from '../models/selector'
 import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
+import { emitWorkerTimeout, emitWorkerKilled } from '../events/emitter'
 
 /**
  * Wrap a promise with a wall-clock timeout. Timer is `.unref()`'d so it doesn't
@@ -168,6 +169,12 @@ export class WorkerPool {
   }
 
   kill(id: string): void {
+    const worker = this.workers.get(id)
+    if (worker) {
+      const workerName = (worker as any).name ?? 'Worker'
+      const skillId = (worker as any).id?.split('-').slice(0, -1).join('-') ?? 'unknown'
+      emitWorkerKilled(id, workerName, skillId, 'pool-remove')
+    }
     this.workers.delete(id)
   }
 
@@ -193,6 +200,7 @@ export class WorkerPool {
       sandboxId: config.sandboxId ?? this.sandboxId ?? undefined,
     }
     const worker = this.spawn(workerConfig)
+    const startTime = Date.now()
     try {
       let result: any
       if (workerConfig.timeoutMs) {
@@ -205,6 +213,17 @@ export class WorkerPool {
         result = await worker.generate(workerConfig.task)
       }
       return result
+    } catch (err) {
+      const durationMs = Date.now() - startTime
+      const errorMsg = (err as Error).message ?? String(err)
+      const workerName = (worker as any).name ?? `${workerConfig.skillId} Specialist`
+
+      // Detect timeout specifically
+      if (errorMsg.includes('exceeded') && errorMsg.includes('ms')) {
+        emitWorkerTimeout(worker.id, workerName, workerConfig.skillId, workerConfig.task, workerConfig.timeoutMs ?? 0, durationMs)
+      }
+
+      throw err
     } finally {
       this.kill(worker.id)
       this.running--

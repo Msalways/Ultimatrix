@@ -16,7 +16,7 @@ import type { CouncilMember } from '../../council/types'
 export class CouncilStrategy implements ExecutionStrategy {
   async run(ctx: StrategyContext): Promise<RunResult> {
     const { goal, config, services, toolPack, humanApprove, onPhase } = ctx
-    const councilConfig = config.council ?? { maxRounds: 5, budgetPerRound: 20000, approvalMode: 'both' as const }
+    const councilConfig = config.council ?? { enabled: true, members: ['strategist', 'operator', 'skeptic', 'analyst', 'human'] as any, maxRounds: 5, budgetPerRound: 20000, approvalMode: 'both' as const }
 
     // Build council members — the operator gets spawnWorker via extraTools in factory.
     // Stub members are replaced with real factory-created members when the session

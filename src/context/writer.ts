@@ -6,10 +6,10 @@
 import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { Logger } from '../utils/logger.js'
-import { GraphStore } from '../graph/store.js'
-import { getGlobalGraphStore } from '../graph/store.js'
-import { FindingNode } from '../graph/schema.js'
+import { Logger } from '../utils/logger'
+import { GraphStore } from '../graph/store'
+import { getGlobalGraphStore } from '../graph/store'
+import { FindingNode } from '../graph/schema'
 
 export interface AppModel {
   target: string
@@ -92,7 +92,7 @@ export class ContextWriter {
   }
 
   async initialize(): Promise<void> {
-    this.logger.info('Initializing context writer for scan', this.config.scanId)
+    this.logger.info('Initializing context writer for scan', { scanId: this.config.scanId } as Record<string, unknown>)
     
     // Ensure context directory exists
     const contextDir = this.getContextPath()
@@ -109,7 +109,7 @@ export class ContextWriter {
       await this.writeJsonFile(filePath, appModel)
       this.logger.success(`Wrote app model to ${filePath}`)
     } catch (error) {
-      this.logger.error(`Failed to write app model:`, error)
+      this.logger.error(`Failed to write app model:`, error as Record<string, unknown>)
       throw error
     }
   }
@@ -130,7 +130,7 @@ export class ContextWriter {
       await this.writeJsonFile(filePath, findingsData)
       this.logger.success(`Wrote ${findings.length} findings to ${filePath}`)
     } catch (error) {
-      this.logger.error(`Failed to write findings:`, error)
+      this.logger.error(`Failed to write findings:`, error as Record<string, unknown>)
       throw error
     }
   }
@@ -147,7 +147,7 @@ export class ContextWriter {
       await this.writeJsonFile(filePath, tracesData)
       this.logger.success(`Wrote ${traces.length} traces to ${filePath}`)
     } catch (error) {
-      this.logger.error(`Failed to write traces:`, error)
+      this.logger.error(`Failed to write traces:`, error as Record<string, unknown>)
       throw error
     }
   }
@@ -160,7 +160,7 @@ export class ContextWriter {
       await this.graphStore.save(filePath)
       this.logger.success(`Saved graph store to ${filePath}`)
     } catch (error) {
-      this.logger.error(`Failed to save graph store:`, error)
+      this.logger.error(`Failed to save graph store:`, error as Record<string, unknown>)
       throw error
     }
   }
@@ -183,14 +183,15 @@ export class ContextWriter {
   }
 
   getContextPath(): string {
+    const { dirname } = require('path') as typeof import('path')
     const scanManagerPath = import.meta.url.includes('file:') 
       ? new URL(import.meta.url).pathname 
       : process.cwd()
     
     // Assuming scan-manager.ts is in the same directory as this file
-    const scanManagerModule = await import('../scan-manager.js')
-    const scanManager = new scanManagerModule.ScanManager({ 
-      scansDir: join(scanManagerModule.dirname(scanManagerPath), 'scans') 
+    const { ScanManager: ScanManagerClass } = require('../scan-manager') as typeof import('../scan-manager')
+    const scanManager = new ScanManagerClass({ 
+      scansDir: join(dirname(scanManagerPath), 'scans') 
     })
     
     return scanManager.getContextPath(this.config.scanId)

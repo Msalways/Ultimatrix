@@ -15,7 +15,7 @@ function endpointById(store: GraphStore): Map<string, EndpointNode> {
  */
 function hasIdSignal(endpoint: EndpointNode, entityIds: Set<string>): boolean {
   const url = endpoint.properties.url
-  let pathSegments: string[] = []
+  let pathSegments: string[]
   try {
     pathSegments = new URL(url).pathname.split('/').filter(Boolean)
   } catch {

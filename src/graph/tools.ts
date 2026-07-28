@@ -241,7 +241,7 @@ export const addEndpoint = createTool({
   execute: async (input) => {
     try {
       const store = getGlobalGraphStore()
-      const result = store.addEndpoint(input)
+      const result = store.addEndpoint(input as any)
       await store.save()
       getForensicLog()?.log({ type: 'graph-mutation', agent: 'worker', tool: 'addEndpoint', args: { url: input.url, method: input.method }, result: { nodeId: result.id } })
       return { ok: true, value: result }
@@ -291,7 +291,7 @@ export const addAuthFlow = createTool({
   execute: async (input) => {
     try {
       const store = getGlobalGraphStore()
-      const result = store.addAuthFlow(input)
+      const result = store.addAuthFlow(input as any)
       await store.save()
       getForensicLog()?.log({ type: 'graph-mutation', agent: 'worker', tool: 'addAuthFlow', args: { flowType: input.flowType }, result: { nodeId: result.id } })
       return { ok: true, value: result }

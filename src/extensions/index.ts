@@ -7,10 +7,10 @@
  * - Configures additional skill directories + exclusions (Phase 7.1).
  */
 
-import { getGlobalToolRegistry } from './tool-registry.js'
-import { resolveEnvVars } from './resolve-env.js'
-import { configureSkillSources } from '../solver/skills/loader.js'
-import type { UltimatrixConfig } from '../config.js'
+import { getGlobalToolRegistry } from './tool-registry'
+import { resolveEnvVars } from './resolve-env'
+import { configureSkillSources } from '../solver/skills/loader'
+import type { UltimatrixConfig } from '../config'
 
 export function applyConfigExtensions(config: UltimatrixConfig): void {
   const reg = getGlobalToolRegistry()

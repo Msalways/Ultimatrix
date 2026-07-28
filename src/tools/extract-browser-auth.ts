@@ -88,7 +88,7 @@ export const extractBrowserAuth = createTool({
       const filteredLocal = filterObj(localStorageData)
       const filteredSession = filterObj(sessionStorageData)
 
-      const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+      const cookieString = cookies.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join('; ')
 
       return {
         ok: true,

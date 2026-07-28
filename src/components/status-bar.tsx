@@ -1,70 +1,58 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useTheme } from 'next-themes'
-import { Sun, Moon } from 'lucide-react'
+import { useBudgetStore } from '@/stores/budget-store'
+import { useSessionStore } from '@/stores/session-store'
+import { cn } from '@/lib/utils'
 
-interface StatusData {
-  ok: boolean
-  initialized: boolean
-  browserReady: boolean
-  oastPort: number | null
-  initError: string | null
-  model: string | null
-  target: string | null
-  uptime: number
-  findings: number
-  deployed: boolean
-  phase: 'off' | 'starting' | 'ready'
+const phaseColors: Record<string, string> = {
+  observe: 'text-blue-400',
+  reason: 'text-purple-400',
+  explore: 'text-emerald-400',
+  conclude: 'text-amber-400',
+  idle: 'text-zinc-500',
+}
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return m > 0 ? `${m}:${String(sec).padStart(2, '0')}` : `${sec}s`
 }
 
 export function StatusBar() {
-  const [status, setStatus] = useState<StatusData | null>(null)
-  const [error, setError] = useState(false)
-  const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
-
-  useEffect(() => {
-    let mounted = true
-    async function fetchStatus() {
-      try {
-        const res = await fetch('/api/status')
-        if (!res.ok) throw new Error('status failed')
-        const data = await res.json()
-        if (mounted) {
-          setStatus(data)
-          setError(false)
-        }
-      } catch {
-        if (mounted) setError(true)
-      }
-    }
-    fetchStatus()
-    const id = setInterval(fetchStatus, 3000)
-    return () => { mounted = false; clearInterval(id) }
-  }, [])
-
-  const phaseLabel = status?.phase === 'ready' ? 'Ready' : status?.phase === 'starting' ? 'Starting...' : error ? 'Offline' : 'Off'
-  const dotColor = error ? 'bg-destructive' : status?.phase === 'ready' ? 'bg-green-500' : 'bg-yellow-500'
+  const { phase, tokensUsed, tokensMax, durationMs, findingsCount, toolCallsCount, isRunning } = useBudgetStore()
+  const activeTarget = useSessionStore((s) => s.activeTarget)
 
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-      <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
-      <span>{phaseLabel}</span>
-      {status?.model && <span className="hidden sm:inline">· {status.model.split('/')[1] || status.model}</span>}
-      {status?.oastPort && <span className="hidden lg:inline">· OAST :{status.oastPort}</span>}
-      {status?.target && <span className="hidden md:inline">· {status.target.length > 30 ? status.target.slice(0, 30) + '…' : status.target}</span>}
-      {status !== null && <span className="hidden xl:inline">· {status.findings} finding{status.findings !== 1 ? 's' : ''}</span>}
-      {mounted && (
-        <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="p-1 rounded hover:bg-accent transition-colors"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
-        </button>
+    <div className="border-t border-zinc-800 bg-zinc-950 px-4 py-1.5 flex items-center gap-4 text-xs text-zinc-500">
+      {activeTarget && (
+        <span className="text-zinc-400 truncate max-w-[200px]">{activeTarget}</span>
       )}
+      <span className={cn('font-medium', phaseColors[phase || 'idle'] || 'text-zinc-500')}>
+        {isRunning ? (phase || 'thinking') : 'idle'}
+      </span>
+      <span>·</span>
+      <span>{toolCallsCount} tool calls</span>
+      <span>·</span>
+      <span>{findingsCount} findings</span>
+      <span>·</span>
+      <span>{formatDuration(durationMs)}</span>
+      {tokensUsed > 0 && (
+        <>
+          <span>·</span>
+          <span>{Math.round(tokensUsed / 1000)}k tokens</span>
+        </>
+      )}
+      <div className="ml-auto flex items-center gap-2">
+        {isRunning && (
+          <div className="w-16 h-1 bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-zinc-600 rounded-full transition-all"
+              style={{ width: `${Math.min((tokensUsed / tokensMax) * 100, 100)}%` }}
+            />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

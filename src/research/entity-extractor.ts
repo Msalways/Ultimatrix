@@ -9,7 +9,7 @@ function entityFromEndpoint(url: string): { name: string; ids: string[] } {
     const parsed = new URL(url)
     const segments = parsed.pathname.split('/').filter(Boolean)
     const ids = segments.filter(looksLikeId)
-    const candidate = segments.findLast(s => !looksLikeId(s) && !['api', 'v1', 'v2', 'v3'].includes(s.toLowerCase()))
+    const candidate = [...segments].reverse().find((s: string) => !looksLikeId(s) && !['api', 'v1', 'v2', 'v3'].includes(s.toLowerCase()))
     return { name: normalizeName(candidate || inferNameFromUrl(url)), ids }
   } catch {
     return { name: normalizeName(inferNameFromUrl(url)), ids: [] }

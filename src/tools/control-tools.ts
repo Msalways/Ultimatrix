@@ -1,13 +1,14 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, EdgeType, type FindingNode, type ExploitProofNode } from '../graph/schema'
+import { NodeType, EdgeType, type FindingNode, type ExploitProofNode, validateNodeProperties } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { generateFromFinding, type Finding } from '../generation/test-generator'
 import { TestStorage } from '../generation/test-storage'
 import { log } from '../utils/logger'
 import { captureScreenshot } from '../browser/manager'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
+import { emitFindingDiscovered, emitFindingStatusChanged } from '../events/emitter'
 import type { EvidenceLevel } from '../types/shared'
 import { isUrlInScope } from '../safety/scope-guard'
 import {
@@ -230,8 +231,8 @@ export const writeFinding = createTool({
     const existingNodes = store.queryNodes(NodeType.FINDING) as FindingNode[]
     const duplicate = existingNodes.find(n => n.properties.findingId === findingId)
 
-    let findingNode: FindingNode
     if (duplicate) {
+      log.warn(`Duplicate finding detected: ${findingId}, merging into existing node`)
       duplicate.properties = {
         ...duplicate.properties,
         severity: effectiveSeverity,
@@ -244,22 +245,38 @@ export const writeFinding = createTool({
         ...(args.remediation ? { remediation: args.remediation } : {}),
       }
       duplicate.updatedAt = Date.now()
-      findingNode = duplicate
-    } else {
-      findingNode = store.addFinding({
-        severity: effectiveSeverity,
-        technique: args.type,
-        endpoint: args.endpoint,
-        evidence: evidenceTexts,
-        screenshots: screenshotPaths,
-        confidence: args.confidence,
-        lifecycleStatus,
-        evidenceLevel,
-        findingId,
-        ...(args.cwe ? { cwe: args.cwe } : {}),
-        ...(args.remediation ? { remediation: args.remediation } : {}),
-      })
+      return {
+        ok: true,
+        value: {
+          id: duplicate.id,
+          findingId: duplicate.properties.findingId,
+          deduplicated: true,
+          merged: true,
+        },
+      }
     }
+
+    // Gap 13.2 — Validate finding properties before persisting to graph
+    const findingProps = {
+      severity: effectiveSeverity,
+      technique: args.type,
+      endpoint: args.endpoint,
+      evidence: evidenceTexts,
+      screenshots: screenshotPaths,
+      confidence: args.confidence,
+      lifecycleStatus,
+      evidenceLevel,
+      findingId,
+      ...(args.cwe ? { cwe: args.cwe } : {}),
+      ...(args.remediation ? { remediation: args.remediation } : {}),
+    }
+    const { valid, errors } = validateNodeProperties(NodeType.FINDING, findingProps)
+    if (!valid) {
+      log.warn(`writeFinding: finding ${findingId} validation issues (continuing anyway): ${errors.join('; ')}`)
+    }
+
+    const findingNode = store.addFinding(findingProps)
+    emitFindingDiscovered(findingNode.id, effectiveSeverity, args.type || 'unknown', args.endpoint, undefined, 'writeFinding')
 
     const finding = {
       id: findingNode.id,

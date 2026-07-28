@@ -214,7 +214,10 @@ export function verifyChain(chain: DetectedChain, evidenceGate?: EvidenceGate): 
     let claimVerified = true
     let missing: string[] = []
     if (evidenceGate) {
-      const claim = `${f.properties.technique} on ${f.properties.endpoint}`
+      const claim = {
+        type: f.properties.technique,
+        endpoint: f.properties.endpoint,
+      }
       const v = evidenceGate.verifyClaim(claim)
       claimVerified = v.verified
       missing = v.missing

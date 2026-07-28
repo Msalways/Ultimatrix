@@ -30,7 +30,7 @@ export class SingleAgentStrategy implements ExecutionStrategy {
       const result = await solve(agent, {
         goal,
         origin: config.target ?? '',
-        config,
+        config: (config as any).solver,
         blackboard: services.blackboard,
         loopDetector: services.loopDetector,
         reflexion: services.reflexion,

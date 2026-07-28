@@ -12,11 +12,6 @@ export const getCapturedHeaders = createTool({
     url: z.string().describe('Target URL or URL pattern to match'),
     role: z.string().optional().describe('Session role (e.g. "admin", "user"). If provided, looks up role-specific session first.'),
   }),
-  outputSchema: z.object({
-    headers: z.record(z.string(), z.string()),
-    authType: z.string().nullable(),
-    source: z.string(),
-  }),
   execute: async ({ url, role }) => {
 
     // 1. Try role-specific session from SessionManager first
@@ -97,11 +92,6 @@ export const storeSession = createTool({
     cookies: z.record(z.string(), z.string()).optional().describe('Session cookies'),
     token: z.string().optional().describe('Bearer token or API key'),
     headers: z.record(z.string(), z.string()).optional().describe('Additional headers to store'),
-  }),
-  outputSchema: z.object({
-    stored: z.boolean(),
-    sessionName: z.string(),
-    headerCount: z.number(),
   }),
   execute: async ({ url, role, cookies, token, headers }) => {
 

@@ -36,7 +36,7 @@ export async function importStateIntoStagehand(
     const page = getActivePage(stagehand)
     if (page) {
       for (const [key, value] of Object.entries(state.localStorage)) {
-        await page.evaluate((k: string, v: string) => localStorage.setItem(k, v), key, value)
+        await (page as any).evaluate((k: string, v: string) => localStorage.setItem(k, v), key, value)
       }
     }
   }
@@ -117,7 +117,7 @@ export async function importStateFromPlaywright(
         if (origin.localStorage) {
           await page.goto(origin.origin).catch(() => {})
           for (const item of origin.localStorage) {
-            await page.evaluate((k: string, v: string) => localStorage.setItem(k, v), item.name, item.value)
+            await (page as any).evaluate((k: string, v: string) => localStorage.setItem(k, v), item.name, item.value)
           }
         }
       }

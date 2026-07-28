@@ -35,8 +35,7 @@ export const useCredential = createTool({
     maskedPassword: z.string().optional(),
     message: z.string(),
   }),
-  execute: async ({ context }) => {
-    const { action, role } = context as { action: 'list' | 'reveal' | 'login'; role?: string }
+  execute: async ({ action, role }) => {
     const credentials = getConfig().credentials ?? {}
     const roles = Object.keys(credentials)
 

@@ -386,17 +386,17 @@ export class HumanObserver {
     page.on('framenavigated', (frame: any) => {
       if (frame === page.mainFrame()) onNavigate(frame.url())
     })
-    page.on('click', onClick)
-    page.on('input', onInput)
-    page.on('select', onSelect)
-    page.on('keydown', onKeyDown)
+    page.on('click' as any, onClick as any)
+    page.on('input' as any, onInput as any)
+    page.on('select' as any, onSelect as any)
+    page.on('keydown' as any, onKeyDown as any)
 
     this.listeners = [
-      () => { try { page.removeListener('navigate', onNavigate) } catch {} },
-      () => { try { page.removeListener('click', onClick) } catch {} },
-      () => { try { page.removeListener('input', onInput) } catch {} },
-      () => { try { page.removeListener('select', onSelect) } catch {} },
-      () => { try { page.removeListener('keydown', onKeyDown) } catch {} },
+      () => { try { page.removeListener('navigate' as any, onNavigate as any) } catch {} },
+      () => { try { page.removeListener('click' as any, onClick as any) } catch {} },
+      () => { try { page.removeListener('input' as any, onInput as any) } catch {} },
+      () => { try { page.removeListener('select' as any, onSelect as any) } catch {} },
+      () => { try { page.removeListener('keydown' as any, onKeyDown as any) } catch {} },
     ]
   }
 
