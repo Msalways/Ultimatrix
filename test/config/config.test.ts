@@ -349,7 +349,7 @@ describe('resolveModel', () => {
     expect((model as any).specificationVersion).toBe('v2')
   })
 
-  it('handles Bedrock provider', () => {
+  it('handles Bedrock provider and cleans up env vars after build', () => {
     const config = baseConfig({
       provider: 'bedrock',
       model: 'claude-3',
@@ -357,10 +357,12 @@ describe('resolveModel', () => {
         bedrock: { authMethod: 'iam', accessKeyId: 'AKID', secretAccessKey: 'SAK', region: 'us-east-1' },
       },
     })
-    resolveModel(config)
-    expect(process.env.AWS_ACCESS_KEY_ID).toBe('AKID')
-    expect(process.env.AWS_SECRET_ACCESS_KEY).toBe('SAK')
-    expect(process.env.AWS_REGION).toBe('us-east-1')
+    const model = resolveModel(config)
+    expect(model).toBeDefined()
+    // Env vars are cleaned up after model build to prevent cross-provider pollution
+    expect(process.env.AWS_ACCESS_KEY_ID).toBeUndefined()
+    expect(process.env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
+    expect(process.env.AWS_REGION).toBeUndefined()
   })
 
   it('handles provider with custom baseUrl in creds', () => {

@@ -76,7 +76,7 @@ export class ReflexionEngine {
   private lastVulnType = ''
   private failedPaths: string[] = []
   private constraints: string[] = []
-  private reflections: Array<{ oldPath: string; newPath: string; reasoning: string; timestamp: string }> = []
+  private reflections: Array<{ oldPath: string; vulnType: string; reasoning: string; timestamp: string }> = []
   private config: ReflexionConfig
 
   constructor(config: Partial<ReflexionConfig> = {}) {
@@ -130,13 +130,22 @@ export class ReflexionEngine {
 
     // When reflection threshold is crossed, record a reflection entry so
     // shouldEscalate() can fire after enough reflections accumulate.
+    // Deduplicate: only push if this is a distinct failure (different path or
+    // different vulnType from the most recent reflection). Prevents infinite
+    // stacking of identical failure reflections while allowing escalation
+    // across distinct failure modes.
     if (this.shouldReflect()) {
-      this.reflections.push({
-        oldPath: path,
-        newPath: '',
-        reasoning: details || `${this.vulnTypeFailCount} same-type failures (${vulnType || 'unknown'})`,
-        timestamp: new Date().toISOString(),
-      })
+      const reasoning = details || `${this.vulnTypeFailCount} same-type failures (${vulnType || 'unknown'})`
+      const last = this.reflections[this.reflections.length - 1]
+      const isNewFailure = !last || last.oldPath !== path || last.vulnType !== vulnType
+      if (isNewFailure) {
+        this.reflections.push({
+          oldPath: path,
+          vulnType: vulnType || '',
+          reasoning,
+          timestamp: new Date().toISOString(),
+        })
+      }
     }
   }
 

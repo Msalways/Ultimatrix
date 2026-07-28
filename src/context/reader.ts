@@ -207,18 +207,18 @@ export class ContextReader {
     }
   }
 
+  /** @deprecated — legacy v6 module, not imported by RSC paths */
   getContextPath(): string {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { dirname } = require('path') as typeof import('path')
-    const scanManagerPath = import.meta.url.includes('file:') 
-      ? new URL(import.meta.url).pathname 
+    const scanManagerPath = (typeof import.meta !== 'undefined' && typeof import.meta.url === 'string' && import.meta.url.includes('file:'))
+      ? new URL(import.meta.url).pathname
       : process.cwd()
-    
-    // Assuming scan-manager.ts is in the same directory as this file
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { ScanManager: ScanManagerClass } = require('../scan-manager') as typeof import('../scan-manager')
-    const scanManager = new ScanManagerClass({ 
-      scansDir: join(dirname(scanManagerPath), 'scans') 
+    const scanManager = new ScanManagerClass({
+      scansDir: join(dirname(scanManagerPath), 'scans')
     })
-    
     return scanManager.getContextPath(this.config.scanId)
   }
 

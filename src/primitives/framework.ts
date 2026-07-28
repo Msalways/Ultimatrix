@@ -19,16 +19,11 @@ import { traceRender } from '../capture/render-tracer'
 import { PayloadStore } from '../payloads/store'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { fileURLToPath } from 'url'
 import { PROJECT_ROOT } from '../lib/project-root'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 function resolvePayloadsDir(): string {
   const candidates = [
     join(PROJECT_ROOT, 'payloads'),
-    join(__dirname, '..', '..', 'payloads'),
     join(process.cwd(), 'payloads'),
   ]
   for (const candidate of candidates) {

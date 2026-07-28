@@ -20,10 +20,13 @@ export interface AttackPath {
 
 const SEVERITY_ORDER = ['info', 'low', 'medium', 'high', 'critical'] as const
 
+function severityIndex(s: string): number {
+  const idx = SEVERITY_ORDER.indexOf(s as typeof SEVERITY_ORDER[number])
+  return idx === -1 ? 0 : idx
+}
+
 function maxSeverity(a: string, b: string): string {
-  const aIdx = SEVERITY_ORDER.indexOf(a as any) ?? 0
-  const bIdx = SEVERITY_ORDER.indexOf(b as any) ?? 0
-  return SEVERITY_ORDER[Math.max(aIdx, bIdx)]
+  return SEVERITY_ORDER[Math.max(severityIndex(a), severityIndex(b))]
 }
 
 /**
@@ -143,7 +146,7 @@ export function findAttackPaths(graphStore: GraphStore): AttackPath[] {
   }
 
   paths.sort((a, b) => {
-    const sevDiff = SEVERITY_ORDER.indexOf(b.totalSeverity) - SEVERITY_ORDER.indexOf(a.totalSeverity)
+    const sevDiff = severityIndex(b.totalSeverity) - severityIndex(a.totalSeverity)
     if (sevDiff !== 0) return sevDiff
     return a.chainLength - b.chainLength
   })

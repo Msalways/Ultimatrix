@@ -59,11 +59,16 @@ function stripMaskedCredentials(
       }
     }
     // Bedrock
-    if (provider === 'bedrock' && entry && 'secretAccessKey' in entry && currentEntry && 'secretAccessKey' in currentEntry) {
-      if (isMasked((entry as any).secretAccessKey) && !isMasked((currentEntry as any).secretAccessKey)) {
-        ;(entry as any).secretAccessKey = (currentEntry as any).secretAccessKey
+    if (provider === 'bedrock' && entry && currentEntry) {
+      if ('secretAccessKey' in entry && 'secretAccessKey' in currentEntry) {
+        if (isMasked((entry as any).secretAccessKey) && !isMasked((currentEntry as any).secretAccessKey)) {
+          ;(entry as any).secretAccessKey = (currentEntry as any).secretAccessKey
+        }
       }
-      if ((entry as any).apiKey && isMasked((entry as any).apiKey) && currentEntry && (currentEntry as any).apiKey && !isMasked((currentEntry as any).apiKey)) {
+      if ((entry as any).sessionToken && isMasked((entry as any).sessionToken) && (currentEntry as any).sessionToken && !isMasked((currentEntry as any).sessionToken)) {
+        ;(entry as any).sessionToken = (currentEntry as any).sessionToken
+      }
+      if ((entry as any).apiKey && isMasked((entry as any).apiKey) && (currentEntry as any).apiKey && !isMasked((currentEntry as any).apiKey)) {
         ;(entry as any).apiKey = (currentEntry as any).apiKey
       }
     }

@@ -1,6 +1,6 @@
 import type { LanguageModelV2 } from '@ai-sdk/provider'
 import type { UltimatrixConfig } from '../config'
-import { DEFAULTS } from '../config'
+import { DEFAULTS, PROVIDER_INFO, resolveProviderAlias } from '../config'
 import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
 import { getGlobalUsageTracker } from '../usage/tracker'
@@ -20,6 +20,21 @@ function isRateLimitError(err: any): boolean {
     msg.includes('rate limit') ||
     msg.includes('request limit') ||
     msg.includes('Too Many Requests')
+  )
+}
+
+function isAuthError(err: any): boolean {
+  const msg = String(err?.message || err || '')
+  const status = err?.status || err?.statusCode
+  return (
+    status === 401 ||
+    status === 403 ||
+    msg.includes('401') ||
+    msg.includes('403') ||
+    msg.includes('Unauthorized') ||
+    msg.includes('authentication') ||
+    msg.includes('invalid_api_key') ||
+    msg.includes('API key')
   )
 }
 
@@ -151,6 +166,22 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                   return result
                 } catch (err: any) {
                   lastError = err
+
+                  // Auth errors (401/403) — do NOT retry, surface immediately
+                  if (isAuthError(err)) {
+                    const duration = Math.round(performance.now() - start)
+                    getForensicLog()?.log({
+                      type: 'tool-error',
+                      agent: provider,
+                      tool: String(prop),
+                      error: `Auth failure [${provider}]: ${err?.message || String(err)}`,
+                      duration,
+                    })
+                    throw new Error(
+                      `Authentication failed for ${provider}: ${err?.message || String(err)}. ` +
+                      `Check your API key for ${provider} in providers.yaml or set ${PROVIDER_INFO[resolveProviderAlias(provider)]?.envVar ?? 'the provider env var'}.`
+                    )
+                  }
 
                   // Rate limit or cumulative quota — retry with provider-specific backoff
                   if ((isRateLimitError(err) || isCumulativeQuotaExhausted(err)) && attempt < attempts - 1) {

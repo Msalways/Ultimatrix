@@ -144,4 +144,16 @@ export const PROVIDER_INFO: Record<string, ProviderInfo> = {
     defaultBaseUrl: '',
     envVar: 'AWS_ACCESS_KEY_ID',
   },
+  cohere: {
+    id: 'cohere',
+    name: 'Cohere',
+    defaultBaseUrl: 'https://api.cohere.com/v2',
+    envVar: 'COHERE_API_KEY',
+  },
+  ollama: {
+    id: 'ollama',
+    name: 'Ollama',
+    defaultBaseUrl: 'http://localhost:11434/v1',
+    envVar: 'OLLAMA_API_KEY',
+  },
 }

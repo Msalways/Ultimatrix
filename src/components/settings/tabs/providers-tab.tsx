@@ -15,7 +15,7 @@ interface ProviderInfo {
 const KNOWN_PROVIDERS = [
   'openai', 'anthropic', 'google', 'groq', 'nvidia', 'together',
   'deepseek', 'mistral', 'xai', 'perplexity', 'cerebras', 'deepinfra',
-  'openrouter', 'azure', 'bedrock', 'custom',
+  'openrouter', 'azure', 'bedrock', 'cohere', 'ollama', 'custom',
 ]
 
 export function ProvidersTab() {

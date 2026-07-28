@@ -88,7 +88,7 @@ describe('Vercel AI SDK Integration via Model Factory', () => {
     expect((model as any).specificationVersion).toBe('v2')
   })
 
-  it('Bedrock sets env vars', () => {
+  it('Bedrock sets and cleans up env vars after model build', () => {
     const config = baseConfig({
       provider: 'bedrock',
       model: 'claude-3',
@@ -96,11 +96,13 @@ describe('Vercel AI SDK Integration via Model Factory', () => {
         bedrock: { authMethod: 'iam', accessKeyId: 'AK', secretAccessKey: 'SK', sessionToken: 'TK', region: 'eu-west-1' },
       },
     })
-    resolveModel(config)
-    expect(process.env.AWS_ACCESS_KEY_ID).toBe('AK')
-    expect(process.env.AWS_SECRET_ACCESS_KEY).toBe('SK')
-    expect(process.env.AWS_SESSION_TOKEN).toBe('TK')
-    expect(process.env.AWS_REGION).toBe('eu-west-1')
+    const model = resolveModel(config)
+    expect(model).toBeDefined()
+    // Env vars are cleaned up after model build to prevent cross-provider pollution
+    expect(process.env.AWS_ACCESS_KEY_ID).toBeUndefined()
+    expect(process.env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
+    expect(process.env.AWS_SESSION_TOKEN).toBeUndefined()
+    expect(process.env.AWS_REGION).toBeUndefined()
   })
 
   it('unknown provider creates model with exact ID', () => {

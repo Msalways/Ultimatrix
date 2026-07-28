@@ -2,10 +2,10 @@
 
 ### Status
 - **1266 tests (95 files), clean tsup build (ESM 1.27MB + CJS 1.30MB + DTS)**
-- **228 source files**, zero test failures
+- **318 source files**, zero test failures
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
-- **21 skills** (7 core + 14 specialized), knowledge-based, not payload lists
+- **56 skills** (10 domains), knowledge-based, not payload lists
 - **Skill-driven tool filtering**: Skills declare toolRefs in YAML frontmatter, tools filtered per-agent
 - **Human-in-the-Loop**: Browser visibility, action capture, session storage, flow reproduction
 - **FIX-PLAN v8.2 COMPLETED**: All root-cause fixes implemented and verified
@@ -34,16 +34,16 @@
               │                │                 │
               └────────────────┼────────────────┘
                                ▼
-                    ┌──────────────────────┐
-                    │  Unified Runner      │ ← src/core/runner.ts
-                    │  (CoreServices)      │   ExecutionStrategy interface
-                    └──────────┬───────────┘
+                     ┌──────────────────────┐
+                     │  Session Runner      │ ← src/session.ts
+                     │  (CoreServices)      │   ExecutionStrategy interface
+                     └──────────┬───────────┘
                                │
                     ┌──────────┴───────────┐
                     ▼                      ▼
            ┌──────────────┐      ┌──────────────────┐
            │  Skills Lib  │      │  Skill-Tool      │
-           │  (21 skills) │      │  Filter          │
+            │  (56 skills) │      │  Filter          │
            │  YAML meta   │      │  core tools      │
            └──────────────┘      │  always included │
                                  └──────────────────┘
@@ -56,7 +56,6 @@ Unified interface for all engines. Each engine implements `ExecutionStrategy`.
 | Module | Location | Purpose |
 |--------|----------|---------|
 | **Types** | `src/core/types.ts` | `ExecutionStrategy`, `StrategyContext`, `CoreServices`, `EnginePreset`, `RunResult` |
-| **Runner** | `src/core/runner.ts` | Resolves engine preset, creates `CoreServices` once, runs strategy |
 | **ToolPack** | `src/core/toolpack.ts` | Shared tool-pack builder for brain + council (core, http, skill, research, orchestration) |
 | **Evidence** | `src/core/evidence.ts` | Shared singleton `EvidenceLedger` for all tools + gate + council |
 | **Blackboard** | `src/core/blackboard.ts` | Unified fact/intent state-space + Plan model + tool-call dedup |
@@ -76,12 +75,6 @@ Parallel debate: 4 LLM members (strategist, operator, skeptic, analyst) debate w
 | **Blackboard** | `src/council/blackboard-shared.ts` | `SharedBlackboard` adapter wrapping core `Blackboard` for council |
 | **Evidence Bridge** | `src/council/evidence-bridge.ts` | `bridgeWorkerToolCall()`, `bridgeWorkerEvidence()`, `extractProposedTasks()` — structured extraction |
 | **Approval** | `src/council/approval.ts` | `classifyImpact()` reads typed `proposal.impact` field, zero regex. HITL gate for critical. |
-
-**Council Strategies:**
-| Strategy | Location | Purpose |
-|----------|----------|---------|
-| **CouncilStrategy** | `src/core/strategies/council.ts` | Wraps `debateOnce()` behind `ExecutionStrategy` interface |
-| **SingleAgentStrategy** | `src/core/strategies/single.ts` | Wraps `solve()` loop behind `ExecutionStrategy` interface |
 
 **Design principle:** No hardcoded substring detection. Structured typed fields at all seams. All regex removed from council code.
 
@@ -299,7 +292,7 @@ reflexion:
 
 ### Known Issues
 
-- Legacy v6 modules (`src/context/`, `src/lib/agent-manager.ts`, `src/swarm/`) have type errors — pre-existing tech debt, not blocking v8
+- Legacy v6 modules (`src/context/`, `src/lib/agent-manager.ts`) have type errors — pre-existing tech debt, not blocking v8
 - Cloudflare challenges block Stagehand crawl — deferred
 - ESLint configured (`eslint.config.js`) but `npm run lint` times out — needs rule tuning for large codebase
 

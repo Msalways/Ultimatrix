@@ -125,6 +125,16 @@ function buildModel(
           apiKey: '',
           transformRequestBody,
         }).chatModel(modelId)
+
+        // Clean up injected env vars after model build to prevent cross-provider leaks
+        if (br?.authMethod === 'api_key') {
+          delete process.env.AWS_BEARER_TOKEN_BEDROCK
+        } else if (br?.authMethod === 'iam') {
+          delete process.env.AWS_ACCESS_KEY_ID
+          delete process.env.AWS_SECRET_ACCESS_KEY
+          delete process.env.AWS_SESSION_TOKEN
+          delete process.env.AWS_REGION
+        }
         break
       }
 

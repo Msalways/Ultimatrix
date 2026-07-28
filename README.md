@@ -99,7 +99,7 @@ That's not a toy. That's a security consultant that works 24/7.
 - **Knowledge graph** — 24 node types, 19 edge types. The agent *queries* its own understanding to decide what to test next
 - **Evidence gate** — Every claim must be backed by actual tool output. No proof = no finding. Zero hallucination tolerance
 - **Reflexion engine** — L0-L4 failure classification with automatic escalation. Gets smarter about *your* target every turn
-- **57 knowledge-based skills** — Not payload lists. Security expertise the LLM reasons over, not pattern-matches against
+- **56 knowledge-based skills** — Not payload lists. Security expertise the LLM reasons over, not pattern-matches against
 - **9 external tool adapters** — Nuclei, sqlmap, ffuf, nmap, and more. Evidence-gated before becoming Findings
 - **Dynamic model selection** — Cheap models for recon, powerful models for exploitation. Automatic per-task routing
 - **Council debate** — 4 LLM specialists (Strategist, Operator, Skeptic, Analyst) debate complex decisions on demand

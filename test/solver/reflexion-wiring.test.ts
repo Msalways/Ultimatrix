@@ -59,21 +59,24 @@ describe('P4.3 — escalation gate (toReflectionPrompt + L3 hints)', () => {
     expect(prompt).toContain('change strategy')
   })
 
-  it('shouldEscalate triggers after maxReflectionsBeforeEscalate reflections', () => {
+  it('shouldEscalate triggers after maxReflectionsBeforeEscalate distinct reflections', () => {
     const engine = new ReflexionEngine()
+    // Cross the threshold with first vulnType
     engine.recordAttempt('runPrimitive', false, null, 'timeout', 'sqli')
     engine.recordAttempt('runPrimitive', false, null, 'timeout', 'sqli')
 
-    // shouldReflect is true, and the reflection was recorded inside recordAttempt
+    // shouldReflect is true, and one reflection was recorded inside recordAttempt
     expect(engine.shouldReflect()).toBe(true)
     // First reflection recorded — shouldEscalate is false (need 3 reflections)
     expect(engine.shouldEscalate()).toBe(false)
 
-    // Continue failing to accumulate more reflections
-    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'sqli')
-    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'sqli')
-    // shouldReflect stays true (vulnTypeFailCount keeps incrementing)
-    // Now shouldEscalate should be true (3 reflections recorded)
+    // Different vulnType → new distinct reflection (crosses threshold again)
+    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'xss')
+    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'xss')
+    // Third vulnType → third distinct reflection
+    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'ssrf')
+    engine.recordAttempt('runPrimitive', false, null, 'timeout', 'ssrf')
+    // Now shouldEscalate should be true (3 distinct reflections recorded)
     expect(engine.shouldEscalate()).toBe(true)
 
     const prompt = engine.toReflectionPrompt()
