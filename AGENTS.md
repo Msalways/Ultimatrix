@@ -1,7 +1,7 @@
 ## Ultimatrix v8 — Intelligence-Augmented Security Researcher
 
 ### Status
-- **1266 tests (95 files), clean tsup build (ESM 1.27MB + CJS 1.30MB + DTS)**
+- **1761 tests (169 files), clean tsup build (ESM 1.61MB + CJS 1.63MB + DTS)**
 - **318 source files**, zero test failures
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
@@ -118,36 +118,22 @@ OODA loop: REASON → EXPLORE → CONCLUDE with intelligence layers observing pa
 | **Registry** | `src/solver/skills/registry.ts` | Graph-aware skill selection by endpoint type, auth, technique history |
 | **Technique Registry** | `src/skills/technique-registry.ts` | Single source of truth for attack techniques, tool mappings, chain rules |
 
-### Skills Library (21 total)
+### Skills Library (56 skills, 10 domains)
 
-**Core (7):**
-| Skill | File |
-|-------|------|
-| Recon | `src/skills/core/recon.md` |
-| Vuln Discovery | `src/skills/core/vuln-discovery.md` |
-| Exploitation | `src/skills/core/exploitation.md` |
-| Post-Exploitation | `src/skills/core/post-exploitation.md` |
-| Reporting | `src/skills/core/reporting.md` |
-| WAF Bypass | `src/skills/core/waf-bypass.md` |
-| Pentest Flow | `src/skills/core/pentest-flow.md` |
+Skills live at `skills/` (project root). YAML frontmatter declares metadata, toolRefs, and composition rules.
 
-**Specialized (14):**
-| Skill | File |
-|-------|------|
-| Web Pentest | `src/skills/specialized/web-pentest.md` |
-| Web Security Advanced | `src/skills/specialized/web-security-advanced.md` |
-| Crypto Toolkit | `src/skills/specialized/crypto-toolkit.md` |
-| CTF Web | `src/skills/specialized/ctf-web.md` |
-| CTF Crypto | `src/skills/specialized/ctf-crypto.md` |
-| CTF Misc | `src/skills/specialized/ctf-misc.md` |
-| OSINT Recon | `src/skills/specialized/osint-recon.md` |
-| AI/MCP Security | `src/skills/specialized/ai-mcp-security.md` |
-| Intranet Pentest | `src/skills/specialized/intranet-pentest.md` |
-| Pentest Tools | `src/skills/specialized/pentest-tools.md` |
-| Authorization | `src/analysis/skills/authorization.md` |
-| Business Logic | `src/analysis/skills/business-logic.md` |
-| Info Disclosure | `src/analysis/skills/information-disclosure.md` |
-| Race Conditions | `src/analysis/skills/race-conditions.md` |
+| Domain | Skills |
+|--------|--------|
+| Injection | exploitation, vuln-discovery, nosql-injection, second-order-sqli, ssti, xxe, command-injection-advanced, email-injection |
+| Web Attacks | web-pentest, web-security-advanced, waf-bypass, blind-ssrf, business-logic, race-conditions-advanced, http-smuggling, deserialization, cors-misconfig, clickjacking, cache-poisoning, open-redirect, prototype-pollution, host-header-injection, css-injection, file-upload-attacks, type-juggling, modern-xss, security-headers-audit |
+| Auth Security | authorization, jwt-advanced, jwt-algorithm-confusion |
+| Recon | recon, osint-recon, information-disclosure, intranet-pentest, post-exploitation, subdomain-takeover, hsts-bypass, ssl-stripping, ctf-misc |
+| Crypto | crypto-toolkit, ctf-crypto |
+| API Security | api-security, api-fuzzing, ai-mcp-security, graphql-attacks, graphql-depth-introspection, websocket-attacks |
+| Cloud Security | aws-iam-exploitation, azure-exploitation, gcp-exploitation, docker-escape, kubernetes-security, serverless-attacks |
+| LLM Security | llm-agentic-security |
+| Supply Chain | supply-chain |
+| Reports | reporting |
 
 ### Campaign Engine (`src/campaign/`)
 
@@ -253,16 +239,18 @@ HAR-based business-logic analysis: value-provenance graph, auth decode, custom h
 
 ### Engine Routing
 
-- `config.engine: 'legacy'` (default) — Uses supervisor + 4 worker agents
+- `config.engine: 'multi-model'` (default) — Solver + model-aware delegation
+- `config.engine: 'legacy'` — Uses supervisor + 4 worker agents
 - `config.engine: 'solver'` — Uses OODA solver loop (REASON → EXPLORE → CONCLUDE)
+- `config.engine: 'council'` — Parallel debate with HITL (on-demand)
 - `ultimatrix solve` always uses solver engine
 - `ultimatrix interact` respects `config.engine`
 
-### Graph Schema (20 node types, 15 edge types)
+### Graph Schema (24 node types, 20 edge types)
 
-**Node types:** Page, Action, Input, Endpoint, Test, Finding, AuthFlow, RBACRole, Attack, Fact, Intent, Reflexion, Workflow, Entity, Hypothesis, Experiment, CandidateFinding, HeaderSemantic, AuthScheme, OutcomeFeedback
+**Node types:** Page, Action, Input, Endpoint, Test, Finding, AuthFlow, RBACRole, Attack, Fact, Intent, Reflexion, Workflow, Entity, Hypothesis, Experiment, CandidateFinding, HeaderSemantic, AuthScheme, OutcomeFeedback, RenderedElement, CouncilDebate, ExploitProof, ThreatModel
 
-**Edge types:** HAS_ACTION, HAS_INPUT, HAS_TEST, FOUND_ON, REQUIRES_AUTH, CHAINED_FROM, TARGETS, PRODUCED, HAS_ROLE, PERMISSION, BUILT_ON, PRODUCED_BY, VALUE_ORIGIN, REQUIRES_ROLE, CHAINS_TO
+**Edge types:** HAS_ACTION, HAS_INPUT, HAS_TEST, FOUND_ON, REQUIRES_AUTH, CHAINED_FROM, TARGETS, PRODUCED, HAS_ROLE, PERMISSION, BUILT_ON, PRODUCED_BY, VALUE_ORIGIN, REQUIRES_ROLE, CHAINS_TO, RENDERED_ON, REINGESTS, ORDERED_BEFORE, PROVES, SESSION_REACHES
 
 ### Config
 
@@ -284,7 +272,7 @@ reflexion:
 
 ### Key Commands
 
-- `npm test` — full test suite (1266/1266)
+- `npm test` — full test suite (1761/1761)
 - `npm run build:cli` — tsup build
 - `npm run lint` — eslint src/
 - `npx ultimatrix solve -t <url>` — OODA solver
