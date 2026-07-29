@@ -66,8 +66,20 @@ export interface BrowserConfig {
 
 export interface MemoryConfig {
   lastMessages: number
-  semanticRecall: boolean
+  semanticRecall: boolean | {
+    topK?: number
+    messageRange?: number
+    scope?: 'thread' | 'resource'
+  }
   workingMemory: boolean
+  vector?: {
+    enabled: boolean
+    url?: string
+  }
+  embedder?: {
+    provider: string
+    model: string
+  }
 }
 
 export interface AgentConfig {
@@ -315,6 +327,7 @@ export const DEFAULTS = {
     lastMessages: 10,
     semanticRecall: false,
     workingMemory: true,
+    vector: { enabled: false },
   },
   browser: {
     headless: true,
@@ -914,8 +927,16 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     },
     memory: {
       lastMessages: Number(memoryRaw.lastMessages ?? DEFAULTS.memory.lastMessages),
-      semanticRecall: Boolean(memoryRaw.semanticRecall ?? DEFAULTS.memory.semanticRecall),
+      semanticRecall: memoryRaw.semanticRecall !== undefined ? memoryRaw.semanticRecall : DEFAULTS.memory.semanticRecall,
       workingMemory: Boolean(memoryRaw.workingMemory ?? DEFAULTS.memory.workingMemory),
+      vector: memoryRaw.vector ? {
+        enabled: Boolean(memoryRaw.vector.enabled ?? false),
+        url: memoryRaw.vector.url ? String(memoryRaw.vector.url) : undefined,
+      } : DEFAULTS.memory.vector,
+      embedder: memoryRaw.embedder ? {
+        provider: String(memoryRaw.embedder.provider ?? ''),
+        model: String(memoryRaw.embedder.model ?? ''),
+      } : undefined,
     },
     agent: {
       maxSteps: Number(agentRaw.maxSteps ?? DEFAULTS.agent.maxSteps),
@@ -1213,11 +1234,13 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
 
   // Write non-default memory config
   const m = config.memory
-  if (m.lastMessages !== 10 || m.semanticRecall !== false || m.workingMemory !== true) {
+  if (m.lastMessages !== 10 || m.semanticRecall !== false || m.workingMemory !== true || m.vector?.enabled || m.embedder) {
     output.memory = {
       lastMessages: m.lastMessages,
       semanticRecall: m.semanticRecall,
       workingMemory: m.workingMemory,
+      ...(m.vector?.enabled ? { vector: m.vector } : {}),
+      ...(m.embedder ? { embedder: m.embedder } : {}),
     }
   }
 

@@ -44,200 +44,239 @@ export function ChatStream() {
     reset()
     setRunning(true)
 
-    const body: Record<string, unknown> = { goal }
-    if (activeTarget) body.target = activeTarget
-
-    const es = new EventSource('/api/solve?' + new URLSearchParams({ goal, target: activeTarget || '' }))
-    eventSourceRef.current = es
-
     let answerBuffer = ''
     let thinkingBuffer = ''
     let thinkingId = nextId()
+    let aborted = false
 
-    es.addEventListener('solver', (e) => {
+    const abortController = new AbortController()
+    eventSourceRef.current = { close: () => abortController.abort() } as any
+
+    function handleSSEEvent(event: string, data: string) {
+      if (aborted) return
       try {
-        const msg = JSON.parse(e.data)
-        switch (msg.kind) {
-          case 'reasoning':
-            thinkingBuffer += msg.text
-            updateMessage(thinkingId, { content: thinkingBuffer } as any)
-            break
-          case 'answer':
-            if (thinkingBuffer && thinkingBuffer.length > 0) {
-              // Finalize thinking block
-              thinkingBuffer = ''
-              thinkingId = nextId()
-            }
-            answerBuffer += msg.text
-            const existingAnswer = useChatStore.getState().messages.find(
-              (m) => 'role' in m && m.role === 'assistant' && m.id !== msg.id
-            )
-            if (existingAnswer) {
-              updateMessage(existingAnswer.id, { content: answerBuffer } as any)
-            } else {
+        if (event === 'solver') {
+          const msg = JSON.parse(data)
+          switch (msg.kind) {
+            case 'reasoning':
+              thinkingBuffer += msg.text
+              updateMessage(thinkingId, { content: thinkingBuffer } as any)
+              break
+            case 'answer':
+              if (thinkingBuffer && thinkingBuffer.length > 0) {
+                thinkingBuffer = ''
+                thinkingId = nextId()
+              }
+              answerBuffer += msg.text
+              const existingAnswer = useChatStore.getState().messages.find(
+                (m) => 'role' in m && m.role === 'assistant' && m.id !== msg.id
+              )
+              if (existingAnswer) {
+                updateMessage(existingAnswer.id, { content: answerBuffer } as any)
+              } else {
+                addMessage({
+                  id: nextId(),
+                  role: 'assistant',
+                  content: answerBuffer,
+                  timestamp: Date.now(),
+                })
+              }
+              break
+            case 'tool':
               addMessage({
                 id: nextId(),
-                role: 'assistant',
-                content: answerBuffer,
+                type: 'tool-call',
+                name: msg.name,
+                args: msg.args,
+                status: 'running',
                 timestamp: Date.now(),
-              })
-            }
-            break
-          case 'tool':
-            addMessage({
-              id: nextId(),
-              type: 'tool-call',
-              name: msg.name,
-              args: msg.args,
-              status: 'running',
-              timestamp: Date.now(),
-              workerId: msg.workerId,
-              workerName: msg.workerName,
-            } as any)
-            incrementToolCalls()
-            break
-          case 'tool-result': {
-            const state = useChatStore.getState()
-            const lastTool = [...state.messages].reverse().find(
-              (m): m is ToolCallMessage => (m as any).type === 'tool-call' && (m as any).name === msg.name && (m as any).status === 'running'
-            )
-            if (lastTool) {
-              updateMessage(lastTool.id, {
-                status: msg.ok ? 'done' : 'error',
-                result: msg.result,
+                workerId: msg.workerId,
+                workerName: msg.workerName,
               } as any)
+              incrementToolCalls()
+              break
+            case 'tool-result': {
+              const state = useChatStore.getState()
+              const lastTool = [...state.messages].reverse().find(
+                (m): m is ToolCallMessage => (m as any).type === 'tool-call' && (m as any).name === msg.name && (m as any).status === 'running'
+              )
+              if (lastTool) {
+                updateMessage(lastTool.id, {
+                  status: msg.ok ? 'done' : 'error',
+                  result: msg.result,
+                } as any)
+              }
+              break
             }
-            break
+            case 'phase':
+              setPhase(msg.phase, msg.step)
+              addMessage({
+                id: nextId(),
+                type: 'phase',
+                phase: msg.phase,
+                step: msg.step,
+                timestamp: Date.now(),
+              } as any)
+              break
+            case 'done':
+              break
           }
-          case 'phase':
-            setPhase(msg.phase, msg.step)
+        } else if (event === 'phase') {
+          const d = JSON.parse(data)
+          setPhase(d.phase, d.step)
+        } else if (event === 'worker:spawned') {
+          const d = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'worker-spawned',
+            workerId: d.workerId,
+            name: d.workerName,
+            skillId: d.skillId,
+            task: d.task,
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'worker:completed') {
+          const d = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'worker-completed',
+            workerId: d.workerId,
+            name: d.workerName || 'Worker',
+            status: 'completed',
+            duration: d.durationMs,
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'finding:discovered') {
+          const d = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'finding',
+            findingId: d.findingId,
+            severity: d.severity,
+            technique: d.technique,
+            endpoint: d.endpoint,
+            timestamp: Date.now(),
+          } as any)
+          incrementFindings()
+        } else if (event === 'graph:node') {
+          const d = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'graph-update',
+            nodeType: d.nodeType,
+            nodeId: d.nodeId,
+            label: d.label,
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'done') {
+          const result = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'summary',
+            content: result.answer?.content || 'Analysis complete',
+            steps: result.steps || 0,
+            toolCalls: result.toolCalls || 0,
+            findings: result.answer?.findings?.length || 0,
+            durationMs: result.durationMs || 0,
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'error') {
+          try {
             addMessage({
               id: nextId(),
-              type: 'phase',
-              phase: msg.phase,
-              step: msg.step,
+              type: 'error',
+              content: JSON.parse(data).message || 'Unknown error',
               timestamp: Date.now(),
             } as any)
-            break
-          case 'done':
-            break
+          } catch {
+            addMessage({
+              id: nextId(),
+              type: 'error',
+              content: String(data),
+              timestamp: Date.now(),
+            } as any)
+          }
         }
       } catch {
         // parse error, ignore
       }
-    })
+    }
 
-    es.addEventListener('phase', (e) => {
+    async function readSSE(res: Response) {
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEvent = 'message'
+
       try {
-        const data = JSON.parse(e.data)
-        setPhase(data.phase, data.step)
-      } catch {}
-    })
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done || aborted) break
+          buffer += decoder.decode(value, { stream: true })
 
-    es.addEventListener('worker:spawned', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        addMessage({
-          id: nextId(),
-          type: 'worker-spawned',
-          workerId: data.workerId,
-          name: data.workerName,
-          skillId: data.skillId,
-          task: data.task,
-          timestamp: Date.now(),
-        } as any)
-      } catch {}
-    })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
 
-    es.addEventListener('worker:completed', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        addMessage({
-          id: nextId(),
-          type: 'worker-completed',
-          workerId: data.workerId,
-          name: data.workerName || 'Worker',
-          status: 'completed',
-          duration: data.durationMs,
-          timestamp: Date.now(),
-        } as any)
-      } catch {}
-    })
-
-    es.addEventListener('finding:discovered', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        addMessage({
-          id: nextId(),
-          type: 'finding',
-          findingId: data.findingId,
-          severity: data.severity,
-          technique: data.technique,
-          endpoint: data.endpoint,
-          timestamp: Date.now(),
-        } as any)
-        incrementFindings()
-      } catch {}
-    })
-
-    es.addEventListener('graph:node', (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        addMessage({
-          id: nextId(),
-          type: 'graph-update',
-          nodeType: data.nodeType,
-          nodeId: data.nodeId,
-          label: data.label,
-          timestamp: Date.now(),
-        } as any)
-      } catch {}
-    })
-
-    es.addEventListener('done', (e) => {
-      try {
-        const result = JSON.parse(e.data)
-        addMessage({
-          id: nextId(),
-          type: 'summary',
-          content: result.answer?.content || 'Analysis complete',
-          steps: result.steps || 0,
-          toolCalls: result.toolCalls || 0,
-          findings: result.answer?.findings?.length || 0,
-          durationMs: result.durationMs || 0,
-          timestamp: Date.now(),
-        } as any)
-      } catch {}
-      cleanup()
-    })
-
-    es.addEventListener('error', (e: MessageEvent) => {
-      if (e.data) {
-        try {
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.slice(7).trim()
+            } else if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              handleSSEEvent(currentEvent, data)
+              currentEvent = 'message'
+            } else if (line === '') {
+              currentEvent = 'message'
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
           addMessage({
             id: nextId(),
             type: 'error',
-            content: JSON.parse(e.data).message || 'Unknown error',
-            timestamp: Date.now(),
-          } as any)
-        } catch {
-          addMessage({
-            id: nextId(),
-            type: 'error',
-            content: String(e.data),
+            content: err.message || 'Stream error',
             timestamp: Date.now(),
           } as any)
         }
+      } finally {
+        cleanup()
       }
-      cleanup()
-    })
-
-    es.onerror = () => {
-      cleanup()
     }
 
+    fetch('/api/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal, target: activeTarget || '' }),
+      signal: abortController.signal,
+    })
+      .then((res) => {
+        if (!res.ok) {
+          return res.json().then((err) => {
+            addMessage({
+              id: nextId(),
+              type: 'error',
+              content: err.error || `HTTP ${res.status}`,
+              timestamp: Date.now(),
+            } as any)
+            cleanup()
+          })
+        }
+        readSSE(res)
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          addMessage({
+            id: nextId(),
+            type: 'error',
+            content: err.message || 'Fetch failed',
+            timestamp: Date.now(),
+          } as any)
+        }
+        cleanup()
+      })
+
     function cleanup() {
-      es.close()
+      aborted = true
       eventSourceRef.current = null
       setStreaming(false)
       setRunning(false)
@@ -254,6 +293,15 @@ export function ChatStream() {
       setRunning(false)
     }
   }, [setStreaming, setRunning])
+
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
+    }
+  }, [])
 
   return (
     <div className="flex flex-col h-full">

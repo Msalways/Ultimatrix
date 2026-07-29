@@ -134,15 +134,81 @@ export function AdvancedTab() {
             />
           </ConfigField>
           <ConfigToggle
-            checked={memory.semanticRecall ?? false}
-            onChange={(v) => update({ memory: { ...memory, semanticRecall: v } })}
+            checked={!!memory.semanticRecall}
+            onChange={(v) => update({ memory: { ...memory, semanticRecall: v ? { topK: 3, messageRange: 2, scope: 'thread' } : false } })}
             label="Semantic recall"
           />
+          {memory.semanticRecall ? (
+            <>
+              <ConfigField label="Top K" description="Number of similar messages to retrieve">
+                <ConfigNumber
+                  value={(typeof memory.semanticRecall === 'object' ? memory.semanticRecall.topK : 3) ?? 3}
+                  onChange={(v) => update({ memory: { ...memory, semanticRecall: { ...(typeof memory.semanticRecall === 'object' ? memory.semanticRecall : {}), topK: v, scope: 'thread' } } })}
+                  min={1}
+                  max={20}
+                />
+              </ConfigField>
+              <ConfigField label="Message Range" description="Context messages around each match">
+                <ConfigNumber
+                  value={(typeof memory.semanticRecall === 'object' ? memory.semanticRecall.messageRange : 2) ?? 2}
+                  onChange={(v) => update({ memory: { ...memory, semanticRecall: { ...(typeof memory.semanticRecall === 'object' ? memory.semanticRecall : {}), messageRange: v, scope: 'thread' } } })}
+                  min={0}
+                  max={10}
+                />
+              </ConfigField>
+              <ConfigField label="Recall Scope">
+                <select
+                  value={(typeof memory.semanticRecall === 'object' ? memory.semanticRecall.scope : 'thread') ?? 'thread'}
+                  onChange={(e) => update({ memory: { ...memory, semanticRecall: { ...(typeof memory.semanticRecall === 'object' ? memory.semanticRecall : {}), scope: e.target.value as 'thread' | 'resource' } } })}
+                  className="w-full px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                >
+                  <option value="thread">Thread (this session only)</option>
+                  <option value="resource">Resource (all sessions)</option>
+                </select>
+              </ConfigField>
+            </>
+          ) : null}
           <ConfigToggle
             checked={memory.workingMemory ?? true}
             onChange={(v) => update({ memory: { ...memory, workingMemory: v } })}
             label="Working memory"
           />
+          <div className="border-t border-zinc-800 pt-3 mt-3">
+            <ConfigToggle
+              checked={memory.vector?.enabled ?? false}
+              onChange={(v) => update({ memory: { ...memory, vector: { ...(memory.vector || {}), enabled: v } } })}
+              label="Enable vector store"
+              description="Required for semantic recall. Uses LibSQL (SQLite) — no external DB needed."
+            />
+            {memory.vector?.enabled && (
+              <ConfigField label="Vector DB URL" description="Defaults to same SQLite file as storage">
+                <input
+                  value={memory.vector?.url || ''}
+                  onChange={(e) => update({ memory: { ...memory, vector: { ...memory.vector!, url: e.target.value || undefined } } })}
+                  className="w-full px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                  placeholder="file:./ultimatrix.db"
+                />
+              </ConfigField>
+            )}
+          </div>
+          <div className="border-t border-zinc-800 pt-3 mt-3">
+            <ConfigField label="Embedder Provider" description="e.g., openai, voyage, mistral">
+              <input
+                value={memory.embedder?.provider || ''}
+                onChange={(e) => update({ memory: { ...memory, embedder: e.target.value ? { provider: e.target.value, model: memory.embedder?.model || '' } : undefined } })}
+                className="w-full px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                placeholder="openai"
+              />
+            </ConfigField>
+            <ConfigField label="Embedder Model" description="e.g., text-embedding-3-small">
+              <input
+                value={memory.embedder?.model || ''}
+                onChange={(e) => update({ memory: { ...memory, embedder: e.target.value ? { provider: memory.embedder?.provider || 'openai', model: e.target.value } : undefined } })}
+                className="w-full px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                placeholder="text-embedding-3-small"
+              />
+            </ConfigField>
+          </div>
         </div>
       </ConfigSection>
 
