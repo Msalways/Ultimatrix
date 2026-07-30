@@ -17,6 +17,8 @@ export interface ToolCallMessage {
   duration?: number
   timestamp: number
   workerId?: string
+  workerName?: string
+  toolCallIndex?: number
 }
 
 export interface PhaseMessage {
@@ -25,6 +27,7 @@ export interface PhaseMessage {
   phase: string
   step: number
   timestamp: number
+  label?: string
 }
 
 export interface ThinkingMessage {

@@ -17,7 +17,7 @@ import { addDiscovery } from '../tools/user-discovery'
 import { detectChainsTool, verifyChainsTool } from '../tools/detect-chains-tool'
 import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import { readReportTool, setForensicLog, getForensicLog } from '../tools/report-tools'
-import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
+import { loadSkillReference, searchSkillTool, loadSkillBodyTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from '../tools/flow-tools'
 import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
@@ -113,6 +113,7 @@ export type ToolRegistry = {
   // Skill Tools
   loadSkillReference: typeof loadSkillReference
   searchSkills: typeof searchSkillTool
+  loadSkillBody: typeof loadSkillBodyTool
   
   // Encode/Decode
   encodeDecode: typeof encodeDecode
@@ -240,6 +241,7 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     // Skill Tools
     loadSkillReference,
     searchSkills: searchSkillTool,
+    loadSkillBody: loadSkillBodyTool,
     
     // Encode/Decode
     encodeDecode,
@@ -339,6 +341,7 @@ export const TOOL_IDS = [
   'loadSkillReference',
   'listSkills',
   'searchSkills',
+  'loadSkillBody',
   'encodeDecode',
   'saveSession',
   'restoreSession',

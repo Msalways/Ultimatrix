@@ -100,3 +100,29 @@ export const searchSkillTool = createTool({
     }
   },
 })
+
+export const loadSkillBodyTool = createTool({
+  id: 'loadSkillBody',
+  description: 'Load a skill\'s full methodology instructions, tool chains, composition rules, and references. Returns the complete attack guidance for a specific skill. Use this after searchSkills identifies a relevant skill — load its body to get the detailed attack methodology before delegating to a worker or applying it directly.',
+  inputSchema: z.object({
+    skillId: z.string().describe('Skill ID (e.g. "injection/exploitation", "web-attacks/web-pentest", "auth-security/authorization")'),
+  }),
+  execute: async ({ skillId }) => {
+    const skill = loadSkill(skillId)
+    if (!skill) return { ok: false, error: `Skill "${skillId}" not found. Use listSkills or searchSkills to find valid skill IDs.` }
+    return {
+      ok: true,
+      value: {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        tier: skill.tier,
+        instructions: skill.instructions,
+        toolRefs: skill.toolRefs,
+        toolChains: skill.toolChains,
+        compositionRules: skill.compositionRules,
+        references: skill.references.map(r => ({ id: r.id, title: r.title })),
+      },
+    }
+  },
+})

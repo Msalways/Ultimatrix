@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ skills: [] })
     }
 
-    const skills = engine.getSkillRegistry().list()
+    const registry = engine.getSkillRegistry()
+    if (!registry) return NextResponse.json({ skills: [] })
+    const skills = registry.list()
     const skillData = skills.map((s: any) => ({
       id: s.id,
       name: s.name ?? s.id,

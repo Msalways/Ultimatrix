@@ -3,6 +3,7 @@ import type { UltimatrixConfig, ModelCapabilities } from '../config'
 import { DEFAULTS } from '../config'
 import { WorkerFactory, type WorkerConfig } from './factory'
 import type { SkillRegistry } from '../solver/skills/registry'
+import { loadSkill } from '../solver/skills/loader'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { ContextBudgetManager, type ContextFitParams } from '../models/context-manager'
 import type { ModelSelector, WorkerTask } from '../models/selector'
@@ -138,7 +139,7 @@ export class WorkerPool {
    */
   validateWorkerContext(config: WorkerConfig, modelId: string): ReturnType<ContextBudgetManager['validateContextFit']> | null {
     if (!this.contextManager) return null
-    const skill = (this.factory as any).skillRegistry?.get?.(config.skillId)
+    const skill = loadSkill(config.skillId)
     return this.contextManager.validateContextFit({
       modelId,
       systemPrompt: skill?.instructions || '',

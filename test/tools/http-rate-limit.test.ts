@@ -18,6 +18,11 @@ vi.mock('../../src/compression/headroom-service', () => ({
       return { compressed: body, wasCompressed: false, wasTruncated: false }
     }
   },
+  getCompressionService: () => ({
+    async compressResponse(body: string) {
+      return { compressed: body, wasCompressed: false, wasTruncated: false }
+    }
+  }),
 }))
 
 vi.mock('../../src/utils/logger', () => ({

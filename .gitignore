@@ -71,3 +71,7 @@ test-worker.ts
 
 # Evaluation run artifacts
 evals/
+
+# Temporary output files
+test-output.txt
+tsc-errors.txt

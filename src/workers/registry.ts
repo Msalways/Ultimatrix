@@ -25,7 +25,7 @@ export async function createMemoryStore(dbPath?: string): Promise<LibSQLStore> {
 function createVectorStore(dbPath?: string): LibSQLVector | null {
   if (!_vector) {
     const url = dbPath ? `file:${dbPath}` : 'file:./ultimatrix.db'
-    _vector = new LibSQLVector({ url })
+    _vector = new LibSQLVector({ id: 'ultimatrix-vector', url })
   }
   return _vector
 }

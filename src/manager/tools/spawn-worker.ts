@@ -100,12 +100,22 @@ export function createSpawnWorkerTool(
 
         emitWorkerCompleted(worker.id, workerName, skillId, task, 'completed', { result, durationMs, graphDiff: { nodesAdded: graphDiff.nodesAdded, findingsAdded: graphDiff.findingsAdded } })
 
+        // Cap worker result: return only compact fields, NOT the full FullOutput.
+        // FullOutput contains steps/toolCalls/toolResults which are unbounded and
+        // would bloat the brain's context if included.
+        const compactResult = {
+          text: typeof (result as any)?.text === 'string' ? (result as any).text.slice(0, 2000) : '',
+          findingsCount: graphDiff.findingsAdded,
+          nodesAdded: graphDiff.nodesAdded,
+          durationMs,
+        }
+
         return {
           ok: true,
           value: {
             workerId: worker.id,
-            status: 'spawned',
-            result,
+            status: 'completed',
+            result: compactResult,
             graphDiff,
           },
         } as any

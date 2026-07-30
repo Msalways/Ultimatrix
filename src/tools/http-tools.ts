@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
-import { CompressionService } from '../compression/headroom-service'
+import { CompressionService, getCompressionService } from '../compression/headroom-service'
 import { isUrlInScope, getScopeConfig } from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
@@ -145,7 +145,7 @@ export const httpRequest = createTool({
       }
       const raw = await fetchWithBackoff(url, fetchOpts)
       const rawBody = await raw.text()
-      const compressionResult = await new CompressionService().compressResponse(rawBody)
+      const compressionResult = await getCompressionService().compressResponse(rawBody)
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
@@ -224,7 +224,7 @@ export const multipartUpload = createTool({
         redirect: 'manual',
         signal: AbortSignal.timeout(15_000),
       })
-      const responseBody = (await new CompressionService().compressResponse(await raw.text())).compressed
+      const responseBody = (await getCompressionService().compressResponse(await raw.text())).compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
       recordStructuredEvidence({
@@ -287,7 +287,7 @@ export const followRedirects = createTool({
         const location = raw.headers.get('location')
         if (!isRedirect || !location) {
           const rawBody = await raw.text()
-          const compressionResult = await new CompressionService().compressResponse(rawBody)
+          const compressionResult = await getCompressionService().compressResponse(rawBody)
           const body = compressionResult.compressed
           const resHeaders: Record<string, string> = {}
           raw.headers.forEach((v, k) => { resHeaders[k] = v })
@@ -367,7 +367,7 @@ export const omitHeader = createTool({
       }
       const raw = await fetchWithBackoff(url, fetchOpts)
       const rawBody = await raw.text()
-      const compressionResult = await new CompressionService().compressResponse(rawBody)
+      const compressionResult = await getCompressionService().compressResponse(rawBody)
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })

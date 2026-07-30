@@ -1,7 +1,7 @@
 import { BudgetAwarePruner, getUniversalTools } from './budget-pruner'
 import { TokenProfiler } from './token-profiler'
 import type { TaskBudget } from '../models/selector'
-import { loadSkill } from '../solver/skills/loader'
+import { initSkillIndex } from '../solver/skills/loader'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
 export type { ToolInferenceRule } from '../skills/technique-registry'
@@ -30,10 +30,11 @@ export class DynamicToolSelector {
     const tools = new Set<string>(getUniversalTools())
 
     // Add skill-specific tools
+    const index = initSkillIndex()
     for (const skillId of skillIds) {
-      const skill = loadSkill(skillId)
-      if (skill) {
-        for (const t of skill.toolRefs) {
+      const meta = index.get(skillId)
+      if (meta) {
+        for (const t of meta.toolRefs) {
           tools.add(t)
         }
       }

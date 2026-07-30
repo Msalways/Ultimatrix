@@ -49,11 +49,11 @@ export function classifyOverflow(
     }
   }
 
-  // Known model — check if estimate exceeds window
-  if (estimatedTokens > contextWindow) {
+  // Known model — check if estimate exceeds 95% of window (5% safety margin)
+  if (estimatedTokens > contextWindow * 0.95) {
     return {
       isOverflow: true,
-      reason: `estimated ${estimatedTokens} tokens exceeds context window ${contextWindow}`,
+      reason: `estimated ${estimatedTokens} tokens exceeds 95% of context window ${contextWindow}`,
     }
   }
 

@@ -1,4 +1,4 @@
-import { loadSkill } from './loader'
+import { initSkillIndex } from './loader'
 
 const CORE_TOOLS = [
   'listTools',
@@ -46,11 +46,12 @@ const CORE_TOOLS = [
 
 export function resolveToolsForSkills(skillIds: string[]): string[] {
   const tools = new Set<string>(CORE_TOOLS)
+  const index = initSkillIndex()
 
   for (const id of skillIds) {
-    const skill = loadSkill(id)
-    if (skill) {
-      for (const t of skill.toolRefs) {
+    const meta = index.get(id)
+    if (meta) {
+      for (const t of meta.toolRefs) {
         tools.add(t)
       }
     }

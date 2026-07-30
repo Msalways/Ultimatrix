@@ -33,7 +33,7 @@ import {
 } from '../graph/tools'
 import { getGraphSchema, getCaptureOverview, queryRelations } from '../graph/relation-tools'
 import { verifyChainsTool } from '../tools/detect-chains-tool'
-import { loadSkillReference, searchSkillTool, listSkills } from '../tools/skill-tools'
+import { loadSkillReference, searchSkillTool, listSkills, loadSkillBodyTool } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
@@ -115,6 +115,7 @@ function skillTools(p: string): Record<string, any> {
     listSkills: s(listSkills, p),
     searchSkills: s(searchSkillTool, p),
     loadSkillReference: s(loadSkillReference, p),
+    loadSkillBody: s(loadSkillBodyTool, p),
   }
 }
 

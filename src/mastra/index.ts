@@ -12,6 +12,7 @@ import { resolveToolsForSkills } from '../solver/skills/tool-filter'
 import type { Skill } from '../solver/skills/registry'
 import type { MastraMemory } from '@mastra/core/memory'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
+import type { InputProcessorOrWorkflow, OutputProcessorOrWorkflow } from '@mastra/core/processors'
 
 function sanitizeToolRecord(tools: Record<string, any>, provider?: string): Record<string, any> {
   if (!provider) return tools
@@ -45,6 +46,10 @@ export interface AgentOptions {
   toolIds?: string[]
   /** Additional instructions appended after the base + skill instructions (e.g. current task). */
   taskInstructions?: string
+  /** Input processors (e.g. TokenLimiterProcessor) applied before each LLM step. */
+  inputProcessors?: InputProcessorOrWorkflow[]
+  /** Output processors applied to LLM output. */
+  outputProcessors?: OutputProcessorOrWorkflow[]
 }
 
 /**
@@ -131,6 +136,14 @@ export function createAgent(
 
   if (options?.memory) {
     agentConfig.memory = options.memory
+  }
+
+  if (options?.inputProcessors) {
+    agentConfig.inputProcessors = options.inputProcessors
+  }
+
+  if (options?.outputProcessors) {
+    agentConfig.outputProcessors = options.outputProcessors
   }
 
   if (options?.browser) {

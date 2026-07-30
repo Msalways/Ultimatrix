@@ -15,14 +15,14 @@ import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitSessionInit, emitSessionError, emitSessionComplete, emitSpiderStart, emitSpiderComplete, emitSpiderError } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
-import { createAllWorkers, createMemoryStore, createMemory } from '../workers/registry'
-import { createSupervisor } from '../manager/agent'
+import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import { finalizeEngagementMemory } from '../intelligence/cross-engagement'
 import type { FindingNode } from '../graph/schema'
 import { NodeType } from '../graph/schema'
 import { createSpiderAgent } from '../spider/agent'
+import { buildSpiderPrompt } from '../spider/instructions'
 import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
@@ -31,15 +31,14 @@ import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
-import { createSolverBrain } from '../solver/brain-tools'
 import { solve } from '../solver/solver'
-import { Blackboard } from '../solver/blackboard'
-import { EvidenceGate } from '../intelligence/evidence-gate'
-import { LoopDetector } from '../intelligence/anti-loop'
-import { ReflexionEngine } from '../intelligence/reflexion'
 import { getGlobalObserver } from '../capture/human-observer'
 import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
+import type { Blackboard } from '../solver/blackboard'
+import type { EvidenceGate } from '../intelligence/evidence-gate'
+import { LoopDetector } from '../intelligence/anti-loop'
+import type { ReflexionEngine } from '../intelligence/reflexion'
 import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
@@ -63,7 +62,6 @@ import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import { ModelSelector } from '../models/selector'
 import { getGlobalQuotaTracker } from '../models/quota-tracker'
 import type { CoreServices } from '../core/types'
-import { coreEvidenceLedger } from '../core/evidence'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
@@ -480,12 +478,7 @@ export class SessionLifecycle {
       const spiderMaxDurationMs = config.spider?.maxDurationMs ?? 120_000
       const spiderDeadline = Date.now() + spiderMaxDurationMs
 
-      const streamPrompt = [
-        `Navigate to ${target} using stagehand_navigate.`,
-        `First parse the HTML with findEndpointsInResponse to extract all links, forms, and API endpoints BEFORE guessing URLs.`,
-        `Use stagehand tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials).`,
-        `Record everything with the graph tools. Report all findings.`,
-      ].join(' ')
+      const streamPrompt = buildSpiderPrompt(target)
 
       // Guard the initial stream() call — if the first LLM call hangs, the
       // deadline-based Promise.race breaks us out instead of blocking forever.
@@ -631,98 +624,26 @@ export class SessionLifecycle {
     this.assertPhase('spider')
     const { config, browser, memory, target, harContextForLLM } = this._resources as SessionResources
 
+    const { createEngineServices } = await import('./engine-setup')
+    const engine = await createEngineServices({ config, browser, memory, target, harContextForLLM })
+
+    // Transfer engine services into lifecycle resources
+    Object.assign(this._resources, {
+      solverBrain: engine.solverBrain,
+      supervisor: engine.supervisor,
+      workers: engine.workers,
+      skillRegistry: engine.skillRegistry,
+      workerPool: engine.workerPool,
+      sessionBlackboard: engine.sessionBlackboard,
+      sessionEvidence: engine.sessionEvidence,
+      sessionLoopDetector: engine.sessionLoopDetector,
+      sessionReflexion: engine.sessionReflexion,
+      coreServices: engine.coreServices,
+      modelSelector: engine.modelSelector,
+      council: engine.council,
+    })
+
     const useSolver = config.engine !== 'legacy'
-
-    // A8: Model Capability Contract — refuse/warn on sub-16K models for complex goals.
-    if (useSolver) {
-      const { checkModelCapability } = await import('../models/capability')
-      const cap = checkModelCapability(config, config.model, {
-        complex: true,
-        require: config.requireCapableModel === true,
-      })
-      if (!cap.ok) {
-        throw new Error(`Model capability contract failed: ${cap.reason}`)
-      }
-      if (cap.warned && cap.reason) {
-        log.warn(`Model capability warning: ${cap.reason}`)
-      }
-    }
-
-    // T3.3: Build shared intelligence (blackboard + evidence + loop + reflexion) ONCE.
-    // Both strategies (single, council) consume these via the runner.
-    const sessionBlackboard = new Blackboard({ origin: target || 'unknown', goal: 'Session started' })
-    const sessionEvidence = new EvidenceGate()
-    const sessionLoopDetector = new LoopDetector(config.antiLoop?.maxFailedTarget ?? DEFAULTS.antiLoop.maxFailedTarget)
-    const sessionReflexion = config.reflexion?.enabled === false
-      ? undefined
-      : new ReflexionEngine({
-          maxSameVulnFails: config.reflexion?.maxSameVulnFails,
-          maxTotalNoProgress: config.reflexion?.maxTotalNoProgress,
-          escalationMaxLevel: config.reflexion?.escalationMaxLevel,
-        })
-
-    // Build unified CoreServices (T3.3) — single instance shared by runner + both engines
-    this._resources.coreServices = {
-      evidence: coreEvidenceLedger,
-      blackboard: sessionBlackboard,
-      loopDetector: sessionLoopDetector,
-      reflexion: sessionReflexion,
-    }
-
-    // Session-level EvidenceGate for the solver/council engine paths.
-    // EvidenceGate wraps coreEvidenceLedger internally so all evidence is shared.
-    this._resources.sessionEvidence = sessionEvidence
-
-    if (!useSolver) {
-      // @deprecated Legacy supervisor path — kept for backward compatibility with web UI
-      log.warn('[deprecated] engine: legacy is deprecated. Switch to engine: multi-model or engine: council in ultimatrix.yaml')
-      const workers = await createAllWorkers(config, browser, memory)
-      const supervisor = createSupervisor(config, { workers, browser, memory })
-      this._resources.workers = workers
-      this._resources.supervisor = supervisor
-      this._resources.sessionBlackboard = sessionBlackboard
-      this._resources.sessionLoopDetector = sessionLoopDetector
-      this._resources.sessionReflexion = sessionReflexion
-    } else {
-      const skillRegistry = new SkillRegistry()
-      skillRegistry.loadFromDirectory('skills')
-      const workerPool = new WorkerPool(config, skillRegistry, browser)
-
-      // Always create solver brain — available for normal operation
-      // and for the REPL. Council is created separately for /council usage.
-      const solverBrain = createSolverBrain(config, {
-        skillRegistry,
-        workerPool,
-        browser,
-        memory,
-        extraContext: harContextForLLM,
-      })
-      this._resources.solverBrain = solverBrain
-
-      this._resources.skillRegistry = skillRegistry
-      this._resources.workerPool = workerPool
-      this._resources.sessionBlackboard = sessionBlackboard
-      this._resources.sessionEvidence = new EvidenceGate()
-      this._resources.sessionLoopDetector = sessionLoopDetector
-      this._resources.sessionReflexion = sessionReflexion
-
-      // Always create council — available on-demand via /council command
-      const { createCouncil } = await import('../council/factory')
-      // B2: Share blackboard — council wraps the core Blackboard
-      this._resources.council = createCouncil(config, { skillRegistry, workerPool, browser }, sessionBlackboard)
-      log.info('Council available (type /council <goal> to deliberate)')
-    }
-
-    // ModelSelector — single instance shared by the brain (multi-model engine)
-    // and by council worker dispatch via WorkerPool.dispatchSlices().
-    if (config.engine !== 'legacy') {
-      this._resources.modelSelector = new ModelSelector(
-        config.modelCapabilities ?? {},
-        config.budgetPolicy ?? { enforcement: 'soft', scope: 'session', resetOn: 'never', allocation: { brain: 0.3, workers: 0.6, spider: 0.1 }, maxModelCallsPerTask: 15, trackTokens: false },
-        config,
-      )
-    }
-
     log.info(useSolver ? 'Solver engine ready with orchestration tools' : 'Legacy engine ready')
 
     if (config.modelTiers) {

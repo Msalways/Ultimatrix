@@ -179,7 +179,8 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                     })
                     throw new Error(
                       `Authentication failed for ${provider}: ${err?.message || String(err)}. ` +
-                      `Check your API key for ${provider} in providers.yaml or set ${PROVIDER_INFO[resolveProviderAlias(provider)]?.envVar ?? 'the provider env var'}.`
+                      `Check your API key for ${provider} in providers.yaml or set ${PROVIDER_INFO[resolveProviderAlias(provider)]?.envVar ?? 'the provider env var'}.`,
+                      { cause: err },
                     )
                   }
 

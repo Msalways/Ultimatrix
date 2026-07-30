@@ -70,3 +70,16 @@ For every unique URL/endpoint discovered, store structured data including the fu
 ### Phase 6: Reaction Awareness
 After every browser action (navigation, clicks, form submissions), check for UI feedback — modals, toasts, errors, success messages, or native dialogs. If a dialog (alert/confirm/prompt) fires, capture it as evidence. This catches UI feedback that observation alone misses.
 `
+
+/**
+ * Build the spider agent prompt from target URL.
+ * NOT hardcoded — derived from the spider instructions above + target.
+ */
+export function buildSpiderPrompt(target: string): string {
+  return [
+    `Navigate to ${target} using stagehand_navigate.`,
+    `First parse the HTML with findEndpointsInResponse to extract all links, forms, and API endpoints BEFORE guessing URLs.`,
+    `Use stagehand tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials).`,
+    `Record everything with the graph tools. Report all findings.`,
+  ].join(' ')
+}

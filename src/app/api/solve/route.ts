@@ -1,6 +1,18 @@
+/**
+ * POST /api/solve — SSE endpoint for the Web UI chat.
+ *
+ * Fixes from error handling audit:
+ * - C1: Abort signal forwarded to engine.solve() via AbortController
+ * - C4: Client disconnect detection via req.signal.addEventListener('abort')
+ * - A4: Proper error propagation and cleanup
+ * - SSE: force-dynamic, X-Accel-Buffering: no for proxy compatibility
+ */
+
 import { NextRequest } from 'next/server'
 import { targetManager } from '@/web/target-manager'
 import { getGlobalEmitter } from '@/events/emitter'
+
+export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,15 +43,29 @@ export async function POST(req: NextRequest) {
     }
 
     const encoder = new TextEncoder()
+    let controllerClosed = false
+
     const stream = new ReadableStream({
       async start(controller) {
         const send = (event: string, data: unknown) => {
+          if (controllerClosed) return
           try {
             controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
           } catch {
-            // Controller closed
+            controllerClosed = true
           }
         }
+
+        // C4: Client disconnect → abort engine
+        req.signal.addEventListener('abort', () => {
+          send('aborted', { message: 'Client disconnected' })
+          engine.abort()
+          cleanup()
+          if (!controllerClosed) {
+            controllerClosed = true
+            try { controller.close() } catch {}
+          }
+        })
 
         const emitter = getGlobalEmitter()
         const listeners: Array<[string, (...args: any[]) => void]> = []
@@ -68,6 +94,13 @@ export async function POST(req: NextRequest) {
           send('heartbeat', { timestamp: Date.now() })
         }, 30_000)
 
+        const cleanup = () => {
+          clearInterval(heartbeat)
+          for (const [event, handler] of listeners) {
+            emitter.off(event as any, handler)
+          }
+        }
+
         try {
           send('started', { target: engine.target, goal, timestamp: Date.now() })
 
@@ -80,13 +113,14 @@ export async function POST(req: NextRequest) {
 
           send('done', result)
         } catch (err) {
-          send('error', { message: String(err) })
+          const message = err instanceof Error ? err.message : String(err)
+          send('error', { message })
         } finally {
-          clearInterval(heartbeat)
-          for (const [event, handler] of listeners) {
-            emitter.off(event as any, handler)
+          cleanup()
+          if (!controllerClosed) {
+            controllerClosed = true
+            try { controller.close() } catch {}
           }
-          controller.close()
         }
       },
     })
@@ -96,10 +130,12 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
       },
     })
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
+    const message = err instanceof Error ? err.message : String(err)
+    return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     })

@@ -11,6 +11,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
+import { loadSkill } from './solver/skills/loader'
 import { askUserConfirm } from './tools/interaction-tools'
 import type { DebateMemory, IntelligenceContext } from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
@@ -343,11 +344,17 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
       return
     }
 
-    // Phase 7.2 ï¿½ pure-discovery skill selection. Skills are no longer
-    // auto-matched from free-form user input via substring scanning. The brain
-    // and council select skills themselves via the listSkills / searchSkills
-    // tools. No skill instructions are pre-loaded from the REPL line.
-    const matchedWithInstructions: any[] = []
+    // Phase 7.2 — pure-discovery skill selection. The brain and council
+    // select skills themselves via listSkills / searchSkills tools.
+    // Pre-load top-matching skill bodies so the council path can forward
+    // instructions to workers, and the enriched goal includes methodology.
+    let matchedWithInstructions: any[] = []
+    if (resources.skillRegistry && line.trim().length > 3) {
+      const candidates = resources.skillRegistry.search(line.trim()).slice(0, 3)
+      matchedWithInstructions = candidates
+        .map(m => loadSkill(m.id))
+        .filter(Boolean)
+    }
 
     const { config, target, threadId, resourceId } = resources
     const councilMatch = line.match(/^\/council(?:\s+(.*))?$/)

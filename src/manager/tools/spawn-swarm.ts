@@ -126,7 +126,13 @@ export function createSpawnSwarmTool(
           emitWorkerCompleted(worker.id, workerName, taskDef.skillId, taskDef.task, 'completed', { result, durationMs })
           emitSwarmWorkerCompleted(swarmId, worker.id, workerName, taskDef.skillId, 'completed', result, durationMs)
 
-          return { workerId: worker.id, skillId: taskDef.skillId, status: 'completed', result }
+          // Cap worker result: only compact fields, NOT the full FullOutput
+          const compactResult = {
+            text: typeof (result as any)?.text === 'string' ? (result as any).text.slice(0, 2000) : '',
+            durationMs,
+          }
+
+          return { workerId: worker.id, skillId: taskDef.skillId, status: 'completed', result: compactResult }
         } catch (error) {
           const durationMs = Date.now() - workerStartTime
           const errorMsg = error instanceof Error ? error.message : String(error)

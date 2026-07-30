@@ -1,15 +1,24 @@
 ﻿import { Memory } from '@mastra/memory'
-import { LibSQLVector } from '@mastra/libsql'
+import { LibSQLVector, LibSQLStore } from '@mastra/libsql'
 import type { UltimatrixConfig } from '../config'
 import { log } from '../utils/logger'
+import { ContextWindowRegistry } from '../models/context-window-registry'
 
 let _vector: LibSQLVector | null = null
+let _storage: LibSQLStore | null = null
 
 function createVectorStore(): LibSQLVector | null {
   if (!_vector) {
-    _vector = new LibSQLVector({ url: 'file:./ultimatrix.db' })
+    _vector = new LibSQLVector({ id: 'ultimatrix-vector', url: 'file:./ultimatrix.db' })
   }
   return _vector
+}
+
+function createStorageStore(): LibSQLStore {
+  if (!_storage) {
+    _storage = new LibSQLStore({ id: 'ultimatrix', url: 'file:./ultimatrix.db' })
+  }
+  return _storage
 }
 
 function resolveEmbedder(config: UltimatrixConfig): string | undefined {
@@ -36,8 +45,16 @@ export function createMemoryFromConfig(config: UltimatrixConfig) {
   }
 
   const vector = wantsVector && embedderId ? createVectorStore() : undefined
+  const storage = createStorageStore()
+
+  // Resolve OM thresholds from model's context window (NOT hardcoded)
+  const registry = new ContextWindowRegistry(config)
+  const contextWindow = registry.getContextWindow(config.model ?? '') || 128_000
+  const observationThreshold = Math.floor(contextWindow * 0.25)  // Compress at 25% of window
+  const reflectionThreshold = Math.floor(contextWindow * 0.35)  // Summarize at 35% of window
 
   return new Memory({
+    storage,
     ...(vector ? { vector } : {}),
     ...(embedderId ? { embedder: embedderId } : {}),
     options: {
@@ -53,6 +70,15 @@ export function createMemoryFromConfig(config: UltimatrixConfig) {
 - Endpoints Tested: {{endpointsTested}}
 - Status: {{status}}
 `,
+      },
+      observationalMemory: {
+        model: config.model ?? 'openai/gpt-4o-mini',
+        observation: {
+          messageTokens: observationThreshold,
+        },
+        reflection: {
+          observationTokens: reflectionThreshold,
+        },
       },
     },
   })

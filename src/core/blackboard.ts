@@ -87,6 +87,11 @@ export class Blackboard {
   private taskSeq = 0
   private testedTasks = new Set<string>()
 
+  // Max bounds to prevent unbounded context growth
+  private static readonly MAX_FACTS = 50
+  private static readonly MAX_INTENTS = 20
+  private static readonly MAX_PLAN_ITEMS = 15
+
   constructor(data?: Partial<{ origin: string; goal: string; facts: BoardFact[]; intents: BoardIntent[]; plan: PlanTask[] }>) {
     if (data) {
       this.origin = data.origin || ''
@@ -113,6 +118,10 @@ export class Blackboard {
       source,
     }
     this.facts.push(fact)
+    // Cap facts to prevent unbounded growth
+    if (this.facts.length > Blackboard.MAX_FACTS) {
+      this.facts = this.facts.slice(-Blackboard.MAX_FACTS)
+    }
     return fact
   }
 
@@ -148,6 +157,10 @@ export class Blackboard {
       note: '',
     }
     this.intents.push(intent)
+    // Cap intents to prevent unbounded growth
+    if (this.intents.length > Blackboard.MAX_INTENTS) {
+      this.intents = this.intents.slice(-Blackboard.MAX_INTENTS)
+    }
     return intent
   }
 
@@ -269,6 +282,10 @@ export class Blackboard {
       testedKey,
     }
     this.plan.push(task)
+    // Cap plan items to prevent unbounded growth
+    if (this.plan.length > Blackboard.MAX_PLAN_ITEMS) {
+      this.plan = this.plan.slice(-Blackboard.MAX_PLAN_ITEMS)
+    }
     return task
   }
 

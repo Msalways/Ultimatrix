@@ -1,6 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { CompressionService } from '../compression/headroom-service'
+import { CompressionService, getCompressionService } from '../compression/headroom-service'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { isUrlInScope } from '../safety/scope-guard'
 
@@ -35,7 +35,7 @@ export const parseResponse = createTool({
     }),
   }),
   execute: async (ctx) => {
-    const compressionResult = await new CompressionService().compressResponse(ctx.body)
+    const compressionResult = await getCompressionService().compressResponse(ctx.body)
     let json: unknown = null
     try {
       json = JSON.parse(compressionResult.compressed)
@@ -133,7 +133,7 @@ export const evaluateRendered = createTool({
       }
 
       const res = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
-      const body = (await new CompressionService().compressResponse(await res.text())).compressed
+      const body = (await getCompressionService().compressResponse(await res.text())).compressed
       const lower = body.toLowerCase()
       const lowerPayload = ctx.payload.toLowerCase()
 

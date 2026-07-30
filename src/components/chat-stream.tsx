@@ -8,7 +8,9 @@ import { ToolCallCard } from './tool-call-card'
 import { FindingCard } from './finding-card'
 import { WorkerCard } from './worker-card'
 import { ChatInput } from './chat-input'
+import { MarkdownBlock } from './markdown-block'
 import { cn } from '@/lib/utils'
+import { appendDelta } from '@/output/render-model'
 
 export function ChatStream() {
   const messages = useChatStore((s) => s.messages)
@@ -17,7 +19,7 @@ export function ChatStream() {
   const updateMessage = useChatStore((s) => s.updateMessage)
   const setStreaming = useChatStore((s) => s.setStreaming)
   const clearMessages = useChatStore((s) => s.clearMessages)
-  const { setPhase, incrementToolCalls, incrementFindings, setRunning, reset } = useBudgetStore()
+  const { setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset } = useBudgetStore()
   const activeTarget = useSessionStore((s) => s.activeTarget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -46,7 +48,8 @@ export function ChatStream() {
 
     let answerBuffer = ''
     let thinkingBuffer = ''
-    let thinkingId = nextId()
+    let thinkingId: string | null = null // B1: null until first chunk
+    let answerId: string | null = null   // B4: track answer message
     let aborted = false
 
     const abortController = new AbortController()
@@ -59,27 +62,35 @@ export function ChatStream() {
           const msg = JSON.parse(data)
           switch (msg.kind) {
             case 'reasoning':
-              thinkingBuffer += msg.text
-              updateMessage(thinkingId, { content: thinkingBuffer } as any)
+              // B1: Create thinking message on FIRST chunk, then update
+              if (thinkingId === null) {
+                thinkingId = nextId()
+                addMessage({
+                  id: thinkingId,
+                  type: 'thinking',
+                  content: msg.text,
+                  collapsed: false,
+                  timestamp: Date.now(),
+                } as any)
+              } else {
+                thinkingBuffer = appendDelta(thinkingBuffer, msg.text)
+                updateMessage(thinkingId, { content: thinkingBuffer } as any)
+              }
               break
             case 'answer':
-              if (thinkingBuffer && thinkingBuffer.length > 0) {
-                thinkingBuffer = ''
-                thinkingId = nextId()
-              }
-              answerBuffer += msg.text
-              const existingAnswer = useChatStore.getState().messages.find(
-                (m) => 'role' in m && m.role === 'assistant' && m.id !== msg.id
-              )
-              if (existingAnswer) {
-                updateMessage(existingAnswer.id, { content: answerBuffer } as any)
-              } else {
+              // B3: Use appendDelta for cumulative provider support
+              answerBuffer = appendDelta(answerBuffer, msg.text)
+              if (answerId === null) {
+                // B4: Create answer message on first chunk
+                answerId = nextId()
                 addMessage({
-                  id: nextId(),
+                  id: answerId,
                   role: 'assistant',
                   content: answerBuffer,
                   timestamp: Date.now(),
                 })
+              } else {
+                updateMessage(answerId, { content: answerBuffer } as any)
               }
               break
             case 'tool':
@@ -92,13 +103,19 @@ export function ChatStream() {
                 timestamp: Date.now(),
                 workerId: msg.workerId,
                 workerName: msg.workerName,
+                toolCallIndex: msg.toolCallIndex,
               } as any)
               incrementToolCalls()
               break
             case 'tool-result': {
               const state = useChatStore.getState()
+              // B5: Match by workerId+name (more precise than just name)
               const lastTool = [...state.messages].reverse().find(
-                (m): m is ToolCallMessage => (m as any).type === 'tool-call' && (m as any).name === msg.name && (m as any).status === 'running'
+                (m): m is ToolCallMessage =>
+                  (m as any).type === 'tool-call' &&
+                  (m as any).name === msg.name &&
+                  (m as any).status === 'running' &&
+                  (!msg.workerId || (m as any).workerId === msg.workerId)
               )
               if (lastTool) {
                 updateMessage(lastTool.id, {
@@ -119,11 +136,21 @@ export function ChatStream() {
               } as any)
               break
             case 'done':
+              // B4: Done event — finalize answer buffer if we have one
               break
           }
         } else if (event === 'phase') {
           const d = JSON.parse(data)
           setPhase(d.phase, d.step)
+        } else if (event === 'spider:progress') {
+          const d = JSON.parse(data)
+          addMessage({
+            id: nextId(),
+            type: 'phase',
+            phase: 'spider',
+            step: d.steps || 0,
+            timestamp: Date.now(),
+          } as any)
         } else if (event === 'worker:spawned') {
           const d = JSON.parse(data)
           addMessage({
@@ -170,6 +197,9 @@ export function ChatStream() {
           } as any)
         } else if (event === 'done') {
           const result = JSON.parse(data)
+          // UX5: Wire budget store from final result
+          if (result.durationMs) setDuration(result.durationMs)
+          if (result.tokensUsed) incrementTokens(result.tokensUsed)
           addMessage({
             id: nextId(),
             type: 'summary',
@@ -282,8 +312,10 @@ export function ChatStream() {
       setRunning(false)
       answerBuffer = ''
       thinkingBuffer = ''
+      thinkingId = null
+      answerId = null
     }
-  }, [activeTarget, addMessage, updateMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, reset])
+  }, [activeTarget, addMessage, updateMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset])
 
   const handleStop = useCallback(() => {
     if (eventSourceRef.current) {
@@ -318,8 +350,8 @@ export function ChatStream() {
           </div>
         ) : (
           <div className="max-w-4xl mx-auto py-4">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
+            {messages.map((msg, i) => (
+              <MessageBubble key={msg.id} message={msg} isStreaming={isStreaming && i === messages.length - 1} />
             ))}
           </div>
         )}
@@ -334,7 +366,7 @@ export function ChatStream() {
   )
 }
 
-function MessageBubble({ message }: { message: StreamMessage }) {
+function MessageBubble({ message, isStreaming = false }: { message: StreamMessage; isStreaming?: boolean }) {
   if ((message as any).type === 'tool-call') {
     return <ToolCallCard message={message as ToolCallMessage} />
   }
@@ -395,19 +427,24 @@ function MessageBubble({ message }: { message: StreamMessage }) {
     )
   }
 
-  // Default: user or assistant text
+  // Default: user or assistant text — B2: use MarkdownBlock for assistant
   const chatMsg = message as ChatMessage
   const isUser = chatMsg.role === 'user'
-  return (
-    <div className={cn('my-2 px-4', isUser ? 'text-right' : '')}>
-      <div className={cn(
-        'inline-block max-w-[85%] text-sm leading-relaxed',
-        isUser
-          ? 'bg-zinc-800 text-zinc-100 rounded-xl rounded-tr-sm px-4 py-2'
-          : 'text-zinc-200',
-      )}>
-        {chatMsg.content}
+  if (isUser) {
+    return (
+      <div className="my-2 px-4 text-right">
+        <div className="inline-block max-w-[85%] text-sm leading-relaxed bg-zinc-800 text-zinc-100 rounded-xl rounded-tr-sm px-4 py-2">
+          {chatMsg.content}
+        </div>
       </div>
-    </div>
-  )
+    )
+  }
+  // Assistant: render as markdown
+    return (
+      <div className="my-2 px-4">
+        <div className="max-w-[85%] text-sm leading-relaxed text-zinc-200">
+          <MarkdownBlock content={chatMsg.content} streaming={isStreaming} />
+        </div>
+      </div>
+    )
 }

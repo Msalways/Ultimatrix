@@ -1,12 +1,29 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ChevronRight, Check, X, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ToolCallMessage } from '@/stores/chat-store'
 
 export function ToolCallCard({ message }: { message: ToolCallMessage }) {
   const [expanded, setExpanded] = useState(false)
+  const [elapsed, setElapsed] = useState<number>(0)
+  const startRef = useRef<number>(message.timestamp)
+
+  // UX1: Live ticking elapsed time while running
+  useEffect(() => {
+    if (message.status !== 'running') return
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - startRef.current)
+    }, 100)
+    return () => clearInterval(interval)
+  }, [message.status])
+
+  const displayDuration = message.duration != null
+    ? `${message.duration}ms`
+    : message.status === 'running'
+      ? `${(elapsed / 1000).toFixed(1)}s`
+      : null
 
   return (
     <div className="ml-8 my-1">
@@ -34,8 +51,13 @@ export function ToolCallCard({ message }: { message: ToolCallMessage }) {
             {Object.entries(message.args).slice(0, 2).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 30) : '...'}`).join(' ')}
           </span>
         )}
-        {message.duration != null && (
-          <span className="text-zinc-600 ml-auto">{message.duration}ms</span>
+        {/* UX2: Worker attribution */}
+        {message.workerName && (
+          <span className="text-zinc-600 text-[10px]">({message.workerName})</span>
+        )}
+        {/* UX1: Live elapsed time */}
+        {displayDuration && (
+          <span className="text-zinc-600 ml-auto">{displayDuration}</span>
         )}
       </button>
       {expanded && message.result && (

@@ -355,10 +355,10 @@ export const DEFAULTS = {
   },
   compression: {
     headroom: {
-      enabled: true,
+      enabled: false,
       tokenBudget: 100000,
       fallbackToTruncation: true,
-      maxResponseSize: 200000,
+      maxResponseSize: 50000,
       model: 'gpt-4o',
     },
   },
@@ -927,15 +927,15 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     },
     memory: {
       lastMessages: Number(memoryRaw.lastMessages ?? DEFAULTS.memory.lastMessages),
-      semanticRecall: memoryRaw.semanticRecall !== undefined ? memoryRaw.semanticRecall : DEFAULTS.memory.semanticRecall,
+      semanticRecall: memoryRaw.semanticRecall != null ? memoryRaw.semanticRecall as MemoryConfig['semanticRecall'] : DEFAULTS.memory.semanticRecall,
       workingMemory: Boolean(memoryRaw.workingMemory ?? DEFAULTS.memory.workingMemory),
       vector: memoryRaw.vector ? {
-        enabled: Boolean(memoryRaw.vector.enabled ?? false),
-        url: memoryRaw.vector.url ? String(memoryRaw.vector.url) : undefined,
+        enabled: Boolean((memoryRaw.vector as Record<string, unknown>).enabled ?? false),
+        url: (memoryRaw.vector as Record<string, unknown>).url ? String((memoryRaw.vector as Record<string, unknown>).url) : undefined,
       } : DEFAULTS.memory.vector,
       embedder: memoryRaw.embedder ? {
-        provider: String(memoryRaw.embedder.provider ?? ''),
-        model: String(memoryRaw.embedder.model ?? ''),
+        provider: String((memoryRaw.embedder as Record<string, unknown>).provider ?? ''),
+        model: String((memoryRaw.embedder as Record<string, unknown>).model ?? ''),
       } : undefined,
     },
     agent: {
