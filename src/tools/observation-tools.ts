@@ -1,6 +1,6 @@
 ﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { CompressionService, getCompressionService } from '../compression/headroom-service'
+import {getCompressionService} from '../compression/headroom-service'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { isUrlInScope } from '../safety/scope-guard'
 
@@ -195,7 +195,7 @@ export const measureTiming = createTool({
         ok: true,
         value: { timingDeltaMs: delta, vulnerable: delta > 1500, samples },
       }
-    } catch (e) {
+    } catch (_e) {
       return { ok: false, value: { timingDeltaMs: 0, vulnerable: false, samples } }
     }
   },

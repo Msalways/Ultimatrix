@@ -32,7 +32,6 @@ function interpolate(value: string, env: Record<string, string | undefined>): st
 }
 
 function warnOnce(key: string): void {
-  // eslint-disable-next-line no-console
   console.warn(`[ultimatrix] config value for "${key}" looks like a plaintext secret — prefer \${ENV_VAR} referencing an environment variable.`)
 }
 

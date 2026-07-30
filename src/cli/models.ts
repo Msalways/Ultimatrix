@@ -1,4 +1,4 @@
-import { loadConfig, type ModelCapabilities } from '../config'
+import { loadConfig } from '../config'
 import { log } from '../utils/logger'
 import { resolveModel } from '../models/factory'
 

@@ -1,6 +1,6 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { getOastUrl, getGlobalOastStore, startOastServer } from './server'
+import {getOastUrl, getGlobalOastStore} from './server'
 
 export const getOastUrlTool = createTool({
   id: 'getOastUrlTool',

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { readFile, readdir } from 'node:fs/promises'
+import {readdir} from 'node:fs/promises'
 import { getGlobalGraphStore } from '../graph/store'
 
 export interface SessionSummary {

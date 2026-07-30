@@ -21,7 +21,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { PROJECT_ROOT } from '../lib/project-root'
 
-function resolvePayloadsDir(): string {
+function _resolvePayloadsDir(): string {
   const candidates = [
     join(PROJECT_ROOT, 'payloads'),
     join(process.cwd(), 'payloads'),

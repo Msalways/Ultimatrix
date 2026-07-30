@@ -1,16 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { writeFile, readFile, mkdir, access } from 'node:fs/promises'
+import {writeFile, readFile, mkdir} from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { existsSync } from 'node:fs'
 import {
   Interaction,
   InteractionType,
-  Assertion,
   TestCase,
   Session,
 } from './interaction'
 import { generateTestCases } from './test-generator'
-import { streamToFile, generateSpecCode } from './codegen'
+import {streamToFile} from './codegen'
 
 export class ActionRecorder {
   private session: Session

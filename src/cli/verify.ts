@@ -1,6 +1,5 @@
 import { main } from '../session'
 import { log } from '../utils/logger'
-import { loadConfig } from '../config'
 
 export async function verifyCommand(args: string[]): Promise<void> {
   const targetIdx = args.indexOf('-t')

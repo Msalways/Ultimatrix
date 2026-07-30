@@ -1,4 +1,4 @@
-import { getAllSkills, loadSkill, initSkillIndex, type Skill, type SkillMeta } from './loader'
+import {initSkillIndex, type SkillMeta} from './loader'
 
 export interface GraphSummary {
   endpointCount: number

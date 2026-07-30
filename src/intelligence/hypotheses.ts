@@ -1,6 +1,6 @@
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
-import type { AnyNodeData, ActionNode, PageNode } from '../graph/schema'
+import type {PageNode} from '../graph/schema'
 import type { SkillRegistry } from '../solver/skills/registry'
 
 export interface Hypothesis {

@@ -28,7 +28,7 @@ export default defineConfig({
   clean: true,
   splitting: false,
   sourcemap: true,
-  target: 'node20',
+  target: 'node22',
   outDir: 'dist',
   external: [],
   banner: {

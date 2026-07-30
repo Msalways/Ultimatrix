@@ -19,7 +19,6 @@ import type {
   McpClientFactory,
   McpServerConfig,
   ToolInfo,
-  ToolSource,
 } from './types'
 import { defaultMcpClientFactory } from './mcp-client'
 import { resolveEnvVars } from './resolve-env'
@@ -215,7 +214,7 @@ function wrapPluginTool(id: string, def: unknown) {
       id,
       description: (def as { description?: string }).description ?? id,
       inputSchema: wrapSchema((def as { inputSchema?: unknown }).inputSchema) as never,
-      execute: async (inputData: never, context: unknown) => (def as { execute: (input: Record<string, unknown>) => unknown }).execute(inputData as Record<string, unknown>),
+      execute: async (inputData: never, _context: unknown) => (def as { execute: (input: Record<string, unknown>) => unknown }).execute(inputData as Record<string, unknown>),
     })
   }
   return createTool({

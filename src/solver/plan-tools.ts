@@ -11,7 +11,7 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import type { Blackboard, PlanTask, TaskStatus } from '../core/blackboard'
+import type {Blackboard, PlanTask} from '../core/blackboard'
 
 const PlanTaskSchema = z.object({
   endpoint: z.string().describe('Endpoint path or URL (e.g. "/api/users", "https://target.com/login")'),

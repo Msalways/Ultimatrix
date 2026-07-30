@@ -1,7 +1,6 @@
 import { loadConfig } from '../config'
 import { log } from '../utils/logger'
 import { getGlobalQuotaTracker } from '../models/quota-tracker'
-import { getLimiterCacheSize } from '../models/limiter-factory'
 
 export async function ratelimitCommand(args: string[]): Promise<void> {
   const sub = args[0] || 'status'

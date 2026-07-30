@@ -1,7 +1,7 @@
 import { NodeType, type ActionNode, type EndpointNode, type InputNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ResearchWorkflow } from './types'
-import { inferNameFromUrl, normalizeName, stableId, uniq } from './utils'
+import {stableId, uniq} from './utils'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
 function classifyWorkflow(url: string, method?: string, tags?: string[]): { name: string; stateChanges: string[] } {

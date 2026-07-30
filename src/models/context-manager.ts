@@ -3,7 +3,7 @@
  * Estimates token counts from text, warns when tight, auto-truncates if needed.
  */
 
-import type { ModelCapabilities, BudgetPolicy } from '../config'
+import type {ModelCapabilities} from '../config'
 import { compactText } from '../output/compaction'
 import type { ContextWindowRegistry } from './context-window-registry'
 

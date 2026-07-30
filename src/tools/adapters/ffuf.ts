@@ -1,7 +1,7 @@
 import { readFile, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { isUrlInScope } from '../../safety/scope-guard'
-import { isToolAvailable, installHint, runBinary, tempFile, defaultWordlistDir, extractUrl } from './common'
+import {isToolAvailable, installHint, runBinary, tempFile, defaultWordlistDir} from './common'
 import type { AdapterFinding, ToolAdapter, ToolResult } from './types'
 
 function scopeTarget(target: string): string {

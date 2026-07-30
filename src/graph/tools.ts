@@ -2,7 +2,6 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from './store'
 import { NodeType } from './schema'
-import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
 
 /**

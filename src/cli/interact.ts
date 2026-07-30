@@ -1,5 +1,4 @@
 import { main } from '../session'
-import { log } from '../utils/logger'
 
 export async function interactCommand(args: string[]): Promise<void> {
   const targetIdx = args.indexOf('-t')

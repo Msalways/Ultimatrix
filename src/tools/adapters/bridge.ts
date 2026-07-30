@@ -12,7 +12,7 @@
  * Unconfirmed findings are returned as `candidates` for `recordFindingCandidate`.
  */
 
-import type { AdapterFinding, BridgeReport, ToolAdapter, ToolResult } from './types'
+import type {BridgeReport, ToolAdapter, ToolResult} from './types'
 import { verifyFinding } from './common'
 
 export async function bridgeToolResult(

@@ -13,7 +13,6 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { TechniqueContext } from '../primitives/framework'
 
 const execFileP = promisify(execFile)
 
@@ -42,7 +41,7 @@ export async function buildGadget(spec: GadgetSpec): Promise<string | null> {
       const { stdout } = await execFileP(spec.ysoserialNet, [spec.chain, spec.command], { maxBuffer: 64 * 1024 * 1024 })
       return stdout
     }
-  } catch (e: any) {
+  } catch (_e: any) {
     return null
   }
   return null

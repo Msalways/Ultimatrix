@@ -442,7 +442,6 @@ export class HumanObserver {
   getFlowGroups(): FlowGroup[] {
     const groups: FlowGroup[] = []
     let current: HumanAction[] = []
-    let lastNavigate = ''
 
     for (const action of this.actions) {
       if (action.type === 'navigate') {
@@ -450,7 +449,6 @@ export class HumanObserver {
           groups.push(this.buildFlowGroup(current))
         }
         current = [action]
-        lastNavigate = action.url
       } else {
         current.push(action)
       }

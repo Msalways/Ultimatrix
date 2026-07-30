@@ -27,7 +27,7 @@ interface StoredToken {
   scope?: string
 }
 
-function keyFor(server: string): Buffer {
+function keyFor(_server: string): Buffer {
   const pass = process.env.ULTIMATRIX_KEY ?? 'ultimatrix-default-device-secret'
   return scryptSync(pass, 'ultimatrix-salt-v1', 32)
 }

@@ -28,8 +28,8 @@ runs/
 playwright-tests-verify/
 
 # Hunt outputs
-output/
-output-*/
+/output/
+/output-*/
 
 # Graphify output (rebuilt by graphify skill)
 graphify-out/

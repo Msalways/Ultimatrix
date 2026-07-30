@@ -1,6 +1,5 @@
 import { main } from '../session'
 import { log } from '../utils/logger'
-import { loadConfig } from '../config'
 import { resolve } from 'node:path'
 
 export async function assessCommand(args: string[]): Promise<void> {

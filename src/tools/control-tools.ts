@@ -8,7 +8,7 @@ import { TestStorage } from '../generation/test-storage'
 import { log } from '../utils/logger'
 import { captureScreenshot } from '../browser/manager'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
-import { emitFindingDiscovered, emitFindingStatusChanged } from '../events/emitter'
+import {emitFindingDiscovered} from '../events/emitter'
 import type { EvidenceLevel } from '../types/shared'
 import { isUrlInScope } from '../safety/scope-guard'
 import {
@@ -134,7 +134,7 @@ function buildFindingId(type: string, endpoint: string, param?: string): string 
   return `${type}:${endpoint}:${param || '*'}`
 }
 
-function sanitizeForFilename(input: string): string {
+function _sanitizeForFilename(input: string): string {
   return input.replace(/[<>:"/\\|?*]/g, '-').replace(/--+/g, '-').replace(/^-|-$/g, '')
 }
 

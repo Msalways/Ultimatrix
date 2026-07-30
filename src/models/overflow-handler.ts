@@ -78,7 +78,7 @@ export async function withOverflowRecovery<T>(
   args: { messages?: any[]; [key: string]: any },
   modelId: string,
   registry: ContextWindowRegistry,
-  config: UltimatrixConfig,
+  _config: UltimatrixConfig,
 ): Promise<T> {
   const entry = registry.resolve(modelId)
   const contextWindow = entry?.contextWindow ?? null

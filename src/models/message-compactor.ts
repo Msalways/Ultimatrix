@@ -47,7 +47,7 @@ export function estimateMessagesTokens(messages: any[]): number {
 
 function estimateMessageTokens(msg: any): number {
   if (!msg) return 0
-  const role = msg.role ?? ''
+  const _role = msg.role ?? ''
   // Base overhead for role + structure
   let tokens = 4
   const content = msg.content
@@ -133,7 +133,7 @@ export function compactMessages(
 
   // L1: Compact large tool results
   if (passCount < maxPasses) {
-    const before = estimateMessagesTokens(current)
+    const _before = estimateMessagesTokens(current)
     const { messages: afterL1, tokensSaved } = compactToolResults(current, tokenBudget, toolResultThreshold)
     if (tokensSaved > 0) {
       current = afterL1

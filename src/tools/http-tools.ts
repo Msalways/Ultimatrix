@@ -2,8 +2,8 @@
 import { z } from 'zod'
 import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
-import { CompressionService, getCompressionService } from '../compression/headroom-service'
-import { isUrlInScope, getScopeConfig } from '../safety/scope-guard'
+import {getCompressionService} from '../compression/headroom-service'
+import {isUrlInScope} from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 

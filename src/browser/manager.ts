@@ -3,7 +3,7 @@ import type { UltimatrixConfig } from '../config'
 import { PROVIDER_INFO } from '../config'
 import { log } from '../utils/logger'
 import { mkdirSync, existsSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import {resolve} from 'node:path'
 import { stopDialogWatcher } from './dialog-watcher'
 import { getGlobalReactionObserver } from './reaction-observer'
 

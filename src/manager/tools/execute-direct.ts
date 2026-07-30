@@ -4,7 +4,7 @@ import type { SkillRegistry } from '../../solver/skills/registry'
 import { loadSkill } from '../../solver/skills/loader'
 import type { UltimatrixConfig } from '../../config'
 
-export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry: SkillRegistry) {
+export function createExecuteDirectTool(_config: UltimatrixConfig, _skillRegistry: SkillRegistry) {
   return createTool({
     id: 'execute-direct',
     description: 'Execute a simple task directly without spawning a worker. Use for quick checks: HTTP requests, status checks, header inspection, simple reconnaissance.',
@@ -30,8 +30,7 @@ export function createExecuteDirectTool(config: UltimatrixConfig, skillRegistry:
         // SUPERVISOR-3: Actually execute the task via HTTP tools
         const { httpRequest } = await import('../../tools/http-tools')
         const { getGlobalGraphStore } = await import('../../graph/store')
-        const store = getGlobalGraphStore()
-        const endpoints = store?.queryNodes(undefined, { type: 'Endpoint' } as any) || []
+        const _store = getGlobalGraphStore()
 
         // Parse task for URL patterns and execute directly
         const urlMatch = task.match(/(https?:\/\/[^\s]+)/i)

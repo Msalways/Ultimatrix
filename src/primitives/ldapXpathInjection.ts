@@ -43,7 +43,7 @@ export const ldapXpathInjection: TechniquePrimitive = {
     const xpathPayloads = payloadResult.bySource.static.length > 1
       ? payloadResult.bySource.static.slice(1, 10)
       : []
-    const ldapErrors = getPayloadStore().getMarkers('ldap/injection')
+    const _ldapErrors = getPayloadStore().getMarkers('ldap/injection')
     ldapPayloads.forEach((p, i) => {
       steps.push({ id: `ldap-${i}`, description: `LDAP bypass into ${param}`, request: { method, url: urlWithParam(url, param, p), headers }, expectedSignal: 'auth bypass / directory error', metadata: { kind: 'ldap', param, payload: p } })
     })

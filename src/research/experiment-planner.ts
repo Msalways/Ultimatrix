@@ -1,4 +1,4 @@
-import { NodeType, type EndpointNode } from '../graph/schema'
+import {type EndpointNode} from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ReplayableRequest, ResearchExperiment, ResearchHypothesis } from './types'
 import { stableId } from './utils'

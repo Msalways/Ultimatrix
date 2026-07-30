@@ -23,12 +23,10 @@ import type {
   CouncilConfig,
   CouncilMember,
   CouncilMemberRole,
-  CouncilMessage,
   DebateCycleResult,
   DebateMemory,
   IntelligenceContext,
   MemberOutput,
-  TaskComplexity,
 } from './types'
 import { extractStances, extractFailedApproaches, extractProvenFindings, buildMemoryPrompt } from './debate-memory'
 import { verifyClaimStructured } from '../tools/control-tools'
@@ -324,7 +322,7 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
   // evidence — otherwise the council deadlocks in a propose→reject loop with
   // zero evidence ever collected (chicken-and-egg against an empty ledger).
   const approvedProposals: MemberOutput[] = []
-  const skeptic = byRole(members, 'skeptic')
+  const _skeptic = byRole(members, 'skeptic')
 
   for (const proposal of proposals) {
     const claim = proposal.claim

@@ -9,7 +9,7 @@
  * No regex, no substring detection. Structured typed fields at all seams.
  */
 
-import { getGlobalEmitter, emitWorkerToolCall, emitWorkerToolResult } from '../events/emitter'
+import {emitWorkerToolCall, emitWorkerToolResult} from '../events/emitter'
 import { getToolEventEmitter, type ToolEvent } from '../lib/tool-events'
 
 export class WorkerContext {

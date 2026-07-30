@@ -88,7 +88,7 @@ export function generateHypotheses(
       })
     }
 
-    const disclosureEndpoints = entityEndpoints.filter(e => entity.sensitiveFields.length > 0)
+    const disclosureEndpoints = entityEndpoints.filter(_e => entity.sensitiveFields.length > 0)
     if (disclosureEndpoints.length > 0) {
       hypotheses.push({
         id: stableId('hypothesis', ['info-disclosure', entity.id]),

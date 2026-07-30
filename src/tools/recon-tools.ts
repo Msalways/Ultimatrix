@@ -38,7 +38,7 @@ const COMMON_SUBDOMAINS = [
 
 async function lookupWhoisViaRdap(domain: string): Promise<any> {
   // Use RDAP bootstrap for TLD resolution
-  const tld = domain.split('.').pop()!
+  const _tld = domain.split('.').pop()!
   try {
     const bootstrapRes = await fetch(`https://data.iana.org/rdap/dns.json`, {
       signal: AbortSignal.timeout(8000),

@@ -1,5 +1,5 @@
 import { isUrlInScope } from '../../safety/scope-guard'
-import { isToolAvailable, installHint, runBinary, tempFile, normalizeSeverity, extractUrl } from './common'
+import {isToolAvailable, installHint, runBinary, normalizeSeverity, extractUrl} from './common'
 import type { AdapterFinding, ToolAdapter, ToolResult } from './types'
 
 function scopeTarget(target: string): string {

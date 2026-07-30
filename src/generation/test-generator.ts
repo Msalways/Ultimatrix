@@ -139,7 +139,7 @@ function generateEvidenceSteps(evidence: Evidence): string[] {
   return lines
 }
 
-function generateCategoryAssertions(finding: Finding): string[] {
+function _generateCategoryAssertions(finding: Finding): string[] {
   const lines: string[] = []
   const indent = '  '
 

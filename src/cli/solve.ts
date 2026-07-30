@@ -19,12 +19,11 @@ import { EvidenceGate } from '../intelligence/evidence-gate'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { ReflexionEngine } from '../intelligence/reflexion'
 import { createSpiderAgent } from '../spider/agent'
-import { createInterface } from 'node:readline/promises'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture } from '../session/har-capture'
 import { generateCaseFile } from '../report/case-file'
 
-export async function solveCommand(target: string, outputDir: string): Promise<void> {
+export async function solveCommand(target: string, _outputDir: string): Promise<void> {
   const config = loadConfig()
   config.target = target
 

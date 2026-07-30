@@ -11,7 +11,7 @@
  * 4. Track proven findings — "XSS on /search is confirmed"
  */
 
-import type { CouncilMemberRole, MemberOutput, CouncilProposal, CouncilCritique } from './types'
+import type {CouncilMemberRole, MemberOutput, CouncilCritique} from './types'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

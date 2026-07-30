@@ -14,8 +14,6 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync } from 'node:fs'
-import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir, tmpdir, platform } from 'node:os'
 import { verifyClaimStructured } from '../control-tools'
@@ -30,7 +28,7 @@ const availabilityCache = new Map<string, boolean>()
 /** Check whether an external binary is installed and on PATH (cached). */
 export async function isToolAvailable(toolName: string): Promise<boolean> {
   if (availabilityCache.has(toolName)) return availabilityCache.get(toolName)!
-  const cmd = platform() === 'win32' ? `where ${toolName}` : `which ${toolName}`
+  const _cmd = platform() === 'win32' ? `where ${toolName}` : `which ${toolName}`
   try {
     await execFileAsync(platform() === 'win32' ? 'where' : 'which', [toolName])
     availabilityCache.set(toolName, true)

@@ -42,7 +42,7 @@ export interface ModelSelection {
   estimatedDuration: number
 }
 
-interface ScoredModel {
+interface _ScoredModel {
   provider: string
   modelId: string
   tier: string
@@ -121,7 +121,7 @@ export class ModelSelector {
       return this.fallbackSelection(task, agentRole)
     }
 
-    const cap = this.capabilities[best.modelId] ?? this.capabilities[best.modelId.replace(best.provider + '/', '')]
+    const _cap = this.capabilities[best.modelId] ?? this.capabilities[best.modelId.replace(best.provider + '/', '')]
     const estimatedTokens = COMPLEXITY_TOKEN_ESTIMATE[task.complexity] ?? COMPLEXITY_TOKEN_ESTIMATE.medium
 
     return {
@@ -149,7 +149,7 @@ export class ModelSelector {
   private scoreModel(
     candidate: { provider: string; modelId: string; tier: string },
     task: WorkerTask,
-    budget: TaskBudget,
+    _budget: TaskBudget,
   ): number {
     let score = 0
     // Look up capabilities by full modelId, or try provider-prefixed version.
@@ -202,7 +202,7 @@ export class ModelSelector {
   private getScoreReasons(
     candidate: { provider: string; modelId: string; tier: string },
     task: WorkerTask,
-    budget: TaskBudget,
+    _budget: TaskBudget,
   ): string[] {
     const reasons: string[] = []
     const cap = this.capabilities[candidate.modelId] ?? this.capabilities[candidate.modelId.replace(candidate.provider + '/', '')]

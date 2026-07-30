@@ -1,10 +1,10 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, type AuthFlowNode, type FactNode, type ActionNode } from '../graph/schema'
+import { NodeType, type AuthFlowNode, type ActionNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
-import { getGlobalObserver, type HumanAction } from '../capture/human-observer'
-import { getActiveBrowser, getActivePage, captureScreenshot } from '../browser/manager'
+import { getGlobalObserver } from '../capture/human-observer'
+import {getActiveBrowser, getActivePage} from '../browser/manager'
 import { log } from '../utils/logger'
 import { createHash } from 'node:crypto'
 import { isUrlInScope } from '../safety/scope-guard'
@@ -36,7 +36,7 @@ function filterValidCookies(cookies: any[]): { valid: any[]; expired: number } {
   return { valid, expired }
 }
 
-async function verifySessionAfterRestore(page: any, targetUrl: string): Promise<{ authenticated: boolean; reason?: string }> {
+async function verifySessionAfterRestore(page: any, _targetUrl: string): Promise<{ authenticated: boolean; reason?: string }> {
   try {
     const finalUrl = page.url()
     const isLoginPage = LOGIN_URL_PATTERNS.some(p => p.test(finalUrl))

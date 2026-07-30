@@ -96,6 +96,7 @@ export function proposalToWorkerConfig(
   proposal: CouncilProposal,
   overrides?: Partial<ProposalWorkerConfig>,
 ): ProposalWorkerConfig {
+  const { context: _ctx, ...rest } = overrides ?? {}
   const base: ProposalWorkerConfig = {
     skillId: proposal.skillId,
     task: proposal.action,
@@ -105,12 +106,11 @@ export function proposalToWorkerConfig(
       reasoning: proposal.reasoning,
       evidenceRequired: proposal.evidenceRequired,
       impact: proposal.impact,
-      ...overrides?.context,
+      ..._ctx,
     },
   }
 
   // Merge top-level overrides (modelId, tenant, sandboxId, etc.) without dropping context.
-  const { context: _omit, ...rest } = overrides ?? {}
   return { ...base, ...rest }
 }
 

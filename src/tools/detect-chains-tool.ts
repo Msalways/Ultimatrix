@@ -50,7 +50,7 @@ export const detectChainsTool = createTool({
           count: chains.length,
         },
       }
-    } catch (error) {
+    } catch (_error) {
       return {
         ok: false,
         value: { chains: [], count: 0 },
@@ -122,7 +122,7 @@ export const verifyChainsTool = createTool({
         ok: true,
         value: { chains, verifiedCount, escalatedCount },
       }
-    } catch (error) {
+    } catch (_error) {
       return {
         ok: false,
         value: { chains: [], verifiedCount: 0, escalatedCount: 0 },

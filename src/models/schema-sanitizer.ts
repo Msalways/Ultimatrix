@@ -171,7 +171,7 @@ export function applySchemaCompat<
   return result;
 }
 
-function sanitizeToolParamsInArray(
+function _sanitizeToolParamsInArray(
   tools: unknown[],
   keywords: string[],
 ): unknown[] {

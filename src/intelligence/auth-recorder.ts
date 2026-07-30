@@ -1,5 +1,4 @@
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType } from '../graph/schema'
 import type { AuthFlowNode } from '../graph/schema'
 import type { AuthFlowType } from '../types/shared'
 

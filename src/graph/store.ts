@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
-import { emitGraphFindingAdded, emitGraphAttackAdded, emitGraphNodeAdded, emitGraphEdgeAdded } from '../events/emitter'
+import {emitGraphFindingAdded, emitGraphAttackAdded, emitGraphEdgeAdded} from '../events/emitter'
 import { getConfig } from '../config'
 import {
   GraphNodeData,
@@ -1061,7 +1061,7 @@ export class GraphStore {
         }
       }
       if (data.edges) this.edges = data.edges
-    } catch (err) {
+    } catch (_err) {
       console.warn(`[graph] Primary graph corrupt at ${targetPath}, trying backup...`)
       const backupPath = `${targetPath}.bak`
       if (existsSync(backupPath)) {
@@ -1091,7 +1091,7 @@ export class GraphStore {
     }
   }
 
-  exportToJson(filePath?: string): SerializedGraph {
+  exportToJson(_filePath?: string): SerializedGraph {
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.exportToJson()
     }
@@ -1102,7 +1102,7 @@ export class GraphStore {
     }
   }
 
-  importFromJson(data: SerializedGraph, filePath?: string): void {
+  importFromJson(data: SerializedGraph, _filePath?: string): void {
     if (this.useLibSQL && this.libSQLStore) {
       this.libSQLStore.importFromJson(data)
       return

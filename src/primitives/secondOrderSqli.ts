@@ -11,7 +11,7 @@
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { observeCompare, observeParse } from './observers'
+import {observeParse} from './observers'
 import { getPayloadStore } from '../payloads/store'
 
 const SQLI_ERROR_MARKERS = () => getPayloadStore().getMarkers('sqli/second-order')

@@ -1,7 +1,6 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType } from '../graph/schema'
 import { log } from '../utils/logger'
 
 export const addDiscovery = createTool({

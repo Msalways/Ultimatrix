@@ -1,6 +1,6 @@
 import { writeFile, mkdir, access } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import {dirname} from 'node:path'
 import { TestCase, Interaction, InteractionType } from './interaction'
 
 export function generateSpecCode(testCases: TestCase[], specName?: string): string {

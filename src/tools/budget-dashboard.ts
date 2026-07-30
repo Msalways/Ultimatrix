@@ -3,7 +3,7 @@
  * budget/usage summaries. Read-only: does not mutate the forensic log.
  */
 
-import type { ForensicEvent, ForensicLog } from '../logging/forensic-log'
+import type {ForensicLog} from '../logging/forensic-log'
 import type { BudgetPolicy } from '../config'
 
 export interface TokenEntry {

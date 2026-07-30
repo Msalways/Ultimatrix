@@ -760,7 +760,6 @@ export async function solve(
   emit({ phase: "observe", step: 0, text: "" });
 
   let fullText = "";
-  let hasReasoningChunks = false;
   let streamIndex = 0;
   // Structured capture: answer (deliverable) vs reasoning (transient scratch).
   // Both channels (text-delta AND the canonical stream.text promise) feed `answerParts`.
@@ -826,7 +825,6 @@ export async function solve(
 
         case "reasoning-delta":
           if (chunk.payload.text) {
-            hasReasoningChunks = true;
             // Transient scratch: captured for the structured `answer.reasoning`
             // field and shown live, never treated as the deliverable.
             reasoningParts.push(chunk.payload.text);

@@ -81,7 +81,7 @@ export function buildBudgetedGoal(
 export function capEnrichedGoal(
   enrichedGoal: string,
   goalCap: number,
-  config: { model?: string; modelCapabilities?: Record<string, { contextWindow: number }> },
+  _config: { model?: string; modelCapabilities?: Record<string, { contextWindow: number }> },
 ): string {
   const currentTokens = estimateTokens(enrichedGoal)
   if (currentTokens <= goalCap) return enrichedGoal

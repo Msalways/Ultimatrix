@@ -18,7 +18,7 @@ import { bridgeToolResult } from './adapters/bridge'
 import { ALL_ADAPTERS, getAdapter, type ToolAdapter } from './adapters'
 import type { AdapterFinding } from './adapters/types'
 
-function findingShape() {
+function _findingShape() {
   return z.object({
     url: z.string().optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),

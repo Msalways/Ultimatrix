@@ -1,6 +1,5 @@
 import type { Page } from 'playwright'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType } from '../graph/schema'
 import { log } from '../utils/logger'
 
 interface ObservedRequest {
@@ -87,7 +86,7 @@ export class PassiveObserver {
       // LibSQLGraphStore - use transactions
       store.beginTransaction().then(async () => {
         try {
-          for (const [key, ep] of observedEndpoints) {
+          for (const [_key, ep] of observedEndpoints) {
             if ('mergeEndpoint' in store && typeof store.mergeEndpoint === 'function') {
               store.mergeEndpoint({
                 url: ep.url,
@@ -106,7 +105,7 @@ export class PassiveObserver {
       })
     } else {
       // GraphStore - no transaction support, but still merge
-      for (const [key, ep] of observedEndpoints) {
+      for (const [_key, ep] of observedEndpoints) {
         store.mergeEndpoint({
           url: ep.url,
           method: ep.method,

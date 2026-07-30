@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { resolve, join } from 'node:path'
+import {join} from 'node:path'
 import { SKILLS_DIR } from '../lib/project-root'
 
 export interface Skill {

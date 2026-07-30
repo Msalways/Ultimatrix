@@ -1,5 +1,5 @@
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, EdgeType } from '../graph/schema'
+import {EdgeType} from '../graph/schema'
 import type { RBACRoleNode } from '../graph/schema'
 
 export interface MatrixRole {
@@ -22,7 +22,7 @@ export function observeRole(
   roleName: string,
   accessibleEndpoints: string[],
   visibleUIElements: string[],
-  apiCalls: string[]
+  _apiCalls: string[]
 ): RBACRoleNode {
   const store = getGlobalGraphStore()
   const node = store.addRBACRole({

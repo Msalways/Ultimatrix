@@ -1,19 +1,14 @@
 ﻿import { log } from './utils/logger'
-import { DEFAULTS, loadConfig } from './config'
-import { detectChains } from './intelligence/chaining'
-import type { FindingNode } from './graph/schema'
+import { DEFAULTS } from './config'
 import { NodeType } from './graph/schema'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
 import type { SolverStreamMessage } from './solver/solver'
 import { getGlobalWorkspace } from './workspace'
-import { writeFile, mkdir } from 'node:fs/promises'
-import { mkdirSync, existsSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
 import { loadSkill } from './solver/skills/loader'
 import { askUserConfirm } from './tools/interaction-tools'
-import type { DebateMemory, IntelligenceContext } from './council/types'
+import type {IntelligenceContext} from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
 import { getGlobalGraphStore } from './graph/store'
 import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
@@ -151,7 +146,7 @@ export interface SolverRenderer {
  * consumes the same RenderModel through a React reducer ï¿½ single contract.
  */
 export function createSolverRenderer(
-  host: SolverRendererHost = {},
+  _host: SolverRendererHost = {},
   ctx: SolverRenderContext = {},
   opts: { plain?: boolean; interaction?: { showReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null } = {},
 ): SolverRenderer {
@@ -265,7 +260,7 @@ function renderMarkdownPlain(text: string): string {
   }
 }
 
-export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
+export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) {
   const lifecycle = new SessionLifecycle()
   /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
   let lastRenderMsg: SolverRenderer | undefined  // eslint-disable-line no-unassigned-vars
@@ -274,18 +269,14 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
   // termcn/Ink TUI (src/ui/*) is retained on disk but disabled â€” we do not
   // construct a ChatBox or UiStore here, so stdin stays owned by readline and
   // no in-place cursor rewrites can erase the user's typed line.
-  const preCfg = loadConfig().interaction ?? {}
-  const preChat = !opts.plain && (preCfg.chat ?? true)
 
   // Initialize: config ? resources ? browser ? infrastructure
   const resources = await lifecycle.init(targetUrl)
 
-  const interactionCfg = resources.config?.interaction ?? {}
-  const chatEnabled = !opts.plain && (interactionCfg.chat ?? true)
 
   // Both renderers are disabled in the native terminal: the REPL uses the
   // plain `log.*` / stdout streamer and a simple `> ` prompt.
-  const chatbox = null
+  const _chatbox = null
 
   // Spider: crawl ? HAR bridge (no activity sink in native terminal)
   await lifecycle.runSpider()
@@ -298,7 +289,7 @@ export async function main(targetUrl?: string, opts: { plain?: boolean } = {}) {
     // Coordinate the in-place markdown painter with the readline input line so
     // The native terminal owns stdin via readline; there is no ink/card surface
     // to coordinate with, so the solver stream writes directly to stdout.
-    const rl = resources.readline
+    const _rl = resources.readline
 
     // Activity sink is disabled in the native terminal: all output routes
     // through `log.*` / stdout below.

@@ -13,7 +13,7 @@ import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import { emitSessionInit, emitSessionError, emitSessionComplete, emitSpiderStart, emitSpiderComplete, emitSpiderError } from '../events/emitter'
+import {emitSessionInit, emitSessionComplete, emitSpiderStart, emitSpiderComplete, emitSpiderError} from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
@@ -31,7 +31,6 @@ import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
-import { solve } from '../solver/solver'
 import { getGlobalObserver } from '../capture/human-observer'
 import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
@@ -60,10 +59,8 @@ type HarCaptureSession = {
 }
 import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import { ModelSelector } from '../models/selector'
-import { getGlobalQuotaTracker } from '../models/quota-tracker'
 import type { CoreServices } from '../core/types'
 
-const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
 
 // â”€â”€â”€ Phase type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -314,7 +311,7 @@ export class SessionLifecycle {
     log.info(`OAST server started on port ${oastPort}`)
   }
 
-  private async validateBrowser(browser: any): Promise<void> {
+  private async validateBrowser(_browser: any): Promise<void> {
     const page = getActivePage()
     if (!page) {
       throw new Error('Browser validation failed: no active page after ensureReady()')

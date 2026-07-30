@@ -46,7 +46,6 @@ export function buildDoneIndex(
   // ─── Tested endpoints ──────────────────────────────────────
   const findings = graph.queryNodes(NodeType.FINDING) as any[]
   const endpoints = graph.queryNodes(NodeType.ENDPOINT) as any[]
-  const tests = graph.queryNodes(NodeType.TEST) as any[]
 
   // Group findings by endpoint
   const testedByEndpoint = new Map<string, Set<string>>()

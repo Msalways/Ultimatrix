@@ -14,15 +14,12 @@
  */
 
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType } from '../graph/schema'
 import { log } from '../utils/logger'
 import { parseHar, getEndpointsWithHeaders, getSecrets, getDataFlows } from '../capture/har-parser'
 import { getOastUrl } from '../oast/server'
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
-import { detectChains } from '../intelligence/chaining'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { runAnalysis } from './analyser'
-import type { HarArchive } from '../capture/har-parser'
 
 export interface BridgeResult {
   endpointsWritten: number
@@ -171,7 +168,7 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   }))
   const hypotheses = generateHypotheses(patterns, harEndpoints)
   for (const hyp of hypotheses) {
-    const intent = store.addFact({
+    const _intent = store.addFact({
       description: `Hypothesis [${hyp.id}]: ${hyp.title} — ${hyp.attackVector}. Targets: ${hyp.targetEndpoints.slice(0, 3).join(', ')}${hyp.targetEndpoints.length > 3 ? ` (+${hyp.targetEndpoints.length - 3} more)` : ''}`,
       source: 'har-bridge',
       confidence: hyp.confidence,

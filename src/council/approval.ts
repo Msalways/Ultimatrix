@@ -15,7 +15,7 @@
  *    clears them.
  */
 
-import type { CouncilMemberRole, ImpactLevel, MemberOutput } from './types'
+import type {ImpactLevel, MemberOutput} from './types'
 export type { ApprovalMode } from './types'
 import type { ApprovalMode } from './types'
 import type { VerificationResult } from '../intelligence/evidence-ledger'

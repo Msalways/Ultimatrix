@@ -18,7 +18,7 @@ import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionRes
 import { claimFor } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 
-function urlWithParam(url: string, param: string, value: string): string {
+function _urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
 }
 
@@ -38,7 +38,7 @@ export const boplaOracle: TechniquePrimitive = {
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
     const url = ctx.endpoint?.url ?? ctx.target!
     const method = ctx.endpoint?.method ?? 'GET'
-    const param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'id'
+    const _param = ctx.param ?? ctx.endpoint?.params?.[0]?.name ?? 'id'
     const steps: AttackStep[] = []
     // Baseline (primary) and alternate (real) identities.
     const primary = ctx.sessionHeaders ?? {}

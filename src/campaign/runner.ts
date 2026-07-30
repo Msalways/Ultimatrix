@@ -24,7 +24,7 @@ import { httpRequest } from '../tools/http-tools'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { GraphStore } from '../graph/store'
 import type { UltimatrixConfig } from '../config'
-import type { PrimitiveRunner, PrimitiveResult } from './types'
+import type {PrimitiveRunner} from './types'
 
 /**
  * Step executor: performs a primitive's AttackStep as a real HTTP request

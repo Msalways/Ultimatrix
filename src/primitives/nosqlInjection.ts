@@ -10,7 +10,7 @@
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
 import { claimFor, loadPayloads } from './framework'
 import { EvidenceGate } from '../intelligence/evidence-gate'
-import { observeCompare, observeParse } from './observers'
+import {observeCompare} from './observers'
 
 function urlWithParam(url: string, param: string, value: string): string {
   try { const u = new URL(url); u.searchParams.set(param, value); return u.toString() } catch { return url }
@@ -104,7 +104,6 @@ export const nosqlInjection: TechniquePrimitive = {
     for (const r of results) {
       const kind = r.step.metadata?.kind
       if (kind === 'nosql-bypass') {
-        const parsed = await observeParse(r.body ?? '', r.headers ?? {}, r.status ?? 0)
         const okAuth = (r.status ?? 0) < 400 && !/invalid|denied|incorrect|unauthorized/i.test((r.body ?? '').toLowerCase())
         if (okAuth) {
           bypassHit = true

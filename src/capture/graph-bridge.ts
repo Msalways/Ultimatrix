@@ -1,8 +1,7 @@
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType } from '../graph/schema'
 import { log } from '../utils/logger'
 
-interface StagehandResult {
+interface _StagehandResult {
   tool: string
   result: unknown
   url?: string

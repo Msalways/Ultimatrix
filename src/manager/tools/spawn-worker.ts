@@ -4,7 +4,6 @@ import type { SkillRegistry } from '../../solver/skills/registry'
 import type { WorkerPool } from '../../workers/pool'
 import type { UltimatrixConfig } from '../../config'
 import { getGlobalGraphStore } from '../../graph/store'
-import { EndpointNode } from '../../graph/schema'
 import { getActiveBrowser } from '../../browser/manager'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
 

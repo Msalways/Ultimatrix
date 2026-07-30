@@ -132,7 +132,7 @@ export class TargetManager {
       clearInterval(this.cleanupTimer)
       this.cleanupTimer = null
     }
-    for (const [target, managed] of this.engines) {
+    for (const [_target, managed] of this.engines) {
       try {
         await managed.engine.destroy()
       } catch {

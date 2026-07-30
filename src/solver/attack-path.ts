@@ -1,5 +1,5 @@
 import { NodeType } from '../graph/schema'
-import type { EndpointNode, FindingNode, AttackNode } from '../graph/schema'
+import type {EndpointNode, FindingNode} from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import { log } from '../utils/logger'
 

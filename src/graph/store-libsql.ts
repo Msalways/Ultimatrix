@@ -762,7 +762,7 @@ export class LibSQLGraphStore {
     return this.queryEdges()
   }
 
-  queryNodes(type?: NodeType, filters?: Record<string, unknown>): AnyNodeData[] {
+  queryNodes(type?: NodeType, _filters?: Record<string, unknown>): AnyNodeData[] {
     let query = 'SELECT id, type, label, properties, created_at, updated_at FROM nodes'
     const params: any[] = []
 

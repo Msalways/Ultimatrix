@@ -15,8 +15,7 @@
  */
 
 import { getActivePage } from './manager'
-import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
-import { log } from '../utils/logger'
+import { getGlobalDialogWatcher } from './dialog-watcher'
 
 export interface Reaction {
   type: 'modal' | 'toast' | 'snackbar' | 'notification' | 'error' | 'success' | 'dialog' | 'text-change' | 'overlay' | 'new-element' | 'none'

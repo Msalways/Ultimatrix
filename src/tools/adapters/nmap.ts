@@ -1,5 +1,5 @@
 import { isUrlInScope } from '../../safety/scope-guard'
-import { isToolAvailable, installHint, runBinary, normalizeSeverity } from './common'
+import {isToolAvailable, installHint, runBinary} from './common'
 import type { AdapterFinding, ToolAdapter, ToolResult } from './types'
 
 function skip(tool: string, target: string, reason: string): ToolResult {
