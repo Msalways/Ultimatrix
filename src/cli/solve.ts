@@ -25,7 +25,11 @@ import { generateCaseFile } from '../report/case-file'
 import { logSolveSummary } from '../utils/solver-summary'
 import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { redactHarJson, redactObject } from '../security/secret-vault'
-import { getGlobalArtifactRegistry } from '../security/artifacts'
+import { getGlobalArtifactRegistry, setArtifactCreateListener } from '../security/artifacts'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { WorkflowStore, getWorkflowPath } from '../workflow/store'
+import { coreEvidenceLedger } from '../core/evidence'
+import { getGlobalUsageTracker } from '../usage/tracker'
 
 export async function solveCommand(target: string, outputDir: string, approvedOrigins: string[] = []): Promise<void> {
   const config = loadConfig()
@@ -43,6 +47,16 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
   const workspace = getGlobalWorkspace()
   await workspace.switchTarget(target)
 
+  // Slice 02 — workflow-owned state. Load a persisted snapshot for this target
+  // or create a fresh one; the workflowId becomes the stable identity for the
+  // crawl, evidence, artifacts, and decision ledger below.
+  const workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target })
+  getGlobalArtifactRegistry().setWorkflowId(workflow.state.workflowId)
+  setArtifactCreateListener((record) => {
+    workflow.recordArtifact(record)
+  })
+  getGlobalDecisionLedger().setWorkflowId(workflow.state.workflowId)
+
   // Ensure graph is loaded
   await workspace.getGraphStore()?.load()
 
@@ -53,6 +67,7 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
 
   // Start browser
   const browser = await getOrCreateBrowser(config)
+  workflow.setBrowserSessionId(String((browser as any)?.id ?? ''))
 
   // Create memory
   const targetDir = workspace.getTargetDir(target)
@@ -92,17 +107,25 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
     log.info('Crawling target to populate graph...')
     const harCapture = await startHarCapture(target, [])
 
-    await runSpiderRuntime({
+    const spiderState = await runSpiderRuntime({
       config,
       target,
       browser,
       memory,
       graphStore: workspace.getGraphStore() as any,
+      workflowId: workflow.state.workflowId,
+      initialState: workflow.state.spider ? { ...workflow.state.spider } : undefined,
       allowAny: isAllowAny(),
       approvedOrigins,
       onText: (text) => process.stdout.write(text),
     })
     process.stdout.write('\n')
+
+    // Slice 02 — attach the crawl snapshot to the workflow and persist.
+    workflow.attachSpider(spiderState)
+    workflow.syncEvidence(coreEvidenceLedger.all())
+    workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
+    await workflow.save()
 
     await workspace.getGraphStore()?.save()
     log.success('Spider crawl complete')
@@ -232,6 +255,13 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
   // Cleanup
   await workspace.getGraphStore()?.save()
   await workspace.getOastStore()?.save()
+
+  // Final workflow snapshot — mark completed and persist.
+  workflow.syncEvidence(coreEvidenceLedger.all())
+  workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
+  workflow.setStatus('completed')
+  await workflow.save()
+
   await stopOastServer()
   await closeBrowser()
 }

@@ -81,6 +81,7 @@ class ArtifactRegistry {
       })
     }
     this.records.set(record.id, record)
+    _createListener?.(record)
     return record
   }
 
@@ -125,4 +126,15 @@ let _registry: ArtifactRegistry | null = null
 export function getGlobalArtifactRegistry(): ArtifactRegistry {
   if (!_registry) _registry = new ArtifactRegistry()
   return _registry
+}
+
+let _createListener: ((record: ArtifactRecord) => void) | null = null
+
+/**
+ * Subscribe to artifact creation (slice 02). Used by the workflow persistence
+ * boundary to fold new artifacts into `WorkflowState.artifacts`. Single slot,
+ * set by the session/web/solve wiring. Typed seam — no string inspection.
+ */
+export function setArtifactCreateListener(fn: ((record: ArtifactRecord) => void) | null): void {
+  _createListener = fn
 }

@@ -33,6 +33,11 @@ import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowA
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitBrowserHumanAction } from '../events/emitter'
 import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
+import { WorkflowStore, getWorkflowPath } from '../workflow/store'
+import { setArtifactCreateListener, getGlobalArtifactRegistry } from '../security/artifacts'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { coreEvidenceLedger } from '../core/evidence'
+import { getGlobalUsageTracker } from '../usage/tracker'
 import { log } from '../utils/logger'
 import { loadSkill } from '../solver/skills/loader'
 
@@ -64,6 +69,8 @@ export class WebEngine {
   private _spiderRan = false
   /** Live runtime handle retained so mid-crawl approvals take effect. */
   private _spiderRuntime?: SpiderRuntime
+  /** Slice 02 — workflow-owned state for this engine (persisted per target). */
+  private _workflow?: WorkflowStore
   /** Proposed origins the user approved for this engine (persists across crawls). */
   private _approvedOrigins: string[] = []
 
@@ -86,6 +93,18 @@ export class WebEngine {
     this.graphStore = graphStore
     this.oastStore = oastStore
 
+    // Slice 02 — workflow-owned state: load a persisted snapshot for this target
+    // or create a fresh one. The workflowId is the stable crawl/evidence/artifact
+    // identity; artifacts created during the session fold in via the typed listener.
+    this._workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(opts.target), { target: opts.target })
+    getGlobalArtifactRegistry().setWorkflowId(this._workflow.state.workflowId)
+    setArtifactCreateListener((record) => {
+      if (record.workflowId === this._workflow?.state.workflowId) {
+        this._workflow?.recordArtifact(record)
+      }
+    })
+    getGlobalDecisionLedger().setWorkflowId(this._workflow.state.workflowId)
+
     const targetDir = workspace.getTargetDir(opts.target)
     if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
     const dbPath = resolve(targetDir, 'ultimatrix.db')
@@ -106,6 +125,7 @@ export class WebEngine {
     // Browser — follows config.headless
     const browser = getOrCreateBrowser(this.config)
     await browser.ensureReady()
+    this._workflow?.setBrowserSessionId(String(browser.id ?? ''))
     startDialogWatcher(browser)
     this.attachHumanObserver()
 
@@ -220,13 +240,14 @@ export class WebEngine {
     onPhase?: (event: PhaseEvent) => void,
   ): Promise<void> {
     const browser = getOrCreateBrowser(this.config)
+    const workflow = this._workflow
     this._spiderState = await runSpiderRuntime({
       config: this.config,
       target: this.target,
       browser,
       graphStore: this.graphStore as any,
-      workflowId: this.id,
-      initialState: this._spiderState,
+      workflowId: workflow?.state.workflowId ?? this.id,
+      initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
       allowAny: isAllowAny(),
       approvedOrigins: this._approvedOrigins,
       onRuntime: (runtime) => {
@@ -245,6 +266,15 @@ export class WebEngine {
         }
       },
     })
+
+    // Slice 02 — attach the crawl snapshot to the workflow and persist so a
+    // later engine/session can resume from the same workflowId.
+    if (workflow) {
+      workflow.attachSpider(this._spiderState)
+      workflow.syncEvidence(coreEvidenceLedger.all())
+      workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
+      await workflow.save()
+    }
   }
 
   abort(): void {

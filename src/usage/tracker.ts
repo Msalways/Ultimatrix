@@ -38,6 +38,11 @@ export class UsageTracker {
     return { inputTokens, outputTokens, totalTokens, calls: this.entries.length }
   }
 
+  /** Raw entries (copies). Consumed by the workflow persistence boundary (slice 02). */
+  getEntries(): UsageEntry[] {
+    return [...this.entries]
+  }
+
   getByProvider(): Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; calls: number }> {
     const byProvider: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; calls: number }> = {}
     for (const e of this.entries) {

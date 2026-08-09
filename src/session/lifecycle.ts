@@ -41,7 +41,11 @@ import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
 import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
 import { redactHarJson } from '../security/secret-vault'
-import { getGlobalArtifactRegistry } from '../security/artifacts'
+import { getGlobalArtifactRegistry, setArtifactCreateListener } from '../security/artifacts'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { WorkflowStore, getWorkflowPath } from '../workflow/store'
+import { getGlobalUsageTracker } from '../usage/tracker'
+import { coreEvidenceLedger } from '../core/evidence'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
@@ -98,6 +102,8 @@ export interface SessionResources {
   consoleMode: boolean
   /** Proposed origins the user pre-approved (CLI `--approve-origin`) before the crawl. */
   approvedOrigins: string[]
+  /** Slice 02 — workflow-owned state (embeds spider, browser, refs). */
+  workflow?: WorkflowStore
   forensicLog: ForensicLog
   threadId: string
   resourceId: string
@@ -199,6 +205,22 @@ export class SessionLifecycle {
       await workspace.switchTarget(target)
     }
 
+    // Slice 02 — workflow-owned state. Load a persisted snapshot if one exists
+    // for this target, otherwise create + persist a fresh one. The workflowId
+    // is the stable identity for crawl/evidence/artifact references — never the
+    // target slug. Artifact creation is folded into the workflow via the typed
+    // listener; the decision ledger is tagged so decisions carry the workflowId.
+    let workflow: WorkflowStore | undefined
+    if (target) {
+      workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target })
+      getGlobalArtifactRegistry().setWorkflowId(workflow.state.workflowId)
+      setArtifactCreateListener((record) => {
+        workflow?.recordArtifact(record)
+      })
+      getGlobalDecisionLedger().setWorkflowId(workflow.state.workflowId)
+    }
+    this._resources.workflow = workflow
+
     // Forensic log
     const forensicLogPath = resolve(workspace.getTargetDir(target || '.'), 'forensic.ndjson')
     const forensicLog = new ForensicLog(forensicLogPath)
@@ -230,6 +252,17 @@ export class SessionLifecycle {
         workspace.getGraphStore()?.save(),
         workspace.getOastStore()?.save(),
       ])
+    })
+
+    this.registerCleanup(async () => {
+      const wf = this._resources.workflow
+      if (!wf) return
+      // Final snapshot of this workflow: fold session-scoped evidence and usage,
+      // mark it completed, and persist so a future session can resume it.
+      wf.syncEvidence(coreEvidenceLedger.all())
+      wf.syncModelUsage(getGlobalUsageTracker().getEntries())
+      if (wf.state.status === 'running') wf.setStatus('completed')
+      await wf.save()
     })
 
     // Finalize cross-engagement memory (anonymized structural features only)
@@ -301,6 +334,15 @@ export class SessionLifecycle {
 
     this._resources.browser = browser
     this._resources.oastPort = oastPort
+
+    // Slice 02 — record the browser session id on the workflow (typed browser.id).
+    if (browser?.id) {
+      const workflow = this._resources.workflow
+      if (workflow) {
+        workflow.setBrowserSessionId(String(browser.id))
+        await workflow.save()
+      }
+    }
 
     this.registerCleanup(async () => {
       log.dim('Stopping OAST server...')
@@ -473,6 +515,7 @@ export class SessionLifecycle {
 
     log.info('Crawling ' + target + '...')
 
+    const workflow = this._resources.workflow
     const spiderState = await runSpiderRuntime({
       config,
       target,
@@ -481,6 +524,8 @@ export class SessionLifecycle {
       threadId,
       resourceId,
       graphStore: workspace.getGraphStore() as any,
+      workflowId: workflow?.state.workflowId ?? undefined,
+      initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
       allowAny: isAllowAny(),
       approvedOrigins: (this._resources as SessionResources).approvedOrigins,
       onText: (text) => process.stdout.write(text),
@@ -494,6 +539,16 @@ export class SessionLifecycle {
         }
       },
     })
+
+    // Slice 02 — attach the crawl snapshot to the workflow and persist. This is
+    // what makes resume possible: the spider state (and stop reason) are carried
+    // forward, not re-discovered from target-keyed globals.
+    if (workflow) {
+      workflow.attachSpider(spiderState)
+      workflow.syncEvidence(coreEvidenceLedger.all())
+      workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
+      await workflow.save()
+    }
 
     const finalSummary = workspace.getGraphStore()?.getTargetSummary()
     if (finalSummary) {

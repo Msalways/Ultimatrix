@@ -40,7 +40,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | # | Slice | Status | Notes |
 |---|-------|--------|-------|
 | 01 | Spider Runtime Foundation | 🔶 (committed) | `SpiderRuntime` committed (`6f81103`). Classification deterministic (explicit allowAny), stale-stop, 9 events, snapshot resume. Frontier is discovery/limit state (agent-driven crawl); `workflows`/`assets` reserved for slice 06 |
-| 02 | Workflow State & Persistence | ⬜ | No `WorkflowState`; state split across session/web/browser/evidence globals |
+| 02 | Workflow State & Persistence | 🟢 (Phase 5 done) | `WorkflowState` (version 1) + `WorkflowStore` (`src/workflow/`) — embeds `SpiderRuntimeState` + browser/model/worker/artifact/evidence/ledger refs; per-target `workflow.json` save/load/resume; version-gated coerce (refuses incompatible payloads); mutators (attachSpider/recordWorker/recordArtifact/recordEvidence) + lifetime-filtered sync (modelUsage/evidence). Wired: lifecycle + web engine + CLI solve pass stable `workflowId` to `runSpiderRuntime`, attach snapshot + persist after crawl, artifact-create listener folds durable artifacts into the workflow |
 | 03 | Engagement Boundary & Policy | 🟢 (Phase 4 done) | `AuthorizationCategory` (10 cats) + `allowedCategories` gating (pure `isCategoryAuthorized` + ambient `isActionAuthorized`/`enforceAction` in scope-guard). External tools deny-by-default (`setExternalToolsConfig`, per-tool narrowing, both-gates-required). Proposed-scope approval: `EngagementBoundary.approveProposed` + `SpiderRuntime.approveProposed` (frontier reclassification) + `approvedOrigins` pre-approval + `scope_proposed` in typed EventMap. CLI `--approve-origin` (repeatable) + web `POST /api/spider/approve`; `'denied'` ToolRunStatus + scanner-tools deny gate |
 | 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
 | 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
@@ -98,10 +98,10 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Tests + commit
 
 ### Phase 5 — Slice 02 WorkflowState
-- [ ] `WorkflowState` type (embeds `SpiderRuntimeState`, browser/model/worker/artifact/evidence/ledger refs)
-- [ ] Persistence save/load + resume
-- [ ] Replace target-keyed crawl globals
-- [ ] Tests + commit
+- [x] `WorkflowState` type (embeds `SpiderRuntimeState`, browser/model/worker/artifact/evidence/ledger refs)
+- [x] Persistence save/load + resume
+- [x] Replace target-keyed crawl globals
+- [x] Tests + commit
 
 ### Phase 6 — Slice 06 Identity Reachability
 - [ ] `IdentityKind`/`IdentityContext`/`ReachabilityRecord` types
