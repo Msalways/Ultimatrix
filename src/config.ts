@@ -239,6 +239,23 @@ export interface VerifierConfig {
   timeoutMs?: number
 }
 
+/**
+ * Shared authorization categories for actions the boundary can permit.
+ * `external_tool` is ALWAYS deny-by-default — it requires explicit opt-in
+ * (`externalTools.enabled`, optionally per-tool) regardless of `allowedCategories`.
+ */
+export type AuthorizationCategory =
+  | 'read'
+  | 'search'
+  | 'create'
+  | 'modify'
+  | 'send'
+  | 'delete'
+  | 'share'
+  | 'execute'
+  | 'browser_action'
+  | 'external_tool'
+
 export interface ScopeConfig {
   /** Domains allowed for outbound requests. Supports exact match and wildcard (*.example.com).
    *  Optional — when omitted (or empty) the tool is free-for-all (no domain restriction). */
@@ -247,6 +264,9 @@ export interface ScopeConfig {
   allowedPaths?: string[]
   /** Protocols allowed. Default: ['https']. */
   allowedProtocols?: string[]
+  /** Action categories permitted against in-scope targets. Absent/empty = legacy
+   *  allow-all, EXCEPT `external_tool` which always requires explicit opt-in. */
+  allowedCategories?: AuthorizationCategory[]
   /** Enforcement mode: 'hard' blocks out-of-scope requests, 'warn' logs but allows. */
   enforcement: 'hard' | 'warn'
 }
@@ -850,6 +870,21 @@ export function validateConfig(
     if (scopeRaw.allowedPaths !== undefined) {
       if (!Array.isArray(scopeRaw.allowedPaths)) {
         errors.push('scope.allowedPaths must be an array of path strings')
+      }
+    }
+    if (scopeRaw.allowedCategories !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedCategories)) {
+        errors.push('scope.allowedCategories must be an array of authorization category strings')
+      } else {
+        const validCategories = new Set<string>([
+          'read', 'search', 'create', 'modify', 'send',
+          'delete', 'share', 'execute', 'browser_action', 'external_tool',
+        ])
+        for (const c of scopeRaw.allowedCategories) {
+          if (typeof c !== 'string' || !validCategories.has(c)) {
+            errors.push(`scope.allowedCategories contains invalid entry: ${JSON.stringify(c)}`)
+          }
+        }
       }
     }
   }
@@ -1583,6 +1618,7 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
       enforcement: config.scope.enforcement,
       ...(config.scope.allowedPaths && config.scope.allowedPaths.length > 0 ? { allowedPaths: config.scope.allowedPaths } : {}),
       ...(config.scope.allowedProtocols && config.scope.allowedProtocols.length > 0 ? { allowedProtocols: config.scope.allowedProtocols } : {}),
+      ...(config.scope.allowedCategories && config.scope.allowedCategories.length > 0 ? { allowedCategories: config.scope.allowedCategories } : {}),
     }
   }
 

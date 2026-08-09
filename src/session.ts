@@ -291,7 +291,7 @@ function renderMarkdownPlain(text: string): string {
   }
 }
 
-export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) {
+export async function main(targetUrl?: string, _opts: { plain?: boolean; approvedOrigins?: string[] } = {}) {
   const lifecycle = new SessionLifecycle()
   /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
   let lastRenderMsg: SolverRenderer | undefined  // eslint-disable-line no-unassigned-vars
@@ -302,7 +302,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
   // no in-place cursor rewrites can erase the user's typed line.
 
   // Initialize: config ? resources ? browser ? infrastructure
-  const resources = await lifecycle.init(targetUrl)
+  const resources = await lifecycle.init(targetUrl, { approvedOrigins: _opts.approvedOrigins })
 
 
   // Both renderers are disabled in the native terminal: the REPL uses the

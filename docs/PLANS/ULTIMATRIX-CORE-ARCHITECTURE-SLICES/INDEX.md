@@ -28,7 +28,7 @@ The intended architecture keeps the existing dual engine shape but makes `multi-
 |---|---|---|
 | 01. Spider Runtime Foundation | Implemented + committed | `SpiderRuntime` shared by CLI+web; stale stop, scope classification (explicit allow-any input), snapshot resume, 9 typed events. Frontier is discovery/limit state; `workflows`/`assets` reserved for slice 06. |
 | 02. Workflow State and Persistence | Mostly pending | Runtime state is still split across target/session globals and subsystem-specific stores. |
-| 03. Engagement Boundary and Policy | Partially complete | `EngagementBoundary` class + allowed/proposed/denied + `scope_proposed` event (wired to CLI+web). AuthorizationCategory + approval workflow pending. |
+| 03. Engagement Boundary and Policy | Implemented + committed | `AuthorizationCategory` (10) + `allowedCategories` gating, external tools deny-by-default, proposed-scope approval workflow (CLI `--approve-origin` + web `/api/spider/approve`), `scope_proposed` typed event. |
 | 04. Secret Vault and Artifacts | Partially complete | Secret vault work exists, but redaction is not yet guaranteed across all persistence paths. |
 | 05. Browser Provider Abstraction | Mostly pending | Current behavior is Stagehand/Playwright-specific. |
 | 06. Identity Role Reachability | Mostly pending | Auth detection exists, but role-specific reachability is not first-class crawl output. |

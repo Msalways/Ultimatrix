@@ -1,8 +1,9 @@
-import type { ScopeConfig } from '../config'
+import type { ScopeConfig, AuthorizationCategory, ExternalToolsConfig } from '../config'
 import { log } from '../utils/logger'
 
 let _config: ScopeConfig | null = null
 let _allowAny = false
+let _externalTools: ExternalToolsConfig | null = null
 
 export function setScopeConfig(config: ScopeConfig | null): void {
   _config = config
@@ -10,6 +11,84 @@ export function setScopeConfig(config: ScopeConfig | null): void {
 
 export function getScopeConfig(): ScopeConfig | null {
   return _config
+}
+
+/** Ambient external-tool policy. Opt-in only — deny by default. */
+export function setExternalToolsConfig(config: ExternalToolsConfig | null): void {
+  _externalTools = config
+}
+
+export function getExternalToolsConfig(): ExternalToolsConfig | null {
+  return _externalTools
+}
+
+/**
+ * External-tool opt-in. `externalTools.enabled` is required; a non-empty
+ * `externalTools.tools` map further narrows to the explicitly-enabled ids.
+ * Without `toolId`, the map is not consulted (the flag alone decides).
+ */
+export function isExternalToolEnabled(toolId?: string): boolean {
+  if (!_externalTools?.enabled) return false
+  const tools = _externalTools.tools
+  if (!tools || Object.keys(tools).length === 0) return true
+  if (!toolId) return true
+  return tools[toolId as keyof typeof tools] === true
+}
+
+/**
+ * Pure authorization predicate — shared by the ambient scope-guard gate and the
+ * per-workflow `EngagementBoundary` (both pass their own policy, never the
+ * other's mutable state). `allowedCategories` absent/empty = legacy allow-all,
+ * EXCEPT `external_tool` which always requires explicit opt-in.
+ */
+export function isCategoryAuthorized(
+  category: AuthorizationCategory,
+  opts?: { allowedCategories?: AuthorizationCategory[]; externalToolsEnabled?: boolean },
+): boolean {
+  const categories = opts?.allowedCategories
+  if (category === 'external_tool') {
+    if (!opts?.externalToolsEnabled) return false
+    if (categories && categories.length > 0 && !categories.includes('external_tool')) return false
+    return true
+  }
+  if (categories && categories.length > 0) return categories.includes(category)
+  return true
+}
+
+/** Ambient authorization gate — reads the global scope config + external-tools config. */
+export function isActionAuthorized(category: AuthorizationCategory, opts?: { toolId?: string }): boolean {
+  return isCategoryAuthorized(category, {
+    allowedCategories: _config?.allowedCategories,
+    externalToolsEnabled: isExternalToolEnabled(opts?.toolId),
+  })
+}
+
+/** Hard gate — throws when the ambient policy denies the action category. */
+export function enforceAction(category: AuthorizationCategory, opts?: { toolId?: string }): void {
+  if (!isActionAuthorized(category, opts)) {
+    throw new Error(
+      `Action not authorized: ${category}${opts?.toolId ? ` (${opts.toolId})` : ''} — enable via config (scope.allowedCategories / externalTools)`,
+    )
+  }
+}
+
+/**
+ * Runtime scope expansion — explicit user approval of a proposed origin.
+ * Merges the origin's hostname into the ambient scope's allowedDomains so the
+ * transport-level gate admits approved URLs. Idempotent; no-op without an
+ * ambient scope config.
+ */
+export function approveScopeOrigin(url: string): void {
+  if (!_config) return
+  let hostname: string
+  try {
+    hostname = new URL(url).hostname.toLowerCase()
+  } catch {
+    return
+  }
+  if (!hostname) return
+  const domains = _config.allowedDomains ?? (_config.allowedDomains = [])
+  if (!domains.includes(hostname)) domains.push(hostname)
 }
 
 /** Explicit opt-out (runtime `--allow-any`). Off by default = deny-by-default. */

@@ -1,4 +1,4 @@
-import type { UltimatrixConfig } from '../config'
+import type { UltimatrixConfig, AuthorizationCategory, ScopeConfig } from '../config'
 import { DEFAULTS } from '../config'
 import { NodeType, type GraphNodeData } from '../graph/schema'
 import { getGlobalEmitter } from '../events/emitter'
@@ -8,8 +8,9 @@ import {
   emitSpiderError,
   emitSpiderPage,
   emitSpiderStart,
+  emitScopeProposed,
 } from '../events/emitter'
-import { deriveScopeFromTarget, isUrlInScope } from '../safety/scope-guard'
+import { deriveScopeFromTarget, isUrlInScope, isCategoryAuthorized, approveScopeOrigin } from '../safety/scope-guard'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
 import { redactUrl } from '../security/secret-vault'
@@ -46,6 +47,8 @@ export interface SpiderRuntimeState {
   discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string; provenanceId?: string }>
   endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string; provenanceId?: string }>
   authStates: Array<{ url: string; state: string; role?: string }>
+  /** Origins of discovered URLs classified `proposed` — surfaced for user approval. */
+  proposedOrigins: string[]
   /** Reserved contract field (slice 06 — workflow discovery). No producer yet. */
   workflows: Array<{ name: string; entryUrl?: string; role?: string }>
   /** Reserved contract field. No producer yet. */
@@ -83,15 +86,64 @@ export interface SpiderRuntimeOptions {
   onEvent?: (event: SpiderRuntimeEvent) => void
   /** Explicit scope opt-out for this runtime. Undefined inherits the ambient global flag. */
   allowAny?: boolean
+  /** Proposed origins pre-approved by the user (each run of the boundary). */
+  approvedOrigins?: string[]
 }
 
 export class EngagementBoundary {
+  readonly target: string
+  readonly allowedOrigins: string[]
+  readonly allowedCategories: AuthorizationCategory[]
+  readonly externalToolsEnabled: boolean
+  readonly proposedOrigins: string[] = []
+  readonly approvedProposals: string[] = []
+  private scopeConfig: ScopeConfig | null
+
   constructor(
-    private target: string,
+    target: string,
     private config: UltimatrixConfig,
     private allowAny?: boolean,
     private workflowId?: string,
-  ) {}
+  ) {
+    this.target = target
+    this.scopeConfig = config.scope ?? deriveScopeFromTarget(target)
+    this.allowedOrigins = this.scopeConfig?.allowedDomains ?? []
+    this.allowedCategories = config.scope?.allowedCategories ?? []
+    this.externalToolsEnabled = config.externalTools?.enabled === true
+  }
+
+  originOf(url: string): string {
+    try {
+      return new URL(url).origin
+    } catch {
+      return url
+    }
+  }
+
+  /** Pure authorization check against THIS boundary's policy (never ambient state). */
+  isActionAuthorized(category: AuthorizationCategory): boolean {
+    return isCategoryAuthorized(category, {
+      allowedCategories: this.allowedCategories,
+      externalToolsEnabled: this.externalToolsEnabled,
+    })
+  }
+
+  /**
+   * Explicit user approval of a proposed URL/origin. Expands this boundary's
+   * scope (so future classifications admit it) and the ambient transport gate
+   * (so approved URLs actually execute). Idempotent per origin.
+   */
+  approveProposed(url: string): void {
+    const origin = this.originOf(url)
+    if (this.approvedProposals.includes(origin)) return
+    this.approvedProposals.push(origin)
+    const hostname = origin.startsWith('http') ? new URL(origin).hostname.toLowerCase() : origin.toLowerCase()
+    if (this.scopeConfig) {
+      const domains = this.scopeConfig.allowedDomains ?? (this.scopeConfig.allowedDomains = [])
+      if (!domains.includes(hostname)) domains.push(hostname)
+    }
+    approveScopeOrigin(origin)
+  }
 
   classifyUrl(url: string): { scope: ScopeClassification; reason?: string } {
     let parsed: URL
@@ -105,8 +157,7 @@ export class EngagementBoundary {
       return { scope: 'denied', reason: 'unsupported_protocol' }
     }
 
-    const scopeConfig = this.config.scope ?? deriveScopeFromTarget(this.target)
-    const checked = isUrlInScope(url, scopeConfig, { allowAny: this.allowAny })
+    const checked = isUrlInScope(url, this.scopeConfig, { allowAny: this.allowAny })
     if (checked.allowed) {
       getGlobalDecisionLedger().recordDecision({
         kind: 'scope.classify',
@@ -143,6 +194,7 @@ export class SpiderRuntime {
       discoveredForms: opts.initialState?.discoveredForms ?? [],
       endpoints: opts.initialState?.endpoints ?? [],
       authStates: opts.initialState?.authStates ?? [],
+      proposedOrigins: opts.initialState?.proposedOrigins ?? [],
       workflows: opts.initialState?.workflows ?? [],
       assets: opts.initialState?.assets ?? [],
       stopReason: opts.initialState?.stopReason,
@@ -154,6 +206,9 @@ export class SpiderRuntime {
     for (const url of this.state.visitedUrls) this.seenPages.add(url)
     for (const endpoint of this.state.endpoints) this.seenEndpoints.add(`${endpoint.method}:${endpoint.url}`)
     for (const form of this.state.discoveredForms) this.seenForms.add(`${form.url}:${form.selector ?? form.action ?? ''}`)
+    for (const origin of opts.approvedOrigins ?? []) {
+      this.approveProposed(origin)
+    }
   }
 
   snapshot(): SpiderRuntimeState {
@@ -164,6 +219,7 @@ export class SpiderRuntime {
       discoveredForms: [...this.state.discoveredForms],
       endpoints: [...this.state.endpoints],
       authStates: [...this.state.authStates],
+      proposedOrigins: [...this.state.proposedOrigins],
       workflows: [...this.state.workflows],
       assets: [...this.state.assets],
     }
@@ -174,14 +230,37 @@ export class SpiderRuntime {
   }
 
   enqueue(url: string, depth = 0, sourcePage?: string, triggeringAction?: string): ScopeClassification {
-    const { scope } = this.boundary.classifyUrl(url)
+    const { scope, reason } = this.boundary.classifyUrl(url)
     const alreadyQueued = this.state.frontier.some((item) => item.url === url)
     if (!alreadyQueued && !this.seenPages.has(url)) {
       this.state.frontier.push({ url, depth, scope, sourcePage, triggeringAction })
     }
-    if (scope === 'proposed') this.emit({ type: 'scope_proposed', url, scope, state: this.snapshot() })
+    if (scope === 'proposed') {
+      const origin = this.boundary.originOf(url)
+      if (!this.state.proposedOrigins.includes(origin)) this.state.proposedOrigins.push(origin)
+      this.emit({ type: 'scope_proposed', url, scope, reason, state: this.snapshot() })
+      emitScopeProposed(this.state.workflowId, url, reason)
+    }
     this.touch()
     return scope
+  }
+
+  /**
+   * Explicit user approval of a proposed URL/origin. Expands the boundary (so
+   * future classifications admit it) and reclassifies already-discovered
+   * proposed items from that origin as `allowed` (approval is a user decision —
+   * the item is no longer awaiting consent).
+   */
+  approveProposed(url: string): void {
+    this.boundary.approveProposed(url)
+    const origin = this.boundary.originOf(url)
+    if (!this.state.proposedOrigins.includes(origin)) this.state.proposedOrigins.push(origin)
+    for (const item of this.state.frontier) {
+      if (item.scope === 'proposed' && this.boundary.originOf(item.url) === origin) {
+        item.scope = 'allowed'
+      }
+    }
+    this.touch()
   }
 
   recordPage(url: string, status = 0, links = 0, forms = 0): void {
@@ -298,6 +377,10 @@ export interface SpiderRunOptions {
   signal?: AbortSignal
   /** Explicit scope opt-out for this run. Undefined inherits the ambient global flag. */
   allowAny?: boolean
+  /** Proposed origins pre-approved by the user before this crawl starts. */
+  approvedOrigins?: string[]
+  /** Retains the live runtime handle (for mid-crawl approval / live state). */
+  onRuntime?: (runtime: SpiderRuntime) => void
 }
 
 export async function runSpiderRuntime(options: SpiderRunOptions): Promise<SpiderRuntimeState> {
@@ -313,7 +396,9 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     initialState: options.initialState,
     onEvent: options.onEvent,
     allowAny: options.allowAny,
+    approvedOrigins: options.approvedOrigins,
   })
+  options.onRuntime?.(runtime)
   const startedAt = Date.now()
   const deadline = startedAt + maxDurationMs
 

@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { bridgeToolResult } from './adapters/bridge'
 import { ALL_ADAPTERS, getAdapter, type ToolAdapter } from './adapters'
 import type { AdapterFinding } from './adapters/types'
+import { isActionAuthorized } from '../safety/scope-guard'
 
 function _findingShape() {
   return z.object({
@@ -39,6 +40,20 @@ export function buildAdapterTool(adapter: ToolAdapter) {
         .describe('Tool-specific options (templates, wordlist, token, source, ports, etc.)'),
     }),
     execute: async ({ target, options }: { target: string; options?: Record<string, unknown> }) => {
+      // External tools are ALWAYS deny-by-default. The binary is never run until
+      // the user explicitly opts in via config (externalTools.enabled, optionally
+      // narrowed per-tool). This gate is the single runtime chokepoint regardless
+      // of which tool pack registered the adapter.
+      if (!isActionAuthorized('external_tool', { toolId: adapter.id })) {
+        return {
+          tool: adapter.id,
+          target,
+          status: 'denied' as const,
+          output: `External tool "${adapter.id}" is disabled. Enable it via config: externalTools.enabled: true${adapter.id !== '' ? ` (externalTools.tools.${adapter.id}: true)` : ''} and include "external_tool" in scope.allowedCategories if a category whitelist is configured.`,
+          findings: [],
+          duration: 0,
+        }
+      }
       const result = await adapter.run({ target, options })
       const bridge = await bridgeToolResult(adapter, result)
       return {

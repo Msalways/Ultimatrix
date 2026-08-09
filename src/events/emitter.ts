@@ -91,6 +91,7 @@ export interface EventMap {
   'spider:endpoint': { method: string; url: string; params: string[]; timestamp: number }
   'spider:complete': { pages: number; endpoints: number; durationMs: number; timestamp: number }
   'spider:error': { url: string; error: string; timestamp: number }
+  'scope_proposed': { workflowId: string; url: string; reason?: string; timestamp: number }
   'spider:event': SpiderRuntimeEvent
 
   // ── Legacy (kept for back-compat) ─────────────────────────
@@ -346,6 +347,9 @@ export function emitSpiderComplete(pages: number, endpoints: number, durationMs:
 }
 export function emitSpiderError(url: string, error: string): void {
   getGlobalEmitter().emit('spider:error', { url, error, timestamp: Date.now() })
+}
+export function emitScopeProposed(workflowId: string, url: string, reason?: string): void {
+  getGlobalEmitter().emit('scope_proposed', { workflowId, url, reason, timestamp: Date.now() })
 }
 
 // Legacy aliases (kept for back-compat)

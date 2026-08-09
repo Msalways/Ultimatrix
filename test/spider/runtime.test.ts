@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EngagementBoundary, SpiderRuntime } from '../../src/spider/runtime'
+import { getGlobalEmitter } from '../../src/events/emitter'
 import type { UltimatrixConfig } from '../../src/config'
 
 function config(overrides: Partial<UltimatrixConfig> = {}): UltimatrixConfig {
@@ -100,5 +101,78 @@ describe('SpiderRuntime', () => {
     expect(state.discoveredForms).toHaveLength(1)
     expect(state.authStates).toHaveLength(1)
     expect(runtime.shouldStopByLimits(1, 2)).toBe('max_pages')
+  })
+})
+
+describe('proposed scope + approval workflow', () => {
+  it('records proposed origins in state and emits typed scope_proposed', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf2', target: 'https://example.com', config: config(), allowAny: false })
+    const seen: Array<{ workflowId: string; url: string; reason?: string; timestamp: number }> = []
+    const onScopeProposed = (e: { workflowId: string; url: string; reason?: string; timestamp: number }) => { seen.push(e) }
+    getGlobalEmitter().on('scope_proposed', onScopeProposed)
+    try {
+      const scope = runtime.enqueue('https://cdn.example.net/app.js', 0)
+      expect(scope).toBe('proposed')
+      expect(runtime.snapshot().proposedOrigins).toContain('https://cdn.example.net')
+      expect(seen.length).toBe(1)
+      expect(seen[0].url).toBe('https://cdn.example.net/app.js')
+      expect(seen[0].workflowId).toBe('wf2')
+    } finally {
+      getGlobalEmitter().off('scope_proposed', onScopeProposed)
+    }
+  })
+
+  it('approveProposed reclassifies frontier items from that origin to allowed', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf3', target: 'https://example.com', config: config(), allowAny: false })
+    runtime.enqueue('https://example.com/', 0)
+    runtime.enqueue('https://cdn.example.net/app.js', 1)
+    runtime.enqueue('https://other.example.net/x.js', 1)
+
+    runtime.approveProposed('https://cdn.example.net/app.js')
+
+    const frontier = runtime.snapshot().frontier
+    expect(frontier.find((i) => i.url === 'https://cdn.example.net/app.js')?.scope).toBe('allowed')
+    expect(frontier.find((i) => i.url === 'https://other.example.net/x.js')?.scope).toBe('proposed')
+    expect(runtime.boundary.approvedProposals).toContain('https://cdn.example.net')
+    expect(runtime.boundary.classifyUrl('https://cdn.example.net/app.js').scope).toBe('allowed')
+  })
+
+  it('pre-approves origins passed via approvedOrigins option', () => {
+    const runtime = new SpiderRuntime({
+      workflowId: 'wf4',
+      target: 'https://example.com',
+      config: config(),
+      allowAny: false,
+      approvedOrigins: ['https://cdn.example.net'],
+    })
+    expect(runtime.boundary.approvedProposals).toContain('https://cdn.example.net')
+    expect(runtime.enqueue('https://cdn.example.net/app.js', 0)).toBe('allowed')
+  })
+
+  it('boundary authorization respects allowedCategories and external-tools config', () => {
+    const boundary = new EngagementBoundary(
+      'https://example.com',
+      config({
+        scope: { allowedDomains: ['example.com'], allowedCategories: ['read'], enforcement: 'hard' },
+        externalTools: { enabled: true },
+      }),
+      false,
+    )
+    expect(boundary.isActionAuthorized('read')).toBe(true)
+    expect(boundary.isActionAuthorized('create')).toBe(false)
+    expect(boundary.isActionAuthorized('external_tool')).toBe(false)
+  })
+
+  it('boundary external_tool authorized only when config opts in AND whitelist allows it', () => {
+    const boundary = new EngagementBoundary(
+      'https://example.com',
+      config({
+        scope: { allowedDomains: ['example.com'], allowedCategories: ['read', 'external_tool'], enforcement: 'hard' },
+        externalTools: { enabled: true },
+      }),
+      false,
+    )
+    expect(boundary.isActionAuthorized('external_tool')).toBe(true)
+    expect(boundary.isActionAuthorized('delete')).toBe(false)
   })
 })

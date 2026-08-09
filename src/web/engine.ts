@@ -29,10 +29,10 @@ import { getOrCreateBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalObserver } from '../capture/human-observer'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
-import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitBrowserHumanAction } from '../events/emitter'
-import { runSpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
+import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
 import { log } from '../utils/logger'
 import { loadSkill } from '../solver/skills/loader'
 
@@ -62,6 +62,10 @@ export class WebEngine {
   private _providersPath = ''
   private _spiderState?: SpiderRuntimeState
   private _spiderRan = false
+  /** Live runtime handle retained so mid-crawl approvals take effect. */
+  private _spiderRuntime?: SpiderRuntime
+  /** Proposed origins the user approved for this engine (persists across crawls). */
+  private _approvedOrigins: string[] = []
 
   constructor(target: string) {
     this.id = randomUUID()
@@ -96,6 +100,8 @@ export class WebEngine {
     // Scope guard — same as CLI
     const scopeConfig = this.config.scope ?? (opts.target ? deriveScopeFromTarget(opts.target) : null)
     setScopeConfig(scopeConfig)
+    // External-tool policy: opt-in only (deny by default)
+    setExternalToolsConfig(this.config.externalTools ?? null)
 
     // Browser — follows config.headless
     const browser = getOrCreateBrowser(this.config)
@@ -222,6 +228,10 @@ export class WebEngine {
       workflowId: this.id,
       initialState: this._spiderState,
       allowAny: isAllowAny(),
+      approvedOrigins: this._approvedOrigins,
+      onRuntime: (runtime) => {
+        this._spiderRuntime = runtime
+      },
       onMessage,
       onPhase,
       signal: this._abortController?.signal,
@@ -239,6 +249,40 @@ export class WebEngine {
 
   abort(): void {
     this._abortController?.abort()
+  }
+
+  /**
+   * Proposed-scope approval workflow (slice 03). Approves a discovered
+   * `proposed` URL/origin: expands the live runtime boundary (reclassifying any
+   * already-discovered proposed items from that origin) and remembers the
+   * approval for subsequent crawls on this engine.
+   */
+  approveProposed(url: string): { ok: boolean; proposedOrigins: string[]; approvedProposals: string[] } {
+    const origin = (() => {
+      try {
+        return new URL(url).origin
+      } catch {
+        return url
+      }
+    })()
+    if (!this._approvedOrigins.includes(origin)) this._approvedOrigins.push(origin)
+    this._spiderRuntime?.approveProposed(url)
+    const state = this._spiderRuntime?.snapshot() ?? this._spiderState
+    return {
+      ok: true,
+      proposedOrigins: state?.proposedOrigins ?? [],
+      approvedProposals: this._spiderRuntime?.boundary.approvedProposals ?? this._approvedOrigins,
+    }
+  }
+
+  /** Current proposed/approved scope state for the UI (empty before first crawl). */
+  getSpiderProposals(): { proposedOrigins: string[]; approvedProposals: string[]; state?: SpiderRuntimeState } {
+    const state = this._spiderRuntime?.snapshot() ?? this._spiderState
+    return {
+      proposedOrigins: state?.proposedOrigins ?? [],
+      approvedProposals: this._spiderRuntime?.boundary.approvedProposals ?? this._approvedOrigins,
+      state,
+    }
   }
 
   getGraph(): GraphStore {
@@ -319,6 +363,8 @@ export class WebEngine {
       // Update scope guard
       const scopeConfig = this.config.scope ?? (this.target ? deriveScopeFromTarget(this.target) : null)
       setScopeConfig(scopeConfig)
+      // Update external-tool policy (opt-in only)
+      setExternalToolsConfig(this.config.externalTools ?? null)
 
       // Update OAST config
       setOastConfig(this.config.oast ?? null)

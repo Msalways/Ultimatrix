@@ -23,11 +23,11 @@ import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture } from '../session/har-capture'
 import { generateCaseFile } from '../report/case-file'
 import { logSolveSummary } from '../utils/solver-summary'
-import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { redactHarJson, redactObject } from '../security/secret-vault'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 
-export async function solveCommand(target: string, _outputDir: string): Promise<void> {
+export async function solveCommand(target: string, outputDir: string, approvedOrigins: string[] = []): Promise<void> {
   const config = loadConfig()
   config.target = target
 
@@ -35,6 +35,8 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
   // Without this, scope-guard returns allowed:true for every URL.
   const scopeConfig = config.scope ?? deriveScopeFromTarget(target)
   setScopeConfig(scopeConfig)
+  // External-tool policy: opt-in only (deny by default).
+  setExternalToolsConfig(config.externalTools ?? null)
 
   showDisclaimer(target)
 
@@ -97,6 +99,7 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
       memory,
       graphStore: workspace.getGraphStore() as any,
       allowAny: isAllowAny(),
+      approvedOrigins,
       onText: (text) => process.stdout.write(text),
     })
     process.stdout.write('\n')

@@ -25,7 +25,7 @@ import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
-import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
@@ -96,6 +96,8 @@ export interface SessionResources {
   readline: ReadlineInterface | null
   /** True when the Ink full-screen console owns the terminal (stdin + screen). */
   consoleMode: boolean
+  /** Proposed origins the user pre-approved (CLI `--approve-origin`) before the crawl. */
+  approvedOrigins: string[]
   forensicLog: ForensicLog
   threadId: string
   resourceId: string
@@ -143,9 +145,10 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 0: Config + Resources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async init(targetUrl?: string, opts: { consoleMode?: boolean } = {}): Promise<SessionResources> {
+  async init(targetUrl?: string, opts: { consoleMode?: boolean; approvedOrigins?: string[] } = {}): Promise<SessionResources> {
     this.assertPhase('idle')
     const consoleMode = Boolean(opts.consoleMode)
+    const approvedOrigins = opts.approvedOrigins ?? []
 
     // Clear any stale limiter state from previous sessions
     resetAllProviderLimiters()
@@ -210,12 +213,16 @@ export class SessionLifecycle {
     this._resources.resourceId = resourceId
     this._resources.forensicLog = forensicLog
     this._resources.consoleMode = consoleMode
+    this._resources.approvedOrigins = approvedOrigins
 
     // Activate scope guard from config.
     // If no explicit scope, derive one from config.target so tools are not
     // hard-rejected out of the box.
     const scopeConfig = config.scope ?? (config.target ? deriveScopeFromTarget(config.target) : null)
     setScopeConfig(scopeConfig)
+    // External-tool policy is opt-in only (deny by default) — ambient for the
+    // adapter chokepoint in buildAdapterTool.
+    setExternalToolsConfig(config.externalTools ?? null)
 
     this.registerCleanup(async () => {
       log.dim('Saving graph and OAST state...')
@@ -475,6 +482,7 @@ export class SessionLifecycle {
       resourceId,
       graphStore: workspace.getGraphStore() as any,
       allowAny: isAllowAny(),
+      approvedOrigins: (this._resources as SessionResources).approvedOrigins,
       onText: (text) => process.stdout.write(text),
       onEvent: (event) => {
         if (event.type === 'crawl_progress') {

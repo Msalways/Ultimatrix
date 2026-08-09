@@ -34,6 +34,7 @@ function printCliHelp(): void {
     'Global options:',
     '  -t, --target <url>                 Target URL',
     '  -o, --output <dir>                 Output directory',
+    '  --approve-origin <url>             Pre-approve a proposed origin (repeatable)',
     '  -h, --help                         Show help',
     '  -v, --version                      Show version',
     '',
@@ -58,6 +59,18 @@ function getOutputDir(cliArgs: string[]): string {
   const outIdx = cliArgs.indexOf('-o')
   const outFlagIdx = cliArgs.indexOf('--output')
   return (outIdx !== -1 ? cliArgs[outIdx + 1] : outFlagIdx !== -1 ? cliArgs[outFlagIdx + 1] : undefined) || resolve(process.cwd(), 'output')
+}
+
+/** Repeatable `--approve-origin <url|origin>` flags → proposed-origin approvals. */
+function getApprovedOrigins(cliArgs: string[]): string[] {
+  const origins: string[] = []
+  for (let i = 0; i < cliArgs.length; i++) {
+    if (cliArgs[i] === '--approve-origin') {
+      const v = cliArgs[i + 1]
+      if (v && !v.startsWith('-')) origins.push(v)
+    }
+  }
+  return origins
 }
 
 ;(async () => {
@@ -262,7 +275,7 @@ function getOutputDir(cliArgs: string[]): string {
       const outputDir = getOutputDir(args.slice(1))
       if (!target) { log.error('solve requires a target: ultimatrix solve -t <url>'); process.exit(1) }
       showDisclaimer(target)
-      await solveCommand(target, outputDir)
+      await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)))
       break
     }
 

@@ -41,7 +41,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 |---|-------|--------|-------|
 | 01 | Spider Runtime Foundation | 🔶 (committed) | `SpiderRuntime` committed (`6f81103`). Classification deterministic (explicit allowAny), stale-stop, 9 events, snapshot resume. Frontier is discovery/limit state (agent-driven crawl); `workflows`/`assets` reserved for slice 06 |
 | 02 | Workflow State & Persistence | ⬜ | No `WorkflowState`; state split across session/web/browser/evidence globals |
-| 03 | Engagement Boundary & Policy | 🔶 | `EngagementBoundary` class + allowed/proposed/denied + `scope_proposed` (rides untracked runtime). Missing: `AuthorizationCategory`, approval flow |
+| 03 | Engagement Boundary & Policy | 🟢 (Phase 4 done) | `AuthorizationCategory` (10 cats) + `allowedCategories` gating (pure `isCategoryAuthorized` + ambient `isActionAuthorized`/`enforceAction` in scope-guard). External tools deny-by-default (`setExternalToolsConfig`, per-tool narrowing, both-gates-required). Proposed-scope approval: `EngagementBoundary.approveProposed` + `SpiderRuntime.approveProposed` (frontier reclassification) + `approvedOrigins` pre-approval + `scope_proposed` in typed EventMap. CLI `--approve-origin` (repeatable) + web `POST /api/spider/approve`; `'denied'` ToolRunStatus + scanner-tools deny gate |
 | 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
 | 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
 | 06 | Identity Role Reachability | 🔶 | AuthStateDetector + rbac-learner + auth-recorder committed. Missing: typed `IdentityKind`/`ReachabilityRecord`, spider integration |
@@ -91,11 +91,11 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Commit — `0e609a5`
 
 ### Phase 4 — Slice 03 Engagement Completion
-- [ ] `AuthorizationCategory` + `allowedCategories` gating
-- [ ] External-tool opt-in wiring
-- [ ] Proposed-scope approval workflow (CLI + web)
-- [ ] `scope_proposed` in typed `EventMap`
-- [ ] Tests + commit
+- [x] `AuthorizationCategory` + `allowedCategories` gating
+- [x] External-tool opt-in wiring
+- [x] Proposed-scope approval workflow (CLI + web)
+- [x] `scope_proposed` in typed `EventMap`
+- [x] Tests + commit
 
 ### Phase 5 — Slice 02 WorkflowState
 - [ ] `WorkflowState` type (embeds `SpiderRuntimeState`, browser/model/worker/artifact/evidence/ledger refs)

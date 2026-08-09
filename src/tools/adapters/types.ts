@@ -31,7 +31,7 @@ export interface AdapterFinding {
   raw: string
 }
 
-export type ToolRunStatus = 'success' | 'error' | 'timeout' | 'skip'
+export type ToolRunStatus = 'success' | 'error' | 'timeout' | 'skip' | 'denied'
 
 export interface ToolResult {
   tool: string
