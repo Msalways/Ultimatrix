@@ -87,12 +87,12 @@ function getOutputDir(cliArgs: string[]): string {
     sessionModule, configModule, initModule, assessModule, verifyModule,
     interactModule, webModule, solveModule, modelsModule, budgetModule,
     ratelimitModule, toolsModule, mcpModule, providersModule, loggerModule, observabilityModule,
-    sdkModule, authorizationModule, workspaceModule, reportToolsModule, reportModule,
+    sdkModule, authorizationModule, workspaceModule, reportToolsModule, reportModule, artifactsModule,
   ] = await Promise.all([
     import('../session'), import('../config'), import('./init'), import('./assess'), import('./verify'),
     import('./interact'), import('./web'), import('./solve'), import('./models'), import('./budget'),
     import('./ratelimit'), import('./tools'), import('./mcp'), import('./providers'), import('../utils/logger'), import('../observability'),
-    import('../sdk'), import('../authorization'), import('../workspace'), import('../tools/report-tools'), import('../report/generator'),
+    import('../sdk'), import('../authorization'), import('../workspace'), import('../tools/report-tools'), import('../report/generator'), import('../security/artifacts'),
   ])
 
   const { main } = sessionModule
@@ -116,6 +116,7 @@ function getOutputDir(cliArgs: string[]): string {
   const { getGlobalWorkspace } = workspaceModule
   const { getForensicLog } = reportToolsModule
   const { generateReport } = reportModule
+  const { getGlobalArtifactRegistry } = artifactsModule
 
   setPinoLogger(initLogger())
   initObservability()
@@ -222,6 +223,11 @@ function getOutputDir(cliArgs: string[]): string {
       const reportPath = resolve(reportDir, `report-${new Date().toISOString().replace(/[:.]/g, '-')}.${format}`)
       writeFileSync(reportPath, report, 'utf-8')
       log.success('Report saved: ' + reportPath)
+      getGlobalArtifactRegistry().create('report', {
+        path: reportPath,
+        initialStatus: 'redacted',
+        provenance: [{ source: 'report-generator', ref: 'generateReport' }],
+      })
       break
     }
 
@@ -242,6 +248,11 @@ function getOutputDir(cliArgs: string[]): string {
       const reportPath = resolve(scanReportDir, `scan-${new Date().toISOString().replace(/[:.]/g, '-')}.md`)
       writeFileSync(reportPath, report, 'utf-8')
       log.success('Report saved: ' + reportPath)
+      getGlobalArtifactRegistry().create('report', {
+        path: reportPath,
+        initialStatus: 'redacted',
+        provenance: [{ source: 'report-generator', ref: 'scanner.exportReport' }],
+      })
       await scanner.close()
       break
     }

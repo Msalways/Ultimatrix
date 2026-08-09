@@ -330,4 +330,57 @@ describe('flow-tools', () => {
       expect(mockPage.press).toHaveBeenCalledWith('#form', 'Enter')
     })
   })
+
+  describe('secret redaction on browser storage export', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOjF9.sig'
+    const jwtAction = { type: 'fill', selector: '#pass', value: `secret${jwt}`, url: 'https://example.com/login', timestamp: Date.now() }
+
+    it('redacts secret-shaped values returned by observeHumanActions', async () => {
+      const { getGlobalObserver } = await import('../../src/capture/human-observer')
+      const observer = getGlobalObserver()
+      observer.getActions.mockReturnValue([jwtAction])
+
+      const { observeHumanActions } = await import('../../src/tools/flow-tools')
+      const result = await callTool(observeHumanActions, {})
+      const value = result.value.actions[0].value
+
+      expect(value).not.toContain(jwt)
+      expect(value).toContain('****')
+    })
+
+    it('redacts secret-shaped values in observeHumanActions flow groups', async () => {
+      const { getGlobalObserver } = await import('../../src/capture/human-observer')
+      const observer = getGlobalObserver()
+      observer.getFlowGroups.mockReturnValue([{
+        type: 'login',
+        actions: [jwtAction],
+        startUrl: 'https://example.com/login',
+        endUrl: 'https://example.com/login',
+        duration: 100,
+      }])
+
+      const { observeHumanActions } = await import('../../src/tools/flow-tools')
+      const result = await callTool(observeHumanActions, { flowOnly: true })
+      const value = result.value.flows[0].actions[0].value
+
+      expect(value).not.toContain(jwt)
+      expect(value).toContain('****')
+    })
+
+    it('redacts embedded secrets in saveLearnedFlow naturalLanguage but keeps raw step values', async () => {
+      const { saveLearnedFlow } = await import('../../src/tools/flow-tools')
+      await callTool(saveLearnedFlow, {
+        name: 'login-flow',
+        flowType: 'login',
+        actions: [
+          { type: 'fill', selector: '#pass', value: `secret${jwt}` },
+        ],
+      })
+
+      const actionCall = mockStore.addAction.mock.calls[0][1] as any
+      expect(actionCall.naturalLanguage).not.toContain(jwt)
+      expect(actionCall.naturalLanguage).toContain('****')
+      expect(actionCall.value).toBe(`secret${jwt}`)
+    })
+  })
 })

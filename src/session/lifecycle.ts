@@ -41,6 +41,7 @@ import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
 import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
 import { redactHarJson } from '../security/secret-vault'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
@@ -505,6 +506,11 @@ export class SessionLifecycle {
           const harPath = resolve(capturesDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.har`)
           await writeFile(harPath, safeHarJson, 'utf-8')
           log.success('HAR saved: ' + harPath)
+          getGlobalArtifactRegistry().create('har', {
+            path: harPath,
+            initialStatus: 'redacted',
+            provenance: [{ source: 'capture', ref: 'network-capture' }],
+          })
 
           try {
             const bridgeResult = await bridgeHARToGraph(safeHarJson, target)

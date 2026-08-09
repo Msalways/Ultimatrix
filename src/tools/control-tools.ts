@@ -20,6 +20,7 @@ import {
   type VerificationResult,
 } from '../intelligence/evidence-ledger'
 import { coreEvidenceLedger } from '../core/evidence'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }>>()
 
@@ -325,6 +326,17 @@ export const writeFinding = createTool({
       })
       exploitProofNodeId = proof.id
     }
+
+    getGlobalArtifactRegistry().create('finding', {
+      initialStatus: 'linked',
+      provenance: [
+        { source: 'tool', ref: 'writeFinding', detail: args.type },
+        { source: 'graph', ref: findingNode.id },
+        ...(exploitProofNodeId ? [{ source: 'graph', ref: exploitProofNodeId, detail: 'EXPLOIT_PROOF (PROVES)' }] : []),
+        { source: 'evidence', detail: `evidenceItems=${evidenceItems.length}` },
+      ],
+      metadata: { endpoint: args.endpoint, severity: effectiveSeverity, evidenceLevel },
+    })
 
     return { ok: true, value: { ...finding, exploitProofNodeId } }
   },

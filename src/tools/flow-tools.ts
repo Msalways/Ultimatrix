@@ -8,6 +8,8 @@ import {getActiveBrowser, getActivePage} from '../browser/manager'
 import { log } from '../utils/logger'
 import { createHash } from 'node:crypto'
 import { isUrlInScope } from '../safety/scope-guard'
+import { redactString } from '../security/secret-vault'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
 
 function hashCredential(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16)
@@ -123,6 +125,15 @@ export const saveSession = createTool({
     })
 
     store.save().catch(err => log.error('Graph save failed: ' + String(err)))
+
+    getGlobalArtifactRegistry().create('session', {
+      initialStatus: 'linked',
+      provenance: [
+        { source: 'browser', detail: 'cookies + localStorage', ref: 'saveSession' },
+        { source: 'graph', detail: 'AuthFlowNode + credentialHash' },
+      ],
+      metadata: { name, target: target || '', cookieCount: Array.isArray(cookies) ? cookies.length : 0 },
+    })
 
     return {
       ok: true,
@@ -246,7 +257,7 @@ export const observeHumanActions = createTool({
             actions: f.actions.map(a => ({
               type: a.type,
               selector: a.selector,
-              value: a.value,
+              value: a.value ? redactString(a.value) : a.value,
               url: a.url,
             })),
           })),
@@ -271,7 +282,7 @@ export const observeHumanActions = createTool({
         actions: actions.map(a => ({
           type: a.type,
           selector: a.selector,
-          value: a.value,
+          value: a.value ? redactString(a.value) : a.value,
           url: a.url,
           timestamp: a.timestamp,
         })),
@@ -311,7 +322,7 @@ export const saveLearnedFlow = createTool({
         selector: action.selector,
         value: action.value,
         url: action.url,
-        naturalLanguage: `${action.type}${action.selector ? ` on ${action.selector}` : ''}${action.value ? ` with value "${action.value}"` : ''}`,
+        naturalLanguage: redactString(`${action.type}${action.selector ? ` on ${action.selector}` : ''}${action.value ? ` with value "${action.value}"` : ''}`),
       })
       actionNodes.push(node)
     }

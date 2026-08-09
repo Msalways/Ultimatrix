@@ -24,7 +24,8 @@ import { startHarCapture } from '../session/har-capture'
 import { generateCaseFile } from '../report/case-file'
 import { logSolveSummary } from '../utils/solver-summary'
 import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
-import { redactHarJson } from '../security/secret-vault'
+import { redactHarJson, redactObject } from '../security/secret-vault'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
 
 export async function solveCommand(target: string, _outputDir: string): Promise<void> {
   const config = loadConfig()
@@ -113,6 +114,11 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
         const harPath = resolve(capturesDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.har`)
         await writeFile(harPath, safeHarJson, 'utf-8')
         log.success('HAR saved: ' + harPath)
+        getGlobalArtifactRegistry().create('har', {
+          path: harPath,
+          initialStatus: 'redacted',
+          provenance: [{ source: 'capture', ref: 'network-capture' }],
+        })
 
         const bridgeResult = await bridgeHARToGraph(safeHarJson, target)
         log.success(`Analyser: ${bridgeResult.endpointsWritten} endpoints, ${bridgeResult.secretsWritten} secrets, ${bridgeResult.factsWritten} facts, ${bridgeResult.hypothesesGenerated} hypotheses → graph`)
@@ -202,8 +208,13 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
   const reportDir = resolve(workspace.getTargetDir(target), 'reports')
   if (!existsSync(reportDir)) mkdirSync(reportDir, { recursive: true })
   const reportPath = resolve(reportDir, `solve-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
-  writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf-8')
+  writeFileSync(reportPath, JSON.stringify(redactObject(result as unknown) as unknown, null, 2), 'utf-8')
   log.success('Results saved: ' + reportPath)
+  getGlobalArtifactRegistry().create('report', {
+    path: reportPath,
+    initialStatus: 'redacted',
+    provenance: [{ source: 'solve', ref: 'solveCommand' }],
+  })
 
   // Generate case file export
   try {

@@ -7,6 +7,8 @@ import {resolve} from 'node:path'
 import { stopDialogWatcher } from './dialog-watcher'
 import { getGlobalReactionObserver } from './reaction-observer'
 import { getGlobalObserver } from '../capture/human-observer'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
+import { redactString } from '../security/secret-vault'
 
 let browser: StagehandBrowser | null = null
 let activeBrowserRef: StagehandBrowser | null = null
@@ -186,12 +188,17 @@ export async function captureScreenshot(
   }
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-')
-  const safeContext = context.replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 60)
+  const safeContext = redactString(context).replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 60)
   const filePath = resolve(screenshotsDir, `${ts}-${safeContext}.png`)
 
   try {
     await page.screenshot({ path: filePath, fullPage: false })
     log.dim(`📸 Screenshot: ${filePath}`)
+    getGlobalArtifactRegistry().create('screenshot', {
+      path: filePath,
+      initialStatus: 'redacted',
+      provenance: [{ source: 'browser', ref: 'captureScreenshot', detail: context }],
+    })
     return filePath
   } catch (err) {
     log.dim(`Screenshot failed: ${err instanceof Error ? err.message : String(err)}`)

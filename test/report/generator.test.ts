@@ -336,4 +336,96 @@ describe('Report Generator', () => {
       expect(md).toContain('tool-call')
     })
   })
+
+  describe('secret redaction', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOjF9.sig'
+    const leakingFindings: Finding[] = [
+      {
+        ...mockFindings[0],
+        request: {
+          method: 'POST',
+          url: 'https://api.example.com/auth?token=secret123',
+          headers: { Authorization: `Bearer ${jwt}` },
+          body: `{"refresh":"${jwt}"}`,
+        },
+      },
+    ]
+
+    it('JSON report never contains raw auth headers, query tokens, or JWT bodies', () => {
+      const json = generateReport(leakingFindings, [], { format: 'json', includeEvidence: true })
+      expect(json).not.toContain(jwt)
+      expect(json).not.toContain('secret123')
+      expect(json).not.toContain(`Bearer ${jwt}`)
+      expect(json).toContain('****')
+    })
+
+    it('HTML report never leaks bearer values while keeping structure', () => {
+      const html = generateReport(leakingFindings, [], { format: 'html' })
+      expect(html).not.toContain(jwt)
+      expect(html).not.toContain('secret123')
+      expect(html).toContain('Authorization')
+      expect(html).toContain('****')
+    })
+
+    it('Markdown report never leaks bearer values while keeping structure', () => {
+      const md = generateReport(leakingFindings, [], { format: 'markdown' })
+      expect(md).not.toContain(jwt)
+      expect(md).not.toContain('secret123')
+      expect(md).toContain('Authorization')
+      expect(md).toContain('****')
+    })
+
+    it('redacts secret query params in human-action forensic URLs (HTML log)', () => {
+      const event: ForensicEvent = {
+        timestamp: Date.now(),
+        type: 'human-action',
+        agent: 'human',
+        tool: 'askUser',
+        args: { type: 'fill', selector: '#password', url: 'https://example.com/auth?token=secret123' },
+      }
+      const html = generateReport([], [], { format: 'html', forensicEvents: [event] })
+      expect(html).not.toContain('secret123')
+      expect(html).toContain('token=')
+    })
+
+    it('forensic events never leak JWT-shaped values in any report format', () => {
+      const event: ForensicEvent = {
+        timestamp: Date.now(),
+        type: 'human-action',
+        agent: 'human',
+        tool: 'askUser',
+        args: { type: 'fill', selector: '#pass', value: `secret${jwt}` },
+      }
+      for (const format of ['json', 'html', 'markdown'] as const) {
+        const out = generateReport([], [], { format, forensicEvents: [event] })
+        expect(out).not.toContain(jwt)
+      }
+    })
+
+    it('redacts secret values inside evidence request headers', () => {
+      const withEvidence: Finding[] = [
+        {
+          ...mockFindings[0],
+          evidence: [{
+            request: {
+              method: 'GET',
+              url: 'https://api.example.com/data',
+              headers: { Cookie: `sid=${jwt}` },
+            },
+            response: { status: 200, body: `{"jwt":"${jwt}"}` },
+            description: 'evidence with secrets',
+          }],
+        },
+      ]
+      const json = generateReport(withEvidence, [], { format: 'json', includeEvidence: true })
+      expect(json).not.toContain(jwt)
+    })
+
+    it('redacts sensitive query params in finding request URLs', () => {
+      const json = generateReport(leakingFindings, [], { format: 'json' })
+      const parsed = JSON.parse(json)
+      expect(parsed.findings[0].request.url).not.toContain('secret123')
+      expect(parsed.findings[0].request.url).toContain('token')
+    })
+  })
 })

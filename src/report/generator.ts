@@ -1,6 +1,7 @@
 import type { Finding } from '../generation/test-generator'
 import type { TestResult } from '../replay/test-runner'
 import type { ForensicEvent } from '../logging/forensic-log'
+import { redactHeaders, redactObject, redactString, redactUrl } from '../security/secret-vault'
 
 export interface ReportOptions {
   format: 'json' | 'html' | 'markdown'
@@ -14,13 +15,69 @@ export interface ReportOptions {
 }
 
 export function generateReport(findings: Finding[], results: TestResult[], options: ReportOptions): string {
+  const safeFindings = findings.map(redactFinding)
+  const safeResults = results.map(r => ({ ...r, testName: redactString(r.testName) }))
+  const safeOptions: ReportOptions = {
+    ...options,
+    title: options.title ? redactString(options.title) : undefined,
+    forensicSummary: options.forensicSummary ? redactString(options.forensicSummary) : undefined,
+    forensicEvents: options.forensicEvents?.map(redactForensicEvent),
+  }
   switch (options.format) {
     case 'json':
-      return generateJson(findings, results, options)
+      return generateJson(safeFindings, safeResults, safeOptions)
     case 'html':
-      return generateHtml(findings, results, options)
+      return generateHtml(safeFindings, safeResults, safeOptions)
     case 'markdown':
-      return generateMarkdown(findings, results, options)
+      return generateMarkdown(safeFindings, safeResults, safeOptions)
+  }
+}
+
+function redactFinding(f: Finding): Finding {
+  return {
+    ...f,
+    title: redactString(f.title),
+    description: redactString(f.description),
+    remediation: f.remediation ? redactString(f.remediation) : undefined,
+    impact: f.impact ? redactString(f.impact) : undefined,
+    reproductionSteps: f.reproductionSteps?.map(redactString),
+    request: {
+      method: f.request.method,
+      url: redactUrl(f.request.url),
+      headers: redactHeaders(f.request.headers),
+      body: f.request.body ? redactString(f.request.body) : undefined,
+    },
+    response: f.response
+      ? { status: f.response.status, body: f.response.body ? redactString(f.response.body) : undefined }
+      : undefined,
+    screenshots: f.screenshots?.map(redactString),
+    evidence: f.evidence?.map(e => ({
+      request: {
+        method: e.request.method,
+        url: redactUrl(e.request.url),
+        headers: redactHeaders(e.request.headers),
+        body: e.request.body ? redactString(e.request.body) : undefined,
+      },
+      response: {
+        status: e.response.status,
+        headers: redactHeaders(e.response.headers),
+        body: redactString(e.response.body),
+      },
+      description: redactString(e.description),
+      screenshot: e.screenshot ? redactString(e.screenshot) : undefined,
+    })),
+    payload: f.payload ? redactObject(f.payload) as Record<string, any> : undefined,
+    param: f.param ? redactObject(f.param) as Record<string, any> : undefined,
+    evidenceMarkers: f.evidenceMarkers?.map(redactString),
+  }
+}
+
+function redactForensicEvent(e: ForensicEvent): ForensicEvent {
+  return {
+    ...e,
+    args: e.args ? redactObject(e.args) as Record<string, unknown> : undefined,
+    result: e.result !== undefined ? redactObject(e.result) : undefined,
+    error: e.error ? redactString(e.error) : undefined,
   }
 }
 

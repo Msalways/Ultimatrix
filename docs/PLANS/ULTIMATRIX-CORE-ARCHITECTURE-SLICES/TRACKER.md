@@ -42,7 +42,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 01 | Spider Runtime Foundation | 🔶 (committed) | `SpiderRuntime` committed (`6f81103`). Classification deterministic (explicit allowAny), stale-stop, 9 events, snapshot resume. Frontier is discovery/limit state (agent-driven crawl); `workflows`/`assets` reserved for slice 06 |
 | 02 | Workflow State & Persistence | ⬜ | No `WorkflowState`; state split across session/web/browser/evidence globals |
 | 03 | Engagement Boundary & Policy | 🔶 | `EngagementBoundary` class + allowed/proposed/denied + `scope_proposed` (rides untracked runtime). Missing: `AuthorizationCategory`, approval flow |
-| 04 | Secret Vault & Artifacts | 🔶 | `SecretVault` (redactSecret/redactHarJson) untracked; HAR redaction wired. Missing: storage/report/screenshot/graph redaction, `ArtifactRecord` |
+| 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
 | 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
 | 06 | Identity Role Reachability | 🔶 | AuthStateDetector + rbac-learner + auth-recorder committed. Missing: typed `IdentityKind`/`ReachabilityRecord`, spider integration |
 | 07 | Decision Ledger & Provenance | ⬜ | No ledger. `routingReason` event typing broken (2× TS2353) |
@@ -70,15 +70,17 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] CDN test green (`test/spider/runtime.test.ts:26` → `proposed`) — 1835/1835 full suite
 - [x] `nextFrontierItem`: REMOVED (dead path — crawl is agent-driven, frontier is discovery/limit state, never a nav pump)
 - [x] Dead `workflows`/`assets` state: KEPT as reserved slice-06 contract fields, documented inline; population deferred to slice 06
-- [ ] Commit
+- [x] Commit — `30d5ae4`
 
 ### Phase 2 — Slice 04 Redaction (highest risk)
-- [ ] Redact browser storage export (`src/tools/flow-tools.ts`)
-- [ ] Redact report generation (`src/report/generator.ts`)
-- [ ] Redact screenshot metadata + graph persistence paths
-- [ ] `ArtifactRecord` lifecycle + provenance
-- [ ] Per-path redaction tests
-- [ ] Commit
+- [x] SecretVault API normalized: `redactValue`/`redactSecret`, `redactString` (JWT + Bearer/Basic shapes), `redactHeaders`, `redactObject` (deep), `redactUrl` (query params), `redactArtifactMetadata`
+- [x] Redact browser storage export (`flow-tools.ts`): `observeHumanActions` values, flow-group values, `saveLearnedFlow` naturalLanguage redacted; raw step `value` retained as operational replay data
+- [x] Redact report generation (`generator.ts`): findings/evidence/forensic pass through `redactFinding`/`redactForensicEvent` (headers, bodies, URLs, query tokens) before JSON/HTML/Markdown render
+- [x] Redact screenshot metadata: `captureScreenshot` context sanitized via `redactString` before filename + `redactObject` on solve-results JSON dump
+- [x] `ArtifactRecord` lifecycle + provenance (`src/security/artifacts.ts`): `ArtifactKind` (incl. session), `ArtifactStatus`, `ProvenanceRef`, registry singleton; wired into screenshot/HAR/report/session/finding paths
+- [x] Design decision (user): session cookies/localStorage stay in graph as OPERATIONAL store (restore keeps working); all EXPOSURE paths redacted — records/reports/LLM-visible values/screenshot filenames. Encrypt-at-rest explicitly out of scope per slice 04
+- [x] Tests: artifacts(6), secret-vault(+7 normalized API), generator(+7 redaction), flow-tools(+3). Full suite 1858/1858, 181 files
+- [x] Commit
 
 ### Phase 3 — Slice 07 Decision Ledger
 - [ ] `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource`

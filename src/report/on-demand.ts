@@ -5,6 +5,7 @@ import { generateReport } from './generator'
 import { getGlobalWorkspace } from '../workspace'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type ExploitProofNode, type FindingNode } from '../graph/schema'
+import { getGlobalArtifactRegistry } from '../security/artifacts'
 
 export type ReportScope = 'finding' | 'engagement'
 
@@ -93,5 +94,10 @@ export function writeOnDemandReport(scope: ReportScope, findingId?: string): OnD
     target,
   })
   writeFileSync(path, md, 'utf8')
+  getGlobalArtifactRegistry().create('report', {
+    path,
+    initialStatus: 'redacted',
+    provenance: [{ source: 'report-generator', ref: 'writeOnDemandReport' }, { source: 'graph', ref: 'collectFindings' }],
+  })
   return { ok: true, path, findingCount: count }
 }
