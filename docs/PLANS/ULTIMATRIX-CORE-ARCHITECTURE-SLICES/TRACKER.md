@@ -44,7 +44,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 03 | Engagement Boundary & Policy | 🟢 (Phase 4 done) | `AuthorizationCategory` (10 cats) + `allowedCategories` gating (pure `isCategoryAuthorized` + ambient `isActionAuthorized`/`enforceAction` in scope-guard). External tools deny-by-default (`setExternalToolsConfig`, per-tool narrowing, both-gates-required). Proposed-scope approval: `EngagementBoundary.approveProposed` + `SpiderRuntime.approveProposed` (frontier reclassification) + `approvedOrigins` pre-approval + `scope_proposed` in typed EventMap. CLI `--approve-origin` (repeatable) + web `POST /api/spider/approve`; `'denied'` ToolRunStatus + scanner-tools deny gate |
 | 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
 | 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
-| 06 | Identity Role Reachability | 🔶 | AuthStateDetector + rbac-learner + auth-recorder committed. Missing: typed `IdentityKind`/`ReachabilityRecord`, spider integration |
+| 06 | Identity Role Reachability | 🟢 (Phase 6 done) | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events (`setIdentity`/`recordAuthFlow`, typed enum→kind map — refresh/form-fill do not change identity), persists via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges (`addReachability`), folds into `WorkflowState.reachability` + `runSpiderRuntime` persistence |
 | 07 | Decision Ledger & Provenance | 🟢 (Phase 3 done) | `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` singleton (`src/security/decision-ledger.ts`). Writes: model selection (selector), worker spawn incl. `routingReason` (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classify (EngagementBoundary), finding create (writeFinding). Provenance refs on spider discoveries (`endpoint_seen`/`form_seen`/`page_seen` carry `provenanceId`) + evidence items (`EvidenceItem.provenanceIds`). `routingReason` typed at event seam (Phase 0). Ledger IDs in workflow state deferred to slice 02 |
 | 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
 | 09 | Proof Rules & Evidence Quality | 🔶 | evidence-gate + ledger committed; `writeFinding` fails closed (non-info). Missing: `ProofRule` module, report-path gate |
@@ -104,11 +104,11 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Tests + commit
 
 ### Phase 6 — Slice 06 Identity Reachability
-- [ ] `IdentityKind`/`IdentityContext`/`ReachabilityRecord` types
-- [ ] Attach identity context to frontier + discovered resources
-- [ ] Auth transition typed state + role-aware events
-- [ ] Persist reachability in workflow + graph
-- [ ] Tests + commit
+- [x] `IdentityKind`/`IdentityContext`/`ReachabilityRecord` types
+- [x] Attach identity context to frontier + discovered resources
+- [x] Auth transition typed state + role-aware events
+- [x] Persist reachability in workflow + graph
+- [x] Tests + commit
 
 ### Phase 7 — Slice 05 Browser Provider
 - [ ] `BrowserProvider` interface + `StagehandProvider` wrapper

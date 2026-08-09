@@ -26,8 +26,10 @@ import {
   CouncilDebateNode,
   ExploitProofNode,
   ThreatModelNode,
+  ReachabilityNode,
   AnyNodeData,
 } from './schema'
+import type { ReachabilityRecord } from '../identity/types'
 
 interface SerializedGraph {
   nodes: GraphNodeData[]
@@ -596,6 +598,67 @@ export class GraphStore {
     }
     this.nodes.set(id, node)
     return node
+  }
+
+  /**
+   * Slice 06 — persist a typed reachability observation. Deduped per
+   * (identityId, resourceType, resourceId). When the reached resource and/or a
+   * matching RBACRole node already exist, wires typed REACHES (node → resource)
+   * and HAS_ROLE (role → node) edges so "which role reached what" is answerable
+   * from graph relations, never prose.
+   */
+  addReachability(record: ReachabilityRecord & { identityKind?: string; roleName?: string; tenantId?: string }): ReachabilityNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addReachability(record)
+    }
+
+    const id = `reachability:${record.identityId}:${record.resourceType}:${record.resourceId}`
+    const existing = this.nodes.get(id)
+    if (existing) {
+      existing.properties.reachedAt = record.reachedAt
+      existing.properties.workflowId = record.workflowId
+      if (record.identityKind) existing.properties.identityKind = record.identityKind
+      existing.updatedAt = Date.now()
+      return existing as ReachabilityNode
+    }
+
+    const node: ReachabilityNode = {
+      id,
+      type: NodeType.REACHABILITY,
+      label: `${record.identityId} reached ${record.resourceType}: ${record.resourceId}`,
+      properties: {
+        workflowId: record.workflowId,
+        identityId: record.identityId,
+        identityKind: record.identityKind,
+        roleName: record.roleName,
+        tenantId: record.tenantId,
+        resourceId: record.resourceId,
+        resourceType: record.resourceType,
+        reachedAt: record.reachedAt,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.nodes.set(id, node)
+
+    const resource = this.findResourceByUrl(record.resourceId)
+    if (resource) {
+      this.addEdge({ fromId: node.id, toId: resource.id, type: EdgeType.REACHES, properties: { workflowId: record.workflowId } })
+    }
+    if (record.roleName) {
+      const role = (this.queryNodes(NodeType.RBAC_ROLE) as Array<{ id: string; properties: { roleName: string } }>)
+        .find((r) => r.properties.roleName === record.roleName)
+      if (role) this.addEdge({ fromId: role.id, toId: node.id, type: EdgeType.HAS_ROLE, properties: { workflowId: record.workflowId } })
+    }
+    return node
+  }
+
+  private findResourceByUrl(url: string): GraphNodeData | undefined {
+    return Array.from(this.nodes.values()).find(
+      (n) =>
+        (n.type === NodeType.PAGE || n.type === NodeType.ENDPOINT || n.type === NodeType.INPUT) &&
+        n.properties.url === url,
+    )
   }
 
   addAttack(data: Partial<AttackNode['properties']>): AttackNode {

@@ -21,6 +21,8 @@ import type { ArtifactRecord } from '../security/artifacts'
 import type { SpiderRuntimeState } from '../spider/runtime'
 import type { UsageEntry } from '../usage/tracker'
 import type { EvidenceItem } from '../intelligence/evidence-ledger'
+import type { ReachabilityRecord } from '../identity/types'
+import { reachabilityKey } from '../identity/reachability'
 import {
   WORKFLOW_STATE_VERSION,
   type WorkflowState,
@@ -53,6 +55,7 @@ export function createWorkflow(target: string, workflowId = `workflow-${randomUU
     artifacts: [],
     evidenceRefs: [],
     decisionLedgerId: undefined,
+    reachability: [],
   }
 }
 
@@ -90,6 +93,7 @@ export function coerceWorkflow(value: unknown, fallback: { target: string }): Wo
     artifacts: Array.isArray(candidate.artifacts) ? (candidate.artifacts as WorkflowState['artifacts']) : [],
     evidenceRefs: Array.isArray(candidate.evidenceRefs) ? (candidate.evidenceRefs as WorkflowEvidenceRef[]) : [],
     decisionLedgerId: typeof candidate.decisionLedgerId === 'string' ? candidate.decisionLedgerId : undefined,
+    reachability: Array.isArray(candidate.reachability) ? (candidate.reachability as ReachabilityRecord[]) : [],
   }
 }
 
@@ -151,6 +155,19 @@ export class WorkflowStore {
   attachSpider(spider: SpiderRuntimeState): void {
     this.state.spider = spider
     this.state.status = 'running'
+    // Slice 06 — fold the crawl's reachability observations into the workflow
+    // top-level so identity → resource reachability survives resume even before
+    // a spider snapshot is attached.
+    for (const record of spider.reachability ?? []) {
+      this.recordReachability(record)
+    }
+    this.touch()
+  }
+
+  /** Slice 06 — record a reachability observation (deduped per identity+resource). */
+  recordReachability(record: ReachabilityRecord): void {
+    if (this.state.reachability.some((r) => reachabilityKey(r) === reachabilityKey(record))) return
+    this.state.reachability.push(record)
     this.touch()
   }
 

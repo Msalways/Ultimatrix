@@ -16,6 +16,7 @@
 
 import type { SpiderRuntimeState } from '../spider/runtime'
 import type { ArtifactKind, ArtifactStatus } from '../security/artifacts'
+import type { ReachabilityRecord } from '../identity/types'
 
 export const WORKFLOW_STATE_VERSION = 1 as const
 export type WorkflowStateVersion = typeof WORKFLOW_STATE_VERSION
@@ -83,4 +84,6 @@ export interface WorkflowState {
   artifacts: WorkflowArtifactRef[]
   evidenceRefs: WorkflowEvidenceRef[]
   decisionLedgerId?: string
+  /** Slice 06 — identity → resource reachability observations (survive resume). */
+  reachability: ReachabilityRecord[]
 }

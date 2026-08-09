@@ -176,3 +176,117 @@ describe('proposed scope + approval workflow', () => {
     expect(boundary.isActionAuthorized('delete')).toBe(false)
   })
 })
+
+describe('SpiderRuntime identity & reachability (Slice 06)', () => {
+  it('defaults to the anonymous identity and honors initialIdentity', () => {
+    const anon = new SpiderRuntime({ workflowId: 'wf-id-1', target: 'https://example.com', config: config() })
+    expect(anon.snapshot().currentIdentity).toMatchObject({ id: 'anonymous', kind: 'anonymous' })
+
+    const admin = new SpiderRuntime({
+      workflowId: 'wf-id-2',
+      target: 'https://example.com',
+      config: config(),
+      initialIdentity: { id: 'admin:administrator', kind: 'admin', label: 'Admin', roleName: 'Administrator' },
+    })
+    expect(admin.snapshot().currentIdentity).toMatchObject({ kind: 'admin', roleName: 'Administrator' })
+  })
+
+  it('setIdentity records a typed transition and emits auth_transition with from/to', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-id-3', target: 'https://example.com', config: config() })
+    const events: Array<{ from?: string; to?: string }> = []
+    const onEvent = (e: any) => {
+      if (e.type === 'auth_transition') events.push({ from: e.from?.id, to: e.to?.id })
+    }
+    getGlobalEmitter().on('spider:event', onEvent)
+    try {
+      const admin = { id: 'admin:administrator', kind: 'admin' as const, label: 'Admin', roleName: 'Administrator' }
+      runtime.setIdentity(admin, 'https://example.com/login')
+      runtime.setIdentity(admin, 'https://example.com/login')
+
+      const state = runtime.snapshot()
+      expect(state.authTransitions).toHaveLength(1)
+      expect(state.authTransitions[0]).toMatchObject({ from: { id: 'anonymous' }, to: { kind: 'admin' }, url: 'https://example.com/login' })
+      expect(state.currentIdentity).toMatchObject({ kind: 'admin' })
+      expect(events).toEqual([{ from: 'anonymous', to: 'admin:administrator' }])
+    } finally {
+      getGlobalEmitter().off('spider:event', onEvent)
+    }
+  })
+
+  it('setIdentity swaps back to anonymous on logout-like flows', () => {
+    const runtime = new SpiderRuntime({
+      workflowId: 'wf-id-4',
+      target: 'https://example.com',
+      config: config(),
+      initialIdentity: { id: 'authenticated:operator', kind: 'authenticated', label: 'Operator' },
+    })
+    runtime.setIdentity({ id: 'anonymous', kind: 'anonymous', label: 'Anonymous' })
+    const state = runtime.snapshot()
+    expect(state.currentIdentity.kind).toBe('anonymous')
+    expect(state.authTransitions[state.authTransitions.length - 1]).toMatchObject({ from: { kind: 'authenticated' }, to: { kind: 'anonymous' } })
+  })
+
+  it('recordAuthFlow folds typed AUTH_FLOW kinds into identity and is idempotent per flow id', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-id-5', target: 'https://example.com', config: config() })
+    runtime.recordAuthFlow('flow-1', 'login', 'Customer Portal', 'https://example.com/login')
+    runtime.recordAuthFlow('flow-1', 'login', 'Customer Portal', 'https://example.com/login')
+    runtime.recordAuthFlow('flow-2', 'logout', 'Logout', 'https://example.com/logout')
+
+    const state = runtime.snapshot()
+    expect(state.currentIdentity.kind).toBe('anonymous')
+    expect(state.authTransitions).toHaveLength(2)
+  })
+
+  it('recordAuthFlow ignores flow types that do not change identity (refresh)', () => {
+    const runtime = new SpiderRuntime({
+      workflowId: 'wf-id-6',
+      target: 'https://example.com',
+      config: config(),
+      initialIdentity: { id: 'authenticated:operator', kind: 'authenticated', label: 'Operator' },
+    })
+    runtime.recordAuthFlow('flow-refresh', 'refresh', 'Token refresh')
+    expect(runtime.snapshot().authTransitions).toHaveLength(0)
+    expect(runtime.snapshot().currentIdentity.kind).toBe('authenticated')
+  })
+
+  it('attributes discoveries to the active identity and dedupes reachability', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-id-7', target: 'https://example.com', config: config() })
+    runtime.recordPage('https://example.com/')
+    runtime.recordPage('https://example.com/')
+    runtime.setIdentity({ id: 'authenticated:operator', kind: 'authenticated', label: 'Operator' })
+    runtime.recordEndpoint('GET', 'https://example.com/api/users')
+    runtime.recordForm('https://example.com/login', '#login')
+
+    const state = runtime.snapshot()
+    expect(state.reachability).toHaveLength(3)
+    expect(state.endpoints[0].identity).toMatchObject({ kind: 'authenticated' })
+    expect(state.discoveredForms[0].identity).toMatchObject({ kind: 'authenticated' })
+  })
+
+  it('keeps role-specific reachability distinct from anonymous reach', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-id-8', target: 'https://example.com', config: config() })
+    runtime.recordEndpoint('GET', 'https://example.com/admin')
+    runtime.setIdentity({ id: 'admin:administrator', kind: 'admin', label: 'Admin', roleName: 'Administrator' })
+    runtime.recordEndpoint('GET', 'https://example.com/admin')
+
+    const state = runtime.snapshot()
+    const adminReach = state.reachability.filter((r) => r.identityId === 'admin:administrator')
+    expect(adminReach).toHaveLength(1)
+    expect(adminReach[0]).toMatchObject({ resourceId: 'https://example.com/admin', resourceType: 'endpoint' })
+    expect(state.reachability).toHaveLength(2)
+  })
+
+  it('resumes reachability from a prior snapshot without re-recording', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-id-9', target: 'https://example.com', config: config() })
+    runtime.recordEndpoint('GET', 'https://example.com/api')
+    const resumed = new SpiderRuntime({
+      workflowId: 'wf-id-9',
+      target: 'https://example.com',
+      config: config(),
+      initialState: runtime.snapshot(),
+    })
+    resumed.recordEndpoint('GET', 'https://example.com/api')
+    expect(resumed.snapshot().reachability).toHaveLength(1)
+    expect(resumed.snapshot().endpoints).toHaveLength(1)
+  })
+})

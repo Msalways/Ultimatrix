@@ -17,6 +17,15 @@ import { redactUrl } from '../security/secret-vault'
 import { createSpiderAgent } from './agent'
 import { buildSpiderPrompt } from './instructions'
 import type { PhaseEvent, SolverStreamMessage } from '../solver/solver'
+import type { IdentityContext, ReachabilityRecord, AuthTransition } from '../identity/types'
+import {
+  anonymousIdentity,
+  createReachability,
+  identityForAuthFlow,
+  pushReachability,
+  reachabilityKey,
+} from '../identity/reachability'
+import type { AuthFlowType } from '../types/shared'
 
 export type ScopeClassification = 'allowed' | 'proposed' | 'denied'
 export type SpiderStopReason = 'frontier_exhausted' | 'max_pages' | 'max_depth' | 'max_duration' | 'stale' | 'aborted' | 'error'
@@ -26,6 +35,7 @@ export type SpiderRuntimeEventName =
   | 'endpoint_seen'
   | 'form_seen'
   | 'auth_detected'
+  | 'auth_transition'
   | 'scope_proposed'
   | 'crawl_progress'
   | 'crawl_stalled'
@@ -37,6 +47,8 @@ export interface FrontierItem {
   scope: ScopeClassification
   sourcePage?: string
   triggeringAction?: string
+  /** The identity context that queued this URL (slice 06). */
+  identity?: IdentityContext
 }
 
 export interface SpiderRuntimeState {
@@ -44,8 +56,8 @@ export interface SpiderRuntimeState {
   target: string
   frontier: FrontierItem[]
   visitedUrls: string[]
-  discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string; provenanceId?: string }>
-  endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string; provenanceId?: string }>
+  discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string; identity?: IdentityContext; provenanceId?: string }>
+  endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string; identity?: IdentityContext; provenanceId?: string }>
   authStates: Array<{ url: string; state: string; role?: string }>
   /** Origins of discovered URLs classified `proposed` — surfaced for user approval. */
   proposedOrigins: string[]
@@ -53,6 +65,12 @@ export interface SpiderRuntimeState {
   workflows: Array<{ name: string; entryUrl?: string; role?: string }>
   /** Reserved contract field. No producer yet. */
   assets: Array<{ url: string; type?: string; scope: ScopeClassification }>
+  /** Slice 06 — the active identity context discoveries are attributed to. */
+  currentIdentity: IdentityContext
+  /** Slice 06 — typed auth transitions (anonymous → authenticated, role swap, logout). */
+  authTransitions: AuthTransition[]
+  /** Slice 06 — identity → resource reachability observations. */
+  reachability: ReachabilityRecord[]
   stopReason?: SpiderStopReason
   startedAt: number
   updatedAt: number
@@ -76,6 +94,13 @@ export interface SpiderRuntimeEvent {
   reason?: SpiderStopReason | string
   message?: string
   state?: SpiderRuntimeState
+  /** Slice 06 — identity under which this event's resource was reached. */
+  identity?: IdentityContext
+  /** Slice 06 — auth transition payload (auth_transition events). */
+  authTransition?: AuthTransition
+  /** Slice 06 — auth transition origin/target identities (auth_transition events). */
+  from?: IdentityContext
+  to?: IdentityContext
 }
 
 export interface SpiderRuntimeOptions {
@@ -83,6 +108,8 @@ export interface SpiderRuntimeOptions {
   target: string
   config: UltimatrixConfig
   initialState?: Partial<SpiderRuntimeState>
+  /** Slice 06 — starting identity context (defaults to anonymous). */
+  initialIdentity?: IdentityContext
   onEvent?: (event: SpiderRuntimeEvent) => void
   /** Explicit scope opt-out for this runtime. Undefined inherits the ambient global flag. */
   allowAny?: boolean
@@ -182,6 +209,8 @@ export class SpiderRuntime {
   private seenPages = new Set<string>()
   private seenEndpoints = new Set<string>()
   private seenForms = new Set<string>()
+  private seenAuthFlows = new Set<string>()
+  private seenReachability = new Set<string>()
 
   constructor(private opts: SpiderRuntimeOptions) {
     const now = Date.now()
@@ -197,6 +226,9 @@ export class SpiderRuntime {
       proposedOrigins: opts.initialState?.proposedOrigins ?? [],
       workflows: opts.initialState?.workflows ?? [],
       assets: opts.initialState?.assets ?? [],
+      currentIdentity: opts.initialState?.currentIdentity ?? opts.initialIdentity ?? anonymousIdentity(),
+      authTransitions: opts.initialState?.authTransitions ?? [],
+      reachability: opts.initialState?.reachability ?? [],
       stopReason: opts.initialState?.stopReason,
       startedAt: opts.initialState?.startedAt ?? now,
       updatedAt: now,
@@ -206,6 +238,7 @@ export class SpiderRuntime {
     for (const url of this.state.visitedUrls) this.seenPages.add(url)
     for (const endpoint of this.state.endpoints) this.seenEndpoints.add(`${endpoint.method}:${endpoint.url}`)
     for (const form of this.state.discoveredForms) this.seenForms.add(`${form.url}:${form.selector ?? form.action ?? ''}`)
+    for (const r of this.state.reachability) this.seenReachability.add(reachabilityKey(r))
     for (const origin of opts.approvedOrigins ?? []) {
       this.approveProposed(origin)
     }
@@ -222,6 +255,8 @@ export class SpiderRuntime {
       proposedOrigins: [...this.state.proposedOrigins],
       workflows: [...this.state.workflows],
       assets: [...this.state.assets],
+      authTransitions: [...this.state.authTransitions],
+      reachability: [...this.state.reachability],
     }
   }
 
@@ -229,11 +264,11 @@ export class SpiderRuntime {
     this.emit({ type: 'crawl_started', target: this.state.target, state: this.snapshot() })
   }
 
-  enqueue(url: string, depth = 0, sourcePage?: string, triggeringAction?: string): ScopeClassification {
+  enqueue(url: string, depth = 0, sourcePage?: string, triggeringAction?: string, identity: IdentityContext = this.state.currentIdentity): ScopeClassification {
     const { scope, reason } = this.boundary.classifyUrl(url)
     const alreadyQueued = this.state.frontier.some((item) => item.url === url)
     if (!alreadyQueued && !this.seenPages.has(url)) {
-      this.state.frontier.push({ url, depth, scope, sourcePage, triggeringAction })
+      this.state.frontier.push({ url, depth, scope, sourcePage, triggeringAction, identity })
     }
     if (scope === 'proposed') {
       const origin = this.boundary.originOf(url)
@@ -265,22 +300,25 @@ export class SpiderRuntime {
 
   recordPage(url: string, status = 0, links = 0, forms = 0): void {
     const { scope } = this.boundary.classifyUrl(url)
+    const identity = this.state.currentIdentity
     if (!this.seenPages.has(url)) {
       this.seenPages.add(url)
       this.state.visitedUrls.push(url)
       this.state.pagesSeen++
     }
+    this.recordReach('page', url)
     const provenanceId = getGlobalDecisionLedger().recordProvenance({
       source: 'web',
       pageUrl: url,
     }).id
     this.touch()
-    this.emit({ type: 'page_seen', url, scope, provenanceId, pages: this.state.pagesSeen, forms, state: this.snapshot() })
+    this.emit({ type: 'page_seen', url, scope, identity, provenanceId, pages: this.state.pagesSeen, forms, state: this.snapshot() })
     emitSpiderPage(url, status, links, forms)
   }
 
   recordEndpoint(method: string, url: string, params: string[] = [], sourcePage?: string): void {
     const { scope } = this.boundary.classifyUrl(url)
+    const identity = this.state.currentIdentity
     const key = `${method}:${url}`
     let provenanceId: string | undefined
     if (!this.seenEndpoints.has(key)) {
@@ -290,15 +328,17 @@ export class SpiderRuntime {
         pageUrl: url,
         actionId: `${method} ${url}`,
       }).id
-      this.state.endpoints.push({ method, url, params, scope, sourcePage, provenanceId })
+      this.state.endpoints.push({ method, url, params, scope, sourcePage, identity, provenanceId })
     }
+    this.recordReach('endpoint', url)
     this.touch()
-    this.emit({ type: 'endpoint_seen', method, url, params, scope, provenanceId, endpoints: this.state.endpoints.length, state: this.snapshot() })
+    this.emit({ type: 'endpoint_seen', method, url, params, scope, identity, provenanceId, endpoints: this.state.endpoints.length, state: this.snapshot() })
     emitSpiderEndpoint(method, url, params)
   }
 
   recordForm(url: string, selector?: string, method?: string, action?: string, role?: string): void {
     const key = `${url}:${selector ?? action ?? ''}`
+    const identity = this.state.currentIdentity
     let provenanceId: string | undefined
     if (!this.seenForms.has(key)) {
       this.seenForms.add(key)
@@ -307,16 +347,62 @@ export class SpiderRuntime {
         pageUrl: url,
         actionId: selector ?? action,
       }).id
-      this.state.discoveredForms.push({ url, selector, method, action, role, provenanceId })
+      this.state.discoveredForms.push({ url, selector, method, action, role, identity, provenanceId })
     }
+    this.recordReach('form', url)
     this.touch()
-    this.emit({ type: 'form_seen', url, method, provenanceId, forms: this.state.discoveredForms.length, state: this.snapshot() })
+    this.emit({ type: 'form_seen', url, method, identity, provenanceId, forms: this.state.discoveredForms.length, state: this.snapshot() })
   }
 
   recordAuth(url: string, state: string, role?: string): void {
     this.state.authStates.push({ url, state, role })
     this.touch()
     this.emit({ type: 'auth_detected', url, message: state, state: this.snapshot() })
+  }
+
+  /**
+   * Slice 06 — record a typed auth transition. Updates the active identity
+   * context and emits an `auth_transition` event so downstream consumers (web
+   * parity, role-aware reporting) see the identity change as a typed fact.
+   * Same-identity calls are idempotent (no spurious transitions).
+   */
+  setIdentity(identity: IdentityContext, url?: string, sourceRef?: string): void {
+    const from = this.state.currentIdentity
+    if (from.id === identity.id && from.kind === identity.kind) return
+    const transition: AuthTransition = {
+      workflowId: this.state.workflowId,
+      from,
+      to: identity,
+      ...(url ? { url } : {}),
+      at: Date.now(),
+      ...(sourceRef ? { sourceRef } : {}),
+    }
+    this.state.authTransitions.push(transition)
+    this.state.currentIdentity = identity
+    this.touch()
+    this.emit({ type: 'auth_transition', url, from: transition.from, to: transition.to, authTransition: transition, state: this.snapshot() })
+  }
+
+  /**
+   * Slice 06 — fold an observed AUTH_FLOW into the crawl identity. Auth-capable
+   * flow types (typed enum) transition the active identity; flows that do not
+   * change identity are ignored. Idempotent per flow node id.
+   */
+  recordAuthFlow(flowId: string, flowType: AuthFlowType, label?: string, url?: string): void {
+    if (this.seenAuthFlows.has(flowId)) return
+    this.seenAuthFlows.add(flowId)
+    const identity = identityForAuthFlow(flowType, label ?? flowType, url)
+    if (!identity || identity.id === this.state.currentIdentity.id) return
+    this.setIdentity(identity, url, flowId)
+  }
+
+  /** Slice 06 — record a reachability observation (deduped per identity+resource). */
+  private recordReach(resourceType: ReachabilityRecord['resourceType'], resourceId: string): void {
+    const record = createReachability(this.state.workflowId, this.state.currentIdentity, resourceType, resourceId)
+    const key = reachabilityKey(record)
+    if (this.seenReachability.has(key)) return
+    this.seenReachability.add(key)
+    this.state.reachability = pushReachability(this.state.reachability, record)
   }
 
   recordProgress(useful: boolean, staleThreshold: number): SpiderStopReason | undefined {
@@ -367,7 +453,11 @@ export interface SpiderRunOptions {
   memory?: any
   threadId?: string
   resourceId?: string
-  graphStore?: { queryNodes?: (type?: NodeType) => GraphNodeData[]; save?: () => Promise<void> }
+  graphStore?: {
+    queryNodes?: (type?: NodeType) => GraphNodeData[]
+    save?: () => Promise<void>
+    addReachability?: (record: ReachabilityRecord & { identityKind?: string; roleName?: string; tenantId?: string }) => unknown
+  }
   workflowId?: string
   initialState?: Partial<SpiderRuntimeState>
   onEvent?: (event: SpiderRuntimeEvent) => void
@@ -455,10 +545,11 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     const finalCounts = collectGraphState(graphStore)
     ingestGraphDiff(runtime, counts, finalCounts)
 
+    const finalState = runtime.snapshot()
+    persistReachability(graphStore, finalState)
     await graphStore?.save?.()
     stopReason ??= 'frontier_exhausted'
     runtime.stop(stopReason)
-    const finalState = runtime.snapshot()
     emitSpiderComplete(finalState.pagesSeen, finalState.endpoints.length, Date.now() - startedAt)
     return finalState
   } catch (err) {
@@ -466,8 +557,24 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     log.error(message)
     emitSpiderError(target, message)
     runtime.stop('error')
+    persistReachability(graphStore, runtime.snapshot())
     await graphStore?.save?.().catch(() => {})
     return runtime.snapshot()
+  }
+}
+
+/** Slice 06 — fold the crawl's reachability observations into the graph. */
+function persistReachability(
+  graphStore: SpiderRunOptions['graphStore'],
+  state: SpiderRuntimeState,
+): void {
+  for (const record of state.reachability) {
+    graphStore?.addReachability?.({
+      ...record,
+      identityKind: state.currentIdentity.kind,
+      roleName: state.currentIdentity.roleName,
+      tenantId: state.currentIdentity.tenantId,
+    })
   }
 }
 
@@ -511,12 +618,14 @@ function collectGraphState(graphStore: SpiderRunOptions['graphStore']) {
   const pages = new Map<string, GraphNodeData>()
   const endpoints = new Map<string, GraphNodeData>()
   const forms = new Map<string, GraphNodeData>()
+  const authFlows = new Map<string, GraphNodeData>()
   for (const page of graphStore?.queryNodes?.(NodeType.PAGE) ?? []) pages.set(String(page.properties.url ?? page.id), page)
   for (const endpoint of graphStore?.queryNodes?.(NodeType.ENDPOINT) ?? []) {
     endpoints.set(`${endpoint.properties.method ?? 'GET'}:${endpoint.properties.url ?? endpoint.id}`, endpoint)
   }
   for (const form of graphStore?.queryNodes?.(NodeType.INPUT) ?? []) forms.set(`${form.properties.url ?? ''}:${form.properties.selector ?? form.id}`, form)
-  return { pages, endpoints, forms }
+  for (const flow of graphStore?.queryNodes?.(NodeType.AUTH_FLOW) ?? []) authFlows.set(flow.id, flow)
+  return { pages, endpoints, forms, authFlows }
 }
 
 function ingestGraphDiff(runtime: SpiderRuntime, before: ReturnType<typeof collectGraphState>, after: ReturnType<typeof collectGraphState>): void {
@@ -534,6 +643,17 @@ function ingestGraphDiff(runtime: SpiderRuntime, before: ReturnType<typeof colle
   for (const [key, node] of after.forms) {
     if (before.forms.has(key)) continue
     runtime.recordForm(String(node.properties.url ?? ''), String(node.properties.selector ?? key), String(node.properties.method ?? 'GET'))
+  }
+  // Slice 06 — auth flows are identity transitions: fold new AUTH_FLOW nodes
+  // into the active identity context (typed flowType → typed identity kind).
+  for (const [id, node] of after.authFlows) {
+    if (before.authFlows.has(id)) continue
+    runtime.recordAuthFlow(
+      id,
+      String(node.properties.flowType ?? '') as AuthFlowType,
+      typeof node.properties.name === 'string' ? node.properties.name : undefined,
+      String(node.properties.startUrl ?? node.properties.target ?? '') || undefined,
+    )
   }
 }
 

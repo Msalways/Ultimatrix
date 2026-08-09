@@ -103,6 +103,17 @@ export const RBACRoleSchema = z.object({
   visibleUIElements: z.array(z.string()),
 })
 
+export const ReachabilitySchema = z.object({
+  workflowId: z.string(),
+  identityId: z.string(),
+  identityKind: z.string().optional(),
+  roleName: z.string().optional(),
+  tenantId: z.string().optional(),
+  resourceId: z.string(),
+  resourceType: z.enum(['page', 'endpoint', 'form', 'workflow']),
+  reachedAt: z.string(),
+})
+
 export const AttackSchema = z.object({
   technique: z.string(),
   payload: z.string(),
@@ -305,6 +316,7 @@ export enum NodeType {
   COUNCIL_DEBATE = 'CouncilDebate',
   EXPLOIT_PROOF = 'ExploitProof',
   THREAT_MODEL = 'ThreatModel',
+  REACHABILITY = 'Reachability',
 }
 
 export enum EdgeType {
@@ -328,6 +340,7 @@ export enum EdgeType {
   ORDERED_BEFORE = 'ORDERED_BEFORE',
   PROVES = 'PROVES',
   SESSION_REACHES = 'SESSION_REACHES',
+  REACHES = 'REACHES',
 }
 
 export interface GraphNodeData {
@@ -723,7 +736,28 @@ export interface ThreatModelNode extends GraphNodeData {
   }
 }
 
-export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode | ExploitProofNode | ThreatModelNode
+/**
+ * Slice 06 — a single "identity X reached resource Y" observation. Typed
+ * properties only (no prose); `identityKind`/`roleName`/`tenantId` mirror the
+ * identity context that made the reach. Linked to the reached resource node
+ * via a REACHES edge and, when a matching RBACRole node exists, to that role
+ * via HAS_ROLE.
+ */
+export interface ReachabilityNode extends GraphNodeData {
+  type: NodeType.REACHABILITY
+  properties: {
+    workflowId: string
+    identityId: string
+    identityKind?: string
+    roleName?: string
+    tenantId?: string
+    resourceId: string
+    resourceType: 'page' | 'endpoint' | 'form' | 'workflow'
+    reachedAt: string
+  }
+}
+
+export type AnyNodeData = GraphNodeData | PageNode | ActionNode | InputNode | EndpointNode | TestNode | FindingNode | AuthFlowNode | RBACRoleNode | AttackNode | FactNode | IntentNode | ReflexionNode | WorkflowNode | EntityNode | HypothesisNode | ExperimentNode | CandidateFindingNode | HeaderSemanticNode | AuthSchemeNode | OutcomeFeedbackNode | RenderedElementNode | CouncilDebateNode | ExploitProofNode | ThreatModelNode | ReachabilityNode
 
 export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.PAGE]: ['url', 'method', 'contentType', 'status', 'tags', 'bodyPreview', 'requiresAuth'],
@@ -750,6 +784,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.COUNCIL_DEBATE]: ['goal', 'round', 'members', 'summary', 'proposedTasks', 'newEvidence', 'complete'],
   [NodeType.EXPLOIT_PROOF]: ['findingId', 'title', 'method', 'url', 'headers', 'body', 'expectedVulnerableResponse', 'reproSteps', 'replayable', 'status', 'resultSummary', 'actorNote', 'scenario', 'relation', 'request', 'response', 'impact'],
   [NodeType.THREAT_MODEL]: ['findingId', 'assetsAtRisk', 'trustBoundary', 'nextTarget', 'businessImpact'],
+  [NodeType.REACHABILITY]: ['workflowId', 'identityId', 'identityKind', 'roleName', 'tenantId', 'resourceId', 'resourceType', 'reachedAt'],
 }
 
 export const NODE_SCHEMAS: Record<NodeType, z.ZodType> = {
@@ -777,6 +812,7 @@ export const NODE_SCHEMAS: Record<NodeType, z.ZodType> = {
   [NodeType.COUNCIL_DEBATE]: CouncilDebateSchema,
   [NodeType.EXPLOIT_PROOF]: ExploitProofSchema,
   [NodeType.THREAT_MODEL]: ThreatModelSchema,
+  [NodeType.REACHABILITY]: ReachabilitySchema,
 }
 
 /**

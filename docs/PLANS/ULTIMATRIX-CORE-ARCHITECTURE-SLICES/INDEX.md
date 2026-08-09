@@ -31,7 +31,7 @@ The intended architecture keeps the existing dual engine shape but makes `multi-
 | 03. Engagement Boundary and Policy | Implemented + committed | `AuthorizationCategory` (10) + `allowedCategories` gating, external tools deny-by-default, proposed-scope approval workflow (CLI `--approve-origin` + web `/api/spider/approve`), `scope_proposed` typed event. |
 | 04. Secret Vault and Artifacts | Partially complete | Secret vault work exists, but redaction is not yet guaranteed across all persistence paths. |
 | 05. Browser Provider Abstraction | Mostly pending | Current behavior is Stagehand/Playwright-specific. |
-| 06. Identity Role Reachability | Mostly pending | Auth detection exists, but role-specific reachability is not first-class crawl output. |
+| 06. Identity Role Reachability | Implemented + committed | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events; persisted via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges and `WorkflowState.reachability` (resume-safe). |
 | 07. Decision Ledger and Provenance | Mostly pending | Some routing reasons exist, but no central decision/provenance ledger. |
 | 08. Orchestrator and Worker Routing | Mostly pending | Worker pool exists; multi-model orchestration needs typed routing and bounded context. |
 | 09. Proof Rules and Evidence Quality | Mostly pending | Evidence gate exists; deterministic finding proof floors are not centralized. |

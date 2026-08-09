@@ -8,8 +8,20 @@ import type { ArtifactRecord } from '../../src/security/artifacts'
 import type { SpiderRuntimeState } from '../../src/spider/runtime'
 import type { UsageEntry } from '../../src/usage/tracker'
 import type { EvidenceItem } from '../../src/intelligence/evidence-ledger'
+import type { ReachabilityRecord } from '../../src/identity/types'
+import { createReachability } from '../../src/identity/reachability'
 
 const TARGET = 'https://workflow-test.example.com'
+
+function makeReachability(overrides: Partial<ReachabilityRecord> = {}): ReachabilityRecord {
+  return createReachability(
+    'workflow-fixture',
+    { id: 'anonymous', kind: 'anonymous', label: 'Anonymous' },
+    'page',
+    `${TARGET}/`,
+    '2026-01-01T00:00:00.000Z',
+  )
+}
 
 function makeSpider(overrides: Partial<SpiderRuntimeState> = {}): SpiderRuntimeState {
   return {
@@ -64,6 +76,7 @@ describe('createWorkflow', () => {
     expect(wf.artifacts).toEqual([])
     expect(wf.evidenceRefs).toEqual([])
     expect(wf.spider).toBeUndefined()
+    expect(wf.reachability).toEqual([])
   })
 
   it('honours an explicit workflowId + browserSessionId', () => {
@@ -101,12 +114,14 @@ describe('coerceWorkflow', () => {
     delete asUnknown.spider
     delete asUnknown.modelUsage
     delete asUnknown.browserSessionId
+    delete asUnknown.reachability
     const coerced = coerceWorkflow(asUnknown, { target: TARGET })
     expect(coerced).not.toBeNull()
     expect(coerced!.workflowId).toBe('workflow-coerce')
     expect(coerced!.spider).toBeUndefined()
     expect(coerced!.modelUsage).toEqual([])
     expect(coerced!.browserSessionId).toBeUndefined()
+    expect(coerced!.reachability).toEqual([])
   })
 
   it('normalises an unknown status to pending', () => {
@@ -225,6 +240,39 @@ describe('WorkflowStore mutators', () => {
     store.recordEvidence({ id: 'ev-2', kind: 'screenshot', label: 'shot', recordedAt: 3 })
     expect(store.state.evidenceRefs).toHaveLength(2)
     expect(store.state.evidenceRefs.every((r) => !('data' in r))).toBe(true)
+  })
+})
+
+describe('WorkflowStore reachability (Slice 06)', () => {
+  function bareStore(id: string): WorkflowStore {
+    const state = createWorkflow(TARGET, id)
+    state.createdAt = '2000-01-01T00:00:00.000Z'
+    state.updatedAt = '2000-01-01T00:00:00.000Z'
+    return new (WorkflowStore as any)(null, state) as WorkflowStore
+  }
+
+  it('recordReachability appends deduped observations', () => {
+    const store = bareStore('workflow-r')
+    store.recordReachability(makeReachability())
+    store.recordReachability(makeReachability())
+    store.recordReachability({ ...makeReachability(), resourceType: 'endpoint', resourceId: `${TARGET}/api` })
+    expect(store.state.reachability).toHaveLength(2)
+    expect(store.state.updatedAt).not.toBe(store.state.createdAt)
+  })
+
+  it('attachSpider folds the crawl reachability into the top-level list (deduped)', () => {
+    const store = bareStore('workflow-r2')
+    const spider = makeSpider()
+    ;(spider as Record<string, unknown>).reachability = [makeReachability(), makeReachability()]
+    store.attachSpider(spider)
+    expect(store.state.reachability).toHaveLength(1)
+    expect(store.state.reachability[0]).toMatchObject({ identityId: 'anonymous', resourceType: 'page', resourceId: `${TARGET}/` })
+  })
+
+  it('attachSpider tolerates a snapshot without reachability (older payloads)', () => {
+    const store = bareStore('workflow-r3')
+    store.attachSpider(makeSpider())
+    expect(store.state.reachability).toEqual([])
   })
 })
 

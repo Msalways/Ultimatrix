@@ -19,8 +19,10 @@ import {
   CouncilDebateNode,
   ExploitProofNode,
   ThreatModelNode,
+  ReachabilityNode,
   AnyNodeData,
 } from './schema'
+import type { ReachabilityRecord } from '../identity/types'
 import { log } from '../utils/logger'
 
 interface SerializedGraph {
@@ -481,6 +483,64 @@ export class LibSQLGraphStore {
     }
     
     this.insertNode(node)
+    return node
+  }
+
+  addReachability(record: ReachabilityRecord & { identityKind?: string; roleName?: string; tenantId?: string }): ReachabilityNode {
+    const id = `reachability:${record.identityId}:${record.resourceType}:${record.resourceId}`
+    const existing = this.getNode(id) as ReachabilityNode | undefined
+
+    if (existing) {
+      const updatedNode = {
+        ...existing,
+        properties: {
+          ...existing.properties,
+          workflowId: record.workflowId,
+          reachedAt: record.reachedAt,
+          ...(record.identityKind ? { identityKind: record.identityKind } : {}),
+          ...(record.roleName ? { roleName: record.roleName } : {}),
+          ...(record.tenantId ? { tenantId: record.tenantId } : {}),
+        },
+        updatedAt: Date.now(),
+      }
+      this.updateNode(updatedNode)
+      return updatedNode as ReachabilityNode
+    }
+
+    const node: ReachabilityNode = {
+      id,
+      type: NodeType.REACHABILITY,
+      label: `${record.identityId} reached ${record.resourceType}: ${record.resourceId}`,
+      properties: {
+        workflowId: record.workflowId,
+        identityId: record.identityId,
+        identityKind: record.identityKind,
+        roleName: record.roleName,
+        tenantId: record.tenantId,
+        resourceId: record.resourceId,
+        resourceType: record.resourceType,
+        reachedAt: record.reachedAt,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+
+    this.insertNode(node)
+
+    const resource = this.queryNodes().find(
+      (n) =>
+        (n.type === NodeType.PAGE || n.type === NodeType.ENDPOINT || n.type === NodeType.INPUT) &&
+        (n as { properties: Record<string, unknown> }).properties.url === record.resourceId,
+    )
+    if (resource) {
+      this.addEdge({ fromId: node.id, toId: resource.id, type: EdgeType.REACHES, properties: { workflowId: record.workflowId } })
+    }
+    if (record.roleName) {
+      const role = this.queryNodes(NodeType.RBAC_ROLE).find(
+        (r) => (r as { properties: Record<string, unknown> }).properties.roleName === record.roleName,
+      )
+      if (role) this.addEdge({ fromId: role.id, toId: node.id, type: EdgeType.HAS_ROLE, properties: { workflowId: record.workflowId } })
+    }
     return node
   }
 
