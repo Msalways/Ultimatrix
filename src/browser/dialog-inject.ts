@@ -16,7 +16,6 @@
  * - Runs captureBaseline()/detectReaction() cycle for UI reaction detection
  */
 
-import { createStagehandTools } from '@mastra/stagehand'
 import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
 import { getGlobalReactionObserver, type ReactionResult } from './reaction-observer'
 import { log } from '../utils/logger'
@@ -58,12 +57,15 @@ function buildReactionEvidence(reactionResult: ReactionResult): string {
  * After execution: read intercepted dialogs, detect UI reactions, append evidence.
  */
 export function wrapStagehandTools(browser: any): Record<string, any> {
-  const raw = createStagehandTools(browser)
+  // Use the browser's configured toolset so lifecycle-sensitive exclusions
+  // (notably stagehand_close for the shared session) cannot be reintroduced.
+  const raw = browser.getTools() as Record<string, any>
   const wrapped: Record<string, any> = {}
   const watcher = getGlobalDialogWatcher()
   const reactionObserver = getGlobalReactionObserver()
 
   for (const [name, tool] of Object.entries(raw)) {
+    if (name === 'stagehand_close') continue
     if (!STAGEHAND_TOOL_NAMES.includes(name)) {
       wrapped[name] = tool
       continue

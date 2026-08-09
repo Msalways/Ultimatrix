@@ -5,6 +5,7 @@ import { RefreshCw, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { StatusGlyph } from '@/components/glyphs';
 import { cn } from '@/lib/utils';
+import { dataFetcher } from '@/services/data-fetcher';
 
 interface Worker {
   id: string | number;
@@ -20,22 +21,17 @@ export function WorkersPanel({ className }: { className?: string }) {
 
   const fetchWorkers = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch('/api/workers');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setWorkers(json.workers ?? []);
-    } catch {
-      setWorkers([]);
-    } finally {
-      setLoading(false);
-    }
+    const result = await dataFetcher.loadWorkers();
+    setWorkers(result.workers as Worker[]);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
     fetchWorkers();
-    const id = setInterval(fetchWorkers, 5000);
-    return () => clearInterval(id);
+  }, [fetchWorkers]);
+
+  useEffect(() => {
+    return dataFetcher.onSSE('worker:', () => { fetchWorkers(); });
   }, [fetchWorkers]);
 
   return (

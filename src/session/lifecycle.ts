@@ -13,16 +13,14 @@ import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import {emitSessionInit, emitSessionComplete, emitSpiderStart, emitSpiderComplete, emitSpiderError} from '../events/emitter'
+import { emitBrowserHumanAction, emitSessionInit, emitSessionComplete } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import { finalizeEngagementMemory } from '../intelligence/cross-engagement'
 import type { FindingNode } from '../graph/schema'
-import { NodeType } from '../graph/schema'
-import { createSpiderAgent } from '../spider/agent'
-import { buildSpiderPrompt } from '../spider/instructions'
+import { runSpiderRuntime } from '../spider/runtime'
 import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
@@ -42,6 +40,7 @@ import { resetAllProviderLimiters } from '../models/limiter-factory'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture, type HarCapture } from './har-capture'
 import { attachHarCaptureViaCdp, type CdpCaptureHandle } from './cdp-network-capture'
+import { redactHarJson } from '../security/secret-vault'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
@@ -336,6 +335,7 @@ export class SessionLifecycle {
       if (page && !observer.isCapturing()) {
         observer.attach(page)
         observer.onAction((action) => {
+          emitBrowserHumanAction(action.type, action.url, action.selector)
           forensicLog.log({
             type: 'human-action',
             agent: 'human',
@@ -465,121 +465,31 @@ export class SessionLifecycle {
 
     log.info('Crawling ' + target + '...')
 
-    const spiderStartMs = Date.now()
-    emitSpiderStart(target, config.spider?.maxSteps ?? 100, config.spider?.maxDurationMs ?? 120_000)
-
-    try {
-      const spiderAgent = createSpiderAgent(config, memory, browser)
-      const spiderLoopDetector = new LoopDetector(config.antiLoop?.maxFailedTarget ?? DEFAULTS.antiLoop.maxFailedTarget)
-      const staleThreshold = config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold
-      const spiderMaxDurationMs = config.spider?.maxDurationMs ?? 120_000
-      const spiderDeadline = Date.now() + spiderMaxDurationMs
-
-      const streamPrompt = buildSpiderPrompt(target)
-
-      // Guard the initial stream() call — if the first LLM call hangs, the
-      // deadline-based Promise.race breaks us out instead of blocking forever.
-      let result: Awaited<ReturnType<typeof spiderAgent.stream>>
-      try {
-        result = await Promise.race([
-          spiderAgent.stream(
-            streamPrompt,
-            { memory: { thread: threadId + '-spider', resource: resourceId + '-spider' }, maxSteps: config.spider?.maxSteps ?? config.agent.maxSteps },
-          ),
-          new Promise<never>((_, reject) => {
-            const timer = setTimeout(
-              () => reject(new Error(`Spider stream init timed out after ${spiderMaxDurationMs}ms`)),
-              spiderMaxDurationMs,
-            )
-            // Unref so this timer doesn't keep the process alive if the stream resolves first.
-            if (typeof timer === 'object' && 'unref' in timer) timer.unref()
-          }),
-        ])
-      } catch (err) {
-        log.error(err instanceof Error ? err.message : String(err))
-        this.phase = 'spider'
-        return
-      }
-
-      let endpointsBefore = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
-      let pagesBefore = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
-      let findingsBefore = workspace.getGraphStore()?.queryNodes?.(NodeType.FINDING)?.length || 0
-      let spiderTimedOut = false
-      
-      for await (const chunk of result.fullStream) {
-        // Wall-clock deadline check: if the spider exceeded maxDurationMs,
-        // stop consuming chunks immediately. This catches hanging tool calls
-        // inside the LLM loop.
-        if (Date.now() > spiderDeadline) {
-          log.warn(`Spider timed out after ${spiderMaxDurationMs}ms — stopping crawl`)
-          spiderTimedOut = true
-          break
+    const spiderState = await runSpiderRuntime({
+      config,
+      target,
+      browser,
+      memory,
+      threadId,
+      resourceId,
+      graphStore: workspace.getGraphStore() as any,
+      onText: (text) => process.stdout.write(text),
+      onEvent: (event) => {
+        if (event.type === 'crawl_progress') {
+          log.dim(`[Spider] Progress: ${event.pages ?? 0} pages, ${event.endpoints ?? 0} endpoints, ${event.forms ?? 0} forms`)
+        } else if (event.type === 'crawl_stalled') {
+          log.warn('Spider stale - no new endpoints for several rounds, stopping crawl')
+        } else if (event.type === 'scope_proposed' && event.url) {
+          log.dim(`[Spider] Scope proposed: ${event.url}`)
         }
-        switch (chunk.type) {
-          case 'text-delta':
-          case 'reasoning-delta':
-            process.stdout.write(chunk.payload.text)
-            break
-          case 'tool-call':
-            if (chunk.payload.toolName !== 'askUser') {
-              log.dim(`  \u2192 ${chunk.payload.toolName}`)
-            }
-            break
-          case 'tool-result': {
-            const endpointsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
-            const pagesNow = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
-            const findingsNow = workspace.getGraphStore()?.queryNodes?.(NodeType.FINDING)?.length || 0
-            
-            const newEndpoints = endpointsNow - endpointsBefore
-            const newPages = pagesNow - pagesBefore
-            const newFindings = findingsNow - findingsBefore
-            
-            if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
-              const progressLine = `[Spider] Progress: +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings`
-              process.stdout.write(`\n${progressLine}\n`)
-            }
-            
-            spiderLoopDetector.recordRound(newEndpoints > 0)
-            endpointsBefore = endpointsNow
-            pagesBefore = pagesNow
-            findingsBefore = findingsNow
+      },
+    })
 
-            if (spiderLoopDetector.isStale(staleThreshold)) {
-              log.warn('Spider stale â€” no new endpoints for several rounds, stopping crawl')
-              break
-            }
-            break
-          }
-          case 'tool-error':
-            log.error(`  Spider: ${chunk.payload.toolName}: ${chunk.payload.error}`)
-            break
-        }
-      }
-
-      // Post-crawl verification
-      const finalSummary = workspace.getGraphStore()?.getTargetSummary()
-      if (finalSummary) {
-        const statusLabel = spiderTimedOut ? '(timed out)' : ''
-        log.dim(`[Spider] Crawl complete ${statusLabel} - Final summary: ${finalSummary.totalEndpoints} endpoints, ${finalSummary.totalPages} pages, ${finalSummary.totalFindings} findings`)
-        
-        // Verify minimum thresholds
-        if (finalSummary.totalEndpoints === 0) {
-          log.warn('[Spider] Warning: No endpoints discovered - navigation may have failed')
-        }
-        if (finalSummary.totalPages === 0) {
-          log.warn('[Spider] Warning: No pages recorded - page recording may be failing')
-        }
-      }
-      
-      await workspace.getGraphStore()?.save()
-      const spiderDurationMs = Date.now() - spiderStartMs
-      const finalEndpoints = workspace.getGraphStore()?.queryNodes?.(NodeType.ENDPOINT)?.length || 0
-      const finalPages = workspace.getGraphStore()?.queryNodes?.(NodeType.PAGE)?.length || 0
-      emitSpiderComplete(finalPages, finalEndpoints, spiderDurationMs)
-    } catch (err) {
-      log.error(err instanceof Error ? err.message : String(err))
-      emitSpiderError(target, err instanceof Error ? err.message : String(err))
-      workspace.getGraphStore()?.save().catch(() => {})
+    const finalSummary = workspace.getGraphStore()?.getTargetSummary()
+    if (finalSummary) {
+      log.dim(`[Spider] Crawl complete (${spiderState.stopReason ?? 'unknown'}) - Final summary: ${finalSummary.totalEndpoints} endpoints, ${finalSummary.totalPages} pages, ${finalSummary.totalFindings} findings`)
+      if (finalSummary.totalEndpoints === 0) log.warn('[Spider] Warning: No endpoints discovered - navigation may have failed')
+      if (finalSummary.totalPages === 0) log.warn('[Spider] Warning: No pages recorded - page recording may be failing')
     }
 
     // HAR bridge
@@ -588,14 +498,15 @@ export class SessionLifecycle {
       try {
         const harJson = await harCapture.stop()
         if (harJson) {
+          const safeHarJson = redactHarJson(harJson)
           const capturesDir = resolve(workspace.getTargetDir(target), 'captures')
           await mkdir(capturesDir, { recursive: true })
           const harPath = resolve(capturesDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.har`)
-          await writeFile(harPath, harJson, 'utf-8')
+          await writeFile(harPath, safeHarJson, 'utf-8')
           log.success('HAR saved: ' + harPath)
 
           try {
-            const bridgeResult = await bridgeHARToGraph(harJson, target)
+            const bridgeResult = await bridgeHARToGraph(safeHarJson, target)
             if (bridgeResult.contextForLLM) {
               this._resources.harContextForLLM = bridgeResult.contextForLLM
               log.success(`HAR bridge: ${bridgeResult.endpointsWritten} endpoints, ${bridgeResult.secretsWritten} secrets, ${bridgeResult.factsWritten} facts, ${bridgeResult.hypothesesGenerated} hypotheses â†’ graph`)
@@ -660,7 +571,7 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 5: REPL loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runREPL(onInput: (line: string) => Promise<void>): Promise<void> {
+  async runREPL(onInput: (line: string) => Promise<void | boolean>): Promise<void> {
     this.assertPhase('engine')
     this.phase = 'running'
 
@@ -691,7 +602,11 @@ export class SessionLifecycle {
 
     try {
       for (;;) {
-        process.stdout.write('> ')
+        let promptTarget = 'no-target'
+        if (target) {
+          try { promptTarget = new URL(target).hostname } catch { promptTarget = target }
+        }
+        process.stdout.write(`${promptTarget}> `)
         // Console mode: Ink owns stdin. The REPL consumes goals from the
         // `uiGoalEmitter` queue (fed by the Ink InputBar) — NO readline
         // listener, so there is exactly one owner of stdin. Non-console mode
@@ -703,7 +618,8 @@ export class SessionLifecycle {
 
         try {
           process.stdout.write('\n')
-          await onInput(line)
+          const shouldContinue = await onInput(line)
+          if (shouldContinue === false) break
         } catch (err) {
           process.stdout.write('\n')
           log.error(err instanceof Error ? err.message : String(err))

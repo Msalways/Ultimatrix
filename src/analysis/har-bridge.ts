@@ -20,6 +20,7 @@ import { getOastUrl } from '../oast/server'
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { runAnalysis } from './analyser'
+import { redactHarJson } from '../security/secret-vault'
 
 export interface BridgeResult {
   endpointsWritten: number
@@ -58,7 +59,8 @@ function resolveSelfOrigin(): string | null {
  */
 export async function bridgeHARToGraph(harJson: string, targetUrl: string): Promise<BridgeResult> {
   const store = getGlobalGraphStore()
-  const archive = parseHar(harJson)
+  const safeHarJson = redactHarJson(harJson)
+  const archive = parseHar(safeHarJson)
   const entries = archive.log.entries
 
   if (entries.length === 0) {
@@ -199,7 +201,7 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
 
   // ── 6.5 Business-logic analysis (use-case, invariants, header semantics, auth reuse, value origins) ──
   try {
-    await runAnalysis(store, harJson)
+    await runAnalysis(store, safeHarJson)
   } catch (analysisErr) {
     log.warn(`HAR bridge: business-logic analysis skipped: ${(analysisErr as Error).message}`)
   }

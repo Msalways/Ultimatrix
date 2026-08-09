@@ -10,24 +10,32 @@ import type { UltimatrixConfig } from '../config'
 import { computeLastMessages } from '../config'
 import { log } from '../utils/logger'
 
-let _store: LibSQLStore | null = null
-let _vector: LibSQLVector | null = null
+const stores = new Map<string, LibSQLStore>()
+const vectors = new Map<string, LibSQLVector>()
+
+function memoryUrl(dbPath?: string): string {
+  return dbPath ? `file:${dbPath}` : 'file:./ultimatrix.db'
+}
 
 export async function createMemoryStore(dbPath?: string): Promise<LibSQLStore> {
-  if (!_store) {
-    const url = dbPath ? `file:${dbPath}` : 'file:./ultimatrix.db'
-    _store = new LibSQLStore({ id: 'ultimatrix', url })
-    await _store.init()
+  const url = memoryUrl(dbPath)
+  let store = stores.get(url)
+  if (!store) {
+    store = new LibSQLStore({ id: `ultimatrix-${stores.size + 1}`, url })
+    await store.init()
+    stores.set(url, store)
   }
-  return _store
+  return store
 }
 
 function createVectorStore(dbPath?: string): LibSQLVector | null {
-  if (!_vector) {
-    const url = dbPath ? `file:${dbPath}` : 'file:./ultimatrix.db'
-    _vector = new LibSQLVector({ id: 'ultimatrix-vector', url })
+  const url = memoryUrl(dbPath)
+  let vector = vectors.get(url)
+  if (!vector) {
+    vector = new LibSQLVector({ id: `ultimatrix-vector-${vectors.size + 1}`, url })
+    vectors.set(url, vector)
   }
-  return _vector
+  return vector
 }
 
 function resolveEmbedder(config: UltimatrixConfig): string | undefined {

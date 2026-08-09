@@ -1,11 +1,8 @@
 import { select, input, password, confirm } from '@inquirer/prompts'
-import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs'
-import { homedir } from 'os'
-import { join, resolve } from 'path'
-import { dump, load } from 'js-yaml'
-import { PROVIDER_INFO, DEFAULTS } from '../config'
+import { PROVIDER_INFO, getConfigPath, getProvidersPath } from '../config'
 import { log } from '../utils/logger'
 import type { EngineType } from '../config'
+import { runSetup, testProviderConnection } from '../core/setup-service'
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -18,38 +15,14 @@ interface InitOptions {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function providersPath(): string {
-  return join(homedir(), '.config', 'ultimatrix', 'providers.yaml')
-}
-
-function ensureDir(filePath: string) {
-  const dir = filePath.substring(0, filePath.lastIndexOf('\\') || filePath.lastIndexOf('/'))
-  if (dir && !existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
-  }
-}
-
 async function testConnection(url: string, model: string, apiKey: string): Promise<boolean> {
-  try {
-    const t0 = Date.now()
-    const res = await fetch(url.replace(/\/+$/, '') + '/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 5 }),
-      signal: AbortSignal.timeout(15000),
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      log.error('Connection failed: ' + res.status + ' ' + body.slice(0, 100))
-      return false
-    }
-    const elapsed = Date.now() - t0
-    log.success('Connection OK (' + elapsed + 'ms)')
-    return true
-  } catch (e) {
-    log.error('Connection failed: ' + (e as Error).message)
-    return false
+  const result = await testProviderConnection(url, model, apiKey)
+  if (result.ok) {
+    log.success('Connection OK (' + result.latencyMs + 'ms)')
+  } else {
+    log.error('Connection failed: ' + result.error)
   }
+  return result.ok
 }
 
 function parseArgs(): InitOptions {
@@ -348,32 +321,6 @@ export async function initWizard() {
 
   // ── Step 5: Save + Summary ────────────────────────────────────────
 
-  // Save providers.yaml
-  const providersConfigPath = providersPath()
-  ensureDir(providersConfigPath)
-  let providersData: Record<string, unknown> = {}
-  if (existsSync(providersConfigPath)) {
-    try {
-      const existing = load(readFileSync(providersConfigPath, 'utf-8'))
-      if (existing && typeof existing === 'object') providersData = existing as Record<string, unknown>
-    } catch { /* ignore */ }
-  }
-
-  providersData[selectedProvider.id] = {
-    apiKey,
-    ...(baseUrl ? { baseUrl } : {}),
-  }
-
-  // Save cross-provider keys collected during tier setup
-  for (const [provId, provCreds] of Object.entries(crossProviderKeys)) {
-    if (!providersData[provId]) {
-      providersData[provId] = { apiKey: provCreds.apiKey, ...(provCreds.baseUrl ? { baseUrl: provCreds.baseUrl } : {}) }
-    }
-  }
-
-  writeFileSync(providersConfigPath, dump(providersData), 'utf-8')
-  log.success(`Saved provider credentials to ${providersConfigPath}`)
-
   // Save ultimatrix.yaml
   if (!opts.nonInteractive) {
     const doSave = await confirm({
@@ -387,56 +334,25 @@ export async function initWizard() {
     }
   }
 
-  const projectPath = resolve('ultimatrix.yaml')
-  let projectData: Record<string, unknown> = {}
-  if (existsSync(projectPath)) {
-    try {
-      const existing = load(readFileSync(projectPath, 'utf-8'))
-      if (existing && typeof existing === 'object') projectData = existing as Record<string, unknown>
-    } catch { /* ignore */ }
+  // Use the shared setup service to write both files
+  const result = await runSetup({
+    provider: selectedProvider.id,
+    model: modelId,
+    apiKey,
+    baseUrl,
+    engine,
+    modelTiers: Object.keys(tiers).length > 0 ? tiers : undefined,
+    crossProviderKeys: Object.keys(crossProviderKeys).length > 0 ? crossProviderKeys : undefined,
+  })
+
+  if (!result.ok) {
+    log.error('Setup failed:')
+    for (const e of result.errors ?? []) log.error('  ' + e)
+    return
   }
 
-  projectData.engine = engine
-
-  // When multi-model is enabled, derive provider/model from balanced tier for the YAML
-  if (useMultiModel && tiers.balanced) {
-    projectData.provider = tiers.balanced.provider
-    projectData.model = tiers.balanced.model
-  } else {
-    projectData.provider = selectedProvider.id
-    projectData.model = modelId
-  }
-
-  if (Object.keys(tiers).length > 0) {
-    projectData.modelTiers = tiers
-  }
-
-  if (!projectData.browser) {
-    projectData.browser = {
-      headless: true,
-      viewport: { width: 1280, height: 720 },
-      domSettleTimeout: 5000,
-      env: 'LOCAL',
-      selfHeal: true,
-      verbose: 0,
-    }
-  }
-  if (!projectData.memory) {
-    projectData.memory = {
-      lastMessages: 10,
-      semanticRecall: false,
-      workingMemory: true,
-    }
-  }
-  if (!projectData.agent) {
-    projectData.agent = {
-      maxSteps: DEFAULTS.agent.maxSteps,
-      scansDir: DEFAULTS.agent.scansDir,
-    }
-  }
-
-  writeFileSync(projectPath, dump(projectData), 'utf-8')
-  log.success(`Saved to ${projectPath}`)
+  log.success(`Saved provider credentials to ${result.providersPath}`)
+  log.success(`Saved to ${result.configPath}`)
 
   printSummary(selectedProvider.id, modelId, engine, tiers)
 }

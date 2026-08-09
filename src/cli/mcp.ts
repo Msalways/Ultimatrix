@@ -16,10 +16,10 @@ import { resolve } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { load, dump } from 'js-yaml'
 import { log } from '../utils/logger'
-import type { McpServerConfig } from '../config'
+import { getConfigPath, type McpServerConfig } from '../config'
 
 function yamlPath(): string {
-  return resolve(process.cwd(), 'ultimatrix.yaml')
+  return getConfigPath()
 }
 
 function readYaml(): Record<string, unknown> {

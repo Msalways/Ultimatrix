@@ -1,6 +1,5 @@
 import { resolve } from 'node:path'
 import { BrowserLauncher } from './capture/browser-launcher'
-import { NetworkCapture } from './capture/network-capture'
 import type { HarArchive } from './capture/har-parser'
 import {getEndpointsWithHeaders} from './capture/har-parser'
 import { loadAllSkills, getBuiltinSkill } from './analysis/skill-loader'
@@ -37,7 +36,6 @@ export interface ScanResult {
 export class Ultimatrix {
   private config: UltimatrixConfig
   private browser: BrowserLauncher
-  private capture: NetworkCapture
   private storage: TestStorage
   private skills: Skill[] = []
   private findings: Finding[] = []
@@ -50,7 +48,6 @@ export class Ultimatrix {
       ...config,
     }
     this.browser = new BrowserLauncher()
-    this.capture = new NetworkCapture()
     this.storage = new TestStorage(this.config.outputDir!)
 
     if (this.config.target) {
@@ -79,8 +76,9 @@ export class Ultimatrix {
       })
     }
 
-    // Capture traffic
-    const { page } = await this.browser.newPage({
+    // Capture traffic — use the capture instance from the browser launcher,
+    // which is the one actually wired to the page's response events.
+    const { page, capture } = await this.browser.newPage({
       headless: this.config.browserOptions?.headless,
       viewport: this.config.browserOptions?.viewport,
     })
@@ -88,9 +86,13 @@ export class Ultimatrix {
     await page.goto(this.config.target)
     await page.waitForLoadState('networkidle')
 
-    // Stop capture
-    this.capture.stop()
-    this.harData = this.capture.exportHar() as unknown as HarArchive
+    // Flush pending async captures, then stop and export.
+    await capture.flush()
+    capture.stop()
+    this.harData = capture.exportHar()
+
+    // Close the page we opened — we're done with it.
+    await this.browser.closePage(page)
 
     // Analyze
     const analysis = analyzeHar(this.harData)
@@ -158,13 +160,16 @@ export class Ultimatrix {
     return this.tests
   }
 
-  async replay(): Promise<{ passed: number; failed: number; total: number }> {
+  async replay(): Promise<{ passed: number; failed: number; skipped: number; total: number; executed: boolean }> {
     const tests = await this.storage.load()
-    // For now, return counts (actual Playwright execution would happen here)
+    // No Playwright execution infrastructure in the SDK yet.
+    // Return honest results — tests were generated but not executed.
     return {
-      passed: tests.length,
+      passed: 0,
       failed: 0,
+      skipped: tests.length,
       total: tests.length,
+      executed: false,
     }
   }
 
@@ -195,8 +200,9 @@ export class Ultimatrix {
     const results = this.tests.map(t => ({
       testFile: `${t.id}.spec.ts`,
       testName: t.name,
-      status: 'passed' as const,
+      status: 'not-run' as const,
       duration: 0,
+      executed: false,
     }))
 
     return generateReport(this.findings, results, { format })

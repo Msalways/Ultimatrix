@@ -35,6 +35,18 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function formatActivityMessage(event: Record<string, unknown>): string {
+  return String(
+    event.message ??
+    event.workerName ??
+    event.toolName ??
+    event.nodeType ??
+    event.label ??
+    event.workerId ??
+    'received'
+  )
+}
+
 type FilterType = ActivityEntry['type'] | 'all';
 
 const FILTER_OPTIONS: FilterType[] = ['all', 'tool-call', 'tool-result', 'error', 'info', 'reasoning'];
@@ -56,17 +68,26 @@ export function ActivityPanel({ onClose }: { onClose?: () => void }) {
       esRef.current.close()
     }
 
-    const es = new EventSource('/api/activity')
+    const es = new EventSource('/api/swarm-events')
     esRef.current = es
 
     es.onopen = () => setConnected(true)
 
     es.onmessage = (ev) => {
       try {
-        const raw = JSON.parse(ev.data) as { type: string; message: string; timestamp: number }
-        if (raw.type === 'heartbeat') return
-        const entry: ActivityEntry = { ...raw, id: nextId++ } as ActivityEntry
-        setEntries((prev) => [...prev.slice(-300), entry])
+        const raw = JSON.parse(ev.data) as { events?: Array<Record<string, unknown>> }
+        if (!Array.isArray(raw.events)) return
+        const mapped = raw.events
+          .filter((event) => event.type !== 'heartbeat' && event._event !== 'heartbeat')
+          .map((event) => ({
+            id: nextId++,
+            type: mapActivityType(String(event._event ?? event.type ?? 'info')),
+            message: formatActivityMessage(event),
+            timestamp: typeof event.timestamp === 'number' ? event.timestamp : Date.now(),
+          }))
+        if (mapped.length > 0) {
+          setEntries((prev) => [...prev, ...mapped].slice(-300))
+        }
       } catch { /* ignore malformed */ }
     }
 
@@ -185,4 +206,13 @@ export function ActivityPanel({ onClose }: { onClose?: () => void }) {
       </ScrollArea>
     </aside>
   )
+}
+
+function mapActivityType(type: string): ActivityEntry['type'] {
+  if (type.includes('tool:call') || type.includes('worker:tool-call')) return 'tool-call'
+  if (type.includes('tool:result') || type.includes('worker:tool-result')) return 'tool-result'
+  if (type.includes('error') || type.includes('rejected')) return 'error'
+  if (type.includes('reason') || type.includes('reflexion')) return 'reasoning'
+  if (type.includes('heartbeat')) return 'heartbeat'
+  return 'info'
 }

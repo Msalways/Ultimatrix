@@ -1,5 +1,6 @@
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { UltimatrixConfig } from '../config'
+import type { TaskComplexity } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import { createAgent } from '../mastra/index'
 import { loadSkill } from '../solver/skills/loader'
@@ -9,6 +10,7 @@ export interface WorkerConfig {
   task: string
   tier?: 'fast' | 'balanced' | 'powerful'
   modelId?: string
+  complexity?: TaskComplexity
   tokenBudget?: number
   context?: any
   browser?: StagehandBrowser
@@ -39,6 +41,8 @@ export class WorkerFactory {
       browser: workerConfig.browser,
       tier: workerConfig.tier,
       modelId: workerConfig.modelId,
+      role: 'worker',
+      complexity: workerConfig.complexity,
       skillIds: [workerConfig.skillId],
       skills: skill ? [skill] : undefined,
       taskInstructions: workerConfig.task,

@@ -18,14 +18,22 @@ import { Blackboard } from '../solver/blackboard'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { ReflexionEngine } from '../intelligence/reflexion'
-import { createSpiderAgent } from '../spider/agent'
+import { runSpiderRuntime } from '../spider/runtime'
 import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture } from '../session/har-capture'
 import { generateCaseFile } from '../report/case-file'
+import { logSolveSummary } from '../utils/solver-summary'
+import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { redactHarJson } from '../security/secret-vault'
 
 export async function solveCommand(target: string, _outputDir: string): Promise<void> {
   const config = loadConfig()
   config.target = target
+
+  // Initialize scope from target — same pattern as lifecycle.ts.
+  // Without this, scope-guard returns allowed:true for every URL.
+  const scopeConfig = config.scope ?? deriveScopeFromTarget(target)
+  setScopeConfig(scopeConfig)
 
   showDisclaimer(target)
 
@@ -81,28 +89,14 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
     log.info('Crawling target to populate graph...')
     const harCapture = await startHarCapture(target, [])
 
-    const spiderAgent = createSpiderAgent(config, memory, browser)
-    const spiderResult = await spiderAgent.stream(
-      `Navigate to ${target}. Use the available browser capabilities to dismiss overlays, discover forms and record them, detect auth flows. Record everything to the knowledge graph.`,
-      { maxSteps: config.agent.maxSteps },
-    )
-
-    for await (const chunk of spiderResult.fullStream) {
-      switch (chunk.type) {
-        case 'text-delta':
-        case 'reasoning-delta':
-          process.stdout.write(chunk.payload.text)
-          break
-        case 'tool-call':
-          if (chunk.payload.toolName !== 'askUser') {
-            log.dim(`  \u2192 ${chunk.payload.toolName}`)
-          }
-          break
-        case 'tool-error':
-          log.error(`  ${chunk.payload.toolName}: ${chunk.payload.error}`)
-          break
-      }
-    }
+    await runSpiderRuntime({
+      config,
+      target,
+      browser,
+      memory,
+      graphStore: workspace.getGraphStore() as any,
+      onText: (text) => process.stdout.write(text),
+    })
     process.stdout.write('\n')
 
     await workspace.getGraphStore()?.save()
@@ -112,13 +106,14 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
     try {
       harJson = await harCapture.stop()
       if (harJson) {
+        const safeHarJson = redactHarJson(harJson)
         const capturesDir = resolve(workspace.getTargetDir(target), 'captures')
         await mkdir(capturesDir, { recursive: true })
         const harPath = resolve(capturesDir, `${new Date().toISOString().replace(/[:.]/g, '-')}.har`)
-        await writeFile(harPath, harJson, 'utf-8')
+        await writeFile(harPath, safeHarJson, 'utf-8')
         log.success('HAR saved: ' + harPath)
 
-        const bridgeResult = await bridgeHARToGraph(harJson, target)
+        const bridgeResult = await bridgeHARToGraph(safeHarJson, target)
         log.success(`Analyser: ${bridgeResult.endpointsWritten} endpoints, ${bridgeResult.secretsWritten} secrets, ${bridgeResult.factsWritten} facts, ${bridgeResult.hypothesesGenerated} hypotheses → graph`)
       } else {
         log.dim('No HAR entries captured')
@@ -136,11 +131,10 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
   let lastResult = null
   const goal = `Perform a comprehensive security assessment of ${target}. Test for SQL injection, XSS, IDOR, authentication bypass, and any other vulnerabilities. Record all findings.`
 
-  const renderMsg = createSolverRenderer({}, {}, { plain: true })
-
   while (round < maxRounds) {
     round++
     log.info(`Solve round ${round}/${maxRounds}`)
+    const renderMsg = createSolverRenderer({}, {}, { plain: true })
 
     const result = await solve(agent, {
       origin: target,
@@ -165,7 +159,7 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
     renderMsg.final?.()
 
     if (result.completed) {
-      log.success(`Goal achieved in round ${round}: ${result.reason}`)
+      log.success(`Assessment objective reached in round ${round}`)
       break
     }
 
@@ -182,14 +176,7 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
   const result = lastResult!
 
   log.nl()
-  if (result.completed) {
-    log.success(`Solver completed: ${result.reason}`)
-  } else {
-    log.warn(`Solver stopped: ${result.reason}`)
-  }
-  if (result.error) {
-    log.error(`Error: ${result.error}`)
-  }
+  logSolveSummary(result)
   log.info(`Tool calls: ${result.toolCalls} | Facts: ${result.facts} | Intents: ${result.intents} | Duration: ${result.durationMs}ms`)
 
   // Token cost estimate

@@ -74,7 +74,7 @@ describe('har-bridge origin tagging', () => {
     expect(res.endpointsWritten).toBe(2)
   })
 
-  it('writes RAW secret value into the finding description (evidence stays precise/lethal)', async () => {
+  it('redacts secret values before writing finding descriptions', async () => {
     const jwt = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxfQ.abc123secret'
     const har = JSON.stringify({
       log: {
@@ -97,9 +97,8 @@ describe('har-bridge origin tagging', () => {
       (c: any[]) => c[0].technique === 'Secret Exposure: token',
     )
     expect(secretFinding).toBeTruthy()
-    // The graph evidence must contain the REAL token, not a mask.
-    expect(secretFinding[0].description).toContain(jwt)
-    expect(secretFinding[0].description).not.toContain('****')
+    expect(secretFinding[0].description).not.toContain(jwt)
+    expect(secretFinding[0].description).toContain('****')
   })
 
   it('tags secrets found in a self entry as self-traffic', async () => {

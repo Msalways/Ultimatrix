@@ -48,6 +48,8 @@ function generateJson(findings: Finding[], results: TestResult[], options: Repor
       testsRun: results.length,
       testsPassed: results.filter(r => r.status === 'passed').length,
       testsFailed: results.filter(r => r.status === 'failed').length,
+      testsNotRun: results.filter(r => r.status === 'not-run').length,
+      executed: results.some(r => r.executed !== false),
     },
     findings: findings.map(f => ({
       id: f.id,

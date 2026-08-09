@@ -24,7 +24,7 @@ const FORWARD_EVENTS: EventKey[] = [
   // Graph
   'graph:node-added', 'graph:edge-added', 'graph:finding-added', 'graph:attack-added', 'graph:mutated',
   // Browser
-  'browser:navigate', 'browser:reaction', 'browser:dialog', 'browser:auth-detected',
+  'browser:navigate', 'browser:reaction', 'browser:dialog', 'browser:auth-detected', 'browser:human-action',
   'browser:bot-detected', 'browser:bot-resolved',
   // Finding
   'finding:discovered', 'finding:verified', 'finding:status-changed', 'finding:chain-detected',

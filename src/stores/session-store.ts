@@ -35,6 +35,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((s) => ({
       sessions: s.sessions.filter((sess) => sess.id !== id),
       activeSessionId: s.activeSessionId === id ? null : s.activeSessionId,
+      activeTarget: s.activeSessionId === id ? null : s.activeTarget,
     })),
 
   setActiveSession: (id) => set({ activeSessionId: id }),

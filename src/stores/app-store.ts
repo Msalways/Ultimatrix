@@ -5,6 +5,7 @@ export { useChatStore, type StreamMessage, type ChatMessage, type ToolCallMessag
 export { useUIStore } from './ui-store'
 export { useSessionStore, type Session } from './session-store'
 export { useBudgetStore } from './budget-store'
+export { useResourceStore, type LoadState, type ResourceKey } from './resource-store'
 
 // ── Legacy types kept for existing components ─────────────────
 

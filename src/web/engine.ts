@@ -15,7 +15,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
-import { loadConfig, type UltimatrixConfig } from '../config'
+import { existsSync, mkdirSync } from 'node:fs'
+import { getConfigPath, getProvidersPath, loadConfig, type UltimatrixConfig } from '../config'
 import { getGlobalWorkspace } from '../workspace'
 import { GraphStore } from '../graph/store'
 import { OastStore } from '../oast/store'
@@ -23,18 +24,16 @@ import { solve, type SolverStreamMessage, type SolveResult, type PhaseEvent, typ
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
 import { createEngineServices, type EngineServices } from '../session/engine-setup'
-import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
+import { createMemory, createMemoryStore } from '../workers/registry'
+import { getOrCreateBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
+import { getGlobalObserver } from '../capture/human-observer'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
-import { createSpiderAgent } from '../spider/agent'
-import { buildSpiderPrompt } from '../spider/instructions'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import { LoopDetector } from '../intelligence/anti-loop'
-import { NodeType } from '../graph/schema'
-import { emitSpiderStart, emitSpiderComplete, emitSpiderError } from '../events/emitter'
+import { emitBrowserHumanAction } from '../events/emitter'
+import { runSpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
 import { log } from '../utils/logger'
-import { DEFAULTS } from '../config'
 import { loadSkill } from '../solver/skills/loader'
 
 export interface WebEngineOpts {
@@ -49,12 +48,20 @@ export class WebEngine {
   private graphStore!: GraphStore
   private oastStore!: OastStore
   private engineServices!: EngineServices
+  private memory?: Awaited<ReturnType<typeof createMemory>>
+  private memoryStore?: Awaited<ReturnType<typeof createMemoryStore>>
+  private _threadId?: string
+  private _resourceId = 'ultimatrix-web'
   private forensicLog?: ForensicLog
   private _initialized = false
   private _running = false
-  private _spiderRan = false
   private _abortController: AbortController | null = null
   private _cleanupFns: Array<() => Promise<void>> = []
+  private _configPath = ''
+  private _configFingerprint = ''
+  private _providersPath = ''
+  private _spiderState?: SpiderRuntimeState
+  private _spiderRan = false
 
   constructor(target: string) {
     this.id = randomUUID()
@@ -62,7 +69,10 @@ export class WebEngine {
   }
 
   async init(opts: WebEngineOpts): Promise<void> {
+    this._configPath = getConfigPath()
+    this._providersPath = getProvidersPath()
     const baseConfig = await loadConfig()
+    this._configFingerprint = this.buildConfigFingerprint(baseConfig)
     this.config = opts.configOverrides
       ? { ...baseConfig, ...opts.configOverrides, target: opts.target }
       : { ...baseConfig, target: opts.target }
@@ -71,6 +81,13 @@ export class WebEngine {
     const { graphStore, oastStore } = await workspace.switchTarget(opts.target)
     this.graphStore = graphStore
     this.oastStore = oastStore
+
+    const targetDir = workspace.getTargetDir(opts.target)
+    if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
+    const dbPath = resolve(targetDir, 'ultimatrix.db')
+    this.memoryStore = await createMemoryStore(dbPath)
+    this.memory = await createMemory(this.config, this.memoryStore, dbPath)
+    await this.ensureMemoryThread()
 
     const forensicLogPath = resolve(workspace.getTargetDir(opts.target), 'forensic.ndjson')
     this.forensicLog = new ForensicLog(forensicLogPath)
@@ -84,6 +101,7 @@ export class WebEngine {
     const browser = getOrCreateBrowser(this.config)
     await browser.ensureReady()
     startDialogWatcher(browser)
+    this.attachHumanObserver()
 
     // OAST server
     setOastConfig(this.config.oast ?? null)
@@ -93,10 +111,13 @@ export class WebEngine {
       await stopOastServer()
     })
     this.registerCleanup(async () => {
-      log.dim('[WebEngine] Closing browser...')
+      log.dim('[WebEngine] Stopping dialog watcher and detaching observers...')
       stopDialogWatcher()
       try { getGlobalReactionObserver().detach() } catch {}
-      await closeBrowser()
+      try { getGlobalObserver().detach() } catch {}
+      // Browser is a process-level singleton — do NOT close it here.
+      // Closing the browser kills the Chromium process for ALL engines.
+      // The browser lifecycle is managed externally (TTL cleanup / graceful shutdown).
     })
 
     // Navigate to target if set
@@ -119,7 +140,7 @@ export class WebEngine {
     this.engineServices = await createEngineServices({
       config: this.config,
       browser,
-      memory: undefined,
+      memory: this.memory,
       target: opts.target,
     })
 
@@ -129,6 +150,7 @@ export class WebEngine {
 
   async solve(params: {
     goal: string
+    interactionMode?: 'ask' | 'run'
     solverConfig?: SolverConfig
     onMessage?: (msg: SolverStreamMessage) => void
     onPhase?: (event: PhaseEvent) => void
@@ -137,10 +159,11 @@ export class WebEngine {
     if (this._running) throw new Error('WebEngine already running a solve')
 
     this._running = true
-    this._abortController = new AbortController()
+    const abortController = new AbortController()
+    this._abortController = abortController
 
     try {
-      // Auto-crawl on first solve — spider runs once per engine lifetime
+      // Auto-crawl on first solve — spider runs once per target, not per engine instance
       if (!this._spiderRan && this.target && this.config.spider?.enabled !== false) {
         await this.runSpider(params.onMessage, params.onPhase)
         this._spiderRan = true
@@ -158,6 +181,7 @@ export class WebEngine {
       const result = await solve(this.engineServices.solverBrain!, {
         origin: this.target,
         goal: params.goal,
+        interactionMode: params.interactionMode,
         config: params.solverConfig,
         ultimatrixConfig: this.config,
         matchedSkills,
@@ -168,6 +192,7 @@ export class WebEngine {
         onMessage: params.onMessage,
         onPhase: params.onPhase,
         memory: { thread: this.threadId, resource: this.resourceId },
+        signal: abortController.signal,
       })
 
       // Graph auto-save after each solve
@@ -176,7 +201,7 @@ export class WebEngine {
       return result
     } finally {
       this._running = false
-      this._abortController = null
+      if (this._abortController === abortController) this._abortController = null
     }
   }
 
@@ -189,66 +214,26 @@ export class WebEngine {
     onPhase?: (event: PhaseEvent) => void,
   ): Promise<void> {
     const browser = getOrCreateBrowser(this.config)
-    const spiderAgent = createSpiderAgent(this.config, undefined, browser)
-    const spiderLoopDetector = new LoopDetector(this.config.antiLoop?.maxFailedTarget ?? DEFAULTS.antiLoop.maxFailedTarget)
-    const staleThreshold = this.config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold
-    const spiderMaxDurationMs = this.config.spider?.maxDurationMs ?? 120_000
-
-    emitSpiderStart(this.target, this.config.spider?.maxSteps ?? 100, spiderMaxDurationMs)
-
-    try {
-      const streamPrompt = buildSpiderPrompt(this.target)
-
-      const result = await Promise.race([
-        spiderAgent.stream(
-          streamPrompt,
-          { maxSteps: this.config.spider?.maxSteps ?? this.config.agent.maxSteps },
-        ),
-        new Promise<never>((_, reject) => {
-          const timer = setTimeout(
-            () => reject(new Error(`Spider timed out after ${spiderMaxDurationMs}ms`)),
-            spiderMaxDurationMs,
-          )
-          if (typeof timer === 'object' && 'unref' in timer) timer.unref()
-        }),
-      ])
-
-      let endpointsBefore = 0
-      let pagesBefore = 0
-      let findingsBefore = 0
-
-      for await (const chunk of result.textStream) {
-        if (typeof chunk !== 'string') continue
-        if (chunk.includes('tool-call') || chunk.includes('tool-result')) continue
-
-        const endpointsNow = this.graphStore?.queryNodes?.(NodeType.ENDPOINT)?.length ?? 0
-        const pagesNow = this.graphStore?.queryNodes?.(NodeType.PAGE)?.length ?? 0
-        const findingsNow = this.graphStore?.queryNodes?.(NodeType.FINDING)?.length ?? 0
-        const newEndpoints = endpointsNow - endpointsBefore
-        const newPages = pagesNow - pagesBefore
-        const newFindings = findingsNow - findingsBefore
-
-        if (newEndpoints > 0 || newPages > 0 || newFindings > 0) {
-          onPhase?.({ phase: 'observe', step: 0, text: `[Spider] +${newEndpoints} endpoints, +${newPages} pages, +${newFindings} findings` })
+    this._spiderState = await runSpiderRuntime({
+      config: this.config,
+      target: this.target,
+      browser,
+      graphStore: this.graphStore as any,
+      workflowId: this.id,
+      initialState: this._spiderState,
+      onMessage,
+      onPhase,
+      signal: this._abortController?.signal,
+      onEvent: (event) => {
+        if (event.type === 'crawl_progress') {
+          onPhase?.({ phase: 'observe', step: 0, text: `[Spider] ${event.pages ?? 0} pages, ${event.endpoints ?? 0} endpoints, ${event.forms ?? 0} forms` })
+        } else if (event.type === 'crawl_stalled') {
+          onPhase?.({ phase: 'stale', step: 0, reason: String(event.reason ?? 'stale') })
+        } else if (event.type === 'scope_proposed' && event.url) {
+          onPhase?.({ phase: 'observe', step: 0, text: `[Spider] scope proposed: ${event.url}` })
         }
-
-        spiderLoopDetector.recordRound(newEndpoints > 0)
-        endpointsBefore = endpointsNow
-        pagesBefore = pagesNow
-        findingsBefore = findingsNow
-
-        if (spiderLoopDetector.isStale(staleThreshold)) {
-          log.warn('[WebEngine] Spider stale — stopping crawl')
-          break
-        }
-      }
-
-      await this.graphStore?.save()
-      emitSpiderComplete(0, 0, spiderMaxDurationMs)
-    } catch (err) {
-      log.error(`[WebEngine] Spider error: ${err instanceof Error ? err.message : String(err)}`)
-      emitSpiderError(this.target, err instanceof Error ? err.message : String(err))
-    }
+      },
+    })
   }
 
   abort(): void {
@@ -281,12 +266,121 @@ export class WebEngine {
     return this._running
   }
 
+  /**
+   * Check if config changed in a way that affects engine behavior.
+   * Only returns true for fields that actually affect runtime (provider, model, engine type, browser settings).
+   * Ignores cosmetic changes like timestamp updates, scope, spider settings, etc.
+   */
+  isConfigStale(): boolean {
+    try {
+      const currentConfig = loadConfig() as any
+      return this.buildConfigFingerprint(currentConfig) !== this._configFingerprint
+    } catch {
+      return false
+    }
+  }
+
+  private buildConfigFingerprint(config: any): string {
+    return JSON.stringify({
+      provider: config.provider,
+      model: config.model,
+      engine: config.engine,
+      browserProvider: config.browser?.provider,
+      browserHeadless: config.browser?.headless,
+      browserEnv: config.browser?.env,
+    })
+  }
+
+  /**
+   * Hot-reload config from disk without destroying the engine.
+   * Rebuilds engine services (brain, skill registry, blackboard, evidence, etc.)
+   * but does NOT touch browser, spider state, or page navigation.
+   */
+  async reloadConfig(): Promise<void> {
+    if (!this._initialized) return
+    try {
+      const freshConfig = await loadConfig()
+      const newFingerprint = this.buildConfigFingerprint(freshConfig)
+      if (newFingerprint === this._configFingerprint) return // no meaningful change
+
+      this.config = { ...freshConfig, target: this.target }
+      this._configFingerprint = newFingerprint
+
+      // Rebuild engine services (brain, worker pool, skill registry, blackboard, evidence, council, model selector)
+      const browser = getOrCreateBrowser(this.config)
+      this.engineServices = await createEngineServices({
+        config: this.config,
+        browser,
+        memory: this.memory,
+        target: this.target,
+      })
+
+      // Update scope guard
+      const scopeConfig = this.config.scope ?? (this.target ? deriveScopeFromTarget(this.target) : null)
+      setScopeConfig(scopeConfig)
+
+      // Update OAST config
+      setOastConfig(this.config.oast ?? null)
+
+      log.info(`[WebEngine] Config hot-reloaded for target: ${this.target}`)
+    } catch (err) {
+      log.warn(`[WebEngine] Config reload failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   private get threadId(): string {
-    return `ultimatrix-web-${this.target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}`
+    return this._threadId ?? `ultimatrix-web-${this.target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}`
   }
 
   private get resourceId(): string {
-    return 'ultimatrix-web'
+    return this._resourceId
+  }
+
+  private attachHumanObserver(): void {
+    const observer = getGlobalObserver()
+    const page = getActivePage()
+    if (!page) return
+
+    observer.onAction((action) => {
+      emitBrowserHumanAction(action.type, action.url, action.selector)
+      this.forensicLog?.log({
+        type: 'human-action',
+        agent: 'human',
+        args: {
+          type: action.type,
+          selector: action.selector,
+          url: action.url,
+          value: action.value,
+        },
+      })
+    })
+
+    observer.attach(page)
+    if (!this.config.browser.headless) {
+      log.info('[WebEngine] Human action capture attached to the visible browser')
+    }
+  }
+
+  private async ensureMemoryThread(): Promise<void> {
+    if (!this.memory) return
+
+    const threadBase = `ultimatrix-web-${this.target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}`
+    const { threads } = await this.memory.listThreads({ filter: { resourceId: this.resourceId } })
+    const existing = threads.find((thread: any) => thread.id === threadBase || thread.id.startsWith(threadBase))
+    this._threadId = existing?.id ?? threadBase
+
+    if (!existing) {
+      await this.memory.saveThread({
+        thread: {
+          id: this._threadId,
+          title: `Ultimatrix Web - ${this.target}`,
+          resourceId: this.resourceId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          metadata: { targetUrl: this.target, surface: 'web' },
+        },
+      })
+    }
   }
 
   private registerCleanup(fn: () => Promise<void>): void {

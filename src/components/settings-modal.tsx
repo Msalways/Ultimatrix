@@ -102,26 +102,30 @@ export function SettingsModal() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={handleClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3" onClick={handleClose}>
       <div
-        className="w-[800px] max-h-[85vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden flex flex-col"
+        className="flex max-h-[88vh] w-full max-w-[860px] flex-col overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
+        <div className="flex h-12 items-center justify-between border-b border-zinc-800 px-4 sm:px-5">
           <span className="text-sm font-medium text-zinc-200">Settings</span>
           <div className="flex items-center gap-3">
             {dirty && (
               <span className="text-xs text-amber-400/70">Unsaved changes</span>
             )}
-            <button onClick={handleClose} className="text-zinc-500 hover:text-zinc-300">
+            <button
+              onClick={handleClose}
+              aria-label="Close settings"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+            >
               <X size={16} />
             </button>
           </div>
         </div>
 
         {/* Tab bar */}
-        <div className="flex border-b border-zinc-800 overflow-x-auto">
+        <div className="flex overflow-x-auto border-b border-zinc-800">
           {TABS.map((tab) => {
             const Icon = tab.icon
             return (
@@ -129,7 +133,7 @@ export function SettingsModal() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors',
+                  'flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700',
                   activeTab === tab.id
                     ? 'text-zinc-200 border-zinc-200'
                     : 'text-zinc-500 hover:text-zinc-300 border-transparent',
@@ -143,7 +147,7 @@ export function SettingsModal() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5">
           {!config ? (
             <div className="flex h-full items-center justify-center text-xs text-zinc-500">
               Loading config...
@@ -154,7 +158,7 @@ export function SettingsModal() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-zinc-800">
+        <div className="flex items-center justify-between border-t border-zinc-800 px-4 py-3 sm:px-5">
           <RestartBanner visible={needsRestart} />
           <div className="flex items-center gap-2 ml-auto">
             {error && (
@@ -162,7 +166,7 @@ export function SettingsModal() {
             )}
             <button
               onClick={handleClose}
-              className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+              className="rounded-md px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
             >
               Cancel
             </button>
@@ -187,19 +191,19 @@ export function SettingsModal() {
 
       {/* Unsaved changes confirmation */}
       {showCloseConfirm && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/40" onClick={() => setShowCloseConfirm(false)}>
-          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-3" onClick={() => setShowCloseConfirm(false)}>
+          <div className="rounded-md border border-zinc-800 bg-zinc-900 p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm text-zinc-200 mb-3">Discard unsaved changes?</div>
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => handleConfirmClose(false)}
-                className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+                className="rounded-md px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
               >
                 Keep editing
               </button>
               <button
                 onClick={() => handleConfirmClose(true)}
-                className="px-3 py-1.5 text-xs bg-red-900/30 text-red-400 hover:bg-red-900/50 rounded"
+                className="rounded-md bg-red-900/30 px-3 py-1.5 text-xs text-red-400 transition-colors hover:bg-red-900/50"
               >
                 Discard
               </button>

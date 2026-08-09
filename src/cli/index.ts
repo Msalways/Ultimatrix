@@ -1,38 +1,47 @@
-import '../patches/ai-sdk'
-import { main } from '../session'
-import { loadConfig } from '../config'
-import { initWizard } from './init'
-import { assessCommand } from './assess'
-import { verifyCommand } from './verify'
-import { interactCommand } from './interact'
-import { webCommand } from './web'
-import { solveCommand } from './solve'
-import { modelsCommand } from './models'
-import { budgetCommand } from './budget'
-import { ratelimitCommand } from './ratelimit'
-import { toolsCommand } from './tools'
-import { mcpCommand } from './mcp'
-import { log, setPinoLogger } from '../utils/logger'
-import { initLogger, initObservability } from '../observability'
-import { Ultimatrix } from '../sdk'
 import { resolve } from 'node:path'
-import { showDisclaimer } from '../authorization'
-import { getGlobalWorkspace } from '../workspace'
 import {existsSync, writeFileSync} from 'node:fs'
-import { getForensicLog } from '../tools/report-tools'
-import { generateReport } from '../report/generator'
 import type { Finding } from '../generation/test-generator'
 
 const args = process.argv.slice(2)
 const subcommand = args[0]
 
-// Initialize structured logging + observability for all subcommands
-const pino = initLogger()
-setPinoLogger(pino)
-initObservability()
+function printCliHelp(): void {
+  process.stdout.write([
+    'Ultimatrix - intelligence-augmented security research',
+    '',
+    'Usage:',
+    '  ultimatrix <command> [options]',
+    '  ultimatrix -t <url>                 Start an interactive session',
+    '',
+    'Core commands:',
+    '  web                                Open the web workspace',
+    '  interact -t <url>                  Interactive research session',
+    '  solve -t <url>                     Run an autonomous assessment',
+    '  learn -t <url>                     Capture and model the target',
+    '  scan -t <url>                      Learn, test, and report',
+    '  resume -t <url>                    Resume persisted target context',
+    '',
+    'Analysis and operations:',
+    '  report -t <url> [--format <type>]  Export findings',
+    '  verify -t <url>                    Recheck findings',
+    '  replay [-o <dir>]                  Replay generated tests',
+    '  models | tools | mcp | budget      Inspect runtime capabilities',
+    '  providers list|set|remove          Manage project provider keys',
+    '  config path                        Show the canonical config file',
+    '  config migrate-credentials         Import the legacy credential store',
+    '  init                               Configure providers and defaults',
+    '',
+    'Global options:',
+    '  -t, --target <url>                 Target URL',
+    '  -o, --output <dir>                 Output directory',
+    '  -h, --help                         Show help',
+    '  -v, --version                      Show version',
+    '',
+  ].join('\n'))
+}
 
 // Helper to get target from args or config
-function getTarget(cliArgs: string[]): string {
+function getTarget(cliArgs: string[], loadConfig: typeof import('../config').loadConfig): string {
   const targetIdx = cliArgs.indexOf('-t')
   const targetFlagIdx = cliArgs.indexOf('--target')
   const target = targetIdx !== -1 ? cliArgs[targetIdx + 1] : targetFlagIdx !== -1 ? cliArgs[targetFlagIdx + 1] : undefined
@@ -52,13 +61,72 @@ function getOutputDir(cliArgs: string[]): string {
 }
 
 ;(async () => {
+  if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+    printCliHelp()
+    return
+  }
+  if (subcommand === '--version' || subcommand === '-v') {
+    process.stdout.write('Ultimatrix 2.0.0\n')
+    return
+  }
+
+  const knownCommands = new Set([
+    'init', 'learn', 'generate', 'replay', 'report', 'scan', 'solve', 'assess',
+    'verify', 'interact', 'resume', 'web', 'models', 'budget', 'ratelimit', 'tools', 'mcp', 'config', 'providers',
+  ])
+  if (subcommand && !subcommand.startsWith('-') && !knownCommands.has(subcommand)) {
+    process.stderr.write(`Unknown command: ${subcommand}\n`)
+    process.stdout.write('Run `ultimatrix --help` to see available commands.\n')
+    process.exitCode = 1
+    return
+  }
+
+  await import('../patches/ai-sdk')
+
+  const [
+    sessionModule, configModule, initModule, assessModule, verifyModule,
+    interactModule, webModule, solveModule, modelsModule, budgetModule,
+    ratelimitModule, toolsModule, mcpModule, providersModule, loggerModule, observabilityModule,
+    sdkModule, authorizationModule, workspaceModule, reportToolsModule, reportModule,
+  ] = await Promise.all([
+    import('../session'), import('../config'), import('./init'), import('./assess'), import('./verify'),
+    import('./interact'), import('./web'), import('./solve'), import('./models'), import('./budget'),
+    import('./ratelimit'), import('./tools'), import('./mcp'), import('./providers'), import('../utils/logger'), import('../observability'),
+    import('../sdk'), import('../authorization'), import('../workspace'), import('../tools/report-tools'), import('../report/generator'),
+  ])
+
+  const { main } = sessionModule
+  const { getConfigPath, getProvidersPath, loadConfig, migrateLegacyCredentialsToProject } = configModule
+  const { initWizard } = initModule
+  const { assessCommand } = assessModule
+  const { verifyCommand } = verifyModule
+  const { interactCommand } = interactModule
+  const { webCommand } = webModule
+  const { solveCommand } = solveModule
+  const { modelsCommand } = modelsModule
+  const { budgetCommand } = budgetModule
+  const { ratelimitCommand } = ratelimitModule
+  const { toolsCommand } = toolsModule
+  const { mcpCommand } = mcpModule
+  const { providersCommand } = providersModule
+  const { log, setPinoLogger } = loggerModule
+  const { initLogger, initObservability } = observabilityModule
+  const { Ultimatrix } = sdkModule
+  const { showDisclaimer } = authorizationModule
+  const { getGlobalWorkspace } = workspaceModule
+  const { getForensicLog } = reportToolsModule
+  const { generateReport } = reportModule
+
+  setPinoLogger(initLogger())
+  initObservability()
+
   switch (subcommand) {
     case 'init':
       await initWizard()
       break
 
     case 'learn': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       showDisclaimer(target)
 
@@ -70,7 +138,7 @@ function getOutputDir(cliArgs: string[]): string {
     }
 
     case 'generate': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       showDisclaimer(target)
 
@@ -94,7 +162,7 @@ function getOutputDir(cliArgs: string[]): string {
     }
 
     case 'report': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       const formatIdx = args.indexOf('--format')
       const format = (formatIdx !== -1 ? args[formatIdx + 1] : 'markdown') as 'json' | 'html' | 'markdown'
@@ -158,7 +226,7 @@ function getOutputDir(cliArgs: string[]): string {
     }
 
     case 'scan': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       showDisclaimer(target)
 
@@ -179,7 +247,7 @@ function getOutputDir(cliArgs: string[]): string {
     }
 
     case 'solve': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       if (!target) { log.error('solve requires a target: ultimatrix solve -t <url>'); process.exit(1) }
       showDisclaimer(target)
@@ -188,28 +256,28 @@ function getOutputDir(cliArgs: string[]): string {
     }
 
     case 'assess': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       if (target) showDisclaimer(target)
       await assessCommand(args.slice(1))
       break
     }
 
     case 'verify': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       if (target) showDisclaimer(target)
       await verifyCommand(args.slice(1))
       break
     }
 
     case 'interact': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       if (target) showDisclaimer(target)
       await interactCommand(args.slice(1))
       break
     }
 
     case 'resume': {
-      const target = getTarget(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig)
       if (target) showDisclaimer(target)
       else { log.error('Resume requires a target: ultimatrix resume -t <url>'); process.exit(1) }
       await main(target)
@@ -250,8 +318,36 @@ function getOutputDir(cliArgs: string[]): string {
       break
     }
 
+    case 'providers': {
+      await providersCommand(args.slice(1))
+      break
+    }
+
+    case 'config': {
+      const action = args[1] || 'path'
+      if (action === 'path') {
+        process.stdout.write(`Config: ${getConfigPath()}\nProviders: ${getProvidersPath()}\n`)
+      } else if (action === 'migrate-credentials') {
+        const result = migrateLegacyCredentialsToProject()
+        log.success(`Credential source: ${result.providersPath}`)
+        log.info(`Migrated: ${result.migrated.join(', ') || 'none'}`)
+        if (result.skipped.length > 0) log.dim(`Already configured: ${result.skipped.join(', ')}`)
+      } else {
+        log.error(`Unknown config action: ${action}`)
+        log.dim('Use `ultimatrix config path` or `ultimatrix config migrate-credentials`.')
+        process.exitCode = 1
+      }
+      break
+    }
+
     default: {
-      const target = getTarget(args)
+      if (subcommand && !subcommand.startsWith('-')) {
+        log.error(`Unknown command: ${subcommand}`)
+        process.stdout.write('Run `ultimatrix --help` to see available commands.\n')
+        process.exitCode = 1
+        break
+      }
+      const target = getTarget(args, loadConfig)
       if (target) {
         showDisclaimer(target)
       }
@@ -260,6 +356,6 @@ function getOutputDir(cliArgs: string[]): string {
     }
   }
 })().catch((err) => {
-  log.error(err instanceof Error ? err.message : String(err))
+  console.error(err instanceof Error ? err.message : String(err))
   process.exit(1)
 })

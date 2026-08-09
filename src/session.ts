@@ -11,11 +11,12 @@ import { askUserConfirm } from './tools/interaction-tools'
 import type {IntelligenceContext} from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
 import { getGlobalGraphStore } from './graph/store'
-import { createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
+import { appendDelta, createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
 import { ChatStream } from './output/layout'
 import type { ChatBox } from './output/chatbox'
 
 import { setLogSink, type LogSink } from './utils/logger'
+import { logSolveSummary } from './utils/solver-summary'
 import chalk from 'chalk'
 
 const internalTools = new Set(['updateWorkingMemory', 'setWorkingMemory'])
@@ -183,13 +184,43 @@ export function createSolverRenderer(
   }
 
   if (opts.plain) {
-    // Lightweight streaming painter (used by `ultimatrix solve` and the
-    // `--plain` fallback): no card framing, TTY-aware escape-free.
+    // Lightweight incremental painter used by `ultimatrix solve` and
+    // `--plain`. Track provider-cumulative chunks so text is never repainted.
+    let renderedAnswer = ''
+    let wroteAnswer = false
     const render = (msg: SolverStreamMessage): void => {
       reduceMessage(model, msg)
-      if (model.answer) process.stdout.write(renderMarkdownPlain(model.answer) + '\n')
+      switch (msg.kind) {
+        case 'answer': {
+          const next = appendDelta(renderedAnswer, msg.text)
+          const suffix = next.startsWith(renderedAnswer)
+            ? next.slice(renderedAnswer.length)
+            : ''
+          if (suffix) {
+            process.stdout.write(suffix)
+            wroteAnswer = true
+          }
+          renderedAnswer = next
+          break
+        }
+        case 'tool':
+          if (wroteAnswer) process.stdout.write('\n')
+          log.dim(`  -> ${msg.name}`)
+          break
+        case 'tool-result':
+          log.dim(`  ${msg.ok ? 'ok' : 'failed'} ${msg.name}`)
+          break
+        case 'done':
+          if (!wroteAnswer && msg.answer.content) {
+            process.stdout.write(renderMarkdownPlain(msg.answer.content))
+            wroteAnswer = true
+          }
+          break
+      }
     }
-    render.final = (): void => { /* plain stream already emitted */ }
+    render.final = (): void => {
+      if (wroteAnswer) process.stdout.write('\n')
+    }
     render.flush = (): void => { /* no buffered system events in plain mode */ }
     render.toggleReasoning = (): void => { /* no card to toggle */ }
     render.exit = (): void => { /* no TUI to tear down */ }
@@ -296,12 +327,38 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
     const sink: ChatBox | null = null as ChatBox | null
 
     // Commands
+    if (line.trim() === '/exit' || line.trim() === '/quit') {
+      log.dim('Ending interactive session.')
+      return false
+    }
+
+    if (line.trim() === '/clear') {
+      if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[H')
+      else process.stdout.write('\n'.repeat(3))
+      return
+    }
+
+    if (line.trim() === '/status') {
+      const summary = getGlobalWorkspace().getGraphStore()?.getTargetSummary()
+      const lines = [
+        `Target: ${resources.target || 'not set'}`,
+        `Engine: ${resources.config.engine}`,
+        `Model: ${resources.config.provider}/${resources.config.model}`,
+        `Graph: ${summary?.totalEndpoints ?? 0} endpoints | ${summary?.totalFindings ?? 0} findings | ${summary?.totalTests ?? 0} tests`,
+      ]
+      for (const statusLine of lines) log.info(statusLine)
+      return
+    }
+
     if (line.trim() === '/help') {
       const helpText = [
         'Commands:',
         '  /council <goal>  â€” deliberate with the council (strategist / operator / skeptic / analyst)',
         '  /report [id]     â€” write a Markdown report (whole engagement, or one finding by id)',
-        '  /reasoning (/r)  â€” expand/collapse the last turn\'s reasoning block',
+        '  /reasoning (/r)  â€” show the last turn\'s reasoning',
+        '  /status          â€” show target, engine, model, and graph counts',
+        '  /clear           â€” clear the terminal view',
+        '  /exit            â€” save and end the session',
         '  /help            â€” show this help',
         '  <goal>           â€” send a goal to the solver brain',
       ].join('\n')
@@ -510,30 +567,16 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
     } else if (target && resources.coreServices) {
       // B3: Solver bypasses runner ï¿½ calls solve() directly with real brain agent
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
-      let streamedResponse = false
-      let reasoningBuf = ''
-      const flushReasoning = (): void => {
-        if (reasoningBuf) {
-          process.stdout.write('\x1b[2m[thinking] ' + reasoningBuf.trim() + '\x1b[0m\n')
-          reasoningBuf = ''
-        }
-      }
-      const renderMsg = (event: SolverStreamMessage): void => {
-        switch (event.kind) {
-          case 'reasoning':
-            streamedResponse = true
-            reasoningBuf += event.text
-            break
-          case 'answer':
-            streamedResponse = true
-            flushReasoning()
-            process.stdout.write(event.text)
-            break
-          case 'tool':
-            log.dim(`  … ${event.name}`)
-            break
-        }
-      }
+      const renderMsg = createSolverRenderer({}, {
+        engine: config.engine,
+        provider: `${config.provider}/${config.model}`,
+        target,
+        prompt: line,
+      }, {
+        plain: _opts.plain,
+        interaction: config.interaction,
+      })
+      lastRenderMsg = renderMsg
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -569,26 +612,11 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
         },
       })
 
-      flushReasoning()
-      if (streamedResponse) process.stdout.write('\n')
-
-      if (result.completed) {
-        log.success(`Solver completed: ${result.reason}`)
-      } else {
-        log.warn(`Solver stopped: ${result.reason}`)
+      renderMsg.final()
+      if (result.toolCalls > 0 || result.error) {
+        logSolveSummary(result)
+        log.info(`Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0}`)
       }
-      if (result.error) {
-        log.error(`Error: ${result.error}`)
-      }
-      const finalAnswer = result.answer?.content || result.text
-      if (!streamedResponse && finalAnswer) {
-        // No live stream was shown — render the answer as the final message.
-        if (result.answer?.reasoning) {
-          log.dim('Reasoning: ' + result.answer.reasoning)
-        }
-        process.stdout.write('\x1b[1m' + finalAnswer + '\x1b[0m\n')
-      }
-      log.info(`Steps: ${result.steps ?? 0} | Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0} | Tool calls: ${result.toolCalls ?? 0}`)
 
       const quotaTracker = getGlobalQuotaTracker()
       const providerStatus = quotaTracker.getStatus()
@@ -601,32 +629,19 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
         log.info('Plan summary:')
         log.info(result.planSummary)
       }
+      renderMsg.flush()
     } else if (target) {
       // Fallback: solver without pre-built coreServices (backward compat)
-      let streamedResponse = false
-      let reasoningBuf = ''
-      const flushReasoning = (): void => {
-        if (reasoningBuf) {
-          process.stdout.write('\x1b[2m[thinking] ' + reasoningBuf.trim() + '\x1b[0m\n')
-          reasoningBuf = ''
-        }
-      }
-      const renderMsg = (event: SolverStreamMessage): void => {
-        switch (event.kind) {
-          case 'reasoning':
-            streamedResponse = true
-            reasoningBuf += event.text
-            break
-          case 'answer':
-            streamedResponse = true
-            flushReasoning()
-            process.stdout.write(event.text)
-            break
-          case 'tool':
-            log.dim(`  … ${event.name}`)
-            break
-        }
-      }
+      const renderMsg = createSolverRenderer({}, {
+        engine: config.engine,
+        provider: `${config.provider}/${config.model}`,
+        target,
+        prompt: line,
+      }, {
+        plain: _opts.plain,
+        interaction: config.interaction,
+      })
+      lastRenderMsg = renderMsg
       const result = await solve(resources.solverBrain!, {
         origin: target,
         goal: line,
@@ -662,29 +677,16 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean } = {}) 
         },
       })
 
-      flushReasoning()
-      if (streamedResponse) process.stdout.write('\n')
-
-      if (result.completed) {
-        log.success(`Solver completed: ${result.reason}`)
-      } else {
-        log.warn(`Solver stopped: ${result.reason}`)
+      renderMsg.final()
+      if (result.toolCalls > 0 || result.error) {
+        logSolveSummary(result)
+        log.info(`Facts: ${result.facts} | Intents: ${result.intents}`)
       }
-      if (result.error) {
-        log.error(`Error: ${result.error}`)
-      }
-      const finalAnswer = result.answer?.content || result.text
-      if (!streamedResponse && finalAnswer) {
-        if (result.answer?.reasoning) {
-          log.dim('Reasoning: ' + result.answer.reasoning)
-        }
-        process.stdout.write('\x1b[1m' + finalAnswer + '\x1b[0m\n')
-      }
-      log.info(`Steps: ${result.steps} | Facts: ${result.facts} | Intents: ${result.intents} | Tool calls: ${result.toolCalls}`)
       if (result.planSummary) {
         log.info('Plan summary:')
         log.info(result.planSummary)
       }
+      renderMsg.flush()
     } else {
       // @deprecated Legacy supervisor path — kept for backward compatibility with web UI
       const result = await resources.supervisor!.stream(line, {

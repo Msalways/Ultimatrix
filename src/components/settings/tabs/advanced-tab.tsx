@@ -79,13 +79,13 @@ export function AdvancedTab() {
         <div className="space-y-3">
           <ConfigToggle
             checked={compression.enabled ?? true}
-            onChange={(v) => update({ compression: { ...compression, enabled: v } })}
+            onChange={(v) => update({ compression: { headroom: { ...compression, enabled: v } } })}
             label="Enable compression"
           />
           <ConfigField label="Token Budget">
             <ConfigNumber
               value={compression.tokenBudget ?? 100000}
-              onChange={(v) => update({ compression: { ...compression, tokenBudget: v } })}
+              onChange={(v) => update({ compression: { headroom: { ...compression, tokenBudget: v } } })}
               min={10000}
               step={10000}
             />
@@ -93,14 +93,14 @@ export function AdvancedTab() {
           <ConfigField label="Max Response Size">
             <ConfigNumber
               value={compression.maxResponseSize ?? 200000}
-              onChange={(v) => update({ compression: { ...compression, maxResponseSize: v } })}
+              onChange={(v) => update({ compression: { headroom: { ...compression, maxResponseSize: v } } })}
               min={10000}
               step={10000}
             />
           </ConfigField>
           <ConfigToggle
             checked={compression.fallbackToTruncation ?? true}
-            onChange={(v) => update({ compression: { ...compression, fallbackToTruncation: v } })}
+            onChange={(v) => update({ compression: { headroom: { ...compression, fallbackToTruncation: v } } })}
             label="Fallback to truncation"
           />
         </div>

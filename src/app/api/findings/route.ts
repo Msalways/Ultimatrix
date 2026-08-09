@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server'
 import { targetManager } from '@/web/target-manager'
+import { loadPersistedGraph } from '@/web/persisted-graph'
+import { NodeType } from '@/graph/schema'
 
 export async function GET(req: NextRequest) {
   try {
@@ -10,11 +12,13 @@ export async function GET(req: NextRequest) {
         ? targetManager.getEngine((await targetManager.listTargets()).pop()!.target)
         : null
 
-    if (!engine || !engine.isInitialized()) {
+    if (!target && (!engine || !engine.isInitialized())) {
       return Response.json({ findings: [] })
     }
 
-    const findings = engine.getFindings()
+    const findings = engine?.isInitialized()
+      ? engine.getFindings()
+      : (await loadPersistedGraph(target!)).queryNodes(NodeType.FINDING)
     const severity = req.nextUrl.searchParams.get('severity')
     const type = req.nextUrl.searchParams.get('type')
 

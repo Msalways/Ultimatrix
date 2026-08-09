@@ -1,7 +1,35 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
-import { join, resolve } from 'path'
+import { dirname, isAbsolute, join, resolve } from 'path'
 import { load, dump } from 'js-yaml'
+import { randomBytes } from 'crypto'
+
+// ─── Config file I/O helpers ────────────────────────────────────────
+
+/** Ensure the parent directory of a file path exists. */
+function ensureDir(filePath: string): void {
+  const dir = dirname(filePath)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+}
+
+/**
+ * Atomic write: write to a temp file, then rename. Prevents corruption
+ * on crash/power-loss and handles Windows EPERM/EBUSY from file watchers.
+ */
+function atomicWrite(filePath: string, content: string): void {
+  ensureDir(filePath)
+  const tmpPath = `${filePath}.tmp.${randomBytes(4).toString('hex')}`
+  try {
+    writeFileSync(tmpPath, content, 'utf-8')
+    renameSync(tmpPath, filePath)
+  } catch (err) {
+    // Clean up temp file on failure
+    try { unlinkSync(tmpPath) } catch { /* best effort */ }
+    throw err
+  }
+}
 
 // ─── Credential types ───────────────────────────────────────────────
 
@@ -56,12 +84,14 @@ export type ProviderCredentials = {
 // ─── Config interface ───────────────────────────────────────────────
 
 export interface BrowserConfig {
+  provider?: 'stagehand'
   headless: boolean
   viewport: { width: number; height: number }
   domSettleTimeout: number
   env: string
   selfHeal: boolean
   verbose: number
+  sessionScope?: 'workflow'
 }
 
 export interface MemoryConfig {
@@ -110,12 +140,25 @@ export interface RateLimitConfig {
 export interface TierConfig {
   provider: string
   model: string
+  maxOutputTokens?: number
 }
 
 export interface ModelTiers {
   fast?: TierConfig
   balanced?: TierConfig
   powerful?: TierConfig
+}
+
+export type TaskComplexity = 'low' | 'medium' | 'high' | 'critical'
+
+export interface ModelRoles {
+  brain?: TierConfig
+  spider?: TierConfig
+  crawlSummarizer?: TierConfig
+  worker?: Partial<Record<TaskComplexity, TierConfig>>
+  verifier?: TierConfig
+  reporter?: TierConfig
+  council?: TierConfig
 }
 
 export interface AuthorizationConfig {
@@ -164,7 +207,16 @@ export interface InteractionConfig {
 export interface SpiderConfig {
   enabled?: boolean
   maxSteps?: number
+  maxPages?: number
+  maxDepth?: number
   maxDurationMs?: number
+  authAware?: boolean
+  boundaryMode?: 'claim-based'
+}
+
+export interface ExternalToolsConfig {
+  enabled?: boolean
+  tools?: Partial<Record<'nmap' | 'arjun' | 'sqlmap' | 'nuclei' | 'ffuf' | 'jwttool' | 'corsy' | 'subfinder' | 'gitleaks', boolean>>
 }
 
 export interface AntiLoopConfig {
@@ -330,12 +382,26 @@ export const DEFAULTS = {
     vector: { enabled: false },
   },
   browser: {
+    provider: 'stagehand',
     headless: true,
     viewport: { width: 1280, height: 720 },
     domSettleTimeout: 5000,
     env: 'LOCAL',
     selfHeal: true,
     verbose: 0,
+    sessionScope: 'workflow',
+  },
+  spider: {
+    enabled: true,
+    maxPages: 100,
+    maxDepth: 2,
+    maxDurationMs: 120_000,
+    authAware: true,
+    boundaryMode: 'claim-based',
+  },
+  externalTools: {
+    enabled: false,
+    tools: {},
   },
   engine: 'multi-model' as EngineType,
   depth: 2,
@@ -389,6 +455,7 @@ export interface UltimatrixConfig {
   timeout: number
   creds: ProviderCredentials
   modelTiers?: ModelTiers
+  modelRoles?: ModelRoles
   browser: BrowserConfig
   memory: MemoryConfig
   agent: AgentConfig
@@ -398,6 +465,7 @@ export interface UltimatrixConfig {
   engine?: EngineType
   solver?: SolverConfig
   spider?: SpiderConfig
+  externalTools?: ExternalToolsConfig
   antiLoop?: AntiLoopConfig
   reflexion?: ReflexionConfig
   verifier?: VerifierConfig
@@ -632,8 +700,56 @@ export class ConfigError extends Error {
 
 // ─── Validation ─────────────────────────────────────────────────────
 
-export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
+export interface ConfigValidationOptions {
+  /** Allow the settings UI to load an incomplete config so credentials can be repaired. */
+  requireCredentials?: boolean
+}
+
+function parseTierConfigValue(
+  val: unknown,
+  fallbackProvider: string,
+): TierConfig | undefined {
+  if (!val) return undefined
+  if (typeof val === 'string') {
+    const slashIdx = val.indexOf('/')
+    return {
+      provider: slashIdx !== -1 ? val.slice(0, slashIdx) : fallbackProvider,
+      model: slashIdx !== -1 ? val.slice(slashIdx + 1) : val,
+    }
+  }
+  if (typeof val === 'object' && 'provider' in val && 'model' in val) {
+    const obj = val as Record<string, unknown>
+    return {
+      provider: String(obj.provider),
+      model: String(obj.model),
+      ...(obj.maxOutputTokens != null ? { maxOutputTokens: Number(obj.maxOutputTokens) } : {}),
+    }
+  }
+  return undefined
+}
+
+function validateTierConfigValue(path: string, val: unknown, errors: string[]): void {
+  if (!val) return
+  if (typeof val === 'string') return
+  if (typeof val !== 'object') {
+    errors.push(`${path} must be "provider/model" or an object with provider and model`)
+    return
+  }
+  const obj = val as Record<string, unknown>
+  if (typeof obj.provider !== 'string' || obj.provider.length === 0) errors.push(`${path}.provider must be a non-empty string`)
+  if (typeof obj.model !== 'string' || obj.model.length === 0) errors.push(`${path}.model must be a non-empty string`)
+  if (obj.maxOutputTokens !== undefined) {
+    const maxOutputTokens = Number(obj.maxOutputTokens)
+    if (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 1) errors.push(`${path}.maxOutputTokens must be a positive number`)
+  }
+}
+
+export function validateConfig(
+  raw: Record<string, unknown>,
+  options: ConfigValidationOptions = {},
+): UltimatrixConfig {
   const errors: string[] = []
+  const requireCredentials = options.requireCredentials !== false
 
   // Required: provider
   const provider = raw.provider as string | undefined
@@ -649,15 +765,40 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     errors.push('model is required (e.g., "llama3-8b-8192", "gpt-4o")')
   }
 
-  // Target: optional in YAML, can be provided via CLI -t flag or env TARGET
+  // Target is optional in YAML and may be supplied as an explicit CLI/web session input.
   const target = raw.target as string | undefined
   if (target && typeof target !== 'string') {
     errors.push('target must be a string (e.g., "https://example.com")')
+  } else if (target) {
+    try {
+      const parsedTarget = new URL(target)
+      if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
+        errors.push('target must use http or https')
+      }
+    } catch {
+      errors.push('target must be a valid URL (e.g., "https://example.com")')
+    }
+  }
+
+  const testCredentials = raw.credentials as Record<string, { email?: unknown; password?: unknown }> | undefined
+  if (testCredentials) {
+    for (const [role, entry] of Object.entries(testCredentials)) {
+      if (!entry || typeof entry !== 'object') {
+        errors.push(`credentials.${role} must be an object`)
+        continue
+      }
+      if (typeof entry.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email)) {
+        errors.push(`credentials.${role}.email must be a valid email address`)
+      }
+      if (typeof entry.password !== 'string' || entry.password.length === 0) {
+        errors.push(`credentials.${role}.password is required`)
+      }
+    }
   }
 
   // Required: creds for the primary provider
   const creds = (raw.creds ?? {}) as ProviderCredentials
-  if (provider && PROVIDER_INFO[provider]) {
+  if (requireCredentials && provider && PROVIDER_INFO[provider]) {
     const providerCreds = creds[provider]
     if (!providerCreds) {
       errors.push(`creds.${provider} is required — set apiKey for ${provider}`)
@@ -729,11 +870,15 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
   // Validate solver config
   const solverRaw = raw.solver as Record<string, unknown> | undefined
   if (solverRaw) {
-    for (const key of ['maxToolCalls', 'maxTokens', 'maxDurationMs', 'maxParallel'] as const) {
+    for (const key of ['maxToolCalls', 'maxTokens', 'maxDurationMs', 'maxParallel', 'maxRounds'] as const) {
       const val = solverRaw[key]
       if (val !== undefined && (typeof val !== 'number' || !Number.isFinite(val) || val < 1)) {
         errors.push(`solver.${key} must be a positive number, got ${JSON.stringify(val)}`)
       }
+    }
+    const chainSteps = solverRaw.maxActiveChainSteps
+    if (chainSteps !== undefined && (typeof chainSteps !== 'number' || !Number.isFinite(chainSteps) || chainSteps < 0)) {
+      errors.push(`solver.maxActiveChainSteps must be a non-negative number, got ${JSON.stringify(chainSteps)}`)
     }
   }
 
@@ -766,6 +911,11 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
   const modelTiers = raw.modelTiers as Record<string, unknown> | undefined
   if (modelTiers) {
     for (const tier of ['fast', 'balanced', 'powerful'] as const) {
+      validateTierConfigValue(`modelTiers.${tier}`, modelTiers[tier], errors)
+    }
+  }
+  if (requireCredentials && modelTiers) {
+    for (const tier of ['fast', 'balanced', 'powerful'] as const) {
       const tierVal = modelTiers[tier]
       if (tierVal && typeof tierVal === 'string') {
         // Backward compat: "provider/model" string
@@ -778,6 +928,54 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
         if (tierCfg.provider && !creds[tierCfg.provider]) {
           errors.push(`creds.${tierCfg.provider} is required for modelTiers.${tier}`)
         }
+      }
+    }
+  }
+
+  const modelRolesRaw = raw.modelRoles && typeof raw.modelRoles === 'object'
+    ? raw.modelRoles as Record<string, unknown>
+    : undefined
+  if (raw.modelRoles && typeof raw.modelRoles !== 'object') {
+    errors.push('modelRoles must be an object')
+  } else if (modelRolesRaw) {
+    validateTierConfigValue('modelRoles.brain', modelRolesRaw.brain, errors)
+    validateTierConfigValue('modelRoles.spider', modelRolesRaw.spider, errors)
+    validateTierConfigValue('modelRoles.crawlSummarizer', modelRolesRaw.crawlSummarizer, errors)
+    validateTierConfigValue('modelRoles.verifier', modelRolesRaw.verifier, errors)
+    validateTierConfigValue('modelRoles.reporter', modelRolesRaw.reporter, errors)
+    validateTierConfigValue('modelRoles.council', modelRolesRaw.council, errors)
+    const workerRaw = typeof modelRolesRaw.worker === 'object' && modelRolesRaw.worker
+      ? modelRolesRaw.worker as Record<string, unknown>
+      : undefined
+    if (modelRolesRaw.worker && typeof modelRolesRaw.worker !== 'object') {
+      errors.push('modelRoles.worker must be an object')
+    } else if (workerRaw) {
+      for (const complexity of ['low', 'medium', 'high', 'critical'] as const) {
+        validateTierConfigValue(`modelRoles.worker.${complexity}`, workerRaw[complexity], errors)
+      }
+    }
+  }
+  if (requireCredentials && modelRolesRaw) {
+    const roleEntries: Array<[string, unknown]> = [
+      ['modelRoles.brain', modelRolesRaw.brain],
+      ['modelRoles.spider', modelRolesRaw.spider],
+      ['modelRoles.crawlSummarizer', modelRolesRaw.crawlSummarizer],
+      ['modelRoles.verifier', modelRolesRaw.verifier],
+      ['modelRoles.reporter', modelRolesRaw.reporter],
+      ['modelRoles.council', modelRolesRaw.council],
+    ]
+    const workerRaw = typeof modelRolesRaw.worker === 'object' && modelRolesRaw.worker
+      ? modelRolesRaw.worker as Record<string, unknown>
+      : undefined
+    if (workerRaw) {
+      for (const complexity of ['low', 'medium', 'high', 'critical'] as const) {
+        roleEntries.push([`modelRoles.worker.${complexity}`, workerRaw[complexity]])
+      }
+    }
+    for (const [path, val] of roleEntries) {
+      const cfg = parseTierConfigValue(val, provider ?? 'groq')
+      if (cfg?.provider && !creds[cfg.provider]) {
+        errors.push(`creds.${cfg.provider} is required for ${path}`)
       }
     }
   }
@@ -839,11 +1037,43 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
           model: slashIdx !== -1 ? val.slice(slashIdx + 1) : val,
         }
       } else if (val && typeof val === 'object' && 'provider' in val && 'model' in val) {
-        parsedTiers[tier] = val as TierConfig
+        const parsed = parseTierConfigValue(val, provider ?? 'groq')
+        if (parsed) parsedTiers[tier] = parsed
       }
     }
     // Only set if at least one tier exists
     if (Object.keys(parsedTiers).length === 0) parsedTiers = undefined
+  }
+
+  let parsedModelRoles: ModelRoles | undefined
+  if (modelRolesRaw) {
+    parsedModelRoles = {}
+    const brain = parseTierConfigValue(modelRolesRaw.brain, provider ?? 'groq')
+    const spider = parseTierConfigValue(modelRolesRaw.spider, provider ?? 'groq')
+    const crawlSummarizer = parseTierConfigValue(modelRolesRaw.crawlSummarizer, provider ?? 'groq')
+    const verifier = parseTierConfigValue(modelRolesRaw.verifier, provider ?? 'groq')
+    const reporter = parseTierConfigValue(modelRolesRaw.reporter, provider ?? 'groq')
+    const council = parseTierConfigValue(modelRolesRaw.council, provider ?? 'groq')
+    if (brain) parsedModelRoles.brain = brain
+    if (spider) parsedModelRoles.spider = spider
+    if (crawlSummarizer) parsedModelRoles.crawlSummarizer = crawlSummarizer
+    if (verifier) parsedModelRoles.verifier = verifier
+    if (reporter) parsedModelRoles.reporter = reporter
+    if (council) parsedModelRoles.council = council
+
+    const workerRaw = typeof modelRolesRaw.worker === 'object' && modelRolesRaw.worker
+      ? modelRolesRaw.worker as Record<string, unknown>
+      : undefined
+    if (workerRaw) {
+      const worker: Partial<Record<TaskComplexity, TierConfig>> = {}
+      for (const complexity of ['low', 'medium', 'high', 'critical'] as const) {
+        const parsed = parseTierConfigValue(workerRaw[complexity], provider ?? 'groq')
+        if (parsed) worker[complexity] = parsed
+      }
+      if (Object.keys(worker).length > 0) parsedModelRoles.worker = worker
+    }
+
+    if (Object.keys(parsedModelRoles).length === 0) parsedModelRoles = undefined
   }
 
   // Validate modelCapabilities
@@ -873,8 +1103,44 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     if (spiderRaw.maxSteps !== undefined && (typeof spiderRaw.maxSteps !== 'number' || spiderRaw.maxSteps < 1)) {
       errors.push('spider.maxSteps must be a positive number')
     }
+    if (spiderRaw.maxPages !== undefined && (typeof spiderRaw.maxPages !== 'number' || spiderRaw.maxPages < 1)) {
+      errors.push('spider.maxPages must be a positive number')
+    }
+    if (spiderRaw.maxDepth !== undefined && (typeof spiderRaw.maxDepth !== 'number' || spiderRaw.maxDepth < 0)) {
+      errors.push('spider.maxDepth must be a non-negative number')
+    }
     if (spiderRaw.maxDurationMs !== undefined && (typeof spiderRaw.maxDurationMs !== 'number' || spiderRaw.maxDurationMs < 1)) {
       errors.push('spider.maxDurationMs must be a positive number')
+    }
+    if (spiderRaw.authAware !== undefined && typeof spiderRaw.authAware !== 'boolean') {
+      errors.push('spider.authAware must be a boolean')
+    }
+    if (spiderRaw.boundaryMode !== undefined && spiderRaw.boundaryMode !== 'claim-based') {
+      errors.push('spider.boundaryMode must be "claim-based"')
+    }
+  }
+
+  const browserRawForValidation = raw.browser as Record<string, unknown> | undefined
+  if (browserRawForValidation) {
+    if (browserRawForValidation.provider !== undefined && browserRawForValidation.provider !== 'stagehand') {
+      errors.push('browser.provider must be "stagehand"')
+    }
+    if (browserRawForValidation.sessionScope !== undefined && browserRawForValidation.sessionScope !== 'workflow') {
+      errors.push('browser.sessionScope must be "workflow"')
+    }
+  }
+
+  const externalToolsRaw = raw.externalTools as Record<string, unknown> | undefined
+  if (externalToolsRaw) {
+    if (externalToolsRaw.enabled !== undefined && typeof externalToolsRaw.enabled !== 'boolean') {
+      errors.push('externalTools.enabled must be a boolean')
+    }
+    if (externalToolsRaw.tools !== undefined && (typeof externalToolsRaw.tools !== 'object' || externalToolsRaw.tools === null || Array.isArray(externalToolsRaw.tools))) {
+      errors.push('externalTools.tools must be an object')
+    } else if (externalToolsRaw.tools && typeof externalToolsRaw.tools === 'object') {
+      for (const [tool, value] of Object.entries(externalToolsRaw.tools as Record<string, unknown>)) {
+        if (typeof value !== 'boolean') errors.push(`externalTools.tools.${tool} must be a boolean`)
+      }
     }
   }
 
@@ -912,7 +1178,9 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     timeout,
     creds,
     modelTiers: parsedTiers,
+    ...(parsedModelRoles ? { modelRoles: parsedModelRoles } : {}),
     browser: {
+      provider: browserRaw.provider != null ? browserRaw.provider as BrowserConfig['provider'] : DEFAULTS.browser.provider,
       headless: browserRaw.headless != null ? Boolean(browserRaw.headless) : DEFAULTS.browser.headless,
       viewport: {
         width: Number(browserRaw.viewport && typeof browserRaw.viewport === 'object'
@@ -924,6 +1192,7 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       env: String(browserRaw.env ?? DEFAULTS.browser.env),
       selfHeal: browserRaw.selfHeal != null ? Boolean(browserRaw.selfHeal) : DEFAULTS.browser.selfHeal,
       verbose: Number(browserRaw.verbose ?? DEFAULTS.browser.verbose),
+      sessionScope: browserRaw.sessionScope != null ? browserRaw.sessionScope as BrowserConfig['sessionScope'] : DEFAULTS.browser.sessionScope,
     },
     memory: {
       lastMessages: Number(memoryRaw.lastMessages ?? DEFAULTS.memory.lastMessages),
@@ -960,6 +1229,8 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
         ...(solverRaw.maxTokens != null ? { maxTokens: Number(solverRaw.maxTokens) } : {}),
         ...(solverRaw.maxDurationMs != null ? { maxDurationMs: Number(solverRaw.maxDurationMs) } : {}),
         ...(solverRaw.maxParallel != null ? { maxParallel: Number(solverRaw.maxParallel) } : {}),
+        ...(solverRaw.maxRounds != null ? { maxRounds: Number(solverRaw.maxRounds) } : {}),
+        ...(solverRaw.maxActiveChainSteps != null ? { maxActiveChainSteps: Number(solverRaw.maxActiveChainSteps) } : {}),
       },
     } : {}),
     ...(antiLoopRaw ? {
@@ -999,7 +1270,17 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
       spider: {
         ...(spiderRaw.enabled != null ? { enabled: Boolean(spiderRaw.enabled) } : {}),
         ...(spiderRaw.maxSteps != null ? { maxSteps: Number(spiderRaw.maxSteps) } : {}),
+        ...(spiderRaw.maxPages != null ? { maxPages: Number(spiderRaw.maxPages) } : {}),
+        ...(spiderRaw.maxDepth != null ? { maxDepth: Number(spiderRaw.maxDepth) } : {}),
         ...(spiderRaw.maxDurationMs != null ? { maxDurationMs: Number(spiderRaw.maxDurationMs) } : {}),
+        ...(spiderRaw.authAware != null ? { authAware: Boolean(spiderRaw.authAware) } : {}),
+        ...(spiderRaw.boundaryMode != null ? { boundaryMode: spiderRaw.boundaryMode as SpiderConfig['boundaryMode'] } : {}),
+      },
+    } : {}),
+    ...(externalToolsRaw ? {
+      externalTools: {
+        ...(externalToolsRaw.enabled != null ? { enabled: Boolean(externalToolsRaw.enabled) } : {}),
+        ...(externalToolsRaw.tools ? { tools: externalToolsRaw.tools as ExternalToolsConfig['tools'] } : {}),
       },
     } : {}),
     ...(verifierRaw ? {
@@ -1012,6 +1293,13 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
     ...(raw.authorization ? { authorization: raw.authorization as AuthorizationConfig } : {}),
     ...(raw.scope ? { scope: raw.scope as ScopeConfig } : {}),
     ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
+    ...(raw.compression ? { compression: raw.compression as CompressionConfig } : {}),
+    ...(raw.truncation ? { truncation: raw.truncation as TruncationConfig } : {}),
+    ...(raw.interaction ? { interaction: raw.interaction as InteractionConfig } : {}),
+    ...(raw.context ? { context: raw.context as ContextConfig } : {}),
+    ...(raw.council ? { council: raw.council as import('./council/types').CouncilConfig } : {}),
+    ...(raw.credentials ? { credentials: raw.credentials as Record<string, { email: string; password: string }> } : {}),
+    ...(raw.providerKeys ? { providerKeys: raw.providerKeys as Record<string, ApiKeyCreds> } : {}),
     ...(raw.oast ? { oast: raw.oast as OastConfig } : {}),
     ...(Array.isArray(raw.mcp) ? { mcp: raw.mcp as McpServerConfig[] } : {}),
     ...(Array.isArray(raw.plugins) ? { plugins: raw.plugins as PluginConfig[] } : {}),
@@ -1022,12 +1310,30 @@ export function validateConfig(raw: Record<string, unknown>): UltimatrixConfig {
 
 // ─── YAML helpers ───────────────────────────────────────────────────
 
-function providersYamlPath(): string {
+function legacyProvidersYamlPath(): string {
   return join(homedir(), '.config', 'ultimatrix', 'providers.yaml')
 }
 
-function ultimatrixYamlPath(): string {
-  return resolve('ultimatrix.yaml')
+/** Resolve the one project config used by CLI and web, including from subdirectories. */
+export function getConfigPath(startDir = process.cwd()): string {
+  const explicit = process.env.ULTIMATRIX_CONFIG
+  if (explicit) return isAbsolute(explicit) ? explicit : resolve(startDir, explicit)
+
+  let dir = resolve(startDir)
+  while (true) {
+    const candidate = join(dir, 'ultimatrix.yaml')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+
+  return join(resolve(startDir), 'ultimatrix.yaml')
+}
+
+/** Credential file paired with the canonical project configuration. */
+export function getProvidersPath(startDir = process.cwd()): string {
+  return join(dirname(getConfigPath(startDir)), 'providers.yaml')
 }
 
 function loadYamlFile(path: string): Record<string, unknown> | null {
@@ -1042,84 +1348,52 @@ function loadYamlFile(path: string): Record<string, unknown> | null {
   }
 }
 
+function normalizeCredentials(raw: unknown): ProviderCredentials {
+  const creds: ProviderCredentials = {}
+  if (!raw || typeof raw !== 'object') return creds
+
+  for (const [provider, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    if (provider === 'azure') {
+      creds.azure = {
+        apiKey: String(e.apiKey ?? ''),
+        endpoint: String(e.endpoint ?? ''),
+        deployment: String(e.deployment ?? ''),
+        apiVersion: String(e.apiVersion ?? '2024-10-21'),
+      }
+    } else if (provider === 'bedrock') {
+      creds.bedrock = {
+        authMethod: (e.authMethod as 'iam' | 'api_key') || (e.apiKey ? 'api_key' : 'iam'),
+        accessKeyId: String(e.accessKeyId ?? ''),
+        secretAccessKey: String(e.secretAccessKey ?? ''),
+        sessionToken: e.sessionToken ? String(e.sessionToken) : undefined,
+        region: String(e.region ?? ''),
+        apiKey: e.apiKey ? String(e.apiKey) : undefined,
+      }
+    } else if (provider === 'custom') {
+      creds.custom = {
+        apiKey: String(e.apiKey ?? ''),
+        baseUrl: String(e.baseUrl ?? e.base_url ?? ''),
+      }
+    } else {
+      const apiKey = String(e.apiKey ?? e.api_key ?? e.key ?? '')
+      const baseUrl = String(e.baseUrl ?? e.base_url ?? e.endpoint ?? '')
+      if (apiKey || baseUrl) creds[provider] = { apiKey, ...(baseUrl ? { baseUrl } : {}) }
+    }
+  }
+
+  return creds
+}
+
 // ─── Load config ────────────────────────────────────────────────────
 
-export function loadConfig(): UltimatrixConfig {
-  const yamlConfig = loadYamlFile(ultimatrixYamlPath()) ?? {}
-  let providersYaml = loadYamlFile(providersYamlPath())
+export function loadConfig(options: ConfigValidationOptions = {}): UltimatrixConfig {
+  const yamlConfig = loadYamlFile(getConfigPath()) ?? {}
+  const creds = normalizeCredentials(loadYamlFile(getProvidersPath()))
 
-  // Merge env-sourced creds into providers yaml creds
-  if (providersYaml) {
-    for (const [id, info] of Object.entries(PROVIDER_INFO)) {
-      const envKey = process.env[info.envVar]
-      if (envKey && !providersYaml[id]) {
-        providersYaml[id] = { apiKey: envKey }
-      } else if (envKey && providersYaml[id] && typeof providersYaml[id] === 'object') {
-        const entry = providersYaml[id] as Record<string, unknown>
-        if (!entry.apiKey) entry.apiKey = envKey
-      }
-    }
-  } else {
-    // No providers.yaml — build providers from env vars only
-    const built: Record<string, unknown> = {}
-    for (const [id, info] of Object.entries(PROVIDER_INFO)) {
-      const envKey = process.env[info.envVar]
-      if (envKey) built[id] = { apiKey: envKey }
-    }
-    if (Object.keys(built).length > 0) {
-      providersYaml = built
-    }
-  }
-
-  // Build creds from providers.yaml + env vars
-  const creds: ProviderCredentials = {}
-  if (providersYaml) {
-    for (const [provider, entry] of Object.entries(providersYaml)) {
-      if (!entry || typeof entry !== 'object') continue
-      const e = entry as Record<string, unknown>
-
-      if (provider === 'azure') {
-        creds.azure = {
-          apiKey: String(e.apiKey ?? ''),
-          endpoint: String(e.endpoint ?? ''),
-          deployment: String(e.deployment ?? ''),
-          apiVersion: String(e.apiVersion ?? '2024-10-21'),
-        }
-      } else if (provider === 'bedrock') {
-        creds.bedrock = {
-          authMethod: (e.authMethod as 'iam' | 'api_key') || (e.apiKey ? 'api_key' : 'iam'),
-          accessKeyId: String(e.accessKeyId ?? ''),
-          secretAccessKey: String(e.secretAccessKey ?? ''),
-          sessionToken: e.sessionToken ? String(e.sessionToken) : undefined,
-          region: String(e.region ?? ''),
-          apiKey: e.apiKey ? String(e.apiKey) : undefined,
-        }
-      } else if (provider === 'custom') {
-        creds.custom = {
-          apiKey: String(e.apiKey ?? ''),
-          baseUrl: String(e.baseUrl ?? ''),
-        }
-      } else {
-        const apiKey = String(e.apiKey ?? e.api_key ?? e.key ?? '')
-        const baseUrl = String(e.baseUrl ?? e.base_url ?? e.endpoint ?? '')
-        if (apiKey || baseUrl) {
-          creds[provider] = { apiKey, ...(baseUrl ? { baseUrl } : {}) }
-        }
-      }
-    }
-  }
-
-  // Also check env vars directly for any provider not in providers.yaml
-  for (const [id, info] of Object.entries(PROVIDER_INFO)) {
-    if (!creds[id]) {
-      const envKey = process.env[info.envVar]
-      if (envKey) {
-        creds[id] = { apiKey: envKey }
-      }
-    }
-  }
-
-  // Merge providerKeys (same-provider different API keys) into creds
+  // Backward compatibility for pre-migration inline aliases. Saving config
+  // consolidates these entries into providers.yaml.
   const providerKeysRaw = yamlConfig.providerKeys as Record<string, { apiKey?: string; baseUrl?: string }> | undefined
   if (providerKeysRaw) {
     for (const [alias, entry] of Object.entries(providerKeysRaw)) {
@@ -1129,23 +1403,52 @@ export function loadConfig(): UltimatrixConfig {
     }
   }
 
-  // Apply env var overrides
-  const providerFromEnv = process.env.LLM_PROVIDER
-  const modelFromEnv = process.env.LLM_MODEL
-  const targetFromEnv = process.env.TARGET
-
   const merged: Record<string, unknown> = {
     ...yamlConfig,
-    ...(providerFromEnv ? { provider: providerFromEnv } : {}),
-    ...(modelFromEnv ? { model: modelFromEnv } : {}),
-    ...(targetFromEnv ? { target: targetFromEnv } : {}),
-    ...(process.env.DEPTH ? { depth: Number(process.env.DEPTH) } : {}),
-    ...(process.env.TIMEOUT ? { timeout: Number(process.env.TIMEOUT) } : {}),
-    ...(process.env.HEADLESS ? { headless: process.env.HEADLESS !== 'false' } : {}),
     creds,
+    providerKeys: undefined,
   }
 
-  return validateConfig(merged)
+  return validateConfig(merged, options)
+}
+
+/** One-time migration from the legacy global credential file. */
+export function migrateLegacyCredentialsToProject(
+  legacyPath = legacyProvidersYamlPath(),
+): { migrated: string[]; skipped: string[]; configPath: string; providersPath: string } {
+  const configPath = getConfigPath()
+  const providersPath = getProvidersPath()
+  const project = loadYamlFile(configPath) ?? {}
+  const current = normalizeCredentials(loadYamlFile(providersPath))
+  const inline = normalizeCredentials(project.creds)
+  const aliases = normalizeCredentials(project.providerKeys)
+  const legacy = normalizeCredentials(loadYamlFile(legacyPath))
+  const migrated: string[] = []
+  const skipped: string[] = []
+
+  for (const source of [inline, aliases, legacy]) {
+    for (const [provider, entry] of Object.entries(source)) {
+      if (!entry) continue
+      if (current[provider]) {
+        if (!skipped.includes(provider)) skipped.push(provider)
+        continue
+      }
+      current[provider] = entry
+      migrated.push(provider)
+    }
+  }
+
+  if (migrated.length > 0 || !existsSync(providersPath)) {
+    atomicWrite(providersPath, dump(current))
+  }
+  if ('creds' in project || 'providerKeys' in project) {
+    delete project.creds
+    delete project.providerKeys
+    atomicWrite(configPath, dump(project))
+    resetConfigCache()
+  }
+
+  return { migrated, skipped, configPath, providersPath }
 }
 
 let _cachedConfig: UltimatrixConfig | null = null
@@ -1167,36 +1470,18 @@ export function resetConfigCache(): void {
 
 // ─── Save helpers ───────────────────────────────────────────────────
 
+export function loadProvidersConfig(): ProviderCredentials {
+  return normalizeCredentials(loadYamlFile(getProvidersPath()))
+}
+
 export function saveProvidersConfig(creds: ProviderCredentials): void {
-  const path = providersYamlPath()
-  const dir = path.substring(0, path.lastIndexOf('\\'))
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-
-  const data: Record<string, unknown> = {}
-  for (const [provider, entry] of Object.entries(creds)) {
-    if (!entry) continue
-    if (provider === 'azure') {
-      const az = entry as AzureCreds
-      data.azure = { apiKey: az.apiKey, endpoint: az.endpoint, deployment: az.deployment, apiVersion: az.apiVersion }
-    } else if (provider === 'bedrock') {
-      const br = entry as BedrockCreds
-      data.bedrock = { authMethod: br.authMethod, accessKeyId: br.accessKeyId, secretAccessKey: br.secretAccessKey, sessionToken: br.sessionToken, region: br.region, apiKey: br.apiKey }
-    } else if (provider === 'custom') {
-      const cu = entry as CustomCreds
-      data.custom = { apiKey: cu.apiKey, baseUrl: cu.baseUrl }
-    } else {
-      const ac = entry as ApiKeyCreds
-      data[provider] = { apiKey: ac.apiKey, baseUrl: ac.baseUrl }
-    }
-  }
-
-  writeFileSync(path, dump(data), 'utf-8')
+  atomicWrite(getProvidersPath(), dump(creds))
+  resetConfigCache()
 }
 
 export function saveProjectConfig(config: UltimatrixConfig): void {
-  const path = ultimatrixYamlPath()
+  const path = getConfigPath()
 
-  // Strip creds from YAML output (they go in providers.yaml)
   const output: Record<string, unknown> = {
     provider: config.provider,
     model: config.model,
@@ -1211,24 +1496,32 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   }
 
   if (config.modelTiers && Object.keys(config.modelTiers).length > 0) {
-    const tiers: Record<string, { provider: string; model: string }> = {}
+    const tiers: Record<string, TierConfig> = {}
     for (const [tier, tierCfg] of Object.entries(config.modelTiers)) {
-      if (tierCfg) tiers[tier] = { provider: tierCfg.provider, model: tierCfg.model }
+      if (tierCfg) tiers[tier] = { provider: tierCfg.provider, model: tierCfg.model, ...(tierCfg.maxOutputTokens ? { maxOutputTokens: tierCfg.maxOutputTokens } : {}) }
     }
     output.modelTiers = tiers
+  }
+
+  if (config.modelRoles && Object.keys(config.modelRoles).length > 0) {
+    output.modelRoles = config.modelRoles
   }
 
   // Write non-default browser config
   const b = config.browser
   if (!b.headless || b.viewport.width !== 1280 || b.viewport.height !== 720 ||
-      b.domSettleTimeout !== 5000 || b.env !== 'LOCAL' || !b.selfHeal || b.verbose !== 0) {
+      b.domSettleTimeout !== 5000 || b.env !== 'LOCAL' || !b.selfHeal || b.verbose !== 0 ||
+      (b.provider ?? DEFAULTS.browser.provider) !== DEFAULTS.browser.provider ||
+      (b.sessionScope ?? DEFAULTS.browser.sessionScope) !== DEFAULTS.browser.sessionScope) {
     output.browser = {
+      provider: b.provider ?? DEFAULTS.browser.provider,
       headless: b.headless,
       viewport: b.viewport,
       domSettleTimeout: b.domSettleTimeout,
       env: b.env,
       selfHeal: b.selfHeal,
       verbose: b.verbose,
+      sessionScope: b.sessionScope ?? DEFAULTS.browser.sessionScope,
     }
   }
 
@@ -1255,12 +1548,31 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
 
   // Write non-default rate limit config
   const rl = config.rateLimit
-  if (rl.requestsPerMinute !== 15 || rl.maxConcurrent !== 2 || rl.retryOnLimit !== true || rl.maxRetries !== 3) {
+  const rateLimitIsNonDefault =
+    rl.requestsPerMinute !== DEFAULTS.rateLimit.requestsPerMinute ||
+    rl.maxConcurrent !== DEFAULTS.rateLimit.maxConcurrent ||
+    rl.retryOnLimit !== DEFAULTS.rateLimit.retryOnLimit ||
+    rl.maxRetries !== DEFAULTS.rateLimit.maxRetries ||
+    rl.tokensPerMinute != null ||
+    rl.backoffStrategy !== DEFAULTS.rateLimit.backoffStrategy ||
+    JSON.stringify(rl.backoffSteps) !== JSON.stringify(DEFAULTS.rateLimit.backoffSteps) ||
+    rl.baseBackoffMs !== DEFAULTS.rateLimit.baseBackoffMs ||
+    rl.maxBackoffMs !== DEFAULTS.rateLimit.maxBackoffMs ||
+    rl.useHeaders !== DEFAULTS.rateLimit.useHeaders ||
+    rl.headerMapping != null
+  if (rateLimitIsNonDefault) {
     output.rateLimit = {
       requestsPerMinute: rl.requestsPerMinute,
+      ...(rl.tokensPerMinute != null ? { tokensPerMinute: rl.tokensPerMinute } : {}),
       maxConcurrent: rl.maxConcurrent,
       retryOnLimit: rl.retryOnLimit,
       maxRetries: rl.maxRetries,
+      backoffStrategy: rl.backoffStrategy,
+      backoffSteps: rl.backoffSteps,
+      baseBackoffMs: rl.baseBackoffMs,
+      maxBackoffMs: rl.maxBackoffMs,
+      useHeaders: rl.useHeaders,
+      ...(rl.headerMapping ? { headerMapping: rl.headerMapping } : {}),
     }
   }
 
@@ -1320,6 +1632,10 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   // Write spider if set
   if (config.spider) {
     output.spider = config.spider
+  }
+
+  if (config.externalTools) {
+    output.externalTools = config.externalTools
   }
 
   // Write antiLoop if set
@@ -1392,7 +1708,11 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
     output.skills = config.skills
   }
 
-  writeFileSync(path, dump(output), 'utf-8')
+  if (config.credentials) {
+    output.credentials = config.credentials
+  }
+
+  atomicWrite(path, dump(output))
 }
 
 

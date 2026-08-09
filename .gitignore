@@ -1,6 +1,9 @@
 node_modules/
 dist/
 ultimatrix.yaml
+ultimatrix-*.yaml
+providers.yaml
+opencode-1.json
 .env
 .env.local
 *.har

@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   try {
-    const { goal, target, solverConfig } = await req.json()
+    const { goal, target, solverConfig, interactionMode } = await req.json()
 
     if (!goal) {
       return new Response(JSON.stringify({ error: 'goal is required' }), {
@@ -56,20 +56,8 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // C4: Client disconnect → abort engine
-        req.signal.addEventListener('abort', () => {
-          send('aborted', { message: 'Client disconnected' })
-          engine.abort()
-          cleanup()
-          if (!controllerClosed) {
-            controllerClosed = true
-            try { controller.close() } catch {}
-          }
-        })
-
         const emitter = getGlobalEmitter()
         const listeners: Array<[string, (...args: any[]) => void]> = []
-
         const on = (event: string, handler: (...args: any[]) => void) => {
           emitter.on(event as any, handler)
           listeners.push([event, handler])
@@ -89,38 +77,38 @@ export async function POST(req: NextRequest) {
         on('browser:reaction', (e) => send('browser:reaction', e))
         on('spider:progress', (e) => send('spider:progress', e))
 
-        // Heartbeat
-        const heartbeat = setInterval(() => {
-          send('heartbeat', { timestamp: Date.now() })
-        }, 30_000)
-
+        const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 30_000)
         const cleanup = () => {
           clearInterval(heartbeat)
-          for (const [event, handler] of listeners) {
-            emitter.off(event as any, handler)
-          }
+          for (const [event, handler] of listeners) emitter.off(event as any, handler)
         }
+        const close = () => {
+          if (controllerClosed) return
+          controllerClosed = true
+          try { controller.close() } catch {}
+        }
+
+        req.signal.addEventListener('abort', () => {
+          engine.abort()
+          cleanup()
+          close()
+        }, { once: true })
 
         try {
           send('started', { target: engine.target, goal, timestamp: Date.now() })
-
           const result = await engine.solve({
             goal,
+            interactionMode: interactionMode === 'ask' ? 'ask' : 'run',
             solverConfig,
             onMessage: (msg) => send('solver', msg),
             onPhase: (event) => send('phase', event),
           })
-
           send('done', result)
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          send('error', { message })
+          send('error', { message: err instanceof Error ? err.message : String(err) })
         } finally {
           cleanup()
-          if (!controllerClosed) {
-            controllerClosed = true
-            try { controller.close() } catch {}
-          }
+          close()
         }
       },
     })

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { SpiderRuntimeEvent } from '../spider/runtime'
 
 // ────────────────────────────────────────────────────────────────
 // Event Map — every event type in the system, typed at the seam.
@@ -22,7 +23,7 @@ export interface EventMap {
   'tool:progress': { toolName: string; phase: string; detail?: string; workerId?: string; timestamp: number }
 
   // ── C. Worker Events ──────────────────────────────────────
-  'worker:spawned': { workerId: string; workerName: string; skillId: string; task: string; endpointId?: string; tier?: string; modelId?: string; tokenBudget?: number; timestamp: number }
+  'worker:spawned': { workerId: string; workerName: string; skillId: string; task: string; endpointId?: string; tier?: string; modelId?: string; tokenBudget?: number; routingReason?: string; timestamp: number }
   'worker:started': { workerId: string; workerName: string; skillId: string; task: string; timestamp: number }
   'worker:tool-call': { workerId: string; workerName: string; skillId: string; toolName: string; args?: Record<string, unknown>; timestamp: number }
   'worker:tool-result': { workerId: string; workerName: string; skillId: string; toolName: string; ok: boolean; durationMs?: number; timestamp: number }
@@ -66,6 +67,7 @@ export interface EventMap {
   'browser:dialog': { dialogType: string; message: string; autoAccepted: boolean; workerId?: string; timestamp: number }
   'browser:console': { level: string; text: string; workerId?: string; timestamp: number }
   'browser:auth-detected': { flowType: string; details: string; workerId?: string; timestamp: number }
+  'browser:human-action': { actionType: string; url: string; selector?: string; timestamp: number }
   'browser:bot-detected': { provider: string; details: string; timestamp: number }
   'browser:bot-resolved': { provider: string; waitMs: number; timestamp: number }
 
@@ -89,6 +91,7 @@ export interface EventMap {
   'spider:endpoint': { method: string; url: string; params: string[]; timestamp: number }
   'spider:complete': { pages: number; endpoints: number; durationMs: number; timestamp: number }
   'spider:error': { url: string; error: string; timestamp: number }
+  'spider:event': SpiderRuntimeEvent
 
   // ── Legacy (kept for back-compat) ─────────────────────────
   'activity:start': { worker: string; task: string }
@@ -180,7 +183,7 @@ export function emitToolProgress(toolName: string, phase: string, detail?: strin
 }
 
 // C. Worker
-export function emitWorkerSpawned(workerId: string, workerName: string, skillId: string, task: string, opts?: { endpointId?: string; tier?: string; modelId?: string; tokenBudget?: number }): void {
+export function emitWorkerSpawned(workerId: string, workerName: string, skillId: string, task: string, opts?: { endpointId?: string; tier?: string; modelId?: string; tokenBudget?: number; routingReason?: string }): void {
   getGlobalEmitter().emit('worker:spawned', { workerId, workerName, skillId, task, ...opts, timestamp: Date.now() })
 }
 export function emitWorkerStarted(workerId: string, workerName: string, skillId: string, task: string): void {
@@ -292,6 +295,9 @@ export function emitBrowserConsole(level: string, text: string, workerId?: strin
 }
 export function emitBrowserAuthDetected(flowType: string, details: string, workerId?: string): void {
   getGlobalEmitter().emit('browser:auth-detected', { flowType, details, workerId, timestamp: Date.now() })
+}
+export function emitBrowserHumanAction(actionType: string, url: string, selector?: string): void {
+  getGlobalEmitter().emit('browser:human-action', { actionType, url, selector, timestamp: Date.now() })
 }
 export function emitBrowserBotDetected(provider: string, details: string): void {
   getGlobalEmitter().emit('browser:bot-detected', { provider, details, timestamp: Date.now() })

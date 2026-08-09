@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { targetManager } from '@/web/target-manager'
+import { SkillRegistry } from '@/solver/skills/registry'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,11 +13,8 @@ export async function GET(req: NextRequest) {
         ? targetManager.getEngine((await targetManager.listTargets()).pop()!.target)
         : null
 
-    if (!engine || !engine.isInitialized()) {
-      return NextResponse.json({ skills: [] })
-    }
-
-    const registry = engine.getSkillRegistry()
+    const registry = engine?.isInitialized() ? engine.getSkillRegistry() : new SkillRegistry()
+    if (!engine?.isInitialized()) registry?.loadFromDirectory('skills')
     if (!registry) return NextResponse.json({ skills: [] })
     const skills = registry.list()
     const skillData = skills.map((s: any) => ({
@@ -24,8 +22,9 @@ export async function GET(req: NextRequest) {
       name: s.name ?? s.id,
       description: s.description ?? '',
       domain: s.domain ?? 'general',
+      tier: s.tier ?? 'balanced',
       tags: s.tags ?? [],
-      file: s.file ?? '',
+      state: 'available' as const,
     }))
 
     return NextResponse.json({ skills: skillData })

@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import type { RunOutcomeKind } from '@/core/run-outcome'
+import type { LoadState } from './resource-store'
 
 export interface ChatMessage {
   id: string
@@ -86,6 +88,12 @@ export interface SummaryMessage {
   toolCalls: number
   findings: number
   durationMs: number
+  outcome: RunOutcomeKind
+  label: string
+  detail: string
+  reason?: string
+  goal?: string
+  mode?: 'ask' | 'run'
   timestamp: number
 }
 
@@ -93,6 +101,16 @@ export interface ErrorMessage {
   id: string
   type: 'error'
   content: string
+  goal?: string
+  mode?: 'ask' | 'run'
+  timestamp: number
+}
+
+export interface StreamStatusMessage {
+  id: string
+  type: 'stream-status'
+  status: 'starting' | 'running' | 'aborted' | 'done'
+  label: string
   timestamp: number
 }
 
@@ -107,13 +125,18 @@ export type StreamMessage =
   | WarningMessage
   | SummaryMessage
   | ErrorMessage
+  | StreamStatusMessage
 
 interface ChatState {
   messages: StreamMessage[]
   isStreaming: boolean
+  historyState: LoadState
+  setMessages: (messages: StreamMessage[]) => void
   addMessage: (msg: StreamMessage) => void
   updateMessage: (id: string, updates: Partial<StreamMessage>) => void
+  removeMessage: (id: string) => void
   setStreaming: (streaming: boolean) => void
+  setHistoryState: (state: LoadState) => void
   clearMessages: () => void
 }
 
@@ -127,6 +150,9 @@ export { nextId }
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   isStreaming: false,
+  historyState: 'idle' as LoadState,
+
+  setMessages: (messages) => set({ messages }),
 
   addMessage: (msg) =>
     set((state) => ({ messages: [...state.messages, msg] })),
@@ -138,7 +164,12 @@ export const useChatStore = create<ChatState>((set) => ({
       ),
     })),
 
+  removeMessage: (id) =>
+    set((state) => ({ messages: state.messages.filter((message) => message.id !== id) })),
+
   setStreaming: (streaming) => set({ isStreaming: streaming }),
+
+  setHistoryState: (historyState) => set({ historyState }),
 
   clearMessages: () => set({ messages: [], isStreaming: false }),
 }))

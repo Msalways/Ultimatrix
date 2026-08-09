@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { targetManager } from '@/web/target-manager'
+import { loadPersistedGraph } from '@/web/persisted-graph'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,11 +13,11 @@ export async function GET(req: NextRequest) {
         ? targetManager.getEngine((await targetManager.listTargets()).pop()!.target)
         : null
 
-    if (!engine || !engine.isInitialized()) {
+    if (!target && (!engine || !engine.isInitialized())) {
       return NextResponse.json({ nodes: [], edges: [] })
     }
 
-    const store = engine.getGraph()
+    const store = engine?.isInitialized() ? engine.getGraph() : await loadPersistedGraph(target!)
     const nodes = store.queryNodes(undefined)
     const edges = store.getAllEdges()
 

@@ -36,3 +36,5 @@ console.warn = (...args: any[]) => {
   if (SUPPRESSED_WARNINGS.some(w => msg.includes(w))) return
   originalWarn(...args)
 }
+
+export {}

@@ -6,10 +6,12 @@ import { mkdirSync, existsSync } from 'node:fs'
 import {resolve} from 'node:path'
 import { stopDialogWatcher } from './dialog-watcher'
 import { getGlobalReactionObserver } from './reaction-observer'
+import { getGlobalObserver } from '../capture/human-observer'
 
 let browser: StagehandBrowser | null = null
 let activeBrowserRef: StagehandBrowser | null = null
 let creating = false
+let browserConfigSnapshot: { headless: boolean; viewport: { width: number; height: number }; env: string } | null = null
 
 const STAGEHAND_FAST_PROVIDER = 'groq'
 const STAGEHAND_FAST_MODEL = 'llama-3.1-8b-instant'
@@ -52,6 +54,9 @@ function deriveStagehandModel(config: UltimatrixConfig) {
 }
 
 export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
+  if (config.browser.provider && config.browser.provider !== 'stagehand') {
+    throw new Error(`Unsupported browser provider: ${config.browser.provider}`)
+  }
   if (browser) return browser
   if (creating) {
     // Wait for the other creation to finish
@@ -74,8 +79,16 @@ export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
       verbose: config.browser.verbose as 0 | 1 | 2,
       disablePino: true,
       scope: 'shared',
+      // The browser belongs to the whole interactive session, not one agent
+      // turn. Only the host may close it during explicit shutdown.
+      excludeTools: ['stagehand_close'],
       model: stagehandModel,
     })
+    browserConfigSnapshot = {
+      headless: config.browser.headless,
+      viewport: config.browser.viewport,
+      env: config.browser.env,
+    }
     activeBrowserRef = browser
 
     log.dim(`Stagehand browser initialized with model: ${stagehandModel.modelName}`)
@@ -101,12 +114,49 @@ export async function closeBrowser(): Promise<void> {
     try {
       stopDialogWatcher()
       getGlobalReactionObserver().detach()
+      getGlobalObserver().detach()
       await browser.close()
     } catch (err) {
       log.dim(`Browser close error: ${err instanceof Error ? err.message : String(err)}`)
     }
     browser = null
     activeBrowserRef = null
+    browserConfigSnapshot = null
+  }
+}
+
+export function getBrowserState(): {
+  active: boolean
+  headless: boolean | null
+  env: string | null
+  pageCount: number | null
+  currentUrl: string | null
+  humanCaptureActive: boolean
+} {
+  const b = activeBrowserRef || browser
+  const page = getActivePage()
+  let pageCount: number | null = null
+  let currentUrl: string | null = null
+
+  try {
+    const stagehand = (b as any)?.requireStagehand?.()
+    const pages = typeof stagehand?.context?.pages === 'function'
+      ? stagehand.context.pages()
+      : stagehand?.context?.pages
+    if (Array.isArray(pages)) pageCount = pages.length
+  } catch {}
+
+  try {
+    currentUrl = typeof page?.url === 'function' ? page.url() : null
+  } catch {}
+
+  return {
+    active: !!b,
+    headless: browserConfigSnapshot?.headless ?? null,
+    env: browserConfigSnapshot?.env ?? null,
+    pageCount,
+    currentUrl,
+    humanCaptureActive: getGlobalObserver().isCapturing(),
   }
 }
 

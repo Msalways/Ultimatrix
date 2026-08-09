@@ -6,6 +6,7 @@ import { StagehandBrowser } from '@mastra/stagehand'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import { UltimatrixConfig } from '../config'
 import { resolveModel } from '../models/factory'
+import { resolveModelRef, type ModelRole, type TaskComplexity } from '../models/routing'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { Logger } from '../utils/logger'
 import { resolveToolsForSkills } from '../solver/skills/tool-filter'
@@ -39,6 +40,8 @@ export interface AgentOptions {
   memory?: MastraMemory
   tier?: 'fast' | 'balanced' | 'powerful' | 'default'
   modelId?: string
+  role?: ModelRole
+  complexity?: TaskComplexity
   skillIds?: string[]
   skills?: Skill[]
   extraTools?: Record<string, any>
@@ -126,12 +129,23 @@ export function createAgent(
     options?.taskInstructions ? `\n## Current Task\n${options.taskInstructions}` : '',
   ].filter(Boolean).join('\n')
 
+  const modelRoute = resolveModelRef(config, {
+    modelId: options?.modelId,
+    tier: options?.tier,
+    role: options?.role,
+    complexity: options?.complexity,
+  })
+
   const agentConfig: any = {
     name: 'ultimatrix-agent',
-    model: resolveModel(config, options?.modelId ? { modelId: options.modelId, tier: options?.tier } : options?.tier),
+    model: resolveModel(config, { modelId: options?.modelId, tier: options?.tier, role: options?.role, complexity: options?.complexity }),
     target: config.target,
     tools: sanitizeToolRecord(allTools, config.provider),
     instructions: fullInstructions,
+  }
+
+  if (modelRoute.maxOutputTokens) {
+    agentConfig.defaultOptions = { modelSettings: { maxTokens: modelRoute.maxOutputTokens } }
   }
 
   if (options?.memory) {

@@ -46,6 +46,11 @@ export class TargetManager {
       if (existing.initPromise) {
         await existing.initPromise
       }
+      if (existing.engine.isConfigStale() && !existing.engine.isRunning()) {
+        log.info(`[TargetManager] Configuration changed; hot-reloading engine for: ${target}`)
+        await existing.engine.reloadConfig()
+        return existing.engine
+      }
       if (!existing.engine.isInitialized()) {
         // Re-init after previous init failed
         const initPromise = existing.engine.init({ target })
@@ -106,6 +111,24 @@ export class TargetManager {
       this.engines.delete(target)
       log.info(`[TargetManager] Destroyed engine for: ${target}`)
     }
+  }
+
+  async resetIdleEngines(): Promise<{ reset: string[]; running: string[] }> {
+    const reset: string[] = []
+    const running: string[] = []
+
+    for (const [target, managed] of this.engines) {
+      if (managed.engine.isRunning()) {
+        running.push(target)
+        continue
+      }
+
+      await managed.engine.reloadConfig()
+      managed.lastAccessed = Date.now()
+      reset.push(target)
+    }
+
+    return { reset, running }
   }
 
   /**

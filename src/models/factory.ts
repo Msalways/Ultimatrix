@@ -5,66 +5,35 @@ import type { UltimatrixConfig } from '../config'
 import { getSanitizeKeywords, sanitizeRequestBody } from './schema-sanitizer'
 import { wrapModel } from './middleware'
 import type { ModelSelector } from './selector'
+import { resolveModelRef, type ModelRole, type TaskComplexity } from './routing'
 import { log } from '../utils/logger'
 
 /**
- * Resolve a model for a given tier.
- * Returns an actual AI SDK LanguageModelV2 instance — NOT a config object.
- *
- * Overload: resolveModel(config, { modelId?, tier?, selector? })
+ * Resolve a model for a tier, role, or explicit model ID.
+ * Returns an actual AI SDK LanguageModelV2 instance, not a config object.
  */
 export function resolveModel(
   config: UltimatrixConfig,
-  tierOrOptions?: 'fast' | 'balanced' | 'powerful' | 'default' | { modelId?: string; tier?: string; selector?: ModelSelector },
+  tierOrOptions?: 'fast' | 'balanced' | 'powerful' | 'default' | {
+    modelId?: string
+    tier?: string
+    selector?: ModelSelector
+    role?: ModelRole
+    complexity?: TaskComplexity
+  },
 ): LanguageModelV2 {
-  let resolvedProvider: string
-  let resolvedModelId: string
+  const route = typeof tierOrOptions === 'string'
+    ? resolveModelRef(config, { tier: tierOrOptions })
+    : resolveModelRef(config, tierOrOptions ?? {})
 
-  if (tierOrOptions && typeof tierOrOptions === 'object' && 'selector' in tierOrOptions) {
-    // Selector-based resolution: use selector to pick model
-    const { selector, modelId, tier } = tierOrOptions
-    if (modelId) {
-      // Explicit model ID — resolve directly
-      const [prov = config.provider, model = modelId] = modelId.split('/')
-      resolvedProvider = prov
-      resolvedModelId = model
-    } else if (selector && tier) {
-      // Tier-based with selector context
-      const tierCfg = config.modelTiers?.[tier as keyof typeof config.modelTiers]
-      if (tierCfg) {
-        resolvedProvider = tierCfg.provider
-        resolvedModelId = tierCfg.model
-      } else {
-        resolvedProvider = config.provider
-        resolvedModelId = config.model
-      }
-    } else {
-      resolvedProvider = config.provider
-      resolvedModelId = config.model
-    }
-  } else {
-    // Legacy tier-based resolution
-    const tier = (tierOrOptions as string) ?? 'default'
-    const normalisedTier = tier === 'default' ? 'balanced' : tier
+  log.dim(`Resolving model: ${route.provider}/${route.model} (${route.tier}: ${route.reason})`)
 
-    const tierCfg = config.modelTiers?.[normalisedTier as keyof typeof config.modelTiers]
-    if (tierCfg) {
-      resolvedProvider = tierCfg.provider
-      resolvedModelId = tierCfg.model
-    } else {
-      resolvedProvider = config.provider
-      resolvedModelId = config.model
-    }
-  }
-
-   log.dim(`Resolving model: ${resolvedProvider}/${resolvedModelId}${typeof tierOrOptions === 'string' ? ` (tier: ${tierOrOptions})` : ''}`)
-
-  return buildModel(config, resolvedProvider, resolvedModelId)
+  return buildModel(config, route.provider, route.model)
 }
 
 /**
  * Build a LanguageModelV2 instance.
- * `modelId` is the EXACT string the user provided — it goes straight to the API.
+ * `modelId` is the exact string the user provided; it goes straight to the API.
  */
 function buildModel(
   config: UltimatrixConfig,
@@ -82,9 +51,7 @@ function buildModel(
   let model: LanguageModelV2
 
   if (!info) {
-    // Unknown provider even after alias resolution — warn and create client
-    // Use the original provider name for the client name (for debugging)
-    console.warn(`[resolveModel] Unknown provider "${provider}" — creating client with no base URL. Set creds.${provider} or use a known provider.`)
+    console.warn(`[resolveModel] Unknown provider "${provider}" - creating client with no base URL. Set creds.${provider} or use a known provider.`)
     model = createOpenAICompatible({
       name: provider,
       baseURL: 'https://localhost',
@@ -95,7 +62,7 @@ function buildModel(
     switch (baseProvider) {
       case 'azure': {
         const az = creds as import('../config').AzureCreds | undefined
-        const apiKey = az?.apiKey || process.env[info.envVar] || ''
+        const apiKey = az?.apiKey || ''
         const endpoint = az?.endpoint || info.defaultBaseUrl
         model = createOpenAICompatible({
           name: 'azure',
@@ -126,7 +93,6 @@ function buildModel(
           transformRequestBody,
         }).chatModel(modelId)
 
-        // Clean up injected env vars after model build to prevent cross-provider leaks
         if (br?.authMethod === 'api_key') {
           delete process.env.AWS_BEARER_TOKEN_BEDROCK
         } else if (br?.authMethod === 'iam') {
@@ -140,7 +106,7 @@ function buildModel(
 
       default: {
         const apiKeyCreds = creds as import('../config').ApiKeyCreds | undefined
-        const apiKey = apiKeyCreds?.apiKey || process.env[info.envVar] || ''
+        const apiKey = apiKeyCreds?.apiKey || ''
         const baseUrl = apiKeyCreds?.baseUrl || info.defaultBaseUrl
 
         model = createOpenAICompatible({

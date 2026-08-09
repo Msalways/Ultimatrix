@@ -17,18 +17,18 @@ export function FindingCard({ message }: { message: FindingMessage }) {
   const Icon = config.icon
 
   return (
-    <div className={cn('ml-8 my-2 p-3 rounded-lg border', config.bg)}>
+    <div className={cn('ml-4 mr-4 my-2 rounded-md border p-3 sm:ml-8', config.bg)}>
       <div className="flex items-start gap-2">
         <Icon size={14} className={cn('mt-0.5 flex-shrink-0', config.color)} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="mb-1 flex min-w-0 items-center gap-2">
             <span className={cn('text-xs font-semibold uppercase', config.color)}>
               {message.severity}
             </span>
-            <span className="text-xs text-zinc-500">{message.technique}</span>
+            <span className="truncate text-xs text-zinc-500">{message.technique}</span>
           </div>
           {message.endpoint && (
-            <div className="text-xs text-zinc-400 font-mono truncate">
+            <div className="truncate font-mono text-xs text-zinc-400">
               {message.endpoint}
             </div>
           )}

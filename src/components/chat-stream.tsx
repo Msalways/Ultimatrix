@@ -1,28 +1,93 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
+  GitBranch,
+  Loader2,
+  PanelLeftOpen,
+  RotateCcw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react'
 import { useChatStore, type StreamMessage, type ToolCallMessage, type ChatMessage, nextId } from '@/stores/chat-store'
 import { useBudgetStore } from '@/stores/budget-store'
 import { useSessionStore } from '@/stores/session-store'
+import { useUIStore } from '@/stores/ui-store'
+import { useResourceStore } from '@/stores/resource-store'
 import { ToolCallCard } from './tool-call-card'
 import { FindingCard } from './finding-card'
 import { WorkerCard } from './worker-card'
-import { ChatInput } from './chat-input'
+import { ChatInput, type InputMode } from './chat-input'
+import { ChatSkeleton } from './skeletons'
 import { MarkdownBlock } from './markdown-block'
-import { cn } from '@/lib/utils'
 import { appendDelta } from '@/output/render-model'
+import { deriveRunOutcome, type RunOutcomeKind } from '@/core/run-outcome'
+import { dataFetcher } from '@/services/data-fetcher'
+
+function normalizeHydratedMessages(messages: unknown[]): StreamMessage[] {
+  return messages.flatMap((message) => {
+    if (!message || typeof message !== 'object') return message as StreamMessage
+    const candidate = message as any
+    if (candidate.type === 'phase' || candidate.type === 'graph-update') return []
+    if (candidate.type === 'stream-status' && (candidate.status === 'starting' || candidate.status === 'running')) {
+      return [{
+        ...candidate,
+        status: 'aborted',
+        label: 'Previous run interrupted',
+      } as StreamMessage]
+    }
+    if (candidate.type === 'tool-call' && candidate.status === 'running') {
+      return [{
+        ...candidate,
+        status: 'error',
+        result: candidate.result || 'Interrupted before this tool returned.',
+      } as StreamMessage]
+    }
+    if (candidate.type === 'thinking') {
+      return [{ ...candidate, collapsed: true } as StreamMessage]
+    }
+    return [candidate as StreamMessage]
+  })
+}
+
+function isInternalTool(name?: string): boolean {
+  if (!name) return false
+  const normalized = name.toLowerCase()
+  return normalized.includes('memory') || normalized === 'gettargetsummary'
+}
+
+function cleanAssistantContent(content?: string): string {
+  if (!content) return ''
+  return content
+    .replace(/^\s*Let me update working memory[^\n]*(\n|$)/i, '')
+    .replace(/^\s*According to the Talking vs\. Hunting rules[^\n]*(\n|$)/i, '')
+    .trim()
+}
 
 export function ChatStream() {
   const messages = useChatStore((s) => s.messages)
   const isStreaming = useChatStore((s) => s.isStreaming)
   const addMessage = useChatStore((s) => s.addMessage)
+  const setMessages = useChatStore((s) => s.setMessages)
   const updateMessage = useChatStore((s) => s.updateMessage)
+  const removeMessage = useChatStore((s) => s.removeMessage)
   const setStreaming = useChatStore((s) => s.setStreaming)
-  const clearMessages = useChatStore((s) => s.clearMessages)
   const { setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset } = useBudgetStore()
   const activeTarget = useSessionStore((s) => s.activeTarget)
+  const openSidebar = useUIStore((s) => s.openSidebar)
+  const setHistoryState = useChatStore((s) => s.setHistoryState)
+  const historyState = useChatStore((s) => s.historyState)
+  const [historyReadyTarget, setHistoryReadyTarget] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const loadedTargetRef = useRef<string | null>(null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -34,7 +99,45 @@ export function ChatStream() {
     scrollToBottom()
   }, [messages, scrollToBottom])
 
-  const handleSend = useCallback((goal: string) => {
+  useEffect(() => {
+    loadedTargetRef.current = activeTarget
+    setHistoryReadyTarget(null)
+
+    if (!activeTarget) {
+      setHistoryReadyTarget(null)
+      return
+    }
+
+    const hasExistingMessages = messages.length > 0
+    setHistoryState(hasExistingMessages ? 'refreshing' : 'loading')
+
+    dataFetcher.loadChatHistory(activeTarget).then(({ messages: loaded }) => {
+      if (loadedTargetRef.current === activeTarget) {
+        setMessages(Array.isArray(loaded) ? normalizeHydratedMessages(loaded) : [])
+        setHistoryReadyTarget(activeTarget)
+        setHistoryState('ready')
+      }
+    })
+  }, [activeTarget, setMessages, setHistoryState])
+
+  useEffect(() => {
+    if (!activeTarget || historyReadyTarget !== activeTarget) return
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+
+    saveTimerRef.current = setTimeout(() => {
+      fetch(`/api/chat-history?target=${encodeURIComponent(activeTarget)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages }),
+      }).catch(() => {})
+    }, isStreaming ? 1200 : 250)
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    }
+  }, [activeTarget, historyReadyTarget, isStreaming, messages])
+
+  const handleSend = useCallback((goal: string, mode: InputMode = 'run') => {
     addMessage({
       id: nextId(),
       role: 'user',
@@ -49,27 +152,38 @@ export function ChatStream() {
     let answerBuffer = ''
     let thinkingBuffer = ''
     let thinkingId: string | null = null // B1: null until first chunk
-    let answerId: string | null = null   // B4: track answer message
+    let liveAnswerId: string | null = null // live preview message shown during streaming
+    const streamStatusId = nextId()
     let aborted = false
 
     const abortController = new AbortController()
     eventSourceRef.current = { close: () => abortController.abort() } as any
 
+    addMessage({
+      id: streamStatusId,
+      type: 'stream-status',
+      status: 'starting',
+      label: 'Starting solver',
+      timestamp: Date.now(),
+    } as any)
+
     function handleSSEEvent(event: string, data: string) {
       if (aborted) return
       try {
+        const parsed = data ? JSON.parse(data) : null
         if (event === 'solver') {
-          const msg = JSON.parse(data)
+          const msg = parsed
           switch (msg.kind) {
             case 'reasoning':
               // B1: Create thinking message on FIRST chunk, then update
               if (thinkingId === null) {
                 thinkingId = nextId()
+                thinkingBuffer = msg.text
                 addMessage({
                   id: thinkingId,
                   type: 'thinking',
                   content: msg.text,
-                  collapsed: false,
+                  collapsed: true,
                   timestamp: Date.now(),
                 } as any)
               } else {
@@ -78,22 +192,37 @@ export function ChatStream() {
               }
               break
             case 'answer':
-              // B3: Use appendDelta for cumulative provider support
+              // Live answer preview: stream deltas into a message node so the
+              // user sees the answer forming in real-time.
               answerBuffer = appendDelta(answerBuffer, msg.text)
-              if (answerId === null) {
-                // B4: Create answer message on first chunk
-                answerId = nextId()
+              if (!liveAnswerId) {
+                liveAnswerId = nextId()
                 addMessage({
-                  id: answerId,
+                  id: liveAnswerId,
                   role: 'assistant',
                   content: answerBuffer,
                   timestamp: Date.now(),
                 })
               } else {
-                updateMessage(answerId, { content: answerBuffer } as any)
+                updateMessage(liveAnswerId, {
+                  content: answerBuffer,
+                  timestamp: Date.now(),
+                } as any)
               }
+              updateMessage(streamStatusId, {
+                status: 'running',
+                label: 'Drafting response',
+              } as any)
               break
             case 'tool':
+              if (isInternalTool(msg.name)) {
+                incrementToolCalls()
+                updateMessage(streamStatusId, {
+                  status: 'running',
+                  label: 'Updating session context',
+                } as any)
+                break
+              }
               addMessage({
                 id: nextId(),
                 type: 'tool-call',
@@ -108,6 +237,13 @@ export function ChatStream() {
               incrementToolCalls()
               break
             case 'tool-result': {
+              if (isInternalTool(msg.name)) {
+                updateMessage(streamStatusId, {
+                  status: 'running',
+                  label: 'Session context updated',
+                } as any)
+                break
+              }
               const state = useChatStore.getState()
               // B5: Match by workerId+name (more precise than just name)
               const lastTool = [...state.messages].reverse().find(
@@ -127,32 +263,46 @@ export function ChatStream() {
             }
             case 'phase':
               setPhase(msg.phase, msg.step)
-              addMessage({
-                id: nextId(),
-                type: 'phase',
-                phase: msg.phase,
-                step: msg.step,
-                timestamp: Date.now(),
+              updateMessage(streamStatusId, {
+                status: 'running',
+                label: `${msg.phase} step ${msg.step}`,
               } as any)
               break
             case 'done':
-              // B4: Done event — finalize answer buffer if we have one
+              // B4: Done event — live preview will be replaced by canonical answer
+              liveAnswerId = null
               break
           }
         } else if (event === 'phase') {
-          const d = JSON.parse(data)
+          const d = parsed
           setPhase(d.phase, d.step)
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: d.text || `${d.phase || 'running'} step ${d.step ?? 0}`,
+          } as any)
+        } else if (event === 'started') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Running against ${parsed.target || activeTarget || 'target'}`,
+          } as any)
+        } else if (event === 'heartbeat') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: 'Still running',
+          } as any)
+        } else if (event === 'aborted') {
+          updateMessage(streamStatusId, {
+            status: 'aborted',
+            label: parsed.message || 'Run aborted',
+          } as any)
         } else if (event === 'spider:progress') {
-          const d = JSON.parse(data)
-          addMessage({
-            id: nextId(),
-            type: 'phase',
-            phase: 'spider',
-            step: d.steps || 0,
-            timestamp: Date.now(),
+          const d = parsed
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Mapping target${d.steps ? ` · step ${d.steps}` : ''}`,
           } as any)
         } else if (event === 'worker:spawned') {
-          const d = JSON.parse(data)
+          const d = parsed
           addMessage({
             id: nextId(),
             type: 'worker-spawned',
@@ -163,7 +313,7 @@ export function ChatStream() {
             timestamp: Date.now(),
           } as any)
         } else if (event === 'worker:completed') {
-          const d = JSON.parse(data)
+          const d = parsed
           addMessage({
             id: nextId(),
             type: 'worker-completed',
@@ -173,8 +323,15 @@ export function ChatStream() {
             duration: d.durationMs,
             timestamp: Date.now(),
           } as any)
+        } else if (event === 'worker:error') {
+          addMessage({
+            id: nextId(),
+            type: 'error',
+            content: parsed.message || parsed.error || `${parsed.workerName || 'Worker'} failed`,
+            timestamp: Date.now(),
+          } as any)
         } else if (event === 'finding:discovered') {
-          const d = JSON.parse(data)
+          const d = parsed
           addMessage({
             id: nextId(),
             type: 'finding',
@@ -185,50 +342,89 @@ export function ChatStream() {
             timestamp: Date.now(),
           } as any)
           incrementFindings()
+        } else if (event === 'finding:verified') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Verified finding ${parsed.findingId || ''}`.trim(),
+          } as any)
         } else if (event === 'graph:node') {
-          const d = JSON.parse(data)
-          addMessage({
-            id: nextId(),
-            type: 'graph-update',
-            nodeType: d.nodeType,
-            nodeId: d.nodeId,
-            label: d.label,
-            timestamp: Date.now(),
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Recorded ${parsed.nodeType || 'graph evidence'}`,
+          } as any)
+        } else if (event === 'graph:edge') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Linked ${parsed.type || 'graph evidence'}`,
+          } as any)
+        } else if (event === 'evidence:recorded' || event === 'reflexion:escalation' || event === 'anti-loop:stale' || event === 'browser:reaction') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: event.split(':').join(' '),
           } as any)
         } else if (event === 'done') {
-          const result = JSON.parse(data)
+          const result = parsed
           // UX5: Wire budget store from final result
           if (result.durationMs) setDuration(result.durationMs)
           if (result.tokensUsed) incrementTokens(result.tokensUsed)
+          const finalContent = cleanAssistantContent(result.answer?.content || result.text || '')
+          const newFindings = result.newFindings ?? 0
+          const outcome = deriveRunOutcome({
+            completed: result.completed,
+            reason: result.reason,
+            toolCalls: result.toolCalls,
+            newFindings,
+            durationMs: result.durationMs,
+            error: result.error,
+          })
+          removeMessage(streamStatusId)
+          // Remove live streaming preview if present — canonical answer replaces it
+          if (liveAnswerId) {
+            removeMessage(liveAnswerId)
+            liveAnswerId = null
+          }
+          if (finalContent) {
+            addMessage({
+              id: nextId(),
+              role: 'assistant',
+              content: finalContent,
+              timestamp: Date.now(),
+            })
+          }
           addMessage({
             id: nextId(),
             type: 'summary',
-            content: result.answer?.content || 'Analysis complete',
+            content: finalContent || 'Analysis complete',
             steps: result.steps || 0,
             toolCalls: result.toolCalls || 0,
-            findings: result.answer?.findings?.length || 0,
+            findings: newFindings,
             durationMs: result.durationMs || 0,
+            outcome: outcome.kind,
+            label: outcome.label,
+            detail: outcome.detail,
+            reason: result.reason,
+            goal,
+            mode,
             timestamp: Date.now(),
           } as any)
         } else if (event === 'error') {
-          try {
-            addMessage({
-              id: nextId(),
-              type: 'error',
-              content: JSON.parse(data).message || 'Unknown error',
-              timestamp: Date.now(),
-            } as any)
-          } catch {
-            addMessage({
-              id: nextId(),
-              type: 'error',
-              content: String(data),
-              timestamp: Date.now(),
-            } as any)
-          }
+          removeMessage(streamStatusId)
+          addMessage({
+            id: nextId(),
+            type: 'error',
+            content: parsed.message || 'Unknown error',
+            goal,
+            mode,
+            timestamp: Date.now(),
+          } as any)
         }
-      } catch {
-        // parse error, ignore
+      } catch (err) {
+        addMessage({
+          id: nextId(),
+          type: 'error',
+          content: err instanceof Error ? `Stream parse error: ${err.message}` : 'Stream parse error',
+          timestamp: Date.now(),
+        } as any)
       }
     }
 
@@ -237,6 +433,17 @@ export function ChatStream() {
       const decoder = new TextDecoder()
       let buffer = ''
       let currentEvent = 'message'
+      let dataLines: string[] = []
+
+      const dispatch = () => {
+        if (dataLines.length === 0) {
+          currentEvent = 'message'
+          return
+        }
+        handleSSEEvent(currentEvent, dataLines.join('\n'))
+        currentEvent = 'message'
+        dataLines = []
+      }
 
       try {
         while (true) {
@@ -251,20 +458,21 @@ export function ChatStream() {
             if (line.startsWith('event: ')) {
               currentEvent = line.slice(7).trim()
             } else if (line.startsWith('data: ')) {
-              const data = line.slice(6)
-              handleSSEEvent(currentEvent, data)
-              currentEvent = 'message'
+              dataLines.push(line.slice(6))
             } else if (line === '') {
-              currentEvent = 'message'
+              dispatch()
             }
           }
         }
+        if (!aborted) dispatch()
       } catch (err: any) {
         if (err.name !== 'AbortError') {
+          removeMessage(streamStatusId)
           addMessage({
             id: nextId(),
             type: 'error',
             content: err.message || 'Stream error',
+            goal,
             timestamp: Date.now(),
           } as any)
         }
@@ -276,18 +484,27 @@ export function ChatStream() {
     fetch('/api/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal, target: activeTarget || '' }),
+      body: JSON.stringify({ goal, target: activeTarget || '', interactionMode: mode }),
       signal: abortController.signal,
     })
       .then((res) => {
         if (!res.ok) {
-          return res.json().then((err) => {
+          return res.text().then((body) => {
+            let message = `HTTP ${res.status}`
+            try {
+              message = JSON.parse(body).error || message
+            } catch {
+              if (body) message = body.slice(0, 500)
+            }
             addMessage({
               id: nextId(),
               type: 'error',
-              content: err.error || `HTTP ${res.status}`,
+              content: message,
+              goal,
+              mode,
               timestamp: Date.now(),
             } as any)
+            removeMessage(streamStatusId)
             cleanup()
           })
         }
@@ -299,8 +516,11 @@ export function ChatStream() {
             id: nextId(),
             type: 'error',
             content: err.message || 'Fetch failed',
+            goal,
+            mode,
             timestamp: Date.now(),
           } as any)
+          removeMessage(streamStatusId)
         }
         cleanup()
       })
@@ -313,18 +533,24 @@ export function ChatStream() {
       answerBuffer = ''
       thinkingBuffer = ''
       thinkingId = null
-      answerId = null
     }
-  }, [activeTarget, addMessage, updateMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset])
+  }, [activeTarget, addMessage, updateMessage, removeMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset])
 
   const handleStop = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
       eventSourceRef.current = null
+      addMessage({
+        id: nextId(),
+        type: 'stream-status',
+        status: 'aborted',
+        label: 'Stopped by user',
+        timestamp: Date.now(),
+      } as any)
       setStreaming(false)
       setRunning(false)
     }
-  }, [setStreaming, setRunning])
+  }, [addMessage, setStreaming, setRunning])
 
   useEffect(() => {
     return () => {
@@ -336,22 +562,64 @@ export function ChatStream() {
   }, [])
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center">
-              <div className="text-2xl font-light text-zinc-600 mb-2">Ultimatrix</div>
-              <div className="text-sm text-zinc-600">Security research agent</div>
+        {messages.length === 0 && historyState === 'loading' ? (
+          <ChatSkeleton />
+        ) : messages.length === 0 ? (
+          <div className="flex h-full items-center justify-center px-6">
+            <div className="w-full max-w-2xl text-center">
+              <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900 text-emerald-300">
+                <GitBranch size={22} />
+              </div>
+              <div className="text-base font-semibold text-zinc-200">Security research workbench</div>
+              <div className="mt-2 text-sm text-zinc-600">
+                {activeTarget ? 'Choose a focused pass or ask about persisted target context.' : 'Add a target to begin a scoped session.'}
+              </div>
               {activeTarget && (
-                <div className="mt-4 text-xs text-zinc-500 font-mono">{activeTarget}</div>
+                <div className="mx-auto mt-4 max-w-full truncate rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-400">
+                  {activeTarget}
+                </div>
+              )}
+              {activeTarget && (
+                <div className="mx-auto mt-5 grid max-w-xl gap-2 text-left sm:grid-cols-3">
+                  <QuickStart
+                    icon={Search}
+                    label="Map attack surface"
+                    onClick={() => handleSend('Map the target attack surface. Fingerprint the application, discover reachable endpoints, and record evidence.', 'run')}
+                  />
+                  <QuickStart
+                    icon={ShieldCheck}
+                    label="Run assessment"
+                    onClick={() => handleSend('Perform a focused security assessment of the active target. Test the discovered surface, verify evidence, and record confirmed findings.', 'run')}
+                  />
+                  <QuickStart
+                    icon={Sparkles}
+                    label="Review session"
+                    onClick={() => handleSend('Summarize what has already been tested, what was found, and the highest-value untested areas from persisted session context.', 'ask')}
+                  />
+                </div>
+              )}
+              {!activeTarget && (
+                <button
+                  onClick={openSidebar}
+                  className="mx-auto mt-5 inline-flex h-9 items-center gap-2 rounded-md bg-zinc-100 px-3 text-xs font-medium text-zinc-950 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                >
+                  <PanelLeftOpen size={14} />
+                  Add target
+                </button>
               )}
             </div>
           </div>
         ) : (
-          <div className="max-w-4xl mx-auto py-4">
+          <div className="mx-auto max-w-4xl py-4">
             {messages.map((msg, i) => (
-              <MessageBubble key={msg.id} message={msg} isStreaming={isStreaming && i === messages.length - 1} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                isStreaming={isStreaming && i === messages.length - 1}
+                onSend={handleSend}
+              />
             ))}
           </div>
         )}
@@ -359,14 +627,44 @@ export function ChatStream() {
       <ChatInput
         onSend={handleSend}
         onStop={handleStop}
+        disabled={!activeTarget}
         isStreaming={isStreaming}
-        placeholder={activeTarget ? `Test ${activeTarget}...` : 'Enter a target URL to begin...'}
+        placeholder={activeTarget ? `Test ${activeTarget}...` : 'Add a target to begin...'}
       />
     </div>
   )
 }
 
-function MessageBubble({ message, isStreaming = false }: { message: StreamMessage; isStreaming?: boolean }) {
+function QuickStart({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: typeof Search
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-10 items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700"
+    >
+      <Icon size={14} className="flex-shrink-0 text-zinc-500" />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function MessageBubble({
+  message,
+  isStreaming = false,
+  onSend,
+}: {
+  message: StreamMessage
+  isStreaming?: boolean
+  onSend: (goal: string, mode?: InputMode) => void
+}) {
   if ((message as any).type === 'tool-call') {
     return <ToolCallCard message={message as ToolCallMessage} />
   }
@@ -379,8 +677,8 @@ function MessageBubble({ message, isStreaming = false }: { message: StreamMessag
   if ((message as any).type === 'phase') {
     const m = message as any
     return (
-      <div className="ml-8 my-1 text-xs text-zinc-500 flex items-center gap-2">
-        <span className="text-zinc-600">▸</span>
+      <div className="ml-4 mr-4 my-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-500 sm:ml-8">
+        <ChevronRight size={12} className="text-zinc-600" />
         <span className="capitalize">{m.phase}</span>
         <span className="text-zinc-700">step {m.step}</span>
       </div>
@@ -389,26 +687,79 @@ function MessageBubble({ message, isStreaming = false }: { message: StreamMessag
   if ((message as any).type === 'graph-update') {
     const m = message as any
     return (
-      <div className="ml-8 my-0.5 text-xs text-zinc-600">
+      <div className="ml-4 mr-4 my-0.5 truncate font-mono text-xs text-zinc-600 sm:ml-8">
         + {m.nodeType}{m.label ? `: ${m.label}` : ''}
       </div>
     )
   }
   if ((message as any).type === 'summary') {
     const m = message as any
+    const presentation = outcomePresentation(m.outcome)
+    const action = outcomeAction(m.outcome, m.goal, m.mode)
+    const Icon = presentation.icon
     return (
-      <div className="ml-8 my-2 px-3 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-xs">
-        <span className="text-emerald-400/80">✓</span>
-        <span className="text-zinc-400 ml-2">
-          Done in {(m.durationMs / 1000).toFixed(0)}s · {m.toolCalls} tool calls · {m.findings} findings
-        </span>
+      <div className={`mx-4 my-3 rounded-md border px-3 py-3 sm:ml-8 ${presentation.frame}`}>
+        <div className="flex items-start gap-2.5">
+          <Icon size={15} className={`mt-0.5 flex-shrink-0 ${presentation.iconClass}`} />
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium text-zinc-200">{m.label}</div>
+            <div className="mt-0.5 text-xs leading-relaxed text-zinc-500">{m.detail}</div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-600">
+              <span className="inline-flex items-center gap-1"><Clock3 size={11} />{formatRunDuration(m.durationMs)}</span>
+              <span>{m.toolCalls} tool {m.toolCalls === 1 ? 'call' : 'calls'}</span>
+              <span>{m.findings} new {m.findings === 1 ? 'finding' : 'findings'}</span>
+            </div>
+          </div>
+          {action && (
+            <button
+              type="button"
+              onClick={() => onSend(action.goal, action.mode)}
+              className="inline-flex h-8 flex-shrink-0 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+            >
+              {action.retry ? <RotateCcw size={12} /> : <ArrowRight size={12} />}
+              <span className="hidden sm:inline">{action.label}</span>
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  if ((message as any).type === 'stream-status') {
+    const m = message as any
+    const done = m.status === 'done'
+    const aborted = m.status === 'aborted'
+    return (
+      <div className="ml-4 mr-4 my-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-500 sm:ml-8">
+        {m.status === 'running' || m.status === 'starting' ? (
+          <Loader2 size={12} className="animate-spin text-zinc-600" />
+        ) : done ? (
+          <CheckCircle2 size={12} className="text-emerald-400/80" />
+        ) : (
+          <CircleAlert size={12} className="text-amber-400/80" />
+        )}
+        <span className={aborted ? 'text-amber-300/80' : 'text-zinc-500'}>{m.label}</span>
       </div>
     )
   }
   if ((message as any).type === 'error') {
+    const errorMessage = message as any
     return (
-      <div className="ml-8 my-2 px-3 py-2 rounded-md bg-red-950/20 border border-red-900/30 text-xs text-red-400/80">
-        {'content' in message ? message.content : ''}
+      <div className="ml-4 mr-4 my-2 flex items-start gap-2 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-3 text-xs text-red-300 sm:ml-8">
+        <CircleAlert size={14} className="mt-0.5 flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">Run failed</div>
+          <div className="mt-1 break-words text-red-300/80">{errorMessage.content || ''}</div>
+        </div>
+        {errorMessage.goal && (
+          <button
+            type="button"
+            onClick={() => onSend(errorMessage.goal, errorMessage.mode || 'ask')}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-red-900/70 px-2 text-[11px] text-red-200 transition-colors hover:bg-red-950/60"
+          >
+            <RotateCcw size={11} />
+            Retry
+          </button>
+        )}
       </div>
     )
   }
@@ -416,35 +767,78 @@ function MessageBubble({ message, isStreaming = false }: { message: StreamMessag
     const m = message as any
     if (!m.content) return null
     return (
-      <details className="ml-8 my-1">
-        <summary className="text-xs text-zinc-600 cursor-pointer hover:text-zinc-500">
-          thinking
+      <details className="ml-4 mr-4 my-1 sm:ml-8" open={!m.collapsed}>
+        <summary className="cursor-pointer text-xs text-zinc-600 hover:text-zinc-500">
+          model reasoning
         </summary>
-        <div className="mt-1 text-xs text-zinc-500 italic whitespace-pre-wrap">
+        <div className="mt-1 whitespace-pre-wrap text-xs italic text-zinc-500">
           {m.content}
         </div>
       </details>
     )
   }
 
-  // Default: user or assistant text — B2: use MarkdownBlock for assistant
   const chatMsg = message as ChatMessage
   const isUser = chatMsg.role === 'user'
   if (isUser) {
     return (
       <div className="my-2 px-4 text-right">
-        <div className="inline-block max-w-[85%] text-sm leading-relaxed bg-zinc-800 text-zinc-100 rounded-xl rounded-tr-sm px-4 py-2">
+        <div className="inline-block max-w-[85%] rounded-md rounded-tr-sm bg-zinc-800 px-4 py-2 text-left text-sm leading-relaxed text-zinc-100 shadow-sm">
           {chatMsg.content}
         </div>
       </div>
     )
   }
-  // Assistant: render as markdown
-    return (
-      <div className="my-2 px-4">
-        <div className="max-w-[85%] text-sm leading-relaxed text-zinc-200">
-          <MarkdownBlock content={chatMsg.content} streaming={isStreaming} />
-        </div>
+  return (
+    <div className="my-2 px-4">
+      <div className="max-w-[90%] text-sm leading-relaxed text-zinc-200">
+        <MarkdownBlock content={chatMsg.content} streaming={isStreaming} />
       </div>
-    )
+    </div>
+  )
+}
+
+function formatRunDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${durationMs}ms`
+  const seconds = Math.round(durationMs / 1000)
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+function outcomePresentation(kind: RunOutcomeKind) {
+  switch (kind) {
+    case 'completed':
+      return { icon: CheckCircle2, iconClass: 'text-emerald-400', frame: 'border-emerald-900/50 bg-emerald-950/10' }
+    case 'answered':
+      return { icon: CheckCircle2, iconClass: 'text-cyan-400', frame: 'border-zinc-800 bg-zinc-900/60' }
+    case 'completed_no_findings':
+      return { icon: Search, iconClass: 'text-amber-400', frame: 'border-amber-900/40 bg-amber-950/10' }
+    case 'failed':
+      return { icon: CircleAlert, iconClass: 'text-red-400', frame: 'border-red-900/50 bg-red-950/20' }
+    default:
+      return { icon: CircleAlert, iconClass: 'text-amber-400', frame: 'border-amber-900/40 bg-amber-950/10' }
+  }
+}
+
+function outcomeAction(kind: RunOutcomeKind, previousGoal?: string, previousMode: InputMode = 'run') {
+  if (kind === 'answered') {
+    return {
+      label: 'Run assessment',
+      goal: 'Perform a focused security assessment of the active target. Test the discovered surface, verify evidence, and record confirmed findings.',
+      retry: false,
+      mode: 'run' as const,
+    }
+  }
+  if (kind === 'completed_no_findings') {
+    return {
+      label: 'Continue deeper',
+      goal: 'Continue the assessment from persisted state. Prioritize the highest-value untested attack paths and avoid repeating completed tests.',
+      retry: false,
+      mode: 'run' as const,
+    }
+  }
+  if (kind === 'failed' || kind === 'interrupted' || kind === 'stopped') {
+    return previousGoal ? { label: 'Retry', goal: previousGoal, retry: true, mode: previousMode } : null
+  }
+  return null
 }

@@ -27,6 +27,7 @@ import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
 import { ContextWindowRegistry } from "../models/context-window-registry";
 import { compactText } from "../output/compaction";
+import { appendDelta } from "../output/render-model";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 const FALLBACK_CONTEXT_WINDOW: Record<string, number> = CONTEXT_WINDOW_MAP;
@@ -142,6 +143,8 @@ export interface SolverAnswer {
   durationMs: number;
   steps: number;
   toolCalls: number;
+  /** Findings added during this turn, excluding persisted findings. */
+  newFindings: number;
 }
 
 /**
@@ -203,12 +206,15 @@ export interface SolveResult {
   completed: boolean;
   reason:
     | "goal_achieved"
+    | "response_complete"
     | "frontier_exhausted"
     | "budget_reached"
     | "stale"
     | "interrupted";
   steps: number;
   toolCalls: number;
+  /** Findings added during this turn, excluding persisted findings. */
+  newFindings: number;
   tokensUsed: number;
   durationMs: number;
   facts: number;
@@ -224,6 +230,7 @@ export interface SolveResult {
 export interface SolveParams {
   origin: string;
   goal: string;
+  interactionMode?: "ask" | "run";
   hints?: string[];
   matchedSkills?: Array<{
     id: string;
@@ -241,6 +248,7 @@ export interface SolveParams {
   loopDetector?: LoopDetector;
   reflexion?: ReflexionEngine;
   memory?: { thread: string; resource: string };
+  signal?: AbortSignal;
   onPhase?: (event: PhaseEvent) => void;
   /** Structured streaming output (preferred). Falls back to `onPhase` adapter if absent. */
   onMessage?: (message: SolverStreamMessage) => void;
@@ -343,43 +351,30 @@ interface CompletionResult {
 /**
  * Determine completion based on graph findings and conversation state.
  *
- * - Graph findings exist → goal_achieved
- * - Conversational turn (hi, hello) → frontier_exhausted (normal)
- * - Nothing happened → stale
+ * Classification is based on observed execution, not prompt wording:
+ * - New graph findings exist -> goal_achieved
+ * - A response with no tool calls -> response_complete
+ * - Tool calls with no new findings -> frontier_exhausted
+ * - Nothing happened -> stale
  */
 function checkCompletion(
-  goal: string,
   toolCallCount: number,
   bodyText: string,
   reasoningText: string,
+  newFindings: number,
 ): CompletionResult {
-  const goalLower = (goal || "").toLowerCase();
-  const isConversational =
-    toolCallCount === 0 &&
-    bodyText.length < 500 &&
-    ["hi", "hello", "hey", "help", "ping", "test", "who", "what", "how"].some(
-      (g) => goalLower.startsWith(g),
-    );
-
   // Nothing happened at all (no deliverable answer and no reasoning)
   if (toolCallCount === 0 && bodyText.length === 0 && reasoningText.length === 0) {
     return { completed: false, reason: "stale" };
   }
 
-  // Conversational turn — just show response, no completion forced
-  if (isConversational) {
-    return { completed: false, reason: "frontier_exhausted" };
+  // A response-only turn is complete, but it is not an assessment run.
+  if (toolCallCount === 0 && bodyText.length > 0) {
+    return { completed: false, reason: "response_complete" };
   }
 
-  // Check if the agent wrote findings to the graph
-  try {
-    const store = getGlobalGraphStore();
-    const findings = store.queryNodes?.(NodeType.FINDING) || [];
-    if (findings.length > 0) {
-      return { completed: true, reason: "goal_achieved" };
-    }
-  } catch {
-    // Graph store not available
+  if (newFindings > 0) {
+    return { completed: true, reason: "goal_achieved" };
   }
 
   // Agent responded but no findings — normal turn
@@ -484,6 +479,11 @@ export async function solve(
 
   // Auto-inject graph context + blackboard state into the goal message
   let enrichedGoal = params.goal;
+  if (params.interactionMode === "ask") {
+    enrichedGoal += "\n\n## Interaction Mode\nAnswer from persisted session context. Do not start new assessment actions unless the user explicitly changes to run mode.";
+  } else if (params.interactionMode === "run") {
+    enrichedGoal += "\n\n## Interaction Mode\nExecute the requested assessment work with the available tools. Record evidence and confirmed findings; do not merely offer to do the work.";
+  }
 
   // Surface pre-confirmed campaign findings to the LLM strategist.
   if (autoCampaignFindings > 0) {
@@ -762,14 +762,18 @@ export async function solve(
   let fullText = "";
   let streamIndex = 0;
   // Structured capture: answer (deliverable) vs reasoning (transient scratch).
-  // Both channels (text-delta AND the canonical stream.text promise) feed `answerParts`.
-  const answerParts: string[] = [];
-  const reasoningParts: string[] = [];
+  // Both channels (text-delta AND the canonical stream.text promise) feed `answerText` via appendDelta.
+  let answerText = "";
+  let reasoningText = "";
   let toolCallCount = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalTokens = 0;
   let lastError: string | undefined;
+  const timeoutSignal = AbortSignal.timeout(cfg.maxDurationMs);
+  const streamSignal = params.signal
+    ? AbortSignal.any([params.signal, timeoutSignal])
+    : timeoutSignal;
 
   // Snapshot graph state for stale detection (compare before/after tool calls)
   const graphStateSnapshot = { findings: 0, endpoints: 0, tests: 0 };
@@ -785,56 +789,38 @@ export async function solve(
 
   try {
     // Single stream call — Mastra handles tool loops internally (like v7)
-    // Wrap with timeout enforcement via maxDurationMs
-    const streamPromise = agent.stream(enrichedGoal, {
+    // The combined signal covers both stream creation and consumption.
+    const stream = await agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
+      abortSignal: streamSignal,
     });
-
-    const timeoutMs = cfg.maxDurationMs;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error(`Solver timeout: ${timeoutMs}ms exceeded`)),
-        timeoutMs,
-      );
-    });
-
-    const stream = await Promise.race([streamPromise, timeoutPromise]);
 
     let lastToolCallArgs: Record<string, unknown> | undefined;
     let lastToolCallName: string | undefined;
 
     for await (const chunk of stream.fullStream) {
+      if (streamSignal.aborted) {
+        throw new Error(params.signal?.aborted
+          ? "Solver interrupted"
+          : `Solver timeout: ${cfg.maxDurationMs}ms exceeded`);
+      }
       switch (chunk.type) {
         case "text-delta":
           fullText += chunk.payload.text;
-          // Live answer channel: streamed deltas are for TRANSIENT display only.
-          // The committed deliverable is resolved from the SDK-canonical
-          // `stream.text` promise after the loop (see final-answer resolution
-          // below) — provider-normalized for every backend, so no provider
-          // specific folding is needed here.
-          answerParts.push(chunk.payload.text);
+          // Live answer channel: appendDelta deduplicates cumulative provider
+          // chunks (nvidia sends full text each time) and passes through
+          // incremental chunks (openai/anthropic) unchanged.
+          answerText = appendDelta(answerText, chunk.payload.text);
           emitMessage({ kind: "answer", text: chunk.payload.text, index: streamIndex++ });
-          emit({
-            phase: "reason",
-            step: toolCallCount,
-            text: chunk.payload.text,
-            reasoning: false,
-          });
           break;
 
         case "reasoning-delta":
           if (chunk.payload.text) {
             // Transient scratch: captured for the structured `answer.reasoning`
             // field and shown live, never treated as the deliverable.
-            reasoningParts.push(chunk.payload.text);
+            reasoningText = appendDelta(reasoningText, chunk.payload.text);
             emitMessage({ kind: "reasoning", text: chunk.payload.text, index: streamIndex++ });
-            emit({
-              phase: "reason",
-              step: toolCallCount,
-              text: chunk.payload.text,
-              reasoning: true,
-            });
           }
           break;
 
@@ -860,15 +846,21 @@ export async function solve(
 
         case "tool-result":
           if (chunk.payload.toolName) {
+            const result = chunk.payload.result as any;
             const output =
-              typeof chunk.payload.result === "string"
-                ? chunk.payload.result
-                : JSON.stringify(chunk.payload.result);
+              typeof result === "string"
+                ? result
+                : JSON.stringify(result) ?? String(result);
+            const toolOk = !(
+              result &&
+              typeof result === "object" &&
+              (result.ok === false || result.success === false || result.status === "failed" || result.error)
+            );
 
             // Record tool output in evidence gate
             evidence.recordToolOutput(output);
 
-            emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: true, result: output });
+            emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: toolOk, result: output });
 
             // Track attack paths
             const detectedPath = extractAttackPath(output);
@@ -925,21 +917,15 @@ export async function solve(
             }
 
             // Record failures in reflexion engine
-            if (
-              chunk.payload.result &&
-              typeof chunk.payload.result === "object"
-            ) {
-              const result = chunk.payload.result as any;
-              if (result.error || result.status === "failed") {
+            if (!toolOk) {
                 const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
                 reflexion.recordAttempt(
                   chunk.payload.toolName,
                   false,
                   null,
-                  result.error || String(result),
+                  result.error || output,
                   vulnType,
                 );
-              }
             }
 
             // Notify caller (graph save, etc.)
@@ -952,9 +938,18 @@ export async function solve(
 
         case "tool-error":
           if (chunk.payload.toolName) {
+            const error = chunk.payload.error instanceof Error
+              ? chunk.payload.error.message
+              : String(chunk.payload.error ?? "Unknown tool error");
             log.error(
-              `${chunk.payload.toolName} failed: ${chunk.payload.error}`,
+              `${chunk.payload.toolName} failed: ${error}`,
             );
+            emitMessage({
+              kind: "tool-result",
+              name: chunk.payload.toolName,
+              ok: false,
+              result: error,
+            });
 
             // Record failure in reflexion engine
               const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
@@ -962,7 +957,7 @@ export async function solve(
                 chunk.payload.toolName,
                 false,
                 null,
-                chunk.payload.error instanceof Error ? chunk.payload.error.message : String(chunk.payload.error ?? ""),
+                error,
                 vulnType,
               );
 
@@ -973,7 +968,7 @@ export async function solve(
               type: "tool-error",
               agent: "solver-brain",
               tool: chunk.payload.toolName,
-              error: chunk.payload.error instanceof Error ? chunk.payload.error.message : String(chunk.payload.error ?? ""),
+              error,
             });
           }
           break;
@@ -987,6 +982,13 @@ export async function solve(
               usage.totalTokens ?? totalInputTokens + totalOutputTokens;
           }
           break;
+      }
+
+      // Yield to event loop periodically to allow enqueued SSE data to flush.
+      // Without this, rapid bursts of chunks get processed before the
+      // ReadableStream/TransformStream can push data to the HTTP response.
+      if (streamIndex % 5 === 0 && streamIndex > 0) {
+        await new Promise<void>((r) => setTimeout(r, 0));
       }
     }
 
@@ -1004,11 +1006,17 @@ export async function solve(
     let canonicalAnswer = "";
     let canonicalReasoning = "";
     try {
-      const resolvedText = (await stream.text) as string | undefined;
+      // Await the SDK canonical promises directly — they are the deduplicated,
+      // provider-normalized final text. No timeout: the outer
+      // AbortSignal.timeout(maxDurationMs) already bounds wall-clock time.
+      const [resolvedText, resolvedReasoning] = await Promise.all([
+        stream.text as Promise<string | undefined>,
+        stream.reasoningText as Promise<string | undefined>,
+      ]);
+
       if (resolvedText && resolvedText.trim().length > 0) {
         canonicalAnswer = resolvedText;
       }
-      const resolvedReasoning = (await stream.reasoningText) as string | undefined;
       if (resolvedReasoning && resolvedReasoning.trim().length > 0) {
         canonicalReasoning = resolvedReasoning;
       }
@@ -1022,19 +1030,21 @@ export async function solve(
     // delivered via the `done` event + SolveResult.text, NOT re-emitted as a
     // live `answer` chunk (that would cause the renderer to print it twice).
     if (canonicalAnswer) {
-      answerParts.length = 0;
-      answerParts.push(canonicalAnswer);
+      answerText = canonicalAnswer;
     }
     // Commit the canonical reasoning. When present it supersedes the raw
     // reasoning-delta chunks; otherwise keep what was captured live.
     if (canonicalReasoning) {
-      reasoningParts.length = 0;
-      reasoningParts.push(canonicalReasoning);
+      reasoningText = canonicalReasoning;
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Provide actionable error messages for common failures
-    if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('Rate limited') || errMsg.includes('Quota exhausted')) {
+    if (params.signal?.aborted) {
+      lastError = 'Solver interrupted by user.';
+    } else if (timeoutSignal.aborted) {
+      lastError = `Solver timed out after ${cfg.maxDurationMs}ms. Increase solver.maxDurationMs in config.`;
+    } else if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('Rate limited') || errMsg.includes('Quota exhausted')) {
       lastError = `Model rate limited or quota exhausted: ${errMsg}. Try switching provider/model in config.`;
     } else if (errMsg.includes('timeout') || errMsg.includes('Solver timeout')) {
       lastError = `Solver timed out: ${errMsg}. Increase solver.maxDurationMs in config.`;
@@ -1049,13 +1059,28 @@ export async function solve(
     });
   }
 
-  // Check goal completion based on graph findings
-  const { completed, reason } = checkCompletion(
-    params.goal,
-    toolCallCount,
-    answerParts.join(""),
-    reasoningParts.join(""),
-  );
+  let newFindings = 0;
+  try {
+    const currentSummary = getGlobalGraphStore().getTargetSummary();
+    newFindings = Math.max(
+      0,
+      currentSummary.totalFindings - graphStateSnapshot.findings,
+    );
+  } catch {
+    // Graph store not available
+  }
+
+  // Classify this turn from its own work, not findings persisted by older runs.
+  const { completed, reason } = params.signal?.aborted
+    ? { completed: false, reason: "interrupted" as const }
+    : timeoutSignal.aborted
+      ? { completed: false, reason: "budget_reached" as const }
+      : checkCompletion(
+          toolCallCount,
+          answerText,
+          reasoningText,
+          newFindings,
+        );
 
   // Find attack paths (CONCLUDE phase)
   try {
@@ -1086,8 +1111,9 @@ export async function solve(
   // (which folds in relation-seeded chain proposals). Bounded by
   // maxActiveChainSteps so it never hijacks the turn's budget.
   if (
-    params.ultimatrixConfig?.engine === "solver" ||
-    params.ultimatrixConfig?.engine === "multi-model"
+    !lastError &&
+    (params.ultimatrixConfig?.engine === "solver" ||
+      params.ultimatrixConfig?.engine === "multi-model")
   ) {
     const maxExploitSteps =
       params.ultimatrixConfig?.solver?.maxActiveChainSteps ?? 3;
@@ -1135,8 +1161,8 @@ export async function solve(
   }
 
   // Assemble the structured final answer (single source of truth for UI).
-  const answerContent = answerParts.join("").trim();
-  const answerReasoning = reasoningParts.join("").trim();
+  const answerContent = answerText.trim();
+  const answerReasoning = reasoningText.trim();
   let findingRefs: SolverAnswer["findings"] = [];
   try {
     const store = getGlobalGraphStore();
@@ -1164,6 +1190,7 @@ export async function solve(
     durationMs: Date.now() - startTime,
     steps: toolCallCount,
     toolCalls: toolCallCount,
+    newFindings,
   };
 
   emitMessage({ kind: "done", answer });
@@ -1173,6 +1200,7 @@ export async function solve(
     reason,
     steps: toolCallCount,
     toolCalls: toolCallCount,
+    newFindings,
     tokensUsed: totalTokens || fullText.length,
     durationMs: Date.now() - startTime,
     facts: board.facts?.length || 0,

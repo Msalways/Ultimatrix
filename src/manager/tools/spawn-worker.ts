@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
 import type { WorkerPool } from '../../workers/pool'
 import type { UltimatrixConfig } from '../../config'
+import type { ModelSelector } from '../../models/selector'
 import { getGlobalGraphStore } from '../../graph/store'
 import { getActiveBrowser } from '../../browser/manager'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
@@ -11,6 +12,7 @@ export function createSpawnWorkerTool(
   config: UltimatrixConfig,
   skillRegistry: SkillRegistry,
   workerPool: WorkerPool,
+  modelSelector?: ModelSelector,
 ) {
   return createTool({
     id: 'spawn-worker',
@@ -21,6 +23,8 @@ export function createSpawnWorkerTool(
       endpointId: z.string().optional().describe('Graph endpoint node ID — worker will receive full endpoint details'),
       tier: z.enum(['fast', 'balanced', 'powerful']).default('balanced').describe('Model tier to use'),
       modelId: z.string().optional().describe('Explicit model ID override (e.g., "groq/llama3-8b-8192")'),
+      complexity: z.enum(['low', 'medium', 'high', 'critical']).default('medium').describe('Task complexity used for model routing'),
+      requiredCapabilities: z.array(z.string()).optional().describe('Model strengths needed for this worker'),
       tokenBudget: z.number().optional().describe('Token budget for this worker'),
     }),
     outputSchema: z.object({
@@ -36,8 +40,14 @@ export function createSpawnWorkerTool(
         findingsAfter: z.number(),
         findingsAdded: z.number(),
       }).optional(),
+      routing: z.object({
+        tier: z.string(),
+        modelId: z.string().optional(),
+        provider: z.string().optional(),
+        reasoning: z.string().optional(),
+      }).optional(),
     }),
-    execute: async ({ skillId, task, endpointId, tier, modelId, tokenBudget }, _context) => {
+    execute: async ({ skillId, task, endpointId, tier, modelId, complexity, requiredCapabilities, tokenBudget }, _context) => {
 
       // SUPERVISOR-1: Snapshot graph before spawning
       const store = getGlobalGraphStore()
@@ -75,11 +85,17 @@ export function createSpawnWorkerTool(
 
       const startTime = Date.now()
       try {
-        const worker = workerPool.spawn({ skillId, task: informedTask, tier, modelId, tokenBudget, browser: getActiveBrowser() || undefined })
+        const taskComplexity = complexity ?? 'medium'
+        const selection = !modelId && modelSelector
+          ? modelSelector.selectForTask({ skillId, taskDescription: informedTask, complexity: taskComplexity, requiredCapabilities }, 'worker')
+          : undefined
+        const routedTier = (selection?.tier ?? tier) as 'fast' | 'balanced' | 'powerful'
+        const routedModelId = modelId ?? selection?.modelId
+        const worker = workerPool.spawn({ skillId, task: informedTask, tier: routedTier, modelId: routedModelId, complexity: taskComplexity, tokenBudget, browser: getActiveBrowser() || undefined })
         const workerName = (worker as any).name ?? `${skillId} Specialist`
 
         // Emit lifecycle events
-        emitWorkerSpawned(worker.id, workerName, skillId, task, { endpointId, tier, modelId, tokenBudget })
+        emitWorkerSpawned(worker.id, workerName, skillId, task, { endpointId, tier: routedTier, modelId: routedModelId, tokenBudget, routingReason: selection?.reasoning })
         emitWorkerStarted(worker.id, workerName, skillId, task)
 
         const result = await worker.generate(informedTask)
@@ -116,6 +132,12 @@ export function createSpawnWorkerTool(
             status: 'completed',
             result: compactResult,
             graphDiff,
+            routing: {
+              tier: routedTier,
+              modelId: routedModelId,
+              provider: selection?.provider,
+              reasoning: selection?.reasoning ?? (modelId ? 'explicit modelId override' : undefined),
+            },
           },
         } as any
       } catch (error) {

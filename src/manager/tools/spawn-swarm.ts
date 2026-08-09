@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
 import type { WorkerPool } from '../../workers/pool'
 import type { UltimatrixConfig } from '../../config'
+import type { ModelSelector } from '../../models/selector'
 import { getGlobalGraphStore } from '../../graph/store'
 import { getActiveBrowser } from '../../browser/manager'
 import {
@@ -22,6 +23,7 @@ export function createSpawnSwarmTool(
   config: UltimatrixConfig,
   skillRegistry: SkillRegistry,
   workerPool: WorkerPool,
+  modelSelector?: ModelSelector,
 ) {
   return createTool({
     id: 'spawn-swarm',
@@ -32,6 +34,9 @@ export function createSpawnSwarmTool(
         task: z.string().describe('Specific task for this worker'),
         endpointId: z.string().optional().describe('Graph endpoint node ID for context'),
         tier: z.enum(['fast', 'balanced', 'powerful']).default('balanced'),
+        modelId: z.string().optional().describe('Explicit model ID override'),
+        complexity: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+        requiredCapabilities: z.array(z.string()).optional(),
       })).describe('List of tasks to execute.'),
       parallel: z.boolean().default(false).describe('Run independent tasks in parallel. Use true for unrelated endpoints. Use false (default) when earlier workers must inform later workers.'),
       maxWorkers: z.number().int().positive().default(5).describe('Maximum workers to spawn'),
@@ -45,6 +50,12 @@ export function createSpawnSwarmTool(
         status: z.string(),
         result: z.unknown().optional(),
         error: z.string().optional(),
+        routing: z.object({
+          tier: z.string(),
+          modelId: z.string().optional(),
+          provider: z.string().optional(),
+          reasoning: z.string().optional(),
+        }).optional(),
       })),
     }),
     execute: async ({ tasks, parallel, maxWorkers }, _context) => {
@@ -107,16 +118,29 @@ export function createSpawnSwarmTool(
         const workerStartTime = Date.now()
 
         try {
+          const taskComplexity = taskDef.complexity ?? 'medium'
+          const selection = !taskDef.modelId && modelSelector
+            ? modelSelector.selectForTask({
+              skillId: taskDef.skillId,
+              taskDescription: informedTask,
+              complexity: taskComplexity,
+              requiredCapabilities: taskDef.requiredCapabilities,
+            }, 'worker')
+            : undefined
+          const routedTier = (selection?.tier ?? taskDef.tier) as 'fast' | 'balanced' | 'powerful'
+          const routedModelId = taskDef.modelId ?? selection?.modelId
           const worker = workerPool.spawn({
             skillId: taskDef.skillId,
             task: informedTask,
-            tier: taskDef.tier,
+            tier: routedTier,
+            modelId: routedModelId,
+            complexity: taskComplexity,
             browser: getActiveBrowser() || undefined,
           })
           const workerName = (worker as any).name ?? `${taskDef.skillId} Specialist`
 
           // Emit worker lifecycle
-          emitWorkerSpawned(worker.id, workerName, taskDef.skillId, taskDef.task)
+          emitWorkerSpawned(worker.id, workerName, taskDef.skillId, taskDef.task, { tier: routedTier, modelId: routedModelId, routingReason: selection?.reasoning })
           emitWorkerStarted(worker.id, workerName, taskDef.skillId, taskDef.task)
           emitSwarmWorkerDispatched(swarmId, worker.id, workerName, taskDef.skillId, taskDef.task, index, limitedTasks.length)
 
@@ -132,7 +156,18 @@ export function createSpawnSwarmTool(
             durationMs,
           }
 
-          return { workerId: worker.id, skillId: taskDef.skillId, status: 'completed', result: compactResult }
+          return {
+            workerId: worker.id,
+            skillId: taskDef.skillId,
+            status: 'completed',
+            result: compactResult,
+            routing: {
+              tier: routedTier,
+              modelId: routedModelId,
+              provider: selection?.provider,
+              reasoning: selection?.reasoning ?? (taskDef.modelId ? 'explicit modelId override' : undefined),
+            },
+          }
         } catch (error) {
           const durationMs = Date.now() - workerStartTime
           const errorMsg = error instanceof Error ? error.message : String(error)
@@ -155,6 +190,7 @@ export function createSpawnSwarmTool(
         status: string
         result?: unknown
         error?: string
+        routing?: unknown
       }> = []
 
       let completedCount = 0

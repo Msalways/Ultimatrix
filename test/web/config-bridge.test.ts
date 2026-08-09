@@ -81,4 +81,19 @@ describe('maskCredentials', () => {
     expect(masked.creds?.bedrock?.accessKeyId).toContain('****')
     expect(masked.creds?.bedrock?.secretAccessKey).toContain('****')
   })
+
+  it('masks provider aliases and test-account passwords', () => {
+    const config: UltimatrixConfig = {
+      provider: 'groq',
+      model: 'test',
+      creds: { groq: { apiKey: 'gsk_secretkey1234567890' } },
+      providerKeys: { 'groq-secondary': { apiKey: 'secondary-secret-key' } },
+      credentials: { admin: { email: 'admin@example.com', password: 'account-password' } },
+    }
+
+    const masked = maskCredentials(config)
+    expect((masked.providerKeys as any)['groq-secondary'].apiKey).toContain('****')
+    expect((masked.credentials as any).admin.password).toBe('****')
+    expect((masked.credentials as any).admin.email).toBe('admin@example.com')
+  })
 })

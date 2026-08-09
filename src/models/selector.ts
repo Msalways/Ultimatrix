@@ -4,6 +4,7 @@ import { resolveProviderAlias } from '../config'
 import { getGlobalQuotaTracker } from './quota-tracker'
 import { createProviderLimiter } from './limiter-factory'
 import type { UltimatrixConfig } from '../config'
+import { COMPLEXITY_TIER_MAP, resolveModelRef, type ModelRole } from './routing'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -55,13 +56,6 @@ interface _ScoredModel {
 // Complexity → model tier mapping for the DYNAMIC WORKER ENGINE (multi-model).
 // This is the engine's own source of truth for per-scenario tier selection and
 // must not be coupled to the council add-on's separate mapping.
-const COMPLEXITY_TIER_MAP: Record<string, string> = {
-  low: 'fast',
-  medium: 'balanced',
-  high: 'powerful',
-  critical: 'powerful',
-}
-
 const COMPLEXITY_TOKEN_ESTIMATE: Record<string, { input: number; output: number }> = {
   low: { input: 500, output: 500 },
   medium: { input: 2000, output: 1500 },
@@ -100,8 +94,11 @@ export class ModelSelector {
     this.successHistory.set(key, Math.max(0, prev - 1))
   }
 
-  selectForTask(task: WorkerTask, agentRole: 'brain' | 'worker' | 'spider'): ModelSelection {
+  selectForTask(task: WorkerTask, agentRole: ModelRole): ModelSelection {
     const budget = this.calculateBudget(task, agentRole)
+    const explicit = this.selectConfiguredRoleModel(task, agentRole, budget)
+    if (explicit) return explicit
+
     const candidates = this.getAvailableModels()
 
     if (candidates.length === 0) {
@@ -137,11 +134,48 @@ export class ModelSelector {
 
   selectTierForSkill(skillId: string, taskComplexity: string): string {
     // Default: map complexity to tier
-    return COMPLEXITY_TIER_MAP[taskComplexity] ?? 'balanced'
+    return COMPLEXITY_TIER_MAP[taskComplexity as keyof typeof COMPLEXITY_TIER_MAP] ?? 'balanced'
   }
 
   explainSelection(selection: ModelSelection, task: WorkerTask): string {
     return `Selected ${selection.modelId} (${selection.tier}) for ${task.complexity} complexity task "${task.skillId}": ${selection.reasoning}`
+  }
+
+  private selectConfiguredRoleModel(
+    task: WorkerTask,
+    agentRole: ModelRole,
+    budget: TaskBudget,
+  ): ModelSelection | undefined {
+    if (
+      (agentRole === 'brain' && !this.config.modelRoles?.brain)
+      || (agentRole === 'spider' && !this.config.modelRoles?.spider)
+      || (agentRole === 'crawlSummarizer' && !this.config.modelRoles?.crawlSummarizer)
+      || (agentRole === 'verifier' && !this.config.modelRoles?.verifier)
+      || (agentRole === 'reporter' && !this.config.modelRoles?.reporter)
+      || (agentRole === 'council' && !this.config.modelRoles?.council)
+      || (agentRole === 'worker' && !this.config.modelRoles?.worker?.[task.complexity])
+    ) {
+      return undefined
+    }
+
+    const route = resolveModelRef(this.config, { role: agentRole, complexity: task.complexity })
+    const estimatedTokens = COMPLEXITY_TOKEN_ESTIMATE[task.complexity] ?? COMPLEXITY_TOKEN_ESTIMATE.medium
+    const cap = this.capabilities[route.modelId] ?? this.capabilities[route.model]
+    const capReason = cap
+      ? `context ${cap.contextWindow}, max output ${route.maxOutputTokens ?? cap.maxOutputTokens}`
+      : route.maxOutputTokens
+        ? `max output ${route.maxOutputTokens}`
+        : 'no capability data'
+
+    return {
+      tier: route.tier,
+      provider: route.provider,
+      modelId: route.modelId,
+      reasoning: `${route.reason}; ${task.complexity} complexity maps to ${route.tier}; ${capReason}`,
+      budget,
+      estimatedTokens: estimatedTokens.input + estimatedTokens.output,
+      estimatedDuration: this.estimateDuration(route.provider, estimatedTokens.input + estimatedTokens.output),
+    }
   }
 
   // ─── Scoring ────────────────────────────────────────────────────
@@ -230,9 +264,9 @@ export class ModelSelector {
 
   // ─── Budget ─────────────────────────────────────────────────────
 
-  private calculateBudget(task: WorkerTask, agentRole: 'brain' | 'worker' | 'spider'): TaskBudget {
+  private calculateBudget(task: WorkerTask, agentRole: ModelRole): TaskBudget {
     // Config uses plural keys: 'workers' not 'worker'
-    const allocationKey = agentRole === 'worker' ? 'workers' : agentRole
+    const allocationKey = agentRole === 'worker' ? 'workers' : agentRole === 'crawlSummarizer' ? 'spider' : agentRole
     const allocation = this.budgetPolicy.allocation[allocationKey as keyof typeof this.budgetPolicy.allocation] ?? 0.3
     const maxModelCalls = Math.floor(this.budgetPolicy.maxModelCallsPerTask * allocation)
     const maxTokens = this.budgetPolicy.maxTokensPerSession
@@ -309,7 +343,7 @@ export class ModelSelector {
     return 'powerful'
   }
 
-  private fallbackSelection(task: WorkerTask, agentRole: 'brain' | 'worker' | 'spider'): ModelSelection {
+  private fallbackSelection(task: WorkerTask, agentRole: ModelRole): ModelSelection {
     const budget = this.calculateBudget(task, agentRole)
     const provider = this.config.provider
     const modelId = this.config.model

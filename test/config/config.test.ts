@@ -330,6 +330,67 @@ describe('resolveModel', () => {
     expect((model as any).modelId).toBe('llama3-8b-8192')
   })
 
+  it('accepts model-specific max output tokens on tiers and roles', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      target: 'https://example.com',
+      creds: {
+        groq: { apiKey: 'gsk_xxx' },
+        openai: { apiKey: 'sk-test' },
+      },
+      modelTiers: {
+        fast: { provider: 'groq', model: 'llama3-8b-8192', maxOutputTokens: 1024 },
+      },
+      modelRoles: {
+        brain: { provider: 'openai', model: 'gpt-4o', maxOutputTokens: 8192 },
+        spider: 'groq/llama3-8b-8192',
+        crawlSummarizer: 'groq/llama3-8b-8192',
+        verifier: { provider: 'openai', model: 'gpt-4o-mini' },
+        reporter: { provider: 'openai', model: 'gpt-4o-mini' },
+        council: { provider: 'openai', model: 'gpt-4o' },
+        worker: {
+          critical: { provider: 'openai', model: 'gpt-4o', maxOutputTokens: 12000 },
+        },
+      },
+    })
+
+    expect(config.modelTiers?.fast?.maxOutputTokens).toBe(1024)
+    expect(config.modelRoles?.brain?.model).toBe('gpt-4o')
+    expect(config.modelRoles?.spider?.provider).toBe('groq')
+    expect(config.modelRoles?.crawlSummarizer?.provider).toBe('groq')
+    expect(config.modelRoles?.verifier?.model).toBe('gpt-4o-mini')
+    expect(config.modelRoles?.reporter?.model).toBe('gpt-4o-mini')
+    expect(config.modelRoles?.council?.model).toBe('gpt-4o')
+    expect(config.modelRoles?.worker?.critical?.maxOutputTokens).toBe(12000)
+  })
+
+  it('resolves brain and spider role models from config', () => {
+    const config = baseConfig({
+      modelRoles: {
+        brain: { provider: 'openai', model: 'gpt-4o-mini' },
+        spider: { provider: 'openai', model: 'gpt-4.1-mini' },
+      },
+    })
+
+    expect((resolveModel(config, { role: 'brain' }) as any).modelId).toBe('gpt-4o-mini')
+    expect((resolveModel(config, { role: 'spider' }) as any).modelId).toBe('gpt-4.1-mini')
+  })
+
+  it('resolves verifier/reporter/council role models from config', () => {
+    const config = baseConfig({
+      modelRoles: {
+        verifier: { provider: 'openai', model: 'gpt-4o-mini' },
+        reporter: { provider: 'openai', model: 'gpt-4o' },
+        council: { provider: 'openai', model: 'gpt-4.1' },
+      },
+    })
+
+    expect((resolveModel(config, { role: 'verifier' }) as any).modelId).toBe('gpt-4o-mini')
+    expect((resolveModel(config, { role: 'reporter' }) as any).modelId).toBe('gpt-4o')
+    expect((resolveModel(config, { role: 'council' }) as any).modelId).toBe('gpt-4.1')
+  })
+
   it('falls back to default when tier not configured', () => {
     const config = baseConfig()
     const model = resolveModel(config, 'fast')
@@ -566,9 +627,9 @@ describe('spider config', () => {
       provider: 'groq',
       model: 'llama3-8b-8192',
       creds: { groq: { apiKey: 'gsk_xxx' } },
-      spider: { enabled: true, maxSteps: 10, maxDurationMs: 60000 },
+      spider: { enabled: true, maxSteps: 10, maxPages: 25, maxDepth: 3, maxDurationMs: 60000, authAware: true, boundaryMode: 'claim-based' },
     })
-    expect(config.spider).toEqual({ enabled: true, maxSteps: 10, maxDurationMs: 60000 })
+    expect(config.spider).toEqual({ enabled: true, maxSteps: 10, maxPages: 25, maxDepth: 3, maxDurationMs: 60000, authAware: true, boundaryMode: 'claim-based' })
   })
 
   it('rejects spider.enabled with non-boolean', () => {
@@ -596,5 +657,19 @@ describe('spider config', () => {
       creds: { groq: { apiKey: 'gsk_xxx' } },
       spider: { maxDurationMs: -1 },
     })).toThrow('spider.maxDurationMs must be a positive number')
+  })
+
+  it('accepts browser provider/session scope and external tool opt-in', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'gsk_xxx' } },
+      browser: { provider: 'stagehand', sessionScope: 'workflow' },
+      externalTools: { enabled: true, tools: { nmap: true, sqlmap: false } },
+    })
+
+    expect(config.browser.provider).toBe('stagehand')
+    expect(config.browser.sessionScope).toBe('workflow')
+    expect(config.externalTools).toEqual({ enabled: true, tools: { nmap: true, sqlmap: false } })
   })
 })

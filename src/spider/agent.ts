@@ -68,7 +68,7 @@ export function createSpiderAgent(
   const agent = createAgent(config, {
     browser,
     memory: memory as any,
-    tier: 'fast',
+    role: 'spider',
     tools: spiderTools as any,
   })
 

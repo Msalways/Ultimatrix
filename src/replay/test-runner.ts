@@ -8,11 +8,12 @@ const execAsync = promisify(exec)
 export interface TestResult {
   testFile: string
   testName: string
-  status: 'passed' | 'failed' | 'skipped' | 'error'
+  status: 'passed' | 'failed' | 'skipped' | 'error' | 'not-run'
   duration: number
   error?: string
   stdout?: string
   stderr?: string
+  executed?: boolean
 }
 
 export interface RunResults {
@@ -56,7 +57,7 @@ export class TestRunner {
       return {
         testFile,
         testName: parsed.name || testFile,
-        status: parsed.status || 'passed',
+        status: parsed.status || 'not-run',
         duration,
         stdout,
         stderr,

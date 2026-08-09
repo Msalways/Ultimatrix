@@ -126,7 +126,7 @@ describe('solve', () => {
     expect(result.steps).toBeGreaterThanOrEqual(0)
   })
 
-  it('returns frontier_exhausted when no findings', async () => {
+  it('returns response_complete when the model answers without running tools', async () => {
     const agent = createMockAgent([
       'No progress possible. All paths blocked.',
     ])
@@ -136,7 +136,8 @@ describe('solve', () => {
       config: { maxToolCalls: 5, staleThreshold: 2 },
     })
     expect(result.completed).toBe(false)
-    expect(result.reason).toBe('frontier_exhausted')
+    expect(result.reason).toBe('response_complete')
+    expect(result.newFindings).toBe(0)
   })
 
   it('returns budget_reached when max tool calls exceeded', async () => {
@@ -246,7 +247,7 @@ describe('solve', () => {
     expect(result.reason).toBe('stale')
   })
 
-  it('emits reasoning-delta as phase:reason events', async () => {
+  it('content does not leak through onPhase events (solver stream only)', async () => {
     const agent = createReasoningMockAgent(
       ['I found SQL injection in /api/users. Evidence: error-based response.'],
       ['| Endpoint | Type |']
@@ -257,9 +258,17 @@ describe('solve', () => {
       goal: 'Find SQL injection',
       onPhase: (event) => events.push(event),
     })
+    // Content (reasoning-delta, text-delta) should NOT leak through the phase
+    // channel — it flows exclusively through the solver stream (emitMessage).
     const reasonEvents = events.filter(e => e.phase === 'reason')
-    expect(reasonEvents.length).toBeGreaterThan(0)
-    expect(reasonEvents.some(e => e.text?.includes('SQL injection'))).toBe(true)
+    const hasContentText = reasonEvents.some(e => e.text?.includes('SQL injection'))
+    expect(hasContentText).toBe(false)
+    // But the result itself should contain the answer (canonical or appendDelta fallback)
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find SQL injection',
+    })
+    expect(result.text).toContain('| Endpoint | Type |')
   })
 
   it('does not persist reasoning prose into result.text (prevents next-turn echo, A12)', async () => {
@@ -288,24 +297,25 @@ describe('solve', () => {
     expect(result.text).toContain('SQL injection')
   })
 
-  it('shows text-delta answer even when reasoning chunks present (no suppression)', async () => {
+  it('answer and reasoning flow through solver stream, not phase channel', async () => {
     const agent = createReasoningMockAgent(
       ['Analysis: 8 endpoints found, SQL injection confirmed.'],
       ['| # | Endpoint | Type | Severity |']
     )
     const events: any[] = []
-    await solve(agent as any, {
+    const result = await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'Find SQL injection',
       onPhase: (event) => events.push(event),
     })
+    // Content should NOT appear in phase events (emit removed for content)
     const reasonEvents = events.filter(e => e.phase === 'reason')
-    // The deliverable (table) arrives via text-delta and is shown as the answer.
-    const hasAnswerTable = reasonEvents.some(e => !e.reasoning && e.text?.includes('| # |'))
-    // The reasoning prose is shown as a distinct reasoning event.
-    const hasReasoningAnalysis = reasonEvents.some(e => e.reasoning && e.text?.includes('Analysis'))
-    expect(hasAnswerTable).toBe(true)
-    expect(hasReasoningAnalysis).toBe(true)
+    const hasAnswerInPhase = reasonEvents.some(e => !e.reasoning && e.text?.includes('| # |'))
+    const hasReasoningInPhase = reasonEvents.some(e => e.reasoning && e.text?.includes('Analysis'))
+    expect(hasAnswerInPhase).toBe(false)
+    expect(hasReasoningInPhase).toBe(false)
+    // Answer should be in result.text (canonical stream.text resolution)
+    expect(result.text).toContain('| # | Endpoint | Type | Severity |')
   })
 
   it('invokes exploitation loop after a finding lands (multi-model engine)', async () => {
@@ -509,5 +519,78 @@ describe('solve', () => {
     })
     const done = messages.find(m => m.kind === 'done')
     expect(done.answer.content).toBe('Hello world, this is distinct.')
+  })
+
+  it('forwards cancellation to the model stream', async () => {
+    const controller = new AbortController()
+    const agent = createMockAgent(['ok'])
+
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Test cancellation',
+      signal: controller.signal,
+    })
+
+    const streamSignal = agent.stream.mock.calls[0][1].abortSignal as AbortSignal
+    expect(streamSignal.aborted).toBe(false)
+
+    controller.abort()
+    expect(streamSignal.aborted).toBe(true)
+  })
+
+  it('emits failed tool results instead of leaving streamed tools running', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'tool-call', payload: { toolName: 'httpRequest', args: { url: 'https://example.com' } } }
+          yield { type: 'tool-error', payload: { toolName: 'httpRequest', error: new Error('connection reset') } }
+        })(),
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+      }),
+    }
+    const messages: any[] = []
+
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Test error streaming',
+      onMessage: (message) => messages.push(message),
+    })
+
+    expect(messages).toContainEqual({
+      kind: 'tool-result',
+      name: 'httpRequest',
+      ok: false,
+      result: 'connection reset',
+    })
+  })
+
+  it('preserves typed tool failures in the stream', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'tool-result', payload: { toolName: 'httpRequest', result: { ok: false, error: 'HTTP 500' } } }
+        })(),
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+      }),
+    }
+    const messages: any[] = []
+
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Test typed failure streaming',
+      onMessage: (message) => messages.push(message),
+    })
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      kind: 'tool-result',
+      name: 'httpRequest',
+      ok: false,
+    }))
   })
 })

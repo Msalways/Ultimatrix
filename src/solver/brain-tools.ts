@@ -17,6 +17,7 @@ import { createTool } from '@mastra/core/tools'
 import { TokenLimiterProcessor } from '@mastra/core/processors'
 import { z } from 'zod'
 import { resolveModel } from '../models/factory'
+import { resolveModelRef } from '../models/routing'
 import { ContextWindowRegistry } from '../models/context-window-registry'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { getBrainInstructions } from './brain-instructions'
@@ -249,7 +250,8 @@ export function createSolverBrain(
 
   // TokenLimiter: intra-turn pruning — limit = 70% of context window
   const registry = new ContextWindowRegistry(config)
-  const contextWindow = registry.getContextWindow(config.model ?? '') || 128_000
+  const brainModel = resolveModelRef(config, { role: 'brain' })
+  const contextWindow = registry.getContextWindow(brainModel.modelId) || registry.getContextWindow(brainModel.model) || 128_000
   const tokenLimit = Math.floor(contextWindow * 0.7)
   const tokenLimiter = new TokenLimiterProcessor({
     limit: tokenLimit,
@@ -258,11 +260,15 @@ export function createSolverBrain(
 
   const agentConfig: any = {
     name: 'ultimatrix-solver-brain',
-    model: resolveModel(config),
+    model: resolveModel(config, { role: 'brain' }),
     target: config.target,
     tools: allTools,
     instructions: getBrainInstructions(config, options.extraContext),
     inputProcessors: [tokenLimiter],
+  }
+
+  if (brainModel.maxOutputTokens) {
+    agentConfig.defaultOptions = { modelSettings: { maxTokens: brainModel.maxOutputTokens } }
   }
 
   if (options.memory) agentConfig.memory = options.memory

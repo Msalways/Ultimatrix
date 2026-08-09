@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useResourceStore } from './resource-store'
 
 type UltimatrixConfig = Record<string, any>
 
@@ -46,12 +47,21 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   needsRestart: false,
 
   load: async () => {
+    useResourceStore.getState().mark('config', 'loading')
     try {
-      const res = await fetch('/api/config')
+      const res = await fetch('/api/config', { cache: 'no-store' })
       const data = await res.json()
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || data.errors?.join('\n') || 'Failed to load configuration')
+      }
       set({ config: data, original: JSON.parse(JSON.stringify(data)), dirty: false, error: null, needsRestart: false })
+      useResourceStore.getState().mark('config', 'ready')
     } catch (err) {
-      set({ error: String(err) })
+      set({
+        config: { provider: '', model: '', creds: {} },
+        error: String(err),
+      })
+      useResourceStore.getState().mark('config', 'error', String(err))
     }
   },
 

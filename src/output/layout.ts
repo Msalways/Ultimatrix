@@ -90,6 +90,8 @@ export class ChatStream {
   private paintedAnswerLen = 0 // chars of model.answer already written to the live region
   private answerCapped = false
   private reasoningExpanded = false
+  private finalized = false
+  private finalizedReasoningShown = false
 
   constructor(opts: ChatOptions = {}) {
     this.opts = opts
@@ -155,6 +157,18 @@ export class ChatStream {
 
   /** Toggle the collapsed reasoning block open/closed (Ctrl-R / /r). */
   toggleReasoning(model?: RenderModel): void {
+    if (this.finalized && model?.reasoning.trim()) {
+      if (this.finalizedReasoningShown) {
+        this.write(`${this.c(ESC.dim)}reasoning already shown${this.c(ESC.reset)}\n`)
+        return
+      }
+      const body = model.reasoning.trim().split('\n')
+        .map((line) => `${this.c(ESC.cyan)}${line || ' '}${this.c(ESC.reset)}`)
+        .join('\n')
+      this.write(body + '\n')
+      this.finalizedReasoningShown = true
+      return
+    }
     this.reasoningExpanded = !this.reasoningExpanded
     if (model && this.begun) this.final(model)
   }
@@ -207,6 +221,7 @@ export class ChatStream {
   /** Finalize: collapse thinking into a cyan block, render clean answer, footer. */
   final(model: RenderModel): void {
     if (!this.begun) return
+    this.finalized = true
     // Erase the live thinking region so the collapsed block replaces it cleanly.
     if (this.liveThinkingRows > 0 && this.tty) {
       this.write(ESC.up(this.liveThinkingRows) + ESC.clearDown)

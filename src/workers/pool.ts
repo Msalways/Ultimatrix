@@ -290,6 +290,7 @@ export class WorkerPool {
         task: slice.task,
         tier: tier as WorkerConfig['tier'],
         modelId,
+        complexity: slice.complexity,
         context: slice.context,
         tokenBudget: slice.tokenBudget,
         tenant: slice.tenant ?? this.tenant ?? undefined,

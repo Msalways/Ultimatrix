@@ -10,7 +10,6 @@ export function ToolCallCard({ message }: { message: ToolCallMessage }) {
   const [elapsed, setElapsed] = useState<number>(0)
   const startRef = useRef<number>(message.timestamp)
 
-  // UX1: Live ticking elapsed time while running
   useEffect(() => {
     if (message.status !== 'running') return
     const interval = setInterval(() => {
@@ -26,12 +25,13 @@ export function ToolCallCard({ message }: { message: ToolCallMessage }) {
       : null
 
   return (
-    <div className="ml-8 my-1">
+    <div className="ml-4 mr-4 my-1 sm:ml-8">
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className={cn(
-          'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-mono w-full text-left',
-          'hover:bg-zinc-800/50 transition-colors',
+          'flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-1.5 text-left font-mono text-xs',
+          'transition-colors hover:bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700',
           message.status === 'running' && 'text-zinc-400',
           message.status === 'done' && 'text-emerald-400/80',
           message.status === 'error' && 'text-red-400/80',
@@ -44,24 +44,21 @@ export function ToolCallCard({ message }: { message: ToolCallMessage }) {
         {message.status === 'running' && <Loader2 size={12} className="animate-spin" />}
         {message.status === 'done' && <Check size={12} />}
         {message.status === 'error' && <X size={12} />}
-        <span className="text-zinc-500">→</span>
-        <span>{message.name}</span>
+        <span className="min-w-0 truncate text-zinc-300">{message.name}</span>
         {message.args && Object.keys(message.args).length > 0 && (
-          <span className="text-zinc-600 truncate max-w-[300px]">
+          <span className="hidden max-w-[300px] truncate text-zinc-600 md:inline">
             {Object.entries(message.args).slice(0, 2).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 30) : '...'}`).join(' ')}
           </span>
         )}
-        {/* UX2: Worker attribution */}
         {message.workerName && (
-          <span className="text-zinc-600 text-[10px]">({message.workerName})</span>
+          <span className="hidden rounded border border-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500 lg:inline">{message.workerName}</span>
         )}
-        {/* UX1: Live elapsed time */}
         {displayDuration && (
-          <span className="text-zinc-600 ml-auto">{displayDuration}</span>
+          <span className="ml-auto flex-shrink-0 text-zinc-600">{displayDuration}</span>
         )}
       </button>
       {expanded && message.result && (
-        <div className="ml-6 mt-1 p-2 rounded bg-zinc-900 border border-zinc-800 text-xs text-zinc-400 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+        <div className="ml-6 mt-1 max-h-48 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900 p-2 font-mono text-xs whitespace-pre-wrap text-zinc-400">
           {message.result.slice(0, 2000)}
         </div>
       )}

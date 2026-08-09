@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { validateConfig } from '../../src/config/schema'
+import { validateConfig } from '../../src/config'
+
+const base = {
+  provider: 'groq',
+  model: 'test-model',
+  creds: { groq: { apiKey: 'test-key' } },
+}
 
 describe('Config Schema', () => {
   it('should validate valid config', () => {
     const config = validateConfig({
+      ...base,
       target: 'https://api.example.com',
     })
     expect(config.target).toBe('https://api.example.com')
@@ -11,6 +18,7 @@ describe('Config Schema', () => {
 
   it('should validate config with credentials', () => {
     const config = validateConfig({
+      ...base,
       target: 'https://api.example.com',
       credentials: {
         admin: { email: 'admin@test.com', password: 'pass123' },
@@ -21,21 +29,23 @@ describe('Config Schema', () => {
 
   it('should validate config with browser options', () => {
     const config = validateConfig({
+      ...base,
       target: 'https://api.example.com',
-      browserOptions: {
+      browser: {
         headless: true,
         viewport: { width: 1280, height: 720 },
       },
     })
-    expect(config.browserOptions?.headless).toBe(true)
+    expect(config.browser.headless).toBe(true)
   })
 
   it('should reject invalid URL', () => {
-    expect(() => validateConfig({ target: 'not-a-url' })).toThrow()
+    expect(() => validateConfig({ ...base, target: 'not-a-url' })).toThrow()
   })
 
   it('should reject invalid email', () => {
     expect(() => validateConfig({
+      ...base,
       target: 'https://api.example.com',
       credentials: {
         admin: { email: 'not-an-email', password: 'pass' },
@@ -45,9 +55,10 @@ describe('Config Schema', () => {
 
   it('should use defaults for optional fields', () => {
     const config = validateConfig({
+      ...base,
       target: 'https://api.example.com',
     })
-    expect(config.provider).toBeUndefined()
-    expect(config.browserOptions).toBeUndefined()
+    expect(config.provider).toBe('groq')
+    expect(config.browser.headless).toBe(true)
   })
 })

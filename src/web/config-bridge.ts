@@ -1,7 +1,7 @@
-import { loadConfig, saveProvidersConfig, saveProjectConfig, validateConfig, resetConfigCache, ConfigError, type UltimatrixConfig, type ProviderCredentials } from '../config'
+import { loadConfig, saveProjectConfig, saveProvidersConfig, validateConfig, resetConfigCache, ConfigError, type UltimatrixConfig, type ProviderCredentials } from '../config'
 
 export async function getWebConfig(): Promise<UltimatrixConfig> {
-  return loadConfig()
+  return loadConfig({ requireCredentials: false })
 }
 
 /**
@@ -27,10 +27,10 @@ function deepMerge<T extends Record<string, unknown>>(target: T, source: Partial
 
 /**
  * Detect masked credential values (****xxxx pattern).
- * Masked values must NOT overwrite real keys in providers.yaml.
+ * Masked values must not overwrite real keys in providers.yaml.
  */
 function isMasked(value: string | undefined): boolean {
-  return typeof value === 'string' && /^\*{4}/.test(value)
+  return typeof value === 'string' && value.includes('****')
 }
 
 /**
@@ -41,47 +41,61 @@ function stripMaskedCredentials(
   incoming: ProviderCredentials,
   current: ProviderCredentials,
 ): ProviderCredentials {
-  const result: ProviderCredentials = { ...incoming }
+  const result: ProviderCredentials = Object.fromEntries(
+    Object.entries(incoming).map(([provider, entry]) => [
+      provider,
+      entry && typeof entry === 'object' ? { ...entry } : entry,
+    ]),
+  ) as ProviderCredentials
   for (const [provider, entry] of Object.entries(result)) {
-    if (!entry) continue
+    if (!entry || typeof entry !== 'object') continue
     const currentEntry = current[provider]
-    if (!currentEntry) continue
+    if (!currentEntry || typeof currentEntry !== 'object') continue
 
-    if ('apiKey' in entry && 'apiKey' in currentEntry) {
-      if (isMasked(entry.apiKey) && !isMasked(currentEntry.apiKey)) {
-        ;(entry as any).apiKey = currentEntry.apiKey
-      }
-    }
-    // Azure
-    if ('apiKey' in entry && provider === 'azure' && currentEntry && 'apiKey' in currentEntry) {
-      if (isMasked((entry as any).apiKey) && !isMasked((currentEntry as any).apiKey)) {
-        ;(entry as any).apiKey = (currentEntry as any).apiKey
-      }
-    }
-    // Bedrock
-    if (provider === 'bedrock' && entry && currentEntry) {
-      if ('secretAccessKey' in entry && 'secretAccessKey' in currentEntry) {
-        if (isMasked((entry as any).secretAccessKey) && !isMasked((currentEntry as any).secretAccessKey)) {
-          ;(entry as any).secretAccessKey = (currentEntry as any).secretAccessKey
-        }
-      }
-      if ((entry as any).sessionToken && isMasked((entry as any).sessionToken) && (currentEntry as any).sessionToken && !isMasked((currentEntry as any).sessionToken)) {
-        ;(entry as any).sessionToken = (currentEntry as any).sessionToken
-      }
-      if ((entry as any).apiKey && isMasked((entry as any).apiKey) && (currentEntry as any).apiKey && !isMasked((currentEntry as any).apiKey)) {
-        ;(entry as any).apiKey = (currentEntry as any).apiKey
+    for (const [field, value] of Object.entries(entry)) {
+      const currentValue = (currentEntry as unknown as Record<string, unknown>)[field]
+      if (typeof value === 'string' && isMasked(value) && typeof currentValue === 'string' && !isMasked(currentValue)) {
+        ;(entry as unknown as Record<string, unknown>)[field] = currentValue
       }
     }
   }
   return result
 }
 
+function restoreMaskedTestCredentials(
+  incoming: Record<string, { email: string; password: string }>,
+  current: Record<string, { email: string; password: string }> = {},
+): Record<string, { email: string; password: string }> {
+  return Object.fromEntries(Object.entries(incoming).map(([role, entry]) => {
+    const password = isMasked(entry.password) ? current[role]?.password ?? entry.password : entry.password
+    return [role, { ...entry, password }]
+  }))
+}
+
 export async function saveWebConfig(updates: Partial<UltimatrixConfig>): Promise<{ ok: boolean; errors?: string[] }> {
   try {
-    const current = await loadConfig()
+    const current = await loadConfig({ requireCredentials: false })
 
-    // Deep merge config (preserves nested objects)
-    const merged = deepMerge(current as unknown as Record<string, unknown>, updates as unknown as Record<string, unknown>)
+    const safeUpdates = { ...updates }
+    if (updates.creds) {
+      safeUpdates.creds = stripMaskedCredentials(updates.creds, current.creds)
+    }
+    if (updates.providerKeys) {
+      safeUpdates.providerKeys = stripMaskedCredentials(
+        updates.providerKeys,
+        current.providerKeys ?? {},
+      ) as Record<string, { apiKey: string; baseUrl?: string }>
+    }
+    if (updates.credentials) {
+      safeUpdates.credentials = restoreMaskedTestCredentials(updates.credentials, current.credentials)
+    }
+
+    // Deep merge config (preserves nested objects). Credentials are a complete
+    // replacement so deleting a provider cannot be undone by the merge.
+    const merged = deepMerge(current as unknown as Record<string, unknown>, safeUpdates as unknown as Record<string, unknown>)
+    if (safeUpdates.creds) merged.creds = safeUpdates.creds
+    if (safeUpdates.providerKeys) merged.providerKeys = safeUpdates.providerKeys
+    if (safeUpdates.credentials) merged.credentials = safeUpdates.credentials
 
     // Validate merged config — throws ConfigError on failure
     try {
@@ -93,13 +107,7 @@ export async function saveWebConfig(updates: Partial<UltimatrixConfig>): Promise
       return { ok: false, errors: [String(err)] }
     }
 
-    // Save credentials to providers.yaml (strip masked values first)
-    if (updates.creds) {
-      const cleanCreds = stripMaskedCredentials(updates.creds, current.creds)
-      await saveProvidersConfig(cleanCreds)
-    }
-
-    // Save full project config to ultimatrix.yaml
+    saveProvidersConfig((merged as unknown as UltimatrixConfig).creds)
     await saveProjectConfig(merged as unknown as UltimatrixConfig)
     resetConfigCache()
     return { ok: true }
@@ -127,6 +135,26 @@ export function maskCredentials(config: UltimatrixConfig): Record<string, unknow
       }
     }
     masked.creds = creds
+  }
+  if (masked.providerKeys && typeof masked.providerKeys === 'object') {
+    const providerKeys = { ...(masked.providerKeys as Record<string, Record<string, unknown>>) }
+    for (const [provider, entry] of Object.entries(providerKeys)) {
+      if (!entry || typeof entry !== 'object') continue
+      const copy = { ...entry }
+      if (typeof copy.apiKey === 'string') {
+        const value = copy.apiKey
+        copy.apiKey = value.length > 8 ? value.slice(0, 4) + '****' + value.slice(-4) : '****'
+      }
+      providerKeys[provider] = copy
+    }
+    masked.providerKeys = providerKeys
+  }
+  if (masked.credentials && typeof masked.credentials === 'object') {
+    const credentials = { ...(masked.credentials as Record<string, { email: string; password: string }>) }
+    for (const [role, entry] of Object.entries(credentials)) {
+      credentials[role] = { ...entry, password: '****' }
+    }
+    masked.credentials = credentials
   }
   return masked
 }

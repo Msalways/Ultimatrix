@@ -159,10 +159,11 @@ function orchestrationTools(
   skillRegistry: SkillRegistry,
   workerPool: WorkerPool,
   p: string,
+  modelSelector?: ModelSelector,
 ): Record<string, any> {
   return {
-    spawnWorker: s(createSpawnWorkerTool(config, skillRegistry, workerPool), p),
-    spawnSwarm: s(createSpawnSwarmTool(config, skillRegistry, workerPool), p),
+    spawnWorker: s(createSpawnWorkerTool(config, skillRegistry, workerPool, modelSelector), p),
+    spawnSwarm: s(createSpawnSwarmTool(config, skillRegistry, workerPool, modelSelector), p),
     executeDirect: s(createExecuteDirectTool(config, skillRegistry), p),
   }
 }
@@ -206,18 +207,16 @@ function campaignTools(config: UltimatrixConfig, p: string): Record<string, any>
   }
 }
 
-function externalTools(p: string): Record<string, any> {
-  return {
-    nuclei: s(scannerTools.nuclei, p),
-    sqlmap: s(scannerTools.sqlmap, p),
-    ffuf: s(scannerTools.ffuf, p),
-    nmap: s(scannerTools.nmap, p),
-    jwttool: s(scannerTools.jwttool, p),
-    arjun: s(scannerTools.arjun, p),
-    corsy: s(scannerTools.corsy, p),
-    subfinder: s(scannerTools.subfinder, p),
-    gitleaks: s(scannerTools.gitleaks, p),
-  }
+function externalTools(config: UltimatrixConfig, p: string): Record<string, any> {
+  if (config.externalTools?.enabled !== true) return {}
+  const enabled = config.externalTools.tools ?? {}
+  const tools = Object.keys(enabled).filter((id) => enabled[id as keyof typeof enabled])
+  if (tools.length === 0) return {}
+  return Object.fromEntries(
+    tools
+      .filter((id) => id in scannerTools)
+      .map((id) => [id, s(scannerTools[id as keyof typeof scannerTools], p)]),
+  )
 }
 
 function modelSelectionTools(
@@ -275,11 +274,11 @@ export function buildToolPack(
     ...skillTools(p),
     ...sessionTools(p),
     ...miscTools(p),
-    ...externalTools(p),
+    ...externalTools(config, p),
   }
 
   if (includeResearch) Object.assign(tools, researchTools(p))
-  if (includeOrchestration) Object.assign(tools, orchestrationTools(config, skillRegistry, workerPool, p))
+  if (includeOrchestration) Object.assign(tools, orchestrationTools(config, skillRegistry, workerPool, p, deps.modelSelector))
   if (includePrimitives) Object.assign(tools, primitiveTools(p))
   if (includePrimitives) Object.assign(tools, campaignTools(config, p))
 

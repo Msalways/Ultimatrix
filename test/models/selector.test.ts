@@ -206,4 +206,21 @@ describe('ModelSelector', () => {
     const critical = selector.selectForTask(makeTask({ complexity: 'critical' }), 'worker')
     expect(critical.modelId).toBe('nvidia/nemotron-3-ultra-550b-a55b')
   })
+
+  it('uses explicit worker complexity role assignment before scoring', () => {
+    const config = makeConfig({
+      modelRoles: {
+        worker: {
+          critical: { provider: 'openai', model: 'gpt-4o', maxOutputTokens: 12000 },
+        },
+      },
+    })
+    const selector = new ModelSelector(config.modelCapabilities!, config.budgetPolicy!, config)
+    const selection = selector.selectForTask(makeTask({ complexity: 'critical' }), 'worker')
+
+    expect(selection.provider).toBe('openai')
+    expect(selection.modelId).toBe('openai/gpt-4o')
+    expect(selection.reasoning).toContain('configured modelRoles.worker.critical')
+    expect(selection.reasoning).toContain('max output')
+  })
 })
