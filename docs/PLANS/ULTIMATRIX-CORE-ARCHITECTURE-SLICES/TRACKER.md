@@ -88,7 +88,7 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Ledger writes: model selection (selector), worker spawn (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classification (EngagementBoundary), finding creation (writeFinding)
 - [x] Provenance refs on spider discoveries (`provenanceId` on endpoint/form/page records + events) + evidence items (`EvidenceItem.provenanceIds`)
 - [x] Tests (13): routing-reason event seam, model-selection persistence (incl. fallback), spider discovery provenance, evidence provenance, ledger redaction (secret-shaped URLs/values), query helpers — full suite 1871/1871, tsc green, clean build
-- [ ] Commit
+- [x] Commit — `0e609a5`
 
 ### Phase 4 — Slice 03 Engagement Completion
 - [ ] `AuthorizationCategory` + `allowedCategories` gating
