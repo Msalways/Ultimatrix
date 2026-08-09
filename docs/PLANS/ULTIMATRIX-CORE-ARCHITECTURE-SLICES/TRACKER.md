@@ -39,7 +39,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 
 | # | Slice | Status | Notes |
 |---|-------|--------|-------|
-| 01 | Spider Runtime Foundation | 🟡 (was 90%) | `src/spider/runtime.ts` + `test/spider/` untracked. CLI+web wired. Stale-stop, 9 events, classification, snapshot resume. Hardening pending |
+| 01 | Spider Runtime Foundation | 🔶 (committed) | `SpiderRuntime` committed (`6f81103`). Classification deterministic (explicit allowAny), stale-stop, 9 events, snapshot resume. Frontier is discovery/limit state (agent-driven crawl); `workflows`/`assets` reserved for slice 06 |
 | 02 | Workflow State & Persistence | ⬜ | No `WorkflowState`; state split across session/web/browser/evidence globals |
 | 03 | Engagement Boundary & Policy | 🔶 | `EngagementBoundary` class + allowed/proposed/denied + `scope_proposed` (rides untracked runtime). Missing: `AuthorizationCategory`, approval flow |
 | 04 | Secret Vault & Artifacts | 🔶 | `SecretVault` (redactSecret/redactHarJson) untracked; HAR redaction wired. Missing: storage/report/screenshot/graph redaction, `ArtifactRecord` |
@@ -57,17 +57,19 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when done.
 
 ### Phase 0 — Lock In The Foundation
-- [ ] Fix 3 tsc blockers: `dialog-inject.ts` TS2698, `spawn-worker.ts` + `spawn-swarm.ts` TS2353
-- [ ] `tsc --noEmit` green
-- [ ] Targeted tests green (spider, secret-vault, config, har-bridge, selector)
-- [ ] Commit untracked foundation: `src/spider/`, `src/security/`, `src/models/routing.ts`, `src/web/{auth,persisted-graph,session-registry}.ts`, `docs/PLANS/` (EXCLUDE `ultimatrix*.yaml` creds)
-- [ ] INDEX.md blockers 1+2 resolved; blocker 4 (Node path) dropped as machine artifact
+- [x] Fix 3 tsc blockers: `dialog-inject.ts` TS2698, `spawn-worker.ts` + `spawn-swarm.ts` TS2353
+- [x] `tsc --noEmit` green
+- [x] Targeted tests green (spider, secret-vault, config, har-bridge, selector)
+- [x] Commit untracked foundation: `src/spider/`, `src/security/`, `src/models/routing.ts`, `src/web/{auth,persisted-graph,session-registry}.ts`, `docs/PLANS/` (EXCLUDE `ultimatrix*.yaml` creds) — commit `6f81103`
+- [x] INDEX.md blockers 1+2 resolved; blocker 4 (Node path) dropped as machine artifact
 
 ### Phase 1 — Slice 01 Hardening
-- [ ] Classification decoupled from global `_allowAny` (explicit boundary input, no global read)
-- [ ] CDN test green (`test/spider/runtime.test.ts:26` → `proposed`)
-- [ ] `nextFrontierItem`: wire into run loop OR remove dead path
-- [ ] Dead `workflows`/`assets` state: populate or drop
+- [x] Classification decoupled from global `_allowAny` (explicit boundary input, no global read)
+  - `isUrlInScope(url, config, { allowAny })` — explicit override wins; `undefined` inherits ambient flag
+  - `EngagementBoundary(target, config, allowAny?)` + threading through `SpiderRuntime`/`runSpiderRuntime` + CLI/web callers (`isAllowAny()`)
+- [x] CDN test green (`test/spider/runtime.test.ts:26` → `proposed`) — 1835/1835 full suite
+- [x] `nextFrontierItem`: REMOVED (dead path — crawl is agent-driven, frontier is discovery/limit state, never a nav pump)
+- [x] Dead `workflows`/`assets` state: KEPT as reserved slice-06 contract fields, documented inline; population deferred to slice 06
 - [ ] Commit
 
 ### Phase 2 — Slice 04 Redaction (highest risk)
@@ -142,10 +144,10 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 
 | # | Blocker | Status |
 |---|---------|--------|
-| 1 | `dialog-inject.ts:81` TS2698 non-object spread | open |
-| 2 | `routingReason` TS2353 on worker spawn events (×2) | open |
-| 3 | CDN URL classified `allowed` not `proposed` (`test/spider/runtime.test.ts:26`) | open — root cause: `test/setup.ts:8` `setAllowAny(true)` short-circuits `scope-guard.ts:31` |
-| 4 | Node path `C:\nvm4w\nodejs\node.exe` unsandboxed | REFUTED — machine artifact, doc-only. Drop from INDEX.md |
+| 1 | `dialog-inject.ts:81` TS2698 non-object spread | ✅ RESOLVED (Phase 0, commit `6f81103`) |
+| 2 | `routingReason` TS2353 on worker spawn events (×2) | ✅ RESOLVED (Phase 0, commit `6f81103`) — `routingReason?: string` added to `emitWorkerSpawned` opts + `EventMap['worker:spawned']` |
+| 3 | CDN URL classified `allowed` not `proposed` (`test/spider/runtime.test.ts:26`) | ✅ RESOLVED (Phase 1) — root cause was `test/setup.ts:8` `setAllowAny(true)` short-circuiting `scope-guard.ts:31`; classification now takes explicit `allowAny` input |
+| 4 | Node path `C:\nvm4w\nodejs\node.exe` unsandboxed | REFUTED — machine artifact, doc-only. Dropped from INDEX.md |
 
 ## Definition of Done (INDEX.md whole-plan)
 

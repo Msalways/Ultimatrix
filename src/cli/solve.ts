@@ -23,7 +23,7 @@ import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { startHarCapture } from '../session/har-capture'
 import { generateCaseFile } from '../report/case-file'
 import { logSolveSummary } from '../utils/solver-summary'
-import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { redactHarJson } from '../security/secret-vault'
 
 export async function solveCommand(target: string, _outputDir: string): Promise<void> {
@@ -95,6 +95,7 @@ export async function solveCommand(target: string, _outputDir: string): Promise<
       browser,
       memory,
       graphStore: workspace.getGraphStore() as any,
+      allowAny: isAllowAny(),
       onText: (text) => process.stdout.write(text),
     })
     process.stdout.write('\n')

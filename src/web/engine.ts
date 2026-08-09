@@ -29,7 +29,7 @@ import { getOrCreateBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalObserver } from '../capture/human-observer'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
-import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitBrowserHumanAction } from '../events/emitter'
 import { runSpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
@@ -221,6 +221,7 @@ export class WebEngine {
       graphStore: this.graphStore as any,
       workflowId: this.id,
       initialState: this._spiderState,
+      allowAny: isAllowAny(),
       onMessage,
       onPhase,
       signal: this._abortController?.signal,

@@ -26,9 +26,9 @@ The intended architecture keeps the existing dual engine shape but makes `multi-
 
 | Slice | Status | Notes |
 |---|---|---|
-| 01. Spider Runtime Foundation | Partially complete | `SpiderRuntime` exists, but stale handling, resume, and URL classification need hardening. |
+| 01. Spider Runtime Foundation | Implemented + committed | `SpiderRuntime` shared by CLI+web; stale stop, scope classification (explicit allow-any input), snapshot resume, 9 typed events. Frontier is discovery/limit state; `workflows`/`assets` reserved for slice 06. |
 | 02. Workflow State and Persistence | Mostly pending | Runtime state is still split across target/session globals and subsystem-specific stores. |
-| 03. Engagement Boundary and Policy | Mostly pending | Scope guard exists, but claim-based boundary and proposal workflow are incomplete. |
+| 03. Engagement Boundary and Policy | Partially complete | `EngagementBoundary` class + allowed/proposed/denied + `scope_proposed` event (wired to CLI+web). AuthorizationCategory + approval workflow pending. |
 | 04. Secret Vault and Artifacts | Partially complete | Secret vault work exists, but redaction is not yet guaranteed across all persistence paths. |
 | 05. Browser Provider Abstraction | Mostly pending | Current behavior is Stagehand/Playwright-specific. |
 | 06. Identity Role Reachability | Mostly pending | Auth detection exists, but role-specific reachability is not first-class crawl output. |
@@ -68,12 +68,12 @@ Slices 03, 04, and 07 are policy/data-quality foundations. Do not build higher-l
 
 ## Current Blockers
 
-These must be resolved before claiming the architecture slice plan is verified:
+All original blockers are resolved (tracked in [TRACKER.md](TRACKER.md)):
 
-- TypeScript error in `src/browser/dialog-inject.ts` around spreading a non-object type.
-- TypeScript event typing errors for `routingReason` in worker spawn events.
-- Spider runtime test failure where an external CDN URL is classified as `allowed` instead of `proposed`.
-- The configured Node path works only when run unsandboxed: `C:\nvm4w\nodejs\node.exe`.
+- ~~TypeScript error in `src/browser/dialog-inject.ts` around spreading a non-object type.~~ RESOLVED
+- ~~TypeScript event typing errors for `routingReason` in worker spawn events.~~ RESOLVED
+- ~~Spider runtime test failure where an external CDN URL is classified as `allowed` instead of `proposed`.~~ RESOLVED — classification now takes explicit `allowAny` input and is independent of ambient global scope state.
+- ~~The configured Node path works only when run unsandboxed: `C:\nvm4w\nodejs\node.exe`.~~ REFUTED — machine artifact, not a repo-level issue.
 
 ---
 
@@ -115,11 +115,11 @@ The architecture plan is done when:
 Targeted verification:
 
 ```powershell
-& C:\nvm4w\nodejs\node.exe .\node_modules\typescript\bin\tsc --noEmit
+node .\node_modules\typescript\bin\tsc --noEmit
 ```
 
 ```powershell
-& C:\nvm4w\nodejs\node.exe .\node_modules\vitest\vitest.mjs run test\spider\runtime.test.ts test\security\secret-vault.test.ts test\config\config.test.ts test\analysis\har-bridge.test.ts test\models\selector.test.ts
+node .\node_modules\vitest\vitest.mjs run test\spider\runtime.test.ts test\security\secret-vault.test.ts test\config\config.test.ts test\analysis\har-bridge.test.ts test\models\selector.test.ts
 ```
 
 Full verification after the slices stabilize:

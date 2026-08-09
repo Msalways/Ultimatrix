@@ -25,7 +25,7 @@ import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
-import { setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { setScopeConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
@@ -473,6 +473,7 @@ export class SessionLifecycle {
       threadId,
       resourceId,
       graphStore: workspace.getGraphStore() as any,
+      allowAny: isAllowAny(),
       onText: (text) => process.stdout.write(text),
       onEvent: (event) => {
         if (event.type === 'crawl_progress') {

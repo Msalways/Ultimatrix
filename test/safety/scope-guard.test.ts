@@ -27,6 +27,14 @@ describe('isUrlInScope', () => {
     setAllowAny(false)
   })
 
+  it('explicit allowAny override wins over the ambient global flag', () => {
+    setAllowAny(true)
+    expect(isUrlInScope('https://evil.com/payload', baseConfig, { allowAny: false }).allowed).toBe(false)
+    setAllowAny(false)
+    expect(isUrlInScope('https://evil.com/payload', baseConfig, { allowAny: true }).allowed).toBe(true)
+    expect(isUrlInScope('https://evil.com/payload', baseConfig).allowed).toBe(false)
+  })
+
   it('allows exact domain match', () => {
     const r = isUrlInScope('https://example.com/api', baseConfig)
     expect(r.allowed).toBe(true)

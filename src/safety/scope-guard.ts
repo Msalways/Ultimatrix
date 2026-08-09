@@ -26,9 +26,19 @@ export interface ScopeCheckResult {
   reason?: string
 }
 
-export function isUrlInScope(url: string, config: ScopeConfig | null = _config): ScopeCheckResult {
+export interface ScopeCheckOptions {
+  /**
+   * Explicit override of the ambient `--allow-any` flag. `true` always allows;
+   * `false` never allows; `undefined` inherits the ambient global flag.
+   * Lets callers like the spider runtime classify URLs deterministically from
+   * their own explicit input instead of mutable global state.
+   */
+  allowAny?: boolean
+}
+
+export function isUrlInScope(url: string, config: ScopeConfig | null = _config, opts: ScopeCheckOptions = {}): ScopeCheckResult {
   // Explicit opt-out overrides everything.
-  if (_allowAny) return { allowed: true }
+  if (opts.allowAny ?? _allowAny) return { allowed: true }
 
   // Scope is OPTIONAL. When no scope policy is configured (or the policy has
   // no allowedDomains), the tool is free-for-all — any URL is permitted.

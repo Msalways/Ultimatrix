@@ -20,21 +20,46 @@ function config(overrides: Partial<UltimatrixConfig> = {}): UltimatrixConfig {
 
 describe('EngagementBoundary', () => {
   it('classifies target URLs as allowed and external URLs as proposed', () => {
-    const boundary = new EngagementBoundary('https://example.com', config())
+    const boundary = new EngagementBoundary('https://example.com', config(), false)
 
     expect(boundary.classifyUrl('https://example.com/app').scope).toBe('allowed')
     expect(boundary.classifyUrl('https://cdn.example.net/app.js').scope).toBe('proposed')
   })
 
   it('denies invalid and non-http URLs', () => {
-    const boundary = new EngagementBoundary('https://example.com', config())
+    const boundary = new EngagementBoundary('https://example.com', config(), false)
 
     expect(boundary.classifyUrl('not-a-url').scope).toBe('denied')
     expect(boundary.classifyUrl('file:///etc/passwd').scope).toBe('denied')
   })
+
+  it('classifies external URLs as proposed even when the ambient global allows any', () => {
+    const boundary = new EngagementBoundary('https://example.com', config(), false)
+    expect(boundary.classifyUrl('https://cdn.example.net/app.js').scope).toBe('proposed')
+  })
+
+  it('opts the boundary in via explicit allow-any, independent of global state', () => {
+    const boundary = new EngagementBoundary('https://example.com', config(), true)
+    expect(boundary.classifyUrl('https://cdn.example.net/app.js').scope).toBe('allowed')
+  })
+
+  it('inherits the ambient global allow-any when no explicit flag is given', () => {
+    const boundary = new EngagementBoundary('https://example.com', config())
+    expect(boundary.classifyUrl('https://cdn.example.net/app.js').scope).toBe('allowed')
+  })
 })
 
 describe('SpiderRuntime', () => {
+  it('threads explicit allowAny into its boundary', () => {
+    const runtime = new SpiderRuntime({
+      workflowId: 'wf1',
+      target: 'https://example.com',
+      config: config(),
+      allowAny: false,
+    })
+    expect(runtime.boundary.classifyUrl('https://cdn.example.net/x.js').scope).toBe('proposed')
+  })
+
   it('dedupes frontier and can resume from prior state', () => {
     const runtime = new SpiderRuntime({ workflowId: 'wf1', target: 'https://example.com', config: config() })
     runtime.enqueue('https://example.com/a', 1)

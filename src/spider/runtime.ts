@@ -44,7 +44,9 @@ export interface SpiderRuntimeState {
   discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string }>
   endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string }>
   authStates: Array<{ url: string; state: string; role?: string }>
+  /** Reserved contract field (slice 06 — workflow discovery). No producer yet. */
   workflows: Array<{ name: string; entryUrl?: string; role?: string }>
+  /** Reserved contract field. No producer yet. */
   assets: Array<{ url: string; type?: string; scope: ScopeClassification }>
   stopReason?: SpiderStopReason
   startedAt: number
@@ -76,10 +78,12 @@ export interface SpiderRuntimeOptions {
   config: UltimatrixConfig
   initialState?: Partial<SpiderRuntimeState>
   onEvent?: (event: SpiderRuntimeEvent) => void
+  /** Explicit scope opt-out for this runtime. Undefined inherits the ambient global flag. */
+  allowAny?: boolean
 }
 
 export class EngagementBoundary {
-  constructor(private target: string, private config: UltimatrixConfig) {}
+  constructor(private target: string, private config: UltimatrixConfig, private allowAny?: boolean) {}
 
   classifyUrl(url: string): { scope: ScopeClassification; reason?: string } {
     let parsed: URL
@@ -94,7 +98,7 @@ export class EngagementBoundary {
     }
 
     const scopeConfig = this.config.scope ?? deriveScopeFromTarget(this.target)
-    const checked = isUrlInScope(url, scopeConfig)
+    const checked = isUrlInScope(url, scopeConfig, { allowAny: this.allowAny })
     if (checked.allowed) return { scope: 'allowed' }
     return { scope: 'proposed', reason: checked.reason }
   }
@@ -109,7 +113,7 @@ export class SpiderRuntime {
 
   constructor(private opts: SpiderRuntimeOptions) {
     const now = Date.now()
-    this.boundary = new EngagementBoundary(opts.target, opts.config)
+    this.boundary = new EngagementBoundary(opts.target, opts.config, opts.allowAny)
     this.state = {
       workflowId: opts.workflowId,
       target: opts.target,
@@ -217,19 +221,6 @@ export class SpiderRuntime {
     return undefined
   }
 
-  nextFrontierItem(): FrontierItem | undefined {
-    while (this.state.frontier.length > 0) {
-      const item = this.state.frontier.shift()!
-      if (item.scope === 'allowed') {
-        this.touch()
-        return item
-      }
-      if (item.scope === 'proposed') this.emit({ type: 'scope_proposed', url: item.url, scope: item.scope, state: this.snapshot() })
-    }
-    this.touch()
-    return undefined
-  }
-
   stop(reason: SpiderStopReason): void {
     this.state.stopReason = reason
     this.touch()
@@ -268,6 +259,8 @@ export interface SpiderRunOptions {
   onMessage?: (msg: SolverStreamMessage) => void
   onPhase?: (event: PhaseEvent) => void
   signal?: AbortSignal
+  /** Explicit scope opt-out for this run. Undefined inherits the ambient global flag. */
+  allowAny?: boolean
 }
 
 export async function runSpiderRuntime(options: SpiderRunOptions): Promise<SpiderRuntimeState> {
@@ -282,6 +275,7 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     config,
     initialState: options.initialState,
     onEvent: options.onEvent,
+    allowAny: options.allowAny,
   })
   const startedAt = Date.now()
   const deadline = startedAt + maxDurationMs
