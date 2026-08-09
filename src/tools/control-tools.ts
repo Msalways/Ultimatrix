@@ -21,6 +21,8 @@ import {
 } from '../intelligence/evidence-ledger'
 import { coreEvidenceLedger } from '../core/evidence'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { redactUrl } from '../security/secret-vault'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }>>()
 
@@ -336,6 +338,14 @@ export const writeFinding = createTool({
         { source: 'evidence', detail: `evidenceItems=${evidenceItems.length}` },
       ],
       metadata: { endpoint: args.endpoint, severity: effectiveSeverity, evidenceLevel },
+    })
+
+    // Slice 07: record the finding-creation decision, linking evidence provenance.
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'finding.create',
+      reason: `create finding ${args.type} on ${redactUrl(args.endpoint)}`,
+      routingReason: `confidence=${args.confidence} level=${evidenceLevel}`,
+      sourceRefs: [findingNode.id, ...structuredEvidenceItems.map(e => e.id), ...(exploitProofNodeId ? [exploitProofNodeId] : [])],
     })
 
     return { ok: true, value: { ...finding, exploitProofNodeId } }

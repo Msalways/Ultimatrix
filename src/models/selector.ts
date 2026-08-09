@@ -5,6 +5,7 @@ import { getGlobalQuotaTracker } from './quota-tracker'
 import { createProviderLimiter } from './limiter-factory'
 import type { UltimatrixConfig } from '../config'
 import { COMPLEXITY_TIER_MAP, resolveModelRef, type ModelRole } from './routing'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -97,12 +98,17 @@ export class ModelSelector {
   selectForTask(task: WorkerTask, agentRole: ModelRole): ModelSelection {
     const budget = this.calculateBudget(task, agentRole)
     const explicit = this.selectConfiguredRoleModel(task, agentRole, budget)
-    if (explicit) return explicit
+    if (explicit) {
+      this.recordSelection(explicit, task)
+      return explicit
+    }
 
     const candidates = this.getAvailableModels()
 
     if (candidates.length === 0) {
-      return this.fallbackSelection(task, agentRole)
+      const fallback = this.fallbackSelection(task, agentRole)
+      this.recordSelection(fallback, task)
+      return fallback
     }
 
     const scored = candidates.map(c => ({
@@ -115,13 +121,15 @@ export class ModelSelector {
     const best = scored[0]
 
     if (best.score <= 0) {
-      return this.fallbackSelection(task, agentRole)
+      const fallback = this.fallbackSelection(task, agentRole)
+      this.recordSelection(fallback, task)
+      return fallback
     }
 
     const _cap = this.capabilities[best.modelId] ?? this.capabilities[best.modelId.replace(best.provider + '/', '')]
     const estimatedTokens = COMPLEXITY_TOKEN_ESTIMATE[task.complexity] ?? COMPLEXITY_TOKEN_ESTIMATE.medium
 
-    return {
+    const selection: ModelSelection = {
       tier: best.tier,
       provider: best.provider,
       modelId: best.modelId,
@@ -129,6 +137,24 @@ export class ModelSelector {
       budget,
       estimatedTokens: estimatedTokens.input + estimatedTokens.output,
       estimatedDuration: this.estimateDuration(best.provider, estimatedTokens.input + estimatedTokens.output),
+    }
+    this.recordSelection(selection, task)
+    return selection
+  }
+
+  /** Best-effort ledger write so model-selection decisions survive the run. */
+  private recordSelection(selection: ModelSelection, task: WorkerTask): void {
+    try {
+      getGlobalDecisionLedger().recordDecision({
+        kind: 'model.selection',
+        reason: `select model for ${task.skillId} (${task.complexity} complexity)`,
+        routingReason: selection.reasoning,
+        provider: selection.provider,
+        model: selection.modelId,
+        sourceRefs: [task.skillId, `tier:${selection.tier}`],
+      })
+    } catch {
+      // Best-effort — a ledger failure must never break routing.
     }
   }
 

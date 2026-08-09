@@ -17,6 +17,7 @@
  */
 
 import { emitEvidenceRecorded } from '../events/emitter'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
 
 export type EvidenceItemType =
   | 'text'
@@ -58,6 +59,8 @@ export interface EvidenceItem {
   timestamp: number
   session?: string
   observed?: ObservedFacts
+  /** Slice 07 — provenance records describing where this evidence came from. */
+  provenanceIds?: string[]
 }
 
 /** A finding claim made by the LLM, carrying typed observed facts (not prose). */
@@ -196,6 +199,11 @@ export class EvidenceLedger {
     item: Omit<EvidenceItem, 'id' | 'timestamp'> &
       Partial<Pick<EvidenceItem, 'id' | 'timestamp'>>,
   ): EvidenceItem {
+    const provenanceId = getGlobalDecisionLedger().recordProvenance({
+      source: 'tool',
+      pageUrl: item.observed?.url,
+      actionId: item.type,
+    }).id
     const recorded: EvidenceItem = {
       id: item.id ?? `ev_${Date.now()}_${++this.seq}`,
       timestamp: item.timestamp ?? Date.now(),
@@ -204,6 +212,7 @@ export class EvidenceLedger {
       label: item.label,
       ...(item.session ? { session: item.session } : {}),
       ...(item.observed ? { observed: item.observed } : {}),
+      provenanceIds: [...(item.provenanceIds ?? []), provenanceId],
     }
     this.items.push(recorded)
     emitEvidenceRecorded(recorded.id, recorded.type)

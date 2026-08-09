@@ -18,6 +18,7 @@ import {
   emitWorkerCompleted,
   emitWorkerError,
 } from '../../events/emitter'
+import { getGlobalDecisionLedger } from '../../security/decision-ledger'
 
 export function createSpawnSwarmTool(
   config: UltimatrixConfig,
@@ -143,6 +144,16 @@ export function createSpawnSwarmTool(
           emitWorkerSpawned(worker.id, workerName, taskDef.skillId, taskDef.task, { tier: routedTier, modelId: routedModelId, routingReason: selection?.reasoning })
           emitWorkerStarted(worker.id, workerName, taskDef.skillId, taskDef.task)
           emitSwarmWorkerDispatched(swarmId, worker.id, workerName, taskDef.skillId, taskDef.task, index, limitedTasks.length)
+
+          // Slice 07: persist the spawn decision so routing reasons survive the run
+          getGlobalDecisionLedger().recordDecision({
+            kind: 'worker.spawn',
+            reason: `spawn ${taskDef.skillId} specialist worker (swarm ${swarmId})`,
+            routingReason: selection?.reasoning,
+            provider: selection?.provider,
+            model: routedModelId,
+            sourceRefs: [worker.id, swarmId, `tier:${routedTier}`],
+          })
 
           const result = await worker.generate(informedTask)
           const durationMs = Date.now() - workerStartTime

@@ -11,6 +11,8 @@ import {
 } from '../events/emitter'
 import { deriveScopeFromTarget, isUrlInScope } from '../safety/scope-guard'
 import { log } from '../utils/logger'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { redactUrl } from '../security/secret-vault'
 import { createSpiderAgent } from './agent'
 import { buildSpiderPrompt } from './instructions'
 import type { PhaseEvent, SolverStreamMessage } from '../solver/solver'
@@ -41,8 +43,8 @@ export interface SpiderRuntimeState {
   target: string
   frontier: FrontierItem[]
   visitedUrls: string[]
-  discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string }>
-  endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string }>
+  discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string; provenanceId?: string }>
+  endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string; provenanceId?: string }>
   authStates: Array<{ url: string; state: string; role?: string }>
   /** Reserved contract field (slice 06 — workflow discovery). No producer yet. */
   workflows: Array<{ name: string; entryUrl?: string; role?: string }>
@@ -64,6 +66,7 @@ export interface SpiderRuntimeEvent {
   method?: string
   params?: string[]
   scope?: ScopeClassification
+  provenanceId?: string
   pages?: number
   endpoints?: number
   forms?: number
@@ -83,7 +86,12 @@ export interface SpiderRuntimeOptions {
 }
 
 export class EngagementBoundary {
-  constructor(private target: string, private config: UltimatrixConfig, private allowAny?: boolean) {}
+  constructor(
+    private target: string,
+    private config: UltimatrixConfig,
+    private allowAny?: boolean,
+    private workflowId?: string,
+  ) {}
 
   classifyUrl(url: string): { scope: ScopeClassification; reason?: string } {
     let parsed: URL
@@ -99,7 +107,20 @@ export class EngagementBoundary {
 
     const scopeConfig = this.config.scope ?? deriveScopeFromTarget(this.target)
     const checked = isUrlInScope(url, scopeConfig, { allowAny: this.allowAny })
-    if (checked.allowed) return { scope: 'allowed' }
+    if (checked.allowed) {
+      getGlobalDecisionLedger().recordDecision({
+        kind: 'scope.classify',
+        reason: `classify ${redactUrl(url)} as allowed`,
+        sourceRefs: this.workflowId ? [this.workflowId] : [],
+      })
+      return { scope: 'allowed' }
+    }
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'scope.classify',
+      reason: `classify ${redactUrl(url)} as proposed`,
+      routingReason: checked.reason,
+      sourceRefs: this.workflowId ? [this.workflowId] : [],
+    })
     return { scope: 'proposed', reason: checked.reason }
   }
 }
@@ -113,7 +134,7 @@ export class SpiderRuntime {
 
   constructor(private opts: SpiderRuntimeOptions) {
     const now = Date.now()
-    this.boundary = new EngagementBoundary(opts.target, opts.config, opts.allowAny)
+    this.boundary = new EngagementBoundary(opts.target, opts.config, opts.allowAny, opts.workflowId)
     this.state = {
       workflowId: opts.workflowId,
       target: opts.target,
@@ -170,31 +191,47 @@ export class SpiderRuntime {
       this.state.visitedUrls.push(url)
       this.state.pagesSeen++
     }
+    const provenanceId = getGlobalDecisionLedger().recordProvenance({
+      source: 'web',
+      pageUrl: url,
+    }).id
     this.touch()
-    this.emit({ type: 'page_seen', url, scope, pages: this.state.pagesSeen, forms, state: this.snapshot() })
+    this.emit({ type: 'page_seen', url, scope, provenanceId, pages: this.state.pagesSeen, forms, state: this.snapshot() })
     emitSpiderPage(url, status, links, forms)
   }
 
   recordEndpoint(method: string, url: string, params: string[] = [], sourcePage?: string): void {
     const { scope } = this.boundary.classifyUrl(url)
     const key = `${method}:${url}`
+    let provenanceId: string | undefined
     if (!this.seenEndpoints.has(key)) {
       this.seenEndpoints.add(key)
-      this.state.endpoints.push({ method, url, params, scope, sourcePage })
+      provenanceId = getGlobalDecisionLedger().recordProvenance({
+        source: 'web',
+        pageUrl: url,
+        actionId: `${method} ${url}`,
+      }).id
+      this.state.endpoints.push({ method, url, params, scope, sourcePage, provenanceId })
     }
     this.touch()
-    this.emit({ type: 'endpoint_seen', method, url, params, scope, endpoints: this.state.endpoints.length, state: this.snapshot() })
+    this.emit({ type: 'endpoint_seen', method, url, params, scope, provenanceId, endpoints: this.state.endpoints.length, state: this.snapshot() })
     emitSpiderEndpoint(method, url, params)
   }
 
   recordForm(url: string, selector?: string, method?: string, action?: string, role?: string): void {
     const key = `${url}:${selector ?? action ?? ''}`
+    let provenanceId: string | undefined
     if (!this.seenForms.has(key)) {
       this.seenForms.add(key)
-      this.state.discoveredForms.push({ url, selector, method, action, role })
+      provenanceId = getGlobalDecisionLedger().recordProvenance({
+        source: 'web',
+        pageUrl: url,
+        actionId: selector ?? action,
+      }).id
+      this.state.discoveredForms.push({ url, selector, method, action, role, provenanceId })
     }
     this.touch()
-    this.emit({ type: 'form_seen', url, method, forms: this.state.discoveredForms.length, state: this.snapshot() })
+    this.emit({ type: 'form_seen', url, method, provenanceId, forms: this.state.discoveredForms.length, state: this.snapshot() })
   }
 
   recordAuth(url: string, state: string, role?: string): void {

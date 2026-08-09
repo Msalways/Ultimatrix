@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { log } from '../utils/logger'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
 
 export type HumanActionType = 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
 
@@ -422,6 +423,20 @@ export class HumanObserver {
     const full: HumanAction = { ...action, timestamp: action.timestamp || Date.now() }
     this.actions.push(full)
     this.callback?.(full)
+
+    // Slice 07: record the browser action decision + provenance. pageUrl is
+    // redacted by the ledger — a browser action must never leak secrets.
+    const actionId = `action:${full.type}:${full.timestamp}`
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'browser.action',
+      reason: `browser ${full.type} action`,
+      sourceRefs: [actionId],
+    })
+    getGlobalDecisionLedger().recordProvenance({
+      source: 'browser',
+      pageUrl: full.url,
+      actionId,
+    })
 
     // Trigger auth state detection on navigations
     if (full.type === 'navigate' && this.page) {

@@ -11,6 +11,7 @@
 
 import {emitWorkerToolCall, emitWorkerToolResult} from '../events/emitter'
 import { getToolEventEmitter, type ToolEvent } from '../lib/tool-events'
+import { getGlobalDecisionLedger } from '../security/decision-ledger'
 
 export class WorkerContext {
   readonly workerId: string
@@ -39,6 +40,14 @@ export class WorkerContext {
 
     // Emit on the global typed bus
     emitWorkerToolCall(this.workerId, this.workerName, this.skillId, toolName, args)
+
+    // Slice 07: record the tool-execution decision. Args are intentionally
+    // NOT stored — tool args can carry target data/secrets.
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'tool.exec',
+      reason: `tool ${toolName} called by ${this.workerName}`,
+      sourceRefs: [this.workerId],
+    })
 
     // Also emit on ToolEventEmitter for the legacy activity panel
     const toolEvent: ToolEvent = {

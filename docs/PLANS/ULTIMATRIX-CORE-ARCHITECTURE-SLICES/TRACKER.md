@@ -45,7 +45,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
 | 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
 | 06 | Identity Role Reachability | 🔶 | AuthStateDetector + rbac-learner + auth-recorder committed. Missing: typed `IdentityKind`/`ReachabilityRecord`, spider integration |
-| 07 | Decision Ledger & Provenance | ⬜ | No ledger. `routingReason` event typing broken (2× TS2353) |
+| 07 | Decision Ledger & Provenance | 🟢 (Phase 3 done) | `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` singleton (`src/security/decision-ledger.ts`). Writes: model selection (selector), worker spawn incl. `routingReason` (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classify (EngagementBoundary), finding create (writeFinding). Provenance refs on spider discoveries (`endpoint_seen`/`form_seen`/`page_seen` carry `provenanceId`) + evidence items (`EvidenceItem.provenanceIds`). `routingReason` typed at event seam (Phase 0). Ledger IDs in workflow state deferred to slice 02 |
 | 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
 | 09 | Proof Rules & Evidence Quality | 🔶 | evidence-gate + ledger committed; `writeFinding` fails closed (non-info). Missing: `ProofRule` module, report-path gate |
 | 10 | CLI/Web Event Parity | 🔶 | All 9 typed events emit (uncommitted emitter). `spider:event` has ZERO subscribers; web gets 3 bridged phase events |
@@ -83,11 +83,12 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Commit
 
 ### Phase 3 — Slice 07 Decision Ledger
-- [ ] `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource`
-- [ ] Fix `routingReason` on `emitWorkerSpawned` opts + `EventMap['worker:spawned']`
-- [ ] Ledger writes: model selection, worker spawn, tool exec, browser action, scope classification, finding creation
-- [ ] Provenance refs on spider discoveries + evidence items
-- [ ] Tests + commit
+- [x] `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` — `src/security/decision-ledger.ts` (singleton, workflowId threading, query helpers, best-effort writes)
+- [x] Fix `routingReason` on `emitWorkerSpawned` opts + `EventMap['worker:spawned']` (verified — resolved Phase 0 `6f81103`, asserted by test)
+- [x] Ledger writes: model selection (selector), worker spawn (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classification (EngagementBoundary), finding creation (writeFinding)
+- [x] Provenance refs on spider discoveries (`provenanceId` on endpoint/form/page records + events) + evidence items (`EvidenceItem.provenanceIds`)
+- [x] Tests (13): routing-reason event seam, model-selection persistence (incl. fallback), spider discovery provenance, evidence provenance, ledger redaction (secret-shaped URLs/values), query helpers — full suite 1871/1871, tsc green, clean build
+- [ ] Commit
 
 ### Phase 4 — Slice 03 Engagement Completion
 - [ ] `AuthorizationCategory` + `allowedCategories` gating

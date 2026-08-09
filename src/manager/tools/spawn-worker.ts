@@ -7,6 +7,7 @@ import type { ModelSelector } from '../../models/selector'
 import { getGlobalGraphStore } from '../../graph/store'
 import { getActiveBrowser } from '../../browser/manager'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
+import { getGlobalDecisionLedger } from '../../security/decision-ledger'
 
 export function createSpawnWorkerTool(
   config: UltimatrixConfig,
@@ -97,6 +98,16 @@ export function createSpawnWorkerTool(
         // Emit lifecycle events
         emitWorkerSpawned(worker.id, workerName, skillId, task, { endpointId, tier: routedTier, modelId: routedModelId, tokenBudget, routingReason: selection?.reasoning })
         emitWorkerStarted(worker.id, workerName, skillId, task)
+
+        // Slice 07: persist the spawn decision so routing reasons survive the run
+        getGlobalDecisionLedger().recordDecision({
+          kind: 'worker.spawn',
+          reason: `spawn ${skillId} specialist worker`,
+          routingReason: selection?.reasoning,
+          provider: selection?.provider,
+          model: routedModelId,
+          sourceRefs: [worker.id, `tier:${routedTier}`, ...(endpointId ? [endpointId] : [])],
+        })
 
         const result = await worker.generate(informedTask)
         const durationMs = Date.now() - startTime
