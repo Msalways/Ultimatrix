@@ -84,7 +84,7 @@ export type ProviderCredentials = {
 // ─── Config interface ───────────────────────────────────────────────
 
 export interface BrowserConfig {
-  provider?: 'stagehand'
+  provider?: import('./browser/provider').BrowserProviderName
   headless: boolean
   viewport: { width: number; height: number }
   domSettleTimeout: number

@@ -17,6 +17,7 @@
 import type { SpiderRuntimeState } from '../spider/runtime'
 import type { ArtifactKind, ArtifactStatus } from '../security/artifacts'
 import type { ReachabilityRecord } from '../identity/types'
+import type { BrowserProviderName } from '../browser/provider'
 
 export const WORKFLOW_STATE_VERSION = 1 as const
 export type WorkflowStateVersion = typeof WORKFLOW_STATE_VERSION
@@ -78,6 +79,8 @@ export interface WorkflowState {
   updatedAt: string
   status: WorkflowStatus
   browserSessionId?: string
+  /** Slice 05 — provider fixed for the workflow's lifetime (resume mismatch rejects). */
+  browserProvider?: BrowserProviderName
   spider?: SpiderRuntimeState
   modelUsage: ModelUsageSummary[]
   activeWorkers: WorkerState[]

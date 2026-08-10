@@ -50,7 +50,7 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
   // Slice 02 — workflow-owned state. Load a persisted snapshot for this target
   // or create a fresh one; the workflowId becomes the stable identity for the
   // crawl, evidence, artifacts, and decision ledger below.
-  const workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target })
+  const workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target, browserProvider: config.browser.provider })
   getGlobalArtifactRegistry().setWorkflowId(workflow.state.workflowId)
   setArtifactCreateListener((record) => {
     workflow.recordArtifact(record)
@@ -68,6 +68,7 @@ export async function solveCommand(target: string, outputDir: string, approvedOr
   // Start browser
   const browser = await getOrCreateBrowser(config)
   workflow.setBrowserSessionId(String((browser as any)?.id ?? ''))
+  workflow.setBrowserProvider(config.browser.provider ?? 'stagehand')
 
   // Create memory
   const targetDir = workspace.getTargetDir(target)

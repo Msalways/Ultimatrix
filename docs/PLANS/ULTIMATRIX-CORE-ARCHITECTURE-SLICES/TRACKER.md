@@ -43,7 +43,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 02 | Workflow State & Persistence | 🟢 (Phase 5 done) | `WorkflowState` (version 1) + `WorkflowStore` (`src/workflow/`) — embeds `SpiderRuntimeState` + browser/model/worker/artifact/evidence/ledger refs; per-target `workflow.json` save/load/resume; version-gated coerce (refuses incompatible payloads); mutators (attachSpider/recordWorker/recordArtifact/recordEvidence) + lifetime-filtered sync (modelUsage/evidence). Wired: lifecycle + web engine + CLI solve pass stable `workflowId` to `runSpiderRuntime`, attach snapshot + persist after crawl, artifact-create listener folds durable artifacts into the workflow |
 | 03 | Engagement Boundary & Policy | 🟢 (Phase 4 done) | `AuthorizationCategory` (10 cats) + `allowedCategories` gating (pure `isCategoryAuthorized` + ambient `isActionAuthorized`/`enforceAction` in scope-guard). External tools deny-by-default (`setExternalToolsConfig`, per-tool narrowing, both-gates-required). Proposed-scope approval: `EngagementBoundary.approveProposed` + `SpiderRuntime.approveProposed` (frontier reclassification) + `approvedOrigins` pre-approval + `scope_proposed` in typed EventMap. CLI `--approve-origin` (repeatable) + web `POST /api/spider/approve`; `'denied'` ToolRunStatus + scanner-tools deny gate |
 | 04 | Secret Vault & Artifacts | 🟢 (Phase 2 done) | `redactObject`/`redactString`/`redactHeaders`/`redactArtifactMetadata` + `ArtifactRecord` lifecycle & provenance wired into screenshot/HAR/report/session/finding. Session cookies retained as operational store (restore intact); exposure redacted. Encrypt-at-rest + remote storage still out of scope. |
-| 05 | Browser Provider Abstraction | 🔶 | `browser.provider: 'stagehand'` config field exists. Missing: `BrowserProvider` interface, `StagehandProvider`, camofox |
+| 05 | Browser Provider Abstraction | 🟢 (Phase 7 done) | `BrowserProvider` interface + `StagehandProvider` wrapper (`src/browser/provider.ts` + `stagehand-provider.ts`) behind the shared manager. Config `browser.provider: 'stagehand'` (default) | `camofox` declared planned-only (fails clearly). Provider + session recorded in `WorkflowState`; resume with a different provider is a hard reject. `exportStorage` → redacted `session` artifact |
 | 06 | Identity Role Reachability | 🟢 (Phase 6 done) | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events (`setIdentity`/`recordAuthFlow`, typed enum→kind map — refresh/form-fill do not change identity), persists via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges (`addReachability`), folds into `WorkflowState.reachability` + `runSpiderRuntime` persistence |
 | 07 | Decision Ledger & Provenance | 🟢 (Phase 3 done) | `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` singleton (`src/security/decision-ledger.ts`). Writes: model selection (selector), worker spawn incl. `routingReason` (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classify (EngagementBoundary), finding create (writeFinding). Provenance refs on spider discoveries (`endpoint_seen`/`form_seen`/`page_seen` carry `provenanceId`) + evidence items (`EvidenceItem.provenanceIds`). `routingReason` typed at event seam (Phase 0). Ledger IDs in workflow state deferred to slice 02 |
 | 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
@@ -111,10 +111,10 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Tests + commit
 
 ### Phase 7 — Slice 05 Browser Provider
-- [ ] `BrowserProvider` interface + `StagehandProvider` wrapper
-- [ ] camofox opt-in (config)
-- [ ] Provider recorded in `WorkflowState`; resume mismatch reject
-- [ ] Tests + commit
+- [x] `BrowserProvider` interface + `StagehandProvider` wrapper
+- [x] camofox opt-in (config)
+- [x] Provider recorded in `WorkflowState`; resume mismatch reject
+- [x] Tests + commit
 
 ### Phase 8 — Slice 09 Proof Rules
 - [ ] `ProofRule`/`ProofCheckResult` + default floors

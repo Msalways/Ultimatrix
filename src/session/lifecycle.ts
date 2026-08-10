@@ -212,7 +212,7 @@ export class SessionLifecycle {
     // listener; the decision ledger is tagged so decisions carry the workflowId.
     let workflow: WorkflowStore | undefined
     if (target) {
-      workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target })
+      workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target, browserProvider: config.browser.provider })
       getGlobalArtifactRegistry().setWorkflowId(workflow.state.workflowId)
       setArtifactCreateListener((record) => {
         workflow?.recordArtifact(record)
@@ -335,11 +335,12 @@ export class SessionLifecycle {
     this._resources.browser = browser
     this._resources.oastPort = oastPort
 
-    // Slice 02 — record the browser session id on the workflow (typed browser.id).
+    // Slice 02/05 — record the browser session id + provider on the workflow (typed browser.id).
     if (browser?.id) {
       const workflow = this._resources.workflow
       if (workflow) {
         workflow.setBrowserSessionId(String(browser.id))
+        workflow.setBrowserProvider(config.browser.provider ?? 'stagehand')
         await workflow.save()
       }
     }

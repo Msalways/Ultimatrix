@@ -23,6 +23,8 @@ import type { UsageEntry } from '../usage/tracker'
 import type { EvidenceItem } from '../intelligence/evidence-ledger'
 import type { ReachabilityRecord } from '../identity/types'
 import { reachabilityKey } from '../identity/reachability'
+import type { BrowserProviderName } from '../browser/provider'
+import { isBrowserProviderName } from '../browser/provider'
 import {
   WORKFLOW_STATE_VERSION,
   type WorkflowState,
@@ -39,7 +41,12 @@ export function getWorkflowPath(target: string): string {
   return resolve(getGlobalWorkspace().getTargetDir(target), 'workflow.json')
 }
 
-export function createWorkflow(target: string, workflowId = `workflow-${randomUUID()}`, browserSessionId?: string): WorkflowState {
+export function createWorkflow(
+  target: string,
+  workflowId = `workflow-${randomUUID()}`,
+  browserSessionId?: string,
+  browserProvider?: BrowserProviderName,
+): WorkflowState {
   const now = new Date().toISOString()
   return {
     version: WORKFLOW_STATE_VERSION,
@@ -49,6 +56,7 @@ export function createWorkflow(target: string, workflowId = `workflow-${randomUU
     updatedAt: now,
     status: 'pending',
     browserSessionId,
+    browserProvider,
     spider: undefined,
     modelUsage: [],
     activeWorkers: [],
@@ -87,6 +95,7 @@ export function coerceWorkflow(value: unknown, fallback: { target: string }): Wo
     updatedAt,
     status: isWorkflowStatus(candidate.status) ? candidate.status : 'pending',
     browserSessionId: typeof candidate.browserSessionId === 'string' ? candidate.browserSessionId : undefined,
+    browserProvider: isBrowserProviderName(candidate.browserProvider) ? candidate.browserProvider : undefined,
     spider: candidate.spider && typeof candidate.spider === 'object' ? (candidate.spider as SpiderRuntimeState) : undefined,
     modelUsage: Array.isArray(candidate.modelUsage) ? (candidate.modelUsage as ModelUsageSummary[]) : [],
     activeWorkers: Array.isArray(candidate.activeWorkers) ? (candidate.activeWorkers as WorkerState[]) : [],
@@ -101,6 +110,8 @@ export interface WorkflowLoadOptions {
   target: string
   workflowId?: string
   browserSessionId?: string
+  /** Slice 05 — the provider this session intends to use; rejects a resume against a different persisted provider. */
+  browserProvider?: BrowserProviderName
 }
 
 export class WorkflowStore {
@@ -122,8 +133,23 @@ export class WorkflowStore {
     } catch {
       loaded = null
     }
-    if (loaded) return new WorkflowStore(path, loaded)
-    const store = new WorkflowStore(path, createWorkflow(opts.target, opts.workflowId, opts.browserSessionId))
+    if (loaded) {
+      // Slice 05 — one workflow maps to one browser provider. Resume with a
+      // different provider than the one that created the workflow is a hard
+      // error (fail clearly, never silently reuse the wrong browser).
+      if (opts.browserProvider && loaded.browserProvider && loaded.browserProvider !== opts.browserProvider) {
+        throw new Error(
+          `Workflow ${loaded.workflowId} for ${opts.target} was created with browser provider '${loaded.browserProvider}' ` +
+            `but this run requests '${opts.browserProvider}'. One workflow maps to one browser provider — resume with ` +
+            `the original provider or target a fresh workflow.`,
+        )
+      }
+      return new WorkflowStore(path, loaded)
+    }
+    const store = new WorkflowStore(
+      path,
+      createWorkflow(opts.target, opts.workflowId, opts.browserSessionId, opts.browserProvider),
+    )
     await store.save()
     return store
   }
@@ -143,6 +169,12 @@ export class WorkflowStore {
 
   setBrowserSessionId(id: string | undefined): void {
     if (id) this.state.browserSessionId = id
+    this.touch()
+  }
+
+  /** Slice 05 — record the provider fixed for this workflow. */
+  setBrowserProvider(provider: BrowserProviderName | undefined): void {
+    if (provider) this.state.browserProvider = provider
     this.touch()
   }
 

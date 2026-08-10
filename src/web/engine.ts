@@ -96,7 +96,7 @@ export class WebEngine {
     // Slice 02 — workflow-owned state: load a persisted snapshot for this target
     // or create a fresh one. The workflowId is the stable crawl/evidence/artifact
     // identity; artifacts created during the session fold in via the typed listener.
-    this._workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(opts.target), { target: opts.target })
+    this._workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(opts.target), { target: opts.target, browserProvider: this.config.browser.provider })
     getGlobalArtifactRegistry().setWorkflowId(this._workflow.state.workflowId)
     setArtifactCreateListener((record) => {
       if (record.workflowId === this._workflow?.state.workflowId) {
@@ -126,6 +126,7 @@ export class WebEngine {
     const browser = getOrCreateBrowser(this.config)
     await browser.ensureReady()
     this._workflow?.setBrowserSessionId(String(browser.id ?? ''))
+    this._workflow?.setBrowserProvider(this.config.browser.provider ?? 'stagehand')
     startDialogWatcher(browser)
     this.attachHumanObserver()
 
