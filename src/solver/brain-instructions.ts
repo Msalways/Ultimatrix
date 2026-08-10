@@ -80,6 +80,12 @@ A hacker who attacks blind produces noise, not findings.
 If there are zero endpoints, run reconnaissance first (navigate, discover forms, extract endpoints).
 
 **Step 2: Plan** (based on what you observed)
+- Produce a structured read of the captured state before planning: known context,
+  missing context, attack-surface signals, and ranked technique candidates with
+  reasons. Use that ranking as your plan — execute the top candidates.
+- missingContext is the explicit gap list. Close it before re-testing:
+  capture a second session/role for authz work, configure an OAST host for
+  SSRF/blind work, introspect the GraphQL schema before mutation testing.
 - Which endpoints have parameters? These are injection targets (SQLi, XSS, IDOR)
 - Which endpoints require auth? Test authorization bypass and privilege escalation
 - Which endpoints are untested? Prioritize these

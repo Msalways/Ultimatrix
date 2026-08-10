@@ -420,5 +420,5 @@ export const listPrimitiveCapabilitiesTool = createTool({
   },
 })
 
-export { listPrimitives, getPrimitive, registerPrimitive, runPrimitive } from './framework'
-export type { TechniquePrimitive, TechniqueContext, PrimitiveResult, AttackStep, StepExecutionResult, EvidenceRef } from './framework'
+export { listPrimitives, getPrimitive, registerPrimitive, runPrimitive, listPrimitiveMetadata, derivePrimitiveMetadata } from './framework'
+export type { TechniquePrimitive, TechniqueContext, PrimitiveResult, AttackStep, StepExecutionResult, EvidenceRef, PrimitiveMetadata } from './framework'

@@ -275,6 +275,79 @@ export function hasPrimitive(id: string): boolean {
   return _primitives.has(id)
 }
 
+// ─── Primitive metadata ────────────────────────────────────────────────
+
+/**
+ * Stable, derived metadata for a registered primitive.
+ *
+ * `tags` is the single source of primitive search/relevance vocabulary. It is
+ * derived from a primitive's OWN declared identity (id, name, technique,
+ * description, adaptsTo) — never injected from outside — so the campaign
+ * planner and technique planner can route on real capability signals instead
+ * of empty arrays. No regex/free-text routing: tokens come from declared
+ * metadata only.
+ */
+export interface PrimitiveMetadata {
+  id: string
+  name: string
+  description: string
+  technique?: string
+  adaptsTo: string[]
+  tags: string[]
+  requiredContext: string[]
+}
+
+const METADATA_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'for', 'with', 'against', 'into', 'over',
+  'under', 'on', 'of', 'to', 'in', 'is', 'are', 'be', 'by', 'from', 'at',
+  'as', 'it', 'its', 'this', 'that', 'these', 'those', 'when', 'while',
+  'use', 'uses', 'using', 'target', 'endpoint', 'http', 'request', 'response',
+  'via', 'can', 'will', 'may', 'should', 'return', 'returns', 'test', 'tests',
+  'testing', 'security', 'check', 'checks', 'checking', 'if', 'then', 'than',
+  'also', 'more', 'most', 'not', 'no', 'yes', 'do', 'does', 'detect',
+  'detects', 'detection', 'run', 'running', 'result', 'results', 'whether',
+  'only', 'but', 'set', 'such', 'what', 'how', 'you', 'your', 'other',
+])
+
+/** Split camelCase/kebab/space-separated identifiers into lowercase words. */
+export function tokenizeIdentifier(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^a-zA-Z0-9\s-]+/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/^-+|-+$/g, ''))
+    .filter((w) => w.length > 1 && !METADATA_STOPWORDS.has(w))
+}
+
+/** Derive stable metadata from a registered primitive's declared identity. */
+export function derivePrimitiveMetadata(p: TechniquePrimitive): PrimitiveMetadata {
+  const tags = new Set<string>()
+  for (const a of p.adaptsTo ?? []) for (const w of tokenizeIdentifier(a)) tags.add(w)
+  for (const w of tokenizeIdentifier(p.id)) tags.add(w)
+  if (p.technique) for (const w of tokenizeIdentifier(p.technique)) tags.add(w)
+  for (const w of tokenizeIdentifier(p.name)) tags.add(w)
+  for (const w of tokenizeIdentifier(p.description)) tags.add(w)
+
+  const requiredContext = new Set<string>()
+  for (const a of p.adaptsTo ?? []) requiredContext.add(a)
+  if (p.technique) for (const w of tokenizeIdentifier(p.technique)) requiredContext.add(w)
+
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    technique: p.technique,
+    adaptsTo: p.adaptsTo ?? [],
+    tags: [...tags],
+    requiredContext: [...requiredContext],
+  }
+}
+
+export function listPrimitiveMetadata(): PrimitiveMetadata[] {
+  return [..._primitives.values()].map(derivePrimitiveMetadata)
+}
+
 // ─── Run helper ─────────────────────────────────────────────────────────
 
 /**

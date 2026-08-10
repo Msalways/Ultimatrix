@@ -36,6 +36,7 @@ import { verifyChainsTool } from '../tools/detect-chains-tool'
 import { loadSkillReference, searchSkillTool, listSkills, loadSkillBodyTool } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
+import { diagnoseTargetTool, runAdvancedPlaybookTool } from '../orchestration/tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { scannerTools } from '../tools/scanner-tools'
 import { useSession, extractSessionCookie } from '../tools/session-tools'
@@ -207,6 +208,13 @@ function campaignTools(config: UltimatrixConfig, p: string): Record<string, any>
   }
 }
 
+function orchestrationLayerTools(p: string): Record<string, any> {
+  return {
+    diagnoseTarget: s(diagnoseTargetTool, p),
+    runAdvancedPlaybook: s(runAdvancedPlaybookTool, p),
+  }
+}
+
 function externalTools(config: UltimatrixConfig, p: string): Record<string, any> {
   if (config.externalTools?.enabled !== true) return {}
   const enabled = config.externalTools.tools ?? {}
@@ -281,6 +289,7 @@ export function buildToolPack(
   if (includeOrchestration) Object.assign(tools, orchestrationTools(config, skillRegistry, workerPool, p, deps.modelSelector))
   if (includePrimitives) Object.assign(tools, primitiveTools(p))
   if (includePrimitives) Object.assign(tools, campaignTools(config, p))
+  if (includePrimitives) Object.assign(tools, orchestrationLayerTools(p))
 
   Object.assign(tools, modelSelectionTools(config, deps.modelSelector))
 

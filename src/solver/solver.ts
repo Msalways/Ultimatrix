@@ -1104,6 +1104,28 @@ export async function solve(
     } catch {}
   }
 
+  // ─── Orchestration diagnosis (Phase 9 / T7) ────────────────────────
+  // Structured pre-flight before the escalation spine: surface high-priority
+  // missing context + ranked candidates so the next brain turn plans on real
+  // state (diagnose before advanced testing). Best-effort; never a blocker.
+  if (!lastError) {
+    try {
+      const { diagnoseTargetState } = await import("../orchestration/diagnosis");
+      const profile = diagnoseTargetState({});
+      const highGaps = profile.missingContext.filter((m) => m.priority === "high");
+      if (highGaps.length > 0) {
+        board.addFact(
+          `Diagnosis before advanced testing: ${highGaps.length} high-priority gap(s) to close first: ${highGaps
+            .map((g) => g.context)
+            .join(", ")}. Close them (capture sessions/roles, configure OAST, introspect schemas) then re-run diagnosis.`,
+          "context",
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
   // ─── Exploitation loop (weaponization spine) ───────────────────────
   // Single escalation driver: after a finding lands, build exploit proofs,
   // capture impact, reuse held sessions to pivot within scope, then emit a

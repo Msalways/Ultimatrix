@@ -38,11 +38,81 @@ const GENERIC_TECHNIQUE_TAGS = ['recon', 'info-disclosure', 'information-disclos
 // Techniques that only matter when the endpoint requires authentication.
 const AUTH_TECHNIQUE_TAGS = ['auth', 'authorization', 'session', 'jwt', 'idor', 'privilege', 'bypass']
 
+// Endpoint signal → technique tag families (Phase 9 / T6). Structured routing:
+// a primitive whose derived tags overlap an endpoint's signal family is strongly
+// relevant to THAT endpoint, instead of blanket-relevant to any param'd endpoint.
+const ENDPOINT_SIGNAL_TECHNIQUE_TAGS: Array<{ signal: string; tags: string[] }> = [
+  { signal: 'graphql', tags: ['graphql', 'introspection', 'depth'] },
+  { signal: 'state-changing', tags: ['race', 'concurrency', 'business', 'workflow'] },
+  { signal: 'object-id-param', tags: ['idor', 'bola', 'authz', 'object', 'id', 'privilege', 'escalation'] },
+  { signal: 'url-like-param', tags: ['ssrf', 'oast', 'redirect', 'open', 'cloud'] },
+  { signal: 'custom-header', tags: ['smuggling', 'header', 'injection', 'host'] },
+  { signal: 'serialized-content', tags: ['deserialization', 'type', 'juggling', 'xml'] },
+]
+
+const STANDARD_HEADERS = new Set([
+  'accept', 'accept-encoding', 'accept-language', 'authorization', 'cache-control',
+  'connection', 'content-length', 'content-type', 'cookie', 'host', 'origin',
+  'pragma', 'referer', 'user-agent',
+])
+
 interface EndpointContext {
   node: EndpointNode
   roles: string[]
   states: string[]
   params: string[]
+}
+
+/** Structured, shape/typed-derived signals for a single endpoint. */
+function endpointSignals(ep: EndpointNode): Set<string> {
+  const out = new Set<string>()
+  const method = (ep.properties.method ?? '').toUpperCase()
+  const url = ep.properties.url ?? ''
+  if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
+    out.add('state-changing')
+  }
+  try {
+    const last = new URL(url).pathname.split('/').filter(Boolean).pop()?.toLowerCase()
+    if (last === 'graphql') out.add('graphql')
+  } catch { /* not a URL */ }
+  if (Array.isArray(ep.properties.tags) && ep.properties.tags.includes('graphql')) out.add('graphql')
+  if (Array.isArray(ep.properties.tags) && ep.properties.tags.includes('serialized-content')) out.add('serialized-content')
+
+  const headers = ep.properties.headers ? Object.keys(ep.properties.headers) : []
+  const custom = headers.filter((h) => !STANDARD_HEADERS.has(h.toLowerCase()))
+  if (custom.length > 0) out.add('custom-header')
+
+  const params = ep.properties.params ?? []
+  for (const p of params) {
+    const tokens = (p?.name ?? '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[_\-.\s]+/)
+      .filter(Boolean)
+    const last = tokens[tokens.length - 1]
+    if (last === 'id' || last === 'ids' || last === 'uuid' || last === 'guid') out.add('object-id-param')
+    if (
+      last === 'url' || last === 'uri' || last === 'href' || last === 'redirect' ||
+      last === 'return' || last === 'callback' || last === 'webhook' || last === 'host' ||
+      last === 'image' || last === 'file' || last === 'import' || last === 'metadata' ||
+      last === 'fetch' || last === 'link' || last === 'target'
+    ) {
+      out.add('url-like-param')
+    }
+  }
+  return out
+}
+
+/** Tags of this primitive that align with an endpoint's structured signals. */
+function signalMatchedTags(primitive: PrimitiveRef, signals: Set<string>): string[] {
+  const tags = primitive.tags ?? []
+  const matched: string[] = []
+  for (const s of signals) {
+    const family = ENDPOINT_SIGNAL_TECHNIQUE_TAGS.find((f) => f.signal === s)
+    if (!family) continue
+    if (family.tags.some((t) => tags.includes(t))) matched.push(s)
+  }
+  return matched
 }
 
 function endpointParams(ep: EndpointNode): string[] {
@@ -84,9 +154,17 @@ function deriveStates(ep: EndpointNode): string[] {
   return [BASELINE_STATE, ...preconditions.map(p => `precondition:${p}`)]
 }
 
-function isTechniqueRelevant(primitive: PrimitiveRef, ep: EndpointNode, hasParams: boolean): boolean {
+function isTechniqueRelevant(
+  primitive: PrimitiveRef,
+  ep: EndpointNode,
+  hasParams: boolean,
+  signals: Set<string>,
+): boolean {
   const tags = primitive.tags ?? []
   if (tags.some(t => GENERIC_TECHNIQUE_TAGS.includes(t))) return true
+  // Strong signal-aligned routing: the primitive matches this endpoint's
+  // structured surface (graphql / state-changing / object-id / url-like / …).
+  if (signalMatchedTags(primitive, signals).length > 0) return true
   if (hasParams) return true
   // Auth-bound techniques only relevant to authenticated/protected endpoints.
   const authRelevant = tags.some(t => AUTH_TECHNIQUE_TAGS.includes(t))
@@ -150,6 +228,7 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     const ep = ctx.node
     const url = ep.properties.url
     const hasParams = ctx.params.length > 0
+    const signals = endpointSignals(ep)
 
     const hypBoost = hypotheses.filter(h => (h.properties.targetEndpoints ?? []).includes(url)).length
     const factBoost = facts.filter(f => f.properties.description.includes(url)).length
@@ -161,9 +240,16 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
 
         const relevantTechniques = primitives.filter(p => {
           if (techniqueFilter && !techniqueFilter.includes(p.id)) return false
-          return isTechniqueRelevant(p, ep, hasParams)
+          return isTechniqueRelevant(p, ep, hasParams, signals)
         })
         if (relevantTechniques.length === 0) continue
+
+        // Signal-aligned techniques get a routing boost (T6) so the campaign
+        // favors primitives whose tags match this endpoint's real surface.
+        const signalTechniqueIds = relevantTechniques
+          .filter(p => signalMatchedTags(p, signals).length > 0)
+          .map(p => p.id)
+        const signalBoost = signalTechniqueIds.length > 0 ? 3 : 0
 
         let priority = 0
         if (role === AUTHENTICATED_ROLE || ep.properties.authType) priority += 2
@@ -173,12 +259,15 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
         if (state !== BASELINE_STATE) priority += 1
         if (reusedEndpoints.has(url)) priority += 1
         if (valueOriginEndpoints.has(ep.id)) priority += 2
+        priority += signalBoost
 
         const techniqueIds = relevantTechniques.map(p => p.id)
         const reasonBits: string[] = []
         if (hypBoost) reasonBits.push(`${hypBoost} human hypothes(is/es) target this endpoint`)
         if (ep.properties.authType) reasonBits.push(`auth:${ep.properties.authType}`)
         if (hasParams) reasonBits.push(`${ctx.params.length} param(s)`)
+        if (signalTechniqueIds.length > 0) reasonBits.push(`signals: ${[...signals].slice(0, 5).join(', ')}`)
+        if (signalBoost) reasonBits.push(`${signalTechniqueIds.length} signal-aligned technique(s)`)
 
         slices.push({
           id: `slice:${ep.id}:${role}:${state}`,
@@ -201,19 +290,28 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   }
 
   // De-dupe empty-role default fallback: ensure at least the default role is
-  // represented when no roles were derived.
+  // represented when no roles were derived. Only RELEVANT techniques are included
+  // (auth-bound techniques must not leak onto unauthenticated endpoints).
   if (slices.length === 0 && endpoints.length > 0) {
     const ep = endpoints[0]
-    slices.push({
-      id: `slice:${ep.id}:${defaultRole}:${BASELINE_STATE}`,
-      endpoint: { id: ep.id, url: ep.properties.url, method: ep.properties.method },
-      params: endpointParams(ep),
-      role: defaultRole,
-      state: BASELINE_STATE,
-      techniqueIds: primitives.map(p => p.id),
-      priority: 1,
-    })
-    coveredEndpoints.add(ep.id)
+    const signals = endpointSignals(ep)
+    const hasParams = endpointParams(ep).length > 0
+    const fallbackTechniques = primitives
+      .filter(p => isTechniqueRelevant(p, ep, hasParams, signals))
+      .map(p => p.id)
+    if (fallbackTechniques.length > 0) {
+      slices.push({
+        id: `slice:${ep.id}:${defaultRole}:${BASELINE_STATE}`,
+        endpoint: { id: ep.id, url: ep.properties.url, method: ep.properties.method },
+        params: endpointParams(ep),
+        role: defaultRole,
+        state: BASELINE_STATE,
+        techniqueIds: fallbackTechniques,
+        priority: 1,
+      })
+      coveredEndpoints.add(ep.id)
+      fallbackTechniques.forEach(t => coveredTechniques.add(t))
+    }
   }
 
   slices.sort((a, b) => b.priority - a.priority)

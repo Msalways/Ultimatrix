@@ -123,7 +123,7 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Tests + commit
 
 ### Phase 9 — Slice 08 Orchestrator (ORCHESTRATION-LAYER-FIX.md)
-- [ ] T1 primitive metadata · T2 diagnosis · T3 planner · T4 `diagnoseTarget` tool · T5 `runAdvancedPlaybook` tool · T6 campaign relevance · T7 solver hunting flow · T8 tests
+- [x] T1 primitive metadata · T2 diagnosis · T3 planner · T4 `diagnoseTarget` tool · T5 `runAdvancedPlaybook` tool · T6 campaign relevance · T7 solver hunting flow · T8 tests
 - [ ] Commit
 
 ### Phase 10 — Slice 10 Event Parity

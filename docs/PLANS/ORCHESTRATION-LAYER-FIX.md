@@ -1,7 +1,7 @@
 # Orchestration Layer Fix - Diagnosis + Advanced Playbook
 
 **Date:** 2026-07-30
-**Status:** PLANNED
+**Status:** COMPLETE (T1–T8, verified 2026-08-10 — 2004/2004 tests)
 **Goal:** Add a real orchestration layer that diagnoses target state, ranks advanced techniques, loads the right skills/tools/workers, and runs evidence-gated playbooks without prompt-only hacks.
 
 ---
@@ -394,3 +394,32 @@ npm run build:cli
 - Confirmed findings still require EvidenceGate.
 - No new mandatory config.
 - No duplicate registries, worker systems, or evidence systems.
+
+---
+
+## Implementation Notes (completed 2026-08-10)
+
+**Modules added** (`src/orchestration/`):
+
+- `types.ts` — `AttackSurfaceSignal`, `DiagnosisProfile`, `TechniqueCandidate`, `AdvancedPlaybook`, `PlaybookRunResult`, `MissingContextRequirement`, `DiagnosedEndpoint`.
+- `diagnosis.ts` — `diagnoseTargetState(input)` reads graph state (endpoints, headers, auth nodes, RBAC roles, workflows, relations) → signals + missing context + ranked candidates. NEVER writes findings. `oastHost` input overrides OAST availability; otherwise `getOastUrl() !== 'http://oast-not-started'`.
+- `technique-planner.ts` — `rankTechniqueCandidates(ctx, primitives, opts)` over `SIGNAL_FAMILIES` (producer const, mirrors analyser USECASE_MAP precedent), `buildAdvancedPlaybook(profile, opts)` flips candidates to worker delegation when high-priority missing context is attached (attaches profile-level missing context itself, so it is self-sufficient).
+- `playbook-runner.ts` — `runAdvancedPlaybook(input, deps)` with seams (`diagnosis`, `buildPlaybook`, `runPrimitive`, `delegateWorker`). Worker candidates are SKIPPED when no delegate is configured — never run silently as primitives.
+- `tools.ts` + `index.ts` — `diagnoseTargetTool` (`diagnoseTarget`), `runAdvancedPlaybookTool` (`runAdvancedPlaybook`, commit flag).
+
+**Wiring:**
+
+- `src/tools/registry.ts`, `src/core/toolpack.ts` (`orchestrationLayerTools(p)`), `src/mastra/tools.ts` (`TOOL_IDS` + metadata + export block).
+- `src/solver/solver.ts` — pre-exploitation-loop diagnosis adds a high-priority-gaps fact to the board (best-effort, never a blocker).
+- `src/campaign/campaign-tool.ts` — feeds `listPrimitiveMetadata()` tags (was `tags: []`, the T6 root cause).
+- `src/campaign/planner.ts` — `endpointSignals()` + `signalMatchedTags()` + signal priority boost (+3); default-role fallback now includes only RELEVANT techniques.
+
+**Shape rules retained (no vocab/substring routing):** param signals split on separators AND camelCase boundaries (`userId` → `user,id`); GraphQL detected from URL path + typed tags/useCase; object-id via trailing token `id|ids|uuid|guid` + `looksLikeId` value shape.
+
+**Gotchas hit:**
+
+- `prompt-no-hardcoded-tools.test.ts` builds a regex over ALL `TOOL_IDS` — brain instructions must NOT name concrete tools ("run diagnoseTarget…" fails; describe the step instead).
+- `listPrimitiveMetadata()` reads a registry populated only when `src/primitives/index.ts` is imported — orchestration tests must import it first.
+- Brain instructions are one big template literal — never insert literal backticks into its body.
+
+**Tests (T8):** `test/orchestration/diagnosis.test.ts` (15), `test/orchestration/technique-planner.test.ts` (11), `test/orchestration/playbook-runner.test.ts` (5), `test/campaign/planner-relevance.test.ts` (8). Full suite 2004/2004, tsc clean, tsup build clean.

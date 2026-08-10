@@ -19,7 +19,7 @@ import { DEFAULTS, type UltimatrixConfig, type BudgetPolicy } from '../config'
 import { getGlobalGraphStore } from '../graph/store'
 import { executeCampaign } from './executor'
 import { createPrimitiveRunner } from './runner'
-import { listPrimitives } from '../primitives'
+import { listPrimitiveMetadata } from '../primitives'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings } from '../tools/control-tools'
 import { getOutcomeFeedbackStore } from '../intelligence/outcome-feedback'
@@ -92,10 +92,13 @@ export function createCampaignTool(config: UltimatrixConfig = defaultCampaignCon
 
       const result = await executeCampaign(graphStore, config, {
         executor,
-        primitives: listPrimitives().map((p) => ({
+        // T6: derived metadata tags (from each primitive's declared identity)
+        // so the planner can route techniques to the endpoints they fit —
+        // not an empty tag array that degrades to blanket relevance.
+        primitives: listPrimitiveMetadata().map((p) => ({
           id: p.id,
           description: p.description,
-          tags: [],
+          tags: p.tags,
         })),
         evidenceGate: gate,
         maxConcurrency,

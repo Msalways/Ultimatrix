@@ -23,6 +23,7 @@ import { buildResearchMap, planResearchExperiments, compareResearchResponses, re
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
+import { diagnoseTargetTool, runAdvancedPlaybookTool } from '../orchestration/tools'
 import { listToolsTool, loadToolTool } from '../extensions/tool-tools'
 import { getGlobalToolRegistry } from '../extensions/tool-registry'
 import { Logger } from '../utils/logger'
@@ -143,6 +144,10 @@ export type ToolRegistry = {
   runCampaign: typeof runCampaignTool
   // Outcome Feedback (Phase 4 / T4.3)
   recordOutcome: typeof recordOutcomeTool
+
+  // Orchestration Layer (Phase 9 / T4)
+  diagnoseTarget: typeof diagnoseTargetTool
+  runAdvancedPlaybook: typeof runAdvancedPlaybookTool
 
   // Extension Discovery (Phase 3)
   listTools: typeof listToolsTool
@@ -272,6 +277,10 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     // Outcome Feedback (Phase 4 / T4.3)
     recordOutcome: recordOutcomeTool,
 
+    // Orchestration Layer (Phase 9 / T4)
+    diagnoseTarget: diagnoseTargetTool,
+    runAdvancedPlaybook: runAdvancedPlaybookTool,
+
     // Extension Discovery (Phase 3)
     listTools: listToolsTool,
     loadTool: loadToolTool,
@@ -359,6 +368,8 @@ export const TOOL_IDS = [
   'runPrimitive',
   'runCampaign',
   'recordOutcome',
+  'diagnoseTarget',
+  'runAdvancedPlaybook',
   'listTools',
   'loadTool',
   'nuclei',
@@ -1462,6 +1473,37 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
     }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
   },
+  diagnoseTarget: {
+    id: 'diagnoseTarget',
+    description: 'Diagnose the captured target state from the knowledge graph and rank technique primitives. Planning only — never executes tests or writes findings.',
+    category: 'observation' as const,
+    inputSchema: z.object({
+      target: z.string().optional(),
+      includeSkills: z.boolean().optional(),
+      includePrimitives: z.boolean().optional(),
+      maxCandidates: z.number().int().positive().optional(),
+    }),
+    outputSchema: z.object({ ok: z.boolean(), profile: z.any() }),
+  },
+  runAdvancedPlaybook: {
+    id: 'runAdvancedPlaybook',
+    description: 'Execute the diagnosed technique plan: runs ranked primitive candidates evidence-gated, skips worker-delegated candidates when no delegate is configured, returns per-candidate results + remaining missing context.',
+    category: 'observation' as const,
+    inputSchema: z.object({
+      candidateIds: z.array(z.string()).optional(),
+      maxCandidates: z.number().int().positive().optional(),
+      commit: z.boolean().optional(),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      executed: z.array(z.any()),
+      skipped: z.array(z.any()),
+      confirmed: z.number(),
+      unconfirmed: z.number(),
+      missingContext: z.array(z.any()),
+      loadedSkills: z.array(z.string()),
+    }),
+  },
 }
 
 // Tool validation function
@@ -1519,4 +1561,6 @@ export {
   runPrimitiveTool,
   runCampaignTool,
   recordOutcomeTool,
+  diagnoseTargetTool,
+  runAdvancedPlaybookTool,
 }

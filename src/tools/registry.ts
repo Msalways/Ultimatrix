@@ -16,6 +16,7 @@ import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, repr
 import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
+import { diagnoseTargetTool, runAdvancedPlaybookTool } from '../orchestration/tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import { useCredential } from './credential-tools'
 import { dualSessionOrchestrator } from './dual-session'
@@ -43,6 +44,8 @@ export {
   buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
   runPrimitiveTool,
   runCampaignTool,
+  diagnoseTargetTool,
+  runAdvancedPlaybookTool,
   recordOutcomeTool,
   useCredential,
   dualSessionOrchestrator,
@@ -72,6 +75,8 @@ export function registerAllTools() {
     buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
     runPrimitive: runPrimitiveTool,
     runCampaign: runCampaignTool,
+    diagnoseTarget: diagnoseTargetTool,
+    runAdvancedPlaybook: runAdvancedPlaybookTool,
     recordOutcome: recordOutcomeTool,
     useCredential,
     dualSessionOrchestrator,
