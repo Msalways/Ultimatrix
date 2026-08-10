@@ -94,7 +94,7 @@ function normalizeUrl(input?: string): string | undefined {
   }
 }
 
-function urlMatches(claimEndpoint: string, itemUrl?: string): boolean {
+export function urlMatchesEndpoint(claimEndpoint: string, itemUrl?: string): boolean {
   const cn = normalizeUrl(claimEndpoint)
   const itemNorm = normalizeUrl(itemUrl)
   if (!cn || !itemNorm) return false
@@ -148,7 +148,7 @@ export function verifyFindingClaim(
 
   for (const item of items) {
     const obs = item.observed
-    const epMatch = urlMatches(claim.endpoint, obs?.url)
+    const epMatch = urlMatchesEndpoint(claim.endpoint, obs?.url)
     if (epMatch) endpointFound = true
 
     const methodMatch =

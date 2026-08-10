@@ -47,7 +47,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 06 | Identity Role Reachability | 🟢 (Phase 6 done) | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events (`setIdentity`/`recordAuthFlow`, typed enum→kind map — refresh/form-fill do not change identity), persists via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges (`addReachability`), folds into `WorkflowState.reachability` + `runSpiderRuntime` persistence |
 | 07 | Decision Ledger & Provenance | 🟢 (Phase 3 done) | `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` singleton (`src/security/decision-ledger.ts`). Writes: model selection (selector), worker spawn incl. `routingReason` (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classify (EngagementBoundary), finding create (writeFinding). Provenance refs on spider discoveries (`endpoint_seen`/`form_seen`/`page_seen` carry `provenanceId`) + evidence items (`EvidenceItem.provenanceIds`). `routingReason` typed at event seam (Phase 0). Ledger IDs in workflow state deferred to slice 02 |
 | 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
-| 09 | Proof Rules & Evidence Quality | 🔶 | evidence-gate + ledger committed; `writeFinding` fails closed (non-info). Missing: `ProofRule` module, report-path gate |
+| 09 | Proof Rules & Evidence Quality | 🟢 (Phase 8 done) | `ProofRule`/`ProofCheckResult` + severity floors (`src/intelligence/proof-rules.ts`): critical ≥2 structured captures, high ≥1 non-text, medium/low ≥1 any-kind, info none; endpoint-scoped qualifying evidence; typed status-conflict detection. `writeFinding` fails CLOSED (stores `proofCheck` on FindingNode + `finding.proof` decision) and report generator excludes failed-proof findings + emits proof metadata (JSON/HTML/Markdown) |
 | 10 | CLI/Web Event Parity | 🔶 | All 9 typed events emit (uncommitted emitter). `spider:event` has ZERO subscribers; web gets 3 bridged phase events |
 | 11 | Memory Split Project Global | 🔶 | `cross-engagement.ts` committed with `assertNoIdentity`. Missing: `MemoryScope`/policy types + boundary tests |
 | 12 | Architecture Evals & Hardening | ⬜ | No eval fixtures or vertical tests |
@@ -117,10 +117,10 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Tests + commit
 
 ### Phase 8 — Slice 09 Proof Rules
-- [ ] `ProofRule`/`ProofCheckResult` + default floors
-- [ ] Gate `writeFinding` + report generator
-- [ ] Conflict handling
-- [ ] Tests + commit
+- [x] `ProofRule`/`ProofCheckResult` + default floors
+- [x] Gate `writeFinding` + report generator
+- [x] Conflict handling
+- [x] Tests + commit
 
 ### Phase 9 — Slice 08 Orchestrator (ORCHESTRATION-LAYER-FIX.md)
 - [ ] T1 primitive metadata · T2 diagnosis · T3 planner · T4 `diagnoseTarget` tool · T5 `runAdvancedPlaybook` tool · T6 campaign relevance · T7 solver hunting flow · T8 tests
@@ -162,7 +162,7 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [ ] Crawl output answers identity/role reachability
 - [ ] Decisions, routing reasons, evidence, discoveries inspectable after a run
 - [ ] Workers receive bounded typed context, emit typed results
-- [ ] Findings fail closed on proof rules
+- [x] Findings fail closed on proof rules
 - [ ] CLI and web consume equivalent typed runtime events
 - [ ] Global memory stores only user preferences
 - [ ] Architecture evals cover crawl, routing, spawning, policy, evidence, browser lifecycle, config fallback, recovery

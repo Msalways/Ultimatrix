@@ -52,6 +52,7 @@ function toReportFinding(node: FindingNode, proofs: ExploitProofNode[]): Finding
     firstSeen: now,
     lastSeen: now,
     status: p.lifecycleStatus === 'rejected' || p.lifecycleStatus === 'disproven' ? 'false-positive' : 'open',
+    proofCheck: p.proofCheck,
   }
 }
 

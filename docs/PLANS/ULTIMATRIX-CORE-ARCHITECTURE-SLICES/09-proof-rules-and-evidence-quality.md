@@ -89,5 +89,5 @@ Candidate findings enter the proof-rule checker. The checker reads evidence refs
 
 ## Completion Status
 
-Mostly pending.
+COMPLETE (Phase 8). `src/intelligence/proof-rules.ts` ships `ProofRule`/`ProofCheckResult`, deterministic severity floors, endpoint-scoped qualifying evidence, and typed status-conflict detection. `writeFinding` fails closed and persists `proofCheck` on the FindingNode + `finding.proof` decision ledger entry. Report generator excludes failed-proof findings and includes proof metadata in JSON/HTML/Markdown. 1968/1968 tests green.
 

@@ -23,6 +23,7 @@ import { coreEvidenceLedger } from '../core/evidence'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
 import { redactUrl } from '../security/secret-vault'
+import { checkProof, combineFindingEvidence, type ProofCheckResult } from '../intelligence/proof-rules'
 
 const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }>>()
 
@@ -224,6 +225,45 @@ export const writeFinding = createTool({
       }
     }
 
+    // Slice 09 — deterministic proof floor. Fails CLOSED: a finding that cannot
+    // meet the minimum evidence floor for its severity is never promoted to the
+    // graph or a report, even when its claim is structurally supported.
+    const proofItems = combineFindingEvidence(args.endpoint, structuredEvidenceItems, structuredLedger.all())
+    for (const e of evidenceItems) {
+      if (e.type === 'screenshot' && !proofItems.some(p => p.data === e.data)) {
+        proofItems.push({ id: `attached:${e.data}`, type: 'screenshot', data: e.data, label: e.label, timestamp: e.timestamp })
+      }
+    }
+    const proofCheck: ProofCheckResult = checkProof({
+      findingType: args.type,
+      endpoint: args.endpoint,
+      severity: effectiveSeverity,
+      observedStatus: args.observedStatus,
+      findingId,
+      items: proofItems,
+    })
+    if (!proofCheck.passed) {
+      log.warn(`ProofRules: "${args.type} on ${args.endpoint}" fails closed — missing: ${proofCheck.missingEvidence.join('; ')} conflicts: ${proofCheck.conflicts.join('; ')}`)
+      getGlobalDecisionLedger().recordDecision({
+        kind: 'finding.proof',
+        reason: `proof check blocked ${args.type} on ${redactUrl(args.endpoint)}`,
+        routingReason: `rule=${proofCheck.ruleId} passed=false`,
+        sourceRefs: proofCheck.evidenceRefs,
+      })
+      return {
+        ok: false,
+        error: `ProofRules: finding does not meet the minimum evidence floor for ${effectiveSeverity}. ${proofCheck.missingEvidence.join('; ')}${proofCheck.conflicts.length ? ` Conflicts: ${proofCheck.conflicts.join('; ')}` : ''} Capture real evidence before writing the finding.`,
+        proofCheck,
+        missing: proofCheck.missingEvidence,
+      }
+    }
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'finding.proof',
+      reason: `proof check passed for ${args.type} on ${redactUrl(args.endpoint)}`,
+      routingReason: `rule=${proofCheck.ruleId} sources=${proofCheck.evidenceRefs.length}`,
+      sourceRefs: proofCheck.evidenceRefs,
+    })
+
     const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
 
     const lifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
@@ -244,6 +284,7 @@ export const writeFinding = createTool({
         confidence: args.confidence,
         lifecycleStatus,
         evidenceLevel,
+        proofCheck,
         ...(args.cwe ? { cwe: args.cwe } : {}),
         ...(args.remediation ? { remediation: args.remediation } : {}),
       }
@@ -270,6 +311,7 @@ export const writeFinding = createTool({
       lifecycleStatus,
       evidenceLevel,
       findingId,
+      proofCheck,
       ...(args.cwe ? { cwe: args.cwe } : {}),
       ...(args.remediation ? { remediation: args.remediation } : {}),
     }
@@ -297,6 +339,7 @@ export const writeFinding = createTool({
       lifecycleStatus,
       evidenceLevel,
       findingId,
+      proofCheck,
       deduplicated: !!duplicate,
     }
 

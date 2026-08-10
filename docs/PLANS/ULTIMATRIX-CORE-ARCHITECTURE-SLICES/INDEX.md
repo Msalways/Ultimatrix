@@ -34,7 +34,7 @@ The intended architecture keeps the existing dual engine shape but makes `multi-
 | 06. Identity Role Reachability | Implemented + committed | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events; persisted via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges and `WorkflowState.reachability` (resume-safe). |
 | 07. Decision Ledger and Provenance | Mostly pending | Some routing reasons exist, but no central decision/provenance ledger. |
 | 08. Orchestrator and Worker Routing | Mostly pending | Worker pool exists; multi-model orchestration needs typed routing and bounded context. |
-| 09. Proof Rules and Evidence Quality | Mostly pending | Evidence gate exists; deterministic finding proof floors are not centralized. |
+| 09. Proof Rules and Evidence Quality | Implemented + committed | `ProofRule`/`ProofCheckResult` + deterministic severity floors (`src/intelligence/proof-rules.ts`): critical ≥2 structured captures, high ≥1 non-text, medium/low ≥1 any-kind, info none. `writeFinding` fails closed (FindingNode `proofCheck` + `finding.proof` decision), report generator excludes failed-proof findings and emits proof metadata. |
 | 10. CLI/Web Event Parity | Partially complete | Typed spider stream work exists, but web progress still needs full runtime event parity. |
 | 11. Memory Split Project Global | Mostly pending | Cross-session memory exists; target-sensitive/global boundary needs enforcement. |
 | 12. Architecture Evals and Hardening | Mostly pending | Targeted tests exist; vertical architecture evals are missing. |

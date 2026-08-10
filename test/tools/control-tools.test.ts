@@ -171,14 +171,14 @@ describe('control-tools', () => {
       const result = await callTool(writeFinding, {
         type: 'idor',
         endpoint: '/user/123',
-        severity: 'high',
+        severity: 'medium',
         confidence: 0.7,
       })
       expect(result.ok).toBe(true)
       expect(result.value.evidenceLevel).toBe('L2')
     })
 
-    it('high severity with L2 evidence gets verified status', async () => {
+    it('fails CLOSED: high severity with text-only evidence fails the proof floor', async () => {
       const { writeFinding } = await import('../../src/tools/control-tools')
       await recordFor('text', 'error message leaked', '/api/debug')
       const result = await callTool(writeFinding, {
@@ -187,9 +187,25 @@ describe('control-tools', () => {
         severity: 'high',
         confidence: 0.7,
       })
+      expect(result.ok).toBe(false)
+      expect(result.proofCheck).toBeDefined()
+      expect(result.proofCheck.passed).toBe(false)
+      expect(result.proofCheck.missingEvidence.length).toBeGreaterThan(0)
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('high severity with raw evidence gets verified status', async () => {
+      const { writeFinding } = await import('../../src/tools/control-tools')
+      await recordFor('raw_request', 'GET /api/debug HTTP/1.1', '/api/debug')
+      const result = await callTool(writeFinding, {
+        type: 'info_leak',
+        endpoint: '/api/debug',
+        severity: 'high',
+        confidence: 0.7,
+      })
       expect(result.ok).toBe(true)
       expect(result.value.lifecycleStatus).toBe('verified')
-      expect(result.value.evidenceLevel).toBe('L2')
+      expect(result.value.proofCheck.passed).toBe(true)
     })
 
     it('generates findingId without param as wildcard', async () => {
@@ -207,7 +223,7 @@ describe('control-tools', () => {
 
     it('deduplicates: second writeFinding with same findingId updates existing', async () => {
       const { writeFinding } = await import('../../src/tools/control-tools')
-      await recordFor('text', 'reflected', '/search')
+      await recordFor('raw_request', 'GET /search HTTP/1.1', '/search')
 
       const existingNode = {
         id: 'finding:existing',

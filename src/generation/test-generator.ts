@@ -1,4 +1,5 @@
 import type { Severity } from '../types/shared'
+import type { ProofCheckResult } from '../intelligence/proof-rules'
 
 export interface Finding {
   id: string
@@ -29,6 +30,8 @@ export interface Finding {
   payload?: Record<string, any>
   param?: Record<string, any>
   evidenceMarkers?: string[]
+  /** Slice 09 — proof-check metadata. Findings with a failed proof are excluded from reports. */
+  proofCheck?: ProofCheckResult
 }
 
 export interface Evidence {

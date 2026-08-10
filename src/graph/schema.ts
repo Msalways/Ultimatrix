@@ -7,6 +7,7 @@ import type {
   ExperimentStatus,
   CandidateFindingStatus,
 } from '../types/shared'
+import type { ProofCheckResult } from '../intelligence/proof-rules'
 import { z } from 'zod'
 
 export const FindingSchema = z.object({
@@ -440,6 +441,8 @@ export interface FindingNode extends GraphNodeData {
     verificationNote?: string
     description?: string
     tags?: string[]
+    /** Slice 09 — deterministic proof-check result captured at write time. */
+    proofCheck?: ProofCheckResult
   }
 }
 
@@ -765,7 +768,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.INPUT]: ['selector', 'inputType', 'name', 'placeholder', 'required', 'maxLength'],
   [NodeType.ENDPOINT]: ['url', 'method', 'description', 'params', 'headers', 'bodySchema', 'authRequired', 'authType', 'tags', 'source', 'origin'],
   [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload', 'tags', 'expectedResult', 'actualResult'],
-  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote', 'description', 'tags'],
+  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote', 'description', 'tags', 'proofCheck'],
   [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash', 'name', 'description', 'target', 'startUrl', 'cookies', 'savedAt', 'localStorage', 'actionNodeIds'],
   [NodeType.RBAC_ROLE]: ['roleName', 'accessibleEndpoints', 'inaccessibleEndpoints', 'visibleUIElements'],
   [NodeType.ATTACK]: ['technique', 'payload', 'vulnerable', 'confidence', 'timestamp'],

@@ -15,7 +15,10 @@ export interface ReportOptions {
 }
 
 export function generateReport(findings: Finding[], results: TestResult[], options: ReportOptions): string {
-  const safeFindings = findings.map(redactFinding)
+  // Slice 09 — report path never bypasses proof rules. Findings whose proof
+  // check failed (missing evidence / conflicts) are excluded outright.
+  const eligible = findings.filter(f => !(f.proofCheck && f.proofCheck.passed === false))
+  const safeFindings = eligible.map(redactFinding)
   const safeResults = results.map(r => ({ ...r, testName: redactString(r.testName) }))
   const safeOptions: ReportOptions = {
     ...options,
@@ -123,6 +126,7 @@ function generateJson(findings: Finding[], results: TestResult[], options: Repor
       request: f.request,
       response: f.response,
       evidence: options.includeEvidence ? f.evidence : undefined,
+      proof: f.proofCheck,
     })),
     results: results.map(r => ({
       testFile: r.testFile,
@@ -211,7 +215,7 @@ function generateHtml(findings: Finding[], results: TestResult[], options: Repor
       <h3>${escapeHtml(f.title)} ${severityBadge(f.severity)}</h3>
       <div class="finding-meta">
         ${f.cwe ? `CWE: ${escapeHtml(f.cwe)} | ` : ''}
-        Confidence: ${((f as any).confidence || 0).toFixed(2)} | Status: ${f.status}
+        Confidence: ${((f as any).confidence || 0).toFixed(2)} | Status: ${f.status}${f.proofCheck ? ` | Proof: ${f.proofCheck.passed ? 'PASSED' : 'FAILED'} (${f.proofCheck.evidenceRefs.length} sources)` : ''}
       </div>
 
       <div class="description">
@@ -448,6 +452,7 @@ function generateMarkdown(findings: Finding[], results: TestResult[], options: R
       lines.push('')
       if (f.cwe) lines.push(`**CWE:** ${f.cwe}`)
       lines.push(`**Confidence:** ${((f as any).confidence || 0).toFixed(2)} | **Status:** ${f.status}`)
+      if (f.proofCheck) lines.push(`**Proof:** ${f.proofCheck.passed ? 'PASSED' : 'FAILED'} (rule ${f.proofCheck.ruleId}, ${f.proofCheck.evidenceRefs.length} independent sources)`)
       lines.push('')
       lines.push(f.description || 'No description provided.')
       lines.push('')
