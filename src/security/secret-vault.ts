@@ -1,4 +1,7 @@
 const SECRET_NAME = /(authorization|bearer|token|secret|password|passwd|pwd|api[_-]?key|apikey|session|sid|csrf|xsrf|cookie)/i
+
+export { SECRET_NAME }
+
 const JWT_VALUE = /eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*/g
 const BEARER_SHAPE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]{8,}/g
 

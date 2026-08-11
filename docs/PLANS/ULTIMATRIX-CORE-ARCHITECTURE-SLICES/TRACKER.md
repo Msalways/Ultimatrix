@@ -49,7 +49,7 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
 | 09 | Proof Rules & Evidence Quality | 🟢 (Phase 8 done) | `ProofRule`/`ProofCheckResult` + severity floors (`src/intelligence/proof-rules.ts`): critical ≥2 structured captures, high ≥1 non-text, medium/low ≥1 any-kind, info none; endpoint-scoped qualifying evidence; typed status-conflict detection. `writeFinding` fails CLOSED (stores `proofCheck` on FindingNode + `finding.proof` decision) and report generator excludes failed-proof findings + emits proof metadata (JSON/HTML/Markdown) |
 | 10 | CLI/Web Event Parity | 🔶 | All 9 typed events emit (uncommitted emitter). `spider:event` has ZERO subscribers; web gets 3 bridged phase events |
-| 11 | Memory Split Project Global | 🔶 | `cross-engagement.ts` committed with `assertNoIdentity`. Missing: `MemoryScope`/policy types + boundary tests |
+| 11 | Memory Split Project Global | ✅ | `src/memory/policy.ts` (scope/kind types, `detectSensitivity` shape gate, `evaluateMemoryWrite` routing, DecisionLedger recording) + `src/memory/global-store.ts` (gated `GlobalMemoryStore`) + cross-engagement gate refactor. 29 boundary tests. Commit `5b53973`-relative |
 | 12 | Architecture Evals & Hardening | ⬜ | No eval fixtures or vertical tests |
 
 ## Phases
@@ -133,10 +133,10 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Parity fixtures + commit
 
 ### Phase 11 — Slice 11 Memory Split
-- [ ] `MemoryScope`/`MemoryWriteRequest`/`MemoryPolicyResult` types
-- [ ] Target-sensitive detector + routing
-- [ ] Block global writes of secrets/target data
-- [ ] Boundary tests + commit
+- [x] `MemoryScope`/`MemoryWriteRequest`/`MemoryPolicyResult` types
+- [x] Target-sensitive detector + routing
+- [x] Block global writes of secrets/target data
+- [x] Boundary tests + commit
 
 ### Phase 12 — Slice 12 Architecture Evals
 - [ ] Vertical crawl→policy→worker→evidence→report eval

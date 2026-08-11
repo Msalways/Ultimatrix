@@ -22,36 +22,7 @@ import { resolve } from 'node:path'
 import { getGlobalWorkspace } from '../workspace'
 import type { GraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
-
-// ─── Privacy guards ──────────────────────────────────────────────────
-
-// Absolute URLs must never enter the store.
-const RAW_URL_RE = /https?:\/\/[^\s"'`)]+/i
-// Bare hostnames (e.g. "example.com", "api.target.io") must never be stored.
-// Restricted to a known TLD set so dotted technique ids like "sql.injection"
-// are not false-positively rejected.
-const KNOWN_TLDS = ['com', 'net', 'org', 'io', 'dev', 'app', 'co', 'us', 'eu', 'xyz', 'sh', 'ai', 'gov', 'edu', 'info', 'biz', 'me', 'cloud', 'local', 'internal', 'example', 'test']
-const HOSTNAME_RE = new RegExp(
-  `(^|[\\s"'\`(]|\\b)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:${KNOWN_TLDS.join('|')})(?=[\\s"'\`)/?#]|$)`,
-  'i',
-)
-
-function assertNoIdentity(value: unknown, path = 'root'): void {
-  if (typeof value === 'string') {
-    if (RAW_URL_RE.test(value)) {
-      throw new Error(`[cross-engagement] privacy guard: raw URL rejected at ${path}: ${value.slice(0, 80)}`)
-    }
-    if (HOSTNAME_RE.test(value)) {
-      throw new Error(`[cross-engagement] privacy guard: hostname/identity rejected at ${path}: ${value.slice(0, 80)}`)
-    }
-  } else if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoIdentity(v, `${path}[${i}]`))
-  } else if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) {
-      assertNoIdentity(v, `${path}.${k}`)
-    }
-  }
-}
+import { evaluateMemoryWrite, recordMemoryPolicyDecision, MemoryPolicyError } from '../memory/policy'
 
 // ─── Structural feature extraction (anonymization) ───────────────────
 
@@ -222,21 +193,29 @@ export class CrossEngagementMemory {
     return this.mem.engagements
   }
 
+  /** Absolute path of the aggregated-memory file (for inspection/tests). */
+  getPath(): string {
+    return this.path
+  }
+
   /**
    * Record an engagement's anonymized summary. The `targetOrigin` is
    * validated as a scoping token but never stored. All other fields are
-   * privacy-checked before aggregation.
+   * routed through the memory-policy gate (slice 11) before aggregation —
+   * any target-sensitive content fails CLOSED (anonymization guarantee).
    */
   async recordEngagementSummary(summary: EngagementSummary): Promise<void> {
     await this.load()
 
-    // Hard privacy guard: reject any raw URL / hostname anywhere in the summary.
-    // NOTE: targetOrigin is a scoping token (like reflexion-store.ts) and is
-    // intentionally EXCLUDED from the guard + never persisted.
-    assertNoIdentity(summary.techniques)
-    assertNoIdentity(summary.findings)
-    assertNoIdentity(summary.failedPatterns)
-    assertNoIdentity(summary.effectiveSequences)
+    // Hard privacy gate (slice 11): the summary must be a safe global write.
+    // targetOrigin is a scoping token (like reflexion-store.ts) and is
+    // intentionally EXCLUDED from the gate + never persisted.
+    const gateInput = { ...summary, targetOrigin: undefined }
+    const result = evaluateMemoryWrite({ scope: 'global', kind: 'technique_pattern', value: gateInput })
+    recordMemoryPolicyDecision({ scope: 'global', kind: 'technique_pattern', value: gateInput }, result)
+    if (!result.allowed) {
+      throw new MemoryPolicyError(result)
+    }
 
     this.mem.engagements += 1
 

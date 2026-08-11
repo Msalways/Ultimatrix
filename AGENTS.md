@@ -1,8 +1,9 @@
 ## Ultimatrix v8 — Intelligence-Augmented Security Researcher
 
 ### Status
-- **1761 tests (169 files), clean tsup build (ESM 1.61MB + CJS 1.63MB + DTS)**
-- **318 source files**, zero test failures
+- **2045 tests (198 files), clean tsup build, zero test failures**
+- **318+ source files**, zero test failures
+- **Slice 11 (Memory Split) DONE**: `src/memory/policy.ts` shape-based target-sensitive gate + `evaluateMemoryWrite` routing (project accepts all, global reroutes workflow-scoped, blocks sensitive fail-closed); `src/memory/global-store.ts` gated global prefs; cross-engagement routed through gate. 29 boundary tests.
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
 - **56 skills** (10 domains), knowledge-based, not payload lists
@@ -88,13 +89,20 @@ Parallel debate: 4 LLM members (strategist, operator, skeptic, analyst) debate w
 | **Anti-Loop** | `src/intelligence/anti-loop.ts` | Stale/dead-end detection, structured `[PATH:]` extraction | 20 |
 | **Constants** | `src/intelligence/constants.ts` | Centralized signal lists (no keyword duplication) | — |
 | **Reflexion Store** | `src/intelligence/reflexion-store.ts` | Persist/load reflexion state to graph | 12 |
-| **Cross-Engagement** | `src/intelligence/cross-engagement.ts` | Privacy-preserving cross-session pattern memory | — |
+| **Cross-Engagement** | `src/intelligence/cross-engagement.ts` | Privacy-preserving cross-session pattern memory (gated by memory policy) | 5 |
 | **Outcome Feedback** | `src/intelligence/outcome-feedback.ts` | Post-engagement feedback loop: finding acceptance → technique weights | — |
 | **Chaining** | `src/intelligence/chaining.ts` | Finding chain detection: links findings into multi-step attack chains | 12 |
 | **Hypotheses** | `src/intelligence/hypotheses.ts` | Attack hypothesis generator from graph state | 9 |
 | **Auth Recorder** | `src/intelligence/auth-recorder.ts` | Auth flow recorder: login, OAuth, SAML → AuthFlow nodes | 18 |
 | **RBAC Learner** | `src/intelligence/rbac-learner.ts` | RBAC learner: role-based access patterns → RBACMatrix nodes | — |
 | **Session Resume** | `src/intelligence/session-resume.ts` | Previous session detection + continuity | — |
+
+### Memory Split (`src/memory/`)
+
+| Module | Location | Purpose | Tests |
+|--------|----------|---------|-------|
+| **Policy** | `src/memory/policy.ts` | `MemoryScope`/`MemoryWriteRequest`/`MemoryPolicyResult`; shape-based `detectSensitivity` (secret/URL/hostname/auth-state/storage/request-payload) + `evaluateMemoryWrite` routing: project accepts all, global reroutes workflow-scoped kinds, blocks target-sensitive content fail-closed; decisions recorded to DecisionLedger | 19 |
+| **Global Store** | `src/memory/global-store.ts` | `GlobalMemoryStore` — ONLY gated write path into global prefs (`output/global/global-preferences.json`); safe prefs persist, workflow-scoped rerouted, sensitive throws `MemoryPolicyError` | 5 |
 
 ### Solver Engine (`src/solver/`)
 
@@ -272,7 +280,7 @@ reflexion:
 
 ### Key Commands
 
-- `npm test` — full test suite (1761/1761)
+- `npm test` — full test suite (2045/2045)
 - `npm run build:cli` — tsup build
 - `npm run lint` — eslint src/
 - `npx ultimatrix solve -t <url>` — OODA solver

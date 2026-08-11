@@ -29,12 +29,12 @@ Cross-engagement memory exists, but the boundary between project-specific discov
 
 ## Implementation Tasks
 
-1. Define memory classes and allowed destinations.
-2. Add target-sensitive data detector using `SecretVault` and scope metadata.
-3. Route workflow discoveries to project memory.
-4. Route user preferences to global memory only when explicitly safe.
-5. Block global writes containing secrets, target URLs, auth state, storage values, or request/response bodies.
-6. Add tests for blocked and allowed memory writes.
+1. ✅ Define memory classes and allowed destinations — `MemoryScope`/`MemoryContentKind`/`MemorySensitivityTag`/`MemoryWriteRequest`/`MemoryPolicyResult` in `src/memory/policy.ts`.
+2. ✅ Add target-sensitive data detector — `detectSensitivity(value, { targetOrigin, contextKey })` using secret shapes (JWT/Bearer/SECRET_NAME keys) + URL/hostname shape + structural HTTP request/response payload detection. Shape-based, no vocab/substring inference.
+3. ✅ Route workflow discoveries to project memory — `evaluateMemoryWrite` reroutes `discovery`/`auth_state`/`target_data` from global → project (allowed, never global).
+4. ✅ Route user preferences to global memory only when explicitly safe — `GlobalMemoryStore.writePreference` persists only `preference`/`technique_pattern` that pass the gate.
+5. ✅ Block global writes containing secrets, target URLs, auth state, storage values, or request/response bodies — fail-closed `MemoryPolicyError`; `MemoryPolicyError` thrown; decisions recorded to the DecisionLedger (`memory.policy` kind).
+6. ✅ Add tests for blocked and allowed memory writes — `test/memory/policy.test.ts` (19), `test/memory/global-store.test.ts` (5), `test/intelligence/cross-engagement-policy.test.ts` (5) = 29 tests.
 
 ## Public Types / Interfaces
 
@@ -88,5 +88,10 @@ Memory writes pass through a policy check. Project data is stored under workflow
 
 ## Completion Status
 
-Mostly pending.
+✅ COMPLETE. `src/memory/policy.ts` (types + shape gate + routing + ledger recording), `src/memory/global-store.ts` (gated global prefs store → `output/global/global-preferences.json`), cross-engagement `recordEngagementSummary` now routes through the shared gate (targetOrigin still a scoping token, never persisted). 29 boundary tests green; full suite 2045/2045; tsc clean; tsup build clean.
+
+Notes:
+- `isSecretKeyName` skips pluralized collection keys (e.g. `pathTokens`) so structural shape fields are not false-flagged; camelCase credential keys (`apiKey`, `accessToken`) via `contextKey` on the top-level persistence key.
+- Decision-ledger recording is best-effort (`recordMemoryPolicyDecision`), never throws into the write site.
+- `SECRET_NAME` is now exported from `src/security/secret-vault.ts` and reused by the policy gate (no duplicated regex).
 
