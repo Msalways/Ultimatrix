@@ -29,6 +29,7 @@ import { MarkdownBlock } from './markdown-block'
 import { appendDelta } from '@/output/render-model'
 import { deriveRunOutcome, type RunOutcomeKind } from '@/core/run-outcome'
 import { dataFetcher } from '@/services/data-fetcher'
+import { spiderEventLine } from '@/spider/render'
 
 function normalizeHydratedMessages(messages: unknown[]): StreamMessage[] {
   return messages.flatMap((message) => {
@@ -300,6 +301,13 @@ export function ChatStream() {
           updateMessage(streamStatusId, {
             status: 'running',
             label: `Mapping target${d.steps ? ` · step ${d.steps}` : ''}`,
+          } as any)
+        } else if (event === 'spider:event') {
+          // Slice 10 — typed spider event stream (parity with CLI renderer).
+          const d = parsed
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: spiderEventLine(d),
           } as any)
         } else if (event === 'worker:spawned') {
           const d = parsed

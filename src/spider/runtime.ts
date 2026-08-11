@@ -666,6 +666,6 @@ function summarizeToolResult(result: unknown): string {
   }
 }
 
-function stableTargetId(target: string): string {
+export function stableTargetId(target: string): string {
   return target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'target'
 }

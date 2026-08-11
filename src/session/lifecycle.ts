@@ -13,14 +13,15 @@ import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import { emitBrowserHumanAction, emitSessionInit, emitSessionComplete } from '../events/emitter'
+import { emitBrowserHumanAction, emitSessionInit, emitSessionComplete, getGlobalEmitter } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import { finalizeEngagementMemory } from '../intelligence/cross-engagement'
 import type { FindingNode } from '../graph/schema'
-import { runSpiderRuntime } from '../spider/runtime'
+import { runSpiderRuntime, stableTargetId, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
+import { spiderEventLine } from '../spider/render'
 import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
@@ -517,29 +518,34 @@ export class SessionLifecycle {
     log.info('Crawling ' + target + '...')
 
     const workflow = this._resources.workflow
-    const spiderState = await runSpiderRuntime({
-      config,
-      target,
-      browser,
-      memory,
-      threadId,
-      resourceId,
-      graphStore: workspace.getGraphStore() as any,
-      workflowId: workflow?.state.workflowId ?? undefined,
-      initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
-      allowAny: isAllowAny(),
-      approvedOrigins: (this._resources as SessionResources).approvedOrigins,
-      onText: (text) => process.stdout.write(text),
-      onEvent: (event) => {
-        if (event.type === 'crawl_progress') {
-          log.dim(`[Spider] Progress: ${event.pages ?? 0} pages, ${event.endpoints ?? 0} endpoints, ${event.forms ?? 0} forms`)
-        } else if (event.type === 'crawl_stalled') {
-          log.warn('Spider stale - no new endpoints for several rounds, stopping crawl')
-        } else if (event.type === 'scope_proposed' && event.url) {
-          log.dim(`[Spider] Scope proposed: ${event.url}`)
-        }
-      },
-    })
+    const spiderWorkflowId = workflow?.state.workflowId ?? `workflow-${stableTargetId(target)}`
+    // Slice 10 — CLI renders the full typed spider:event stream through the
+    // shared renderer (same output as the Web UI). Scoped by workflowId so a
+    // concurrent web crawl never leaks into the CLI.
+    const onSpiderEvent = (event: SpiderRuntimeEvent): void => {
+      if (event.workflowId !== spiderWorkflowId) return
+      log.dim(spiderEventLine(event))
+    }
+    getGlobalEmitter().on('spider:event', onSpiderEvent)
+    let spiderState: SpiderRuntimeState | undefined
+    try {
+      spiderState = await runSpiderRuntime({
+        config,
+        target,
+        browser,
+        memory,
+        threadId,
+        resourceId,
+        graphStore: workspace.getGraphStore() as any,
+        workflowId: workflow?.state.workflowId ?? undefined,
+        initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
+        allowAny: isAllowAny(),
+        approvedOrigins: (this._resources as SessionResources).approvedOrigins,
+        onText: (text) => process.stdout.write(text),
+      })
+    } finally {
+      getGlobalEmitter().off('spider:event', onSpiderEvent)
+    }
 
     // Slice 02 — attach the crawl snapshot to the workflow and persist. This is
     // what makes resume possible: the spider state (and stop reason) are carried

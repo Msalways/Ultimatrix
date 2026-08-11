@@ -76,6 +76,9 @@ export async function POST(req: NextRequest) {
         on('anti-loop:stale', (e) => send('anti-loop:stale', e))
         on('browser:reaction', (e) => send('browser:reaction', e))
         on('spider:progress', (e) => send('spider:progress', e))
+        // Slice 10 — forward the full typed spider event stream (parity with
+        // the CLI). The UI renders typed fields, not text deltas.
+        on('spider:event', (e) => send('spider:event', e))
 
         const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 30_000)
         const cleanup = () => {

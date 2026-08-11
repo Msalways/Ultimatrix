@@ -31,8 +31,9 @@ import { getGlobalObserver } from '../capture/human-observer'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
 import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import { emitBrowserHumanAction } from '../events/emitter'
-import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeState } from '../spider/runtime'
+import { emitBrowserHumanAction, getGlobalEmitter } from '../events/emitter'
+import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeState, type SpiderRuntimeEvent } from '../spider/runtime'
+import { spiderEventToPhase } from '../spider/render'
 import { WorkflowStore, getWorkflowPath } from '../workflow/store'
 import { setArtifactCreateListener, getGlobalArtifactRegistry } from '../security/artifacts'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
@@ -242,31 +243,35 @@ export class WebEngine {
   ): Promise<void> {
     const browser = getOrCreateBrowser(this.config)
     const workflow = this._workflow
-    this._spiderState = await runSpiderRuntime({
-      config: this.config,
-      target: this.target,
-      browser,
-      graphStore: this.graphStore as any,
-      workflowId: workflow?.state.workflowId ?? this.id,
-      initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
-      allowAny: isAllowAny(),
-      approvedOrigins: this._approvedOrigins,
-      onRuntime: (runtime) => {
-        this._spiderRuntime = runtime
-      },
-      onMessage,
-      onPhase,
-      signal: this._abortController?.signal,
-      onEvent: (event) => {
-        if (event.type === 'crawl_progress') {
-          onPhase?.({ phase: 'observe', step: 0, text: `[Spider] ${event.pages ?? 0} pages, ${event.endpoints ?? 0} endpoints, ${event.forms ?? 0} forms` })
-        } else if (event.type === 'crawl_stalled') {
-          onPhase?.({ phase: 'stale', step: 0, reason: String(event.reason ?? 'stale') })
-        } else if (event.type === 'scope_proposed' && event.url) {
-          onPhase?.({ phase: 'observe', step: 0, text: `[Spider] scope proposed: ${event.url}` })
-        }
-      },
-    })
+    const spiderWorkflowId = workflow?.state.workflowId ?? this.id
+    // Slice 10 — bridge the FULL typed spider:event stream into the solver
+    // phase stream via the shared renderer (parity with CLI). Scoped by
+    // workflowId so concurrent engines never cross-couple.
+    const onSpiderEvent = (event: SpiderRuntimeEvent): void => {
+      if (event.workflowId !== spiderWorkflowId) return
+      onPhase?.(spiderEventToPhase(event))
+    }
+    getGlobalEmitter().on('spider:event', onSpiderEvent)
+    try {
+      this._spiderState = await runSpiderRuntime({
+        config: this.config,
+        target: this.target,
+        browser,
+        graphStore: this.graphStore as any,
+        workflowId: workflow?.state.workflowId ?? this.id,
+        initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
+        allowAny: isAllowAny(),
+        approvedOrigins: this._approvedOrigins,
+        onRuntime: (runtime) => {
+          this._spiderRuntime = runtime
+        },
+        onMessage,
+        onPhase,
+        signal: this._abortController?.signal,
+      })
+    } finally {
+      getGlobalEmitter().off('spider:event', onSpiderEvent)
+    }
 
     // Slice 02 — attach the crawl snapshot to the workflow and persist so a
     // later engine/session can resume from the same workflowId.

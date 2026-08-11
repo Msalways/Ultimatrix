@@ -124,13 +124,13 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 
 ### Phase 9 — Slice 08 Orchestrator (ORCHESTRATION-LAYER-FIX.md)
 - [x] T1 primitive metadata · T2 diagnosis · T3 planner · T4 `diagnoseTarget` tool · T5 `runAdvancedPlaybook` tool · T6 campaign relevance · T7 solver hunting flow · T8 tests
-- [ ] Commit
+- [x] Commit — `5b53973`
 
 ### Phase 10 — Slice 10 Event Parity
-- [ ] Subscribe web to `spider:event` typed stream
-- [ ] CLI event renderer parity
-- [ ] Remove text-delta-only progress assumptions
-- [ ] Parity fixtures + commit
+- [x] Subscribe web to `spider:event` typed stream
+- [x] CLI event renderer parity
+- [x] Remove text-delta-only progress assumptions
+- [x] Parity fixtures + commit
 
 ### Phase 11 — Slice 11 Memory Split
 - [ ] `MemoryScope`/`MemoryWriteRequest`/`MemoryPolicyResult` types
