@@ -29,15 +29,15 @@ The repo has many targeted tests and build coverage. Architecture-level evals fo
 
 ## Implementation Tasks
 
-1. Create architecture eval fixtures.
-2. Add vertical crawl-completion eval.
-3. Add scope policy eval for allowed/proposed/denied.
-4. Add worker routing eval.
-5. Add proof-rule finding eval.
-6. Add browser lifecycle eval.
-7. Add config fallback eval for model roles and browser provider.
-8. Add recovery evals for stalled crawls and failed workers.
-9. Add CI-friendly targeted command documentation.
+- [x] 1. Create architecture eval fixtures.
+- [x] 2. Add vertical crawl-completion eval.
+- [x] 3. Add scope policy eval for allowed/proposed/denied.
+- [x] 4. Add worker routing eval.
+- [x] 5. Add proof-rule finding eval.
+- [x] 6. Add browser lifecycle eval.
+- [x] 7. Add config fallback eval for model roles and browser provider.
+- [x] 8. Add recovery evals for stalled crawls and failed workers.
+- [x] 9. Add CI-friendly targeted command documentation.
 
 ## Public Types / Interfaces
 
@@ -92,5 +92,14 @@ Eval fixtures drive workflow runs through the same runtime APIs used by CLI and 
 
 ## Completion Status
 
-Mostly pending.
+**COMPLETE (2026-08-11).** 9 evals green, tsc 0 errors, full suite 2054/2054 (199 files), clean tsup build.
+
+- `src/evals/types.ts` — `ArchitectureEvalCase` (adds `execute`), `ArchitectureEvalResult`, `ArchitectureEvalSuite`.
+- `src/evals/runner.ts` — `runEvalCase` (ordered-event subsequence + deep-equal state-subset, failures per case, durationMs), `runEvalSuite`.
+- `src/evals/harness.ts` — `evalConfig()` (explicit deny-by-default scope, antiLoop staleThreshold 2, external tools disabled), `eventCapturer`, `fakeGraphStore`, `fakeWorkerAgent`, `fakeWorkerPool`, `fakeModelSelector` — fakes ONLY at the model/browser boundary.
+- `src/evals/fixtures.ts` — 8 vertical cases: crawl-completion (runtime → WorkflowStore persist/reload → boundary classification), scope-policy (allowed/proposed/denied, proposed never auto-executed, explicit approval reclassifies, ambient `setAllowAny(true)` from `test/setup.ts` never leaks into an `allowAny:false` boundary), worker-routing (`createSpawnWorkerTool` with fake pool+selector → typed routing + compact result + `worker.spawn` decision persisted), proof-rule-finding (writeFinding high+capture accepted; `checkProof` floor: critical ≥2 structured fail-closed), browser-lifecycle (provider fixed per workflow, resume mismatch hard-rejects, camofox planned → throws), config-fallback (`resolveModelRef` complexity tiers/brain role + `resolveBrowserProvider`), recovery (stalled crawl → `stale` stopReason + `crawl_stalled`; failed worker → `ok:false` with decision persisted), external-tools-gating (deny-by-default, configured categories authorized).
+- `test/evals/architecture.test.ts` (9 tests) — mock set mirrors `control-tools.test.ts`; runs full suite + per-case diagnostics.
+- `npm run test:evals` → `vitest run test/evals`.
+
+Verification: `npm run test:evals` 9/9; `npx tsc --noEmit` 0 errors; `npm test` 2054/2054 (199 files); `npm run build:cli` clean (ESM/CJS/DTS).
 

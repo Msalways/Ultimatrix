@@ -46,11 +46,11 @@ Base (committed): scope-guard · evidence-gate/ledger · cross-engagement · wor
 | 05 | Browser Provider Abstraction | 🟢 (Phase 7 done) | `BrowserProvider` interface + `StagehandProvider` wrapper (`src/browser/provider.ts` + `stagehand-provider.ts`) behind the shared manager. Config `browser.provider: 'stagehand'` (default) | `camofox` declared planned-only (fails clearly). Provider + session recorded in `WorkflowState`; resume with a different provider is a hard reject. `exportStorage` → redacted `session` artifact |
 | 06 | Identity Role Reachability | 🟢 (Phase 6 done) | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events (`setIdentity`/`recordAuthFlow`, typed enum→kind map — refresh/form-fill do not change identity), persists via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges (`addReachability`), folds into `WorkflowState.reachability` + `runSpiderRuntime` persistence |
 | 07 | Decision Ledger & Provenance | 🟢 (Phase 3 done) | `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord`/`ProvenanceSource` singleton (`src/security/decision-ledger.ts`). Writes: model selection (selector), worker spawn incl. `routingReason` (spawn-worker/swarm), tool exec (worker-context), browser action (human-observer), scope classify (EngagementBoundary), finding create (writeFinding). Provenance refs on spider discoveries (`endpoint_seen`/`form_seen`/`page_seen` carry `provenanceId`) + evidence items (`EvidenceItem.provenanceIds`). `routingReason` typed at event seam (Phase 0). Ledger IDs in workflow state deferred to slice 02 |
-| 08 | Orchestrator & Worker Routing | 🔶 | pool/selector/skills/council + `src/models/routing.ts` (untracked). Missing: orchestrator (ORCHESTRATION-LAYER-FIX T1–T8) |
+| 08 | Orchestrator & Worker Routing | 🟢 (Phase 9 done) | `src/orchestration/` — diagnosis (read-only signals + missing context + ranked candidates), technique-planner (`SIGNAL_FAMILIES`, worker delegation), playbook-runner (seamed), tools `diagnoseTarget` + `runAdvancedPlaybook`. Campaign feeds `listPrimitiveMetadata()` tags; planner signal routing + boost. Committed `5b53973` |
 | 09 | Proof Rules & Evidence Quality | 🟢 (Phase 8 done) | `ProofRule`/`ProofCheckResult` + severity floors (`src/intelligence/proof-rules.ts`): critical ≥2 structured captures, high ≥1 non-text, medium/low ≥1 any-kind, info none; endpoint-scoped qualifying evidence; typed status-conflict detection. `writeFinding` fails CLOSED (stores `proofCheck` on FindingNode + `finding.proof` decision) and report generator excludes failed-proof findings + emits proof metadata (JSON/HTML/Markdown) |
-| 10 | CLI/Web Event Parity | 🔶 | All 9 typed events emit (uncommitted emitter). `spider:event` has ZERO subscribers; web gets 3 bridged phase events |
-| 11 | Memory Split Project Global | ✅ | `src/memory/policy.ts` (scope/kind types, `detectSensitivity` shape gate, `evaluateMemoryWrite` routing, DecisionLedger recording) + `src/memory/global-store.ts` (gated `GlobalMemoryStore`) + cross-engagement gate refactor. 29 boundary tests. Commit `5b53973`-relative |
-| 12 | Architecture Evals & Hardening | ⬜ | No eval fixtures or vertical tests |
+| 10 | CLI/Web Event Parity | 🟢 (Phase 10 done) | `src/spider/render.ts` shared typed renderer (all 10 `SpiderRuntimeEvent` types, typed discriminant, zero substring) + `SPIDER_EVENT_PHASE` map; CLI `lifecycle.runSpider` + web `engine.runSpider` both subscribe scoped by `workflowId`; SSE `solve/route.ts` forwards typed frames; `chat-stream.tsx` renders via `spiderEventLine`; parity fixtures consumed by CLI + web tests. Committed `93380b8` |
+| 11 | Memory Split Project Global | ✅ | `src/memory/policy.ts` (scope/kind types, `detectSensitivity` shape gate, `evaluateMemoryWrite` routing, DecisionLedger recording) + `src/memory/global-store.ts` (gated `GlobalMemoryStore`) + cross-engagement gate refactor. 29 boundary tests. Commit `7cc2fdd` |
+| 12 | Architecture Evals & Hardening | ✅ | `src/evals/` (types/runner/harness/fixtures) + `test/evals/architecture.test.ts` — 8 vertical cases (crawl-completion, scope-policy, worker-routing, proof-rule-finding, browser-lifecycle, config-fallback, recovery, external-tools-gating) driving the REAL runtime modules with LLM-boundary fakes only. `npm run test:evals`. 9 tests. Full suite 2054/2054, tsc 0 errors, clean build |
 
 ## Phases
 
@@ -139,9 +139,9 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 - [x] Boundary tests + commit
 
 ### Phase 12 — Slice 12 Architecture Evals
-- [ ] Vertical crawl→policy→worker→evidence→report eval
-- [ ] Browser lifecycle eval · recovery evals · config fallback eval
-- [ ] Commit + close plan DoD
+- [x] Vertical crawl→policy→worker→evidence→report eval
+- [x] Browser lifecycle eval · recovery evals · config fallback eval
+- [x] Commit + close plan DoD
 
 ## Blockers
 
@@ -154,15 +154,15 @@ Each phase gate: green `tsc --noEmit` + green tests + commit. Tick `[x]` when do
 
 ## Definition of Done (INDEX.md whole-plan)
 
-- [ ] One spider runtime serves CLI and web
-- [ ] Workflow state persisted + resumed (crawl, browser, evidence, artifact, model, worker)
-- [ ] Every URL classified `allowed`/`proposed`/`denied`; proposed never auto-executed
-- [ ] Secret-like values redacted before durable storage everywhere
-- [ ] Browser provider selected by config, fixed per workflow
-- [ ] Crawl output answers identity/role reachability
-- [ ] Decisions, routing reasons, evidence, discoveries inspectable after a run
-- [ ] Workers receive bounded typed context, emit typed results
+- [x] One spider runtime serves CLI and web
+- [x] Workflow state persisted + resumed (crawl, browser, evidence, artifact, model, worker)
+- [x] Every URL classified `allowed`/`proposed`/`denied`; proposed never auto-executed
+- [x] Secret-like values redacted before durable storage everywhere
+- [x] Browser provider selected by config, fixed per workflow
+- [x] Crawl output answers identity/role reachability
+- [x] Decisions, routing reasons, evidence, discoveries inspectable after a run
+- [x] Workers receive bounded typed context, emit typed results
 - [x] Findings fail closed on proof rules
-- [ ] CLI and web consume equivalent typed runtime events
-- [ ] Global memory stores only user preferences
-- [ ] Architecture evals cover crawl, routing, spawning, policy, evidence, browser lifecycle, config fallback, recovery
+- [x] CLI and web consume equivalent typed runtime events
+- [x] Global memory stores only user preferences
+- [x] Architecture evals cover crawl, routing, spawning, policy, evidence, browser lifecycle, config fallback, recovery

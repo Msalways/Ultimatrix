@@ -42,6 +42,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "tsx scripts/test-e2e.ts",
+    "test:evals": "vitest run test/evals",
     "clean": "rm -rf dist .next",
     "validate": "node scripts/validate-setup.js",
     "demo": "node scripts/quick-demo.js",

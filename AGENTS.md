@@ -1,8 +1,9 @@
 ## Ultimatrix v8 — Intelligence-Augmented Security Researcher
 
 ### Status
-- **2045 tests (198 files), clean tsup build, zero test failures**
+- **2054 tests (199 files), clean tsup build, zero test failures**
 - **318+ source files**, zero test failures
+- **Slice 12 (Architecture Evals) DONE**: `src/evals/` — `types.ts` (ArchitectureEvalCase/Result/Suite), `runner.ts` (runEvalCase/runEvalSuite: ordered-event subsequence + deep-equal state-subset), `harness.ts` (evalConfig + LLM-boundary fakes), `fixtures.ts` (8 vertical cases). `test/evals/architecture.test.ts` (9 tests). `npm run test:evals` → `vitest run test/evals`. Cases drive REAL runtime modules: crawl-completion (SpiderRuntime → WorkflowStore persist/reload → boundary classify), scope-policy (allowed/proposed/denied, proposed never auto-executed, approval reclassifies, ambient allow-any never leaks), worker-routing (createSpawnWorkerTool typed routing + compact result + worker.spawn decision), proof-rule-finding (writeFinding gate + checkProof floor fail-closed), browser-lifecycle (provider fixed per workflow, resume mismatch reject, camofox planned → throws), config-fallback (resolveModelRef tiers/roles + resolveBrowserProvider), recovery (stale crawl stopReason + failed worker ok:false w/ persisted decision), external-tools-gating (deny-by-default).
 - **Slice 11 (Memory Split) DONE**: `src/memory/policy.ts` shape-based target-sensitive gate + `evaluateMemoryWrite` routing (project accepts all, global reroutes workflow-scoped, blocks sensitive fail-closed); `src/memory/global-store.ts` gated global prefs; cross-engagement routed through gate. 29 boundary tests.
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
@@ -280,7 +281,8 @@ reflexion:
 
 ### Key Commands
 
-- `npm test` — full test suite (2045/2045)
+- `npm test` — full test suite (2054/2054)
+- `npm run test:evals` — architecture evals (`vitest run test/evals`)
 - `npm run build:cli` — tsup build
 - `npm run lint` — eslint src/
 - `npx ultimatrix solve -t <url>` — OODA solver

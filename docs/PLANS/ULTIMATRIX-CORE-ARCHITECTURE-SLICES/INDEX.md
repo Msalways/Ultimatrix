@@ -1,6 +1,6 @@
 # Ultimatrix Core Architecture Slices
 
-**Status:** Planned, with several slices partially implemented in current source.
+**Status:** COMPLETE — all 12 slices implemented, committed, and verified (full suite 2054/2054, tsc 0 errors, clean tsup build).
 **Purpose:** Break the core architecture improvement plan into buildable slices that can be implemented one at a time without re-deciding the architecture.
 
 ---
@@ -26,18 +26,18 @@ The intended architecture keeps the existing dual engine shape but makes `multi-
 
 | Slice | Status | Notes |
 |---|---|---|
-| 01. Spider Runtime Foundation | Implemented + committed | `SpiderRuntime` shared by CLI+web; stale stop, scope classification (explicit allow-any input), snapshot resume, 9 typed events. Frontier is discovery/limit state; `workflows`/`assets` reserved for slice 06. |
+| 01. Spider Runtime Foundation | Implemented + committed | `SpiderRuntime` shared by CLI+web; stale stop, scope classification (explicit allow-any input), snapshot resume, 10 typed events. Frontier is discovery/limit state; `workflows`/`assets` reserved for slice 06. |
 | 02. Workflow State and Persistence | Implemented + committed | `WorkflowState` (version 1) + `WorkflowStore` (`src/workflow/`) — embeds `SpiderRuntimeState` + browser/model/worker/artifact/evidence/ledger refs; per-target `workflow.json` save/load/resume; version-gated coerce; lifetime-filtered sync. Wired into lifecycle + web engine + CLI solve (stable `workflowId`, post-crawl attach + persist, artifact-create listener). |
 | 03. Engagement Boundary and Policy | Implemented + committed | `AuthorizationCategory` (10) + `allowedCategories` gating, external tools deny-by-default, proposed-scope approval workflow (CLI `--approve-origin` + web `/api/spider/approve`), `scope_proposed` typed event. |
-| 04. Secret Vault and Artifacts | Partially complete | Secret vault work exists, but redaction is not yet guaranteed across all persistence paths. |
+| 04. Secret Vault and Artifacts | Implemented + committed | `SecretVault` normalized API (`redactValue`/`redactString`/`redactHeaders`/`redactObject`/`redactUrl`/`redactArtifactMetadata`); redaction wired into browser storage export, report generation, screenshot metadata, session/finding paths; `ArtifactRecord` lifecycle + provenance (`src/security/artifacts.ts`). |
 | 05. Browser Provider Abstraction | Implemented + committed | `BrowserProvider` interface + `StagehandProvider` wrapper; config-driven selection (`browser.provider`, default stagehand); provider + session recorded in `WorkflowState`; resume with a different provider is a hard reject; `camofox` fails clearly as planned-only. |
 | 06. Identity Role Reachability | Implemented + committed | Typed `IdentityKind`/`IdentityContext`/`ReachabilityRecord`/`AuthTransition` (`src/identity/`). Spider runtime attaches session-level `currentIdentity` to frontier + page/endpoint/form discoveries, records deduped reachability + typed `auth_transition` events; persisted via `REACHABILITY` nodes + `REACHES`/`HAS_ROLE` edges and `WorkflowState.reachability` (resume-safe). |
-| 07. Decision Ledger and Provenance | Mostly pending | Some routing reasons exist, but no central decision/provenance ledger. |
-| 08. Orchestrator and Worker Routing | Mostly pending | Worker pool exists; multi-model orchestration needs typed routing and bounded context. |
+| 07. Decision Ledger and Provenance | Implemented + committed | Central `DecisionLedger`/`DecisionRecord`/`ProvenanceRecord` (`src/security/decision-ledger.ts`); writes from model selection, worker spawn (incl. `routingReason`), tool exec, browser action, scope classify, finding create; provenance refs on spider discoveries + evidence items. |
+| 08. Orchestrator and Worker Routing | Implemented + committed | `src/orchestration/` — diagnosis, technique-planner (`SIGNAL_FAMILIES`, worker delegation), playbook-runner, tools `diagnoseTarget` + `runAdvancedPlaybook`; campaign feeds `listPrimitiveMetadata()` tags; typed routing via `src/models/routing.ts` (`resolveModelRef`, `COMPLEXITY_TIER_MAP`). |
 | 09. Proof Rules and Evidence Quality | Implemented + committed | `ProofRule`/`ProofCheckResult` + deterministic severity floors (`src/intelligence/proof-rules.ts`): critical ≥2 structured captures, high ≥1 non-text, medium/low ≥1 any-kind, info none. `writeFinding` fails closed (FindingNode `proofCheck` + `finding.proof` decision), report generator excludes failed-proof findings and emits proof metadata. |
-| 10. CLI/Web Event Parity | Partially complete | Typed spider stream work exists, but web progress still needs full runtime event parity. |
-| 11. Memory Split Project Global | Mostly pending | Cross-session memory exists; target-sensitive/global boundary needs enforcement. |
-| 12. Architecture Evals and Hardening | Mostly pending | Targeted tests exist; vertical architecture evals are missing. |
+| 10. CLI/Web Event Parity | Implemented + committed | `src/spider/render.ts` shared typed renderer (all 10 `SpiderRuntimeEvent` types, zero substring); CLI `lifecycle.runSpider` + web `engine.runSpider` subscribe scoped by `workflowId`; SSE `solve/route.ts` forwards typed frames; `chat-stream.tsx` renders via `spiderEventLine`; parity fixtures. |
+| 11. Memory Split Project Global | Implemented + committed | `src/memory/policy.ts` shape-based target-sensitive gate + `evaluateMemoryWrite` routing (project accepts all, global reroutes workflow-scoped kinds, blocks sensitive fail-closed) + `src/memory/global-store.ts` gated `GlobalMemoryStore` + cross-engagement gate refactor. |
+| 12. Architecture Evals and Hardening | Implemented + committed | `src/evals/` (types/runner/harness/fixtures) + `test/evals/architecture.test.ts` — 8 vertical cases driving the REAL runtime modules with LLM-boundary fakes only; `npm run test:evals`. |
 
 Additional partial implementation:
 
@@ -79,14 +79,7 @@ All original blockers are resolved (tracked in [TRACKER.md](TRACKER.md)):
 
 ## Recommended Next Slice
 
-Start with [01. Spider Runtime Foundation](01-spider-runtime-foundation.md).
-
-Reason:
-
-- It already exists and is partially complete.
-- It blocks reliable CLI/web event parity.
-- It exposes the current scope-classification bug.
-- Workflow state should attach spider state instead of inventing a second crawl model.
+All 12 slices are complete. Remaining work is optional post-MVP extensibility (MCP result caching, plugin sandboxing, skill-merit decay, cross-session MCP discovery persistence, MCP/plugin Web UI) and legacy v6 tech-debt cleanup (`disproven` lifecycle enum, legacy type errors, lint runtime).
 
 ---
 
@@ -115,14 +108,15 @@ The architecture plan is done when:
 Targeted verification:
 
 ```powershell
+npm run test:evals
 node .\node_modules\typescript\bin\tsc --noEmit
 ```
 
 ```powershell
-node .\node_modules\vitest\vitest.mjs run test\spider\runtime.test.ts test\security\secret-vault.test.ts test\config\config.test.ts test\analysis\har-bridge.test.ts test\models\selector.test.ts
+node .\node_modules\vitest\vitest.mjs run test\spider\runtime.test.ts test\security\secret-vault.test.ts test\config\config.test.ts test\analysis\har-bridge.test.ts test\models\selector.test.ts test\evals\architecture.test.ts
 ```
 
-Full verification after the slices stabilize:
+Full verification:
 
 ```powershell
 npm test
