@@ -21,6 +21,7 @@ import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analys
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { runAnalysis } from './analyser'
 import { redactHarJson } from '../security/secret-vault'
+import { commitFinding } from '../tools/control-tools'
 
 export interface BridgeResult {
   endpointsWritten: number
@@ -120,20 +121,43 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   // so value-provenance never treats our own callback body as a target secret.
   const secrets = getSecrets(entries)
   for (const secret of secrets) {
-    const entryUrl = entries[secret.entryIndex]?.request?.url ?? ''
+    const entry = entries[secret.entryIndex]
+    const entryUrl = entry?.request?.url ?? ''
+    const method = entry?.request?.method ?? 'GET'
+    const status = entry?.response?.status
     const secretOrigin = originOf(entryUrl)
-    store.addFinding({
-      endpoint: `${secret.location}:${secret.name}`,
-      technique: `Secret Exposure: ${secret.type}`,
+    // Every secret finding is a real capture -> routed through the shared
+    // finding-commit gate with source 'captured' and its HAR entry as typed
+    // evidence, so it is structurally verified against what actually crossed
+    // the wire before it can reach the graph or a report.
+    const gateResult = await commitFinding({
+      type: `Secret Exposure: ${secret.type}`,
+      endpoint: entryUrl,
+      param: `${secret.location}:${secret.name}`,
+      method,
       severity: secret.type === 'jwt' || secret.type === 'password' ? 'high' : 'medium',
       confidence: 0.7,
       description: `${secret.description}. Found in ${secret.location} (entry ${secret.entryIndex}): ${secret.name} = ${secret.value}`,
-      evidence: [`HAR entry ${secret.entryIndex}`, `${secret.location}: ${secret.name}`],
+      evidence: [
+        {
+          type: 'har_entry',
+          data: JSON.stringify({ method, url: entryUrl, status }),
+          label: `HAR entry ${secret.entryIndex}`,
+          timestamp: Date.now(),
+          observed: { url: entryUrl, method, ...(status != null ? { status } : {}) },
+        },
+      ],
       tags: secretOrigin === 'self'
         ? ['har-bridge', 'secret', secret.type, 'self-traffic']
         : ['har-bridge', 'secret', secret.type],
+      source: 'captured',
+      tool: 'har-bridge',
     })
-    secretsWritten++
+    if (gateResult.ok) {
+      secretsWritten++
+    } else {
+      log.warn(`HAR bridge: secret finding for ${secret.location}:${secret.name} blocked by gate: ${gateResult.error}`)
+    }
   }
 
   // ── 3. Data flows → Fact nodes ────────────────────────────────

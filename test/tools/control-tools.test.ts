@@ -7,6 +7,8 @@ vi.mock('@mastra/core/tools', () => ({
 const mockStore = {
   queryNodes: vi.fn().mockReturnValue([]),
   addFinding: vi.fn(),
+  addExploitProof: vi.fn(),
+  addEdge: vi.fn(),
   save: vi.fn().mockResolvedValue(undefined),
 }
 
@@ -70,6 +72,12 @@ describe('control-tools', () => {
       type: 'Finding',
       properties: data,
     }))
+    mockStore.addExploitProof.mockImplementation((data: any) => ({
+      id: 'proof:1',
+      type: 'ExploitProof',
+      properties: data,
+    }))
+    mockStore.addEdge.mockReturnValue(undefined)
   })
 
   describe('writeFinding — structural evidence contract (A5)', () => {
@@ -256,6 +264,153 @@ describe('control-tools', () => {
       expect(result.value.deduplicated).toBe(true)
       expect(result.value.id).toBe('finding:existing')
       expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('commitFinding — shared finding-commit gate (F1)', () => {
+    const gateInput = (overrides: any) => ({
+      type: 'idor',
+      endpoint: '/api/users',
+      severity: 'medium' as const,
+      confidence: 0.7,
+      source: 'llm' as const,
+      tool: 'test',
+      ...overrides,
+    })
+
+    const rawFor = (url: string) => ({
+      type: 'raw_request' as const,
+      data: `GET ${url} HTTP/1.1`,
+      label: 'raw capture',
+      observed: { url, method: 'GET', status: 200 },
+    })
+
+    it('rejects a non-human claim when evidence does not support the endpoint', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(
+        gateInput({ endpoint: '/api/private', evidence: [rawFor('/other')] }),
+      )
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.missing).toEqual(['endpoint:/api/private'])
+      }
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('human assertions skip claim verification but the proof floor still fails CLOSED', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(
+        gateInput({
+          severity: 'high',
+          source: 'human',
+          evidence: [
+            { type: 'text', data: 'observed by operator', label: 'human note', observed: { url: '/api/users', method: 'GET', status: 200 } },
+          ],
+        }),
+      )
+      // Human trust bypasses claim verification (no endpoint:missing), but the
+      // deterministic floor is NOT downgraded: high requires a non-text capture.
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.missing).toEqual(
+          expect.arrayContaining([expect.stringContaining('screenshot/har_entry/raw_request/raw_response')]),
+        )
+        expect(result.proofCheck).toBeDefined()
+        expect(result.proofCheck!.passed).toBe(false)
+      }
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('human assertions with a real capture pass the floor and commit', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(
+        gateInput({ severity: 'high', source: 'human', evidence: [rawFor('/api/users')] }),
+      )
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.value.evidenceLevel).toBe('L4')
+        expect(result.value.lifecycleStatus).toBe('verified')
+        expect(result.value.proofCheck.passed).toBe(true)
+      }
+      expect(mockStore.addFinding).toHaveBeenCalled()
+    })
+
+    it('attaches committed evidence to the persisted finding', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      expect(result.ok).toBe(true)
+      expect(mockStore.addFinding).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evidence: expect.arrayContaining(['[raw capture] GET /api/users HTTP/1.1']),
+          findingId: 'idor:/api/users:*',
+        }),
+      )
+    })
+
+    it('persists an EXPLOIT_PROOF node with a PROVES edge when exploitProof is supplied', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(
+        gateInput({
+          severity: 'high',
+          evidence: [rawFor('/api/users')],
+          exploitProof: {
+            scenario: 'read another user record',
+            relation: 'cross-api trust boundary',
+            request: 'GET /api/users/2',
+            response: '{"id":2,"email":"victim"}',
+            impact: 'read victim data',
+          },
+        }),
+      )
+      expect(result.ok).toBe(true)
+      expect(mockStore.addExploitProof).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scenario: 'read another user record',
+          findingId: expect.any(String),
+          status: 'proposed',
+        }),
+      )
+      expect(mockStore.addEdge).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'PROVES', fromId: 'proof:1', toId: 'finding:1' }),
+      )
+      if (result.ok) {
+        expect(result.value.exploitProofNodeId).toBe('proof:1')
+      }
+    })
+
+    it('merges duplicates through the gate (no second graph write)', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const existingNode = {
+        id: 'finding:existing',
+        type: 'Finding',
+        properties: {
+          findingId: 'idor:/api/users:*',
+          severity: 'low',
+          evidence: [],
+          confidence: 0.3,
+          lifecycleStatus: 'verified',
+          evidenceLevel: 'L1',
+        },
+      }
+      mockStore.queryNodes.mockReturnValue([existingNode])
+      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.value.deduplicated).toBe(true)
+        expect(result.value.merged).toBe(true)
+        expect(result.value.id).toBe('finding:existing')
+      }
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('carries the proofCheck on the committed finding for report gating', async () => {
+      const { commitFinding } = await import('../../src/tools/control-tools')
+      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.value.proofCheck.ruleId).toBe('floor-medium')
+        expect(result.value.proofCheck.passed).toBe(true)
+      }
     })
   })
 })

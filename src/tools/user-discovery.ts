@@ -2,6 +2,7 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { log } from '../utils/logger'
+import { commitFinding, buildTextEvidence } from './control-tools'
 
 export const addDiscovery = createTool({
   id: 'addDiscovery',
@@ -27,15 +28,22 @@ export const addDiscovery = createTool({
         source: 'user-input',
       })
 
-      const finding = store.addFinding({
+      const gateResult = await commitFinding({
+        type: technique,
         endpoint,
-        technique,
+        method: method || 'GET',
         severity,
         confidence,
         description,
-        evidence: evidence || [],
         tags: [...(tags || []), 'user-reported'],
+        source: 'human',
+        tool: 'addDiscovery',
+        evidence: buildTextEvidence(evidence, endpoint, method),
       })
+      if (!gateResult.ok) {
+        log.warn(`User discovery rejected by gate: ${gateResult.error}`)
+        return { ok: false, error: gateResult.error }
+      }
 
       store.save().catch(() => {})
 
@@ -44,7 +52,7 @@ export const addDiscovery = createTool({
       return {
         ok: true,
         value: {
-          findingId: finding.id,
+          findingId: gateResult.value.findingId,
           endpoint,
           technique,
           severity,

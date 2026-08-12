@@ -141,6 +141,354 @@ function buildFindingId(type: string, endpoint: string, param?: string): string 
 function _sanitizeForFilename(input: string): string {
   return input.replace(/[<>:"/\\|?*]/g, '-').replace(/--+/g, '-').replace(/^-|-$/g, '')
 }
+// ─── Slice 13 / F1 - shared finding-commit gate ────────────────
+// Every surface that persists a Finding (writeFinding tool, addFinding tool,
+// updateGraph addFinding, HAR bridge, user-discovery) routes through this ONE
+// gate so a claim can never reach the graph or a report without structural
+// verification against recorded evidence AND a deterministic proof floor for
+// its severity. A bandaid would patch each caller; this moves the invariant to
+// its owner - the single place that writes Finding nodes.
+
+export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
+
+export interface CommitEvidenceInput {
+  type: EvidenceItemType
+  data: string
+  label: string
+  timestamp?: number
+  session?: string
+  observed?: ObservedFacts
+}
+
+export interface CommitFindingInput {
+  type: string
+  endpoint: string
+  param?: string
+  method?: string
+  payload?: string
+  description?: string
+  severity: FindingSeverity
+  confidence: number
+  cwe?: string
+  remediation?: string
+  observedStatus?: number
+  exploitProof?: {
+    relation?: string
+    scenario: string
+    request: string
+    response: string
+    impact: string
+  }
+  /**
+   * Assertion origin.
+   *  - 'llm' / 'captured' - the claim is structurally verified against recorded
+   *    evidence (typed observed facts), then the severity floor is enforced.
+   *  - 'human' - a human assertion is trusted, but the deterministic proof
+   *    floor STILL applies (fail-closed; no severity downgrade bandaid).
+   */
+  source: 'llm' | 'captured' | 'human'
+  /** Pre-captured evidence attached to this finding. */
+  evidence?: CommitEvidenceInput[]
+  tags?: string[]
+  /** Originating tool/component for forensic attribution. */
+  tool?: string
+}
+
+export interface CommittedFinding {
+  id: string
+  type: string
+  endpoint: string
+  param: string
+  method: string
+  payload: string
+  description: string
+  severity: FindingSeverity
+  confidence: number
+  confirmed: boolean
+  evidence: CommitEvidenceInput[]
+  graphNodeId: string
+  lifecycleStatus: FindingNode['properties']['lifecycleStatus']
+  evidenceLevel: EvidenceLevel
+  findingId: string
+  proofCheck: ProofCheckResult
+  deduplicated: boolean
+  merged?: boolean
+  exploitProofNodeId?: string
+}
+
+export type CommitFindingResult =
+  | { ok: true; value: CommittedFinding }
+  | { ok: false; error: string; missing?: string[]; proofCheck?: ProofCheckResult }
+
+export async function commitFinding(input: CommitFindingInput): Promise<CommitFindingResult> {
+  const args = input
+  const store = getGlobalGraphStore()
+  const evidenceItems: Array<{ type: EvidenceItemType; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }> =
+    (args.evidence ?? []).map((e, i) => ({
+      type: e.type,
+      data: e.data,
+      label: e.label,
+      timestamp: e.timestamp ?? Date.now() + i,
+      ...(e.session ? { session: e.session } : {}),
+      ...(e.observed ? { observed: e.observed } : {}),
+    }))
+  const structuredEvidenceItems: EvidenceItem[] = evidenceItems.map((e, i) => ({
+    id: `attached_${i}`,
+    type: e.type,
+    data: e.data,
+    label: e.label,
+    timestamp: e.timestamp,
+    ...(e.session ? { session: e.session } : {}),
+    ...(e.observed ? { observed: e.observed } : {}),
+  }))
+
+  const evidenceTexts = evidenceItems.map(e => `[${e.label}] ${e.data}`)
+
+  const evidenceLevel = determineEvidenceLevel(evidenceItems)
+  const findingId = buildFindingId(args.type, args.endpoint, args.param)
+
+  // Maker/Checker: structural verification of the claim against recorded evidence.
+  // Root-cause fix: verify typed observed facts, do NOT substring-scan prose, and
+  // HARD-REJECT unsupported claims (no severity downgrade bandaid).
+  // Human-reported assertions skip claim verification (the human is the authority),
+  // but the deterministic proof floor below still applies to every source.
+  const effectiveSeverity = args.severity
+  if (args.severity !== 'info' && args.source !== 'human') {
+    const claim: FindingClaim = {
+      type: args.type,
+      endpoint: args.endpoint,
+      param: args.param,
+      method: args.method,
+      observed: args.observedStatus != null ? { status: args.observedStatus } : undefined,
+    }
+    const globalCheck = verifyClaimStructured(claim)
+    const localCheck = verifyFindingClaim(claim, structuredEvidenceItems)
+    const verification: VerificationResult =
+      globalCheck.verified || localCheck.verified
+        ? { verified: true, missing: [], supporting: [...globalCheck.supporting, ...localCheck.supporting] }
+        : {
+            verified: false,
+            missing: globalCheck.missing.length ? globalCheck.missing : localCheck.missing,
+            supporting: [],
+          }
+    if (!verification.verified) {
+      log.warn(`EvidenceGate: claim "${args.type} on ${args.endpoint}" not supported by recorded evidence - missing: ${verification.missing.join(', ')}`)
+      return {
+        ok: false,
+        error: `EvidenceGate: claim not supported by recorded evidence. Missing: ${verification.missing.join(', ')}. Capture real evidence (recordEvidence with observed facts, or a tool-captured request/response) before writing the finding.`,
+        missing: verification.missing,
+      }
+    }
+  }
+
+  // Slice 09 - deterministic proof floor. Fails CLOSED: a finding that cannot
+  // meet the minimum evidence floor for its severity is never promoted to the
+  // graph or a report, even when its claim is structurally supported.
+  const proofItems = combineFindingEvidence(args.endpoint, structuredEvidenceItems, structuredLedger.all())
+  for (const e of evidenceItems) {
+    if (e.type === 'screenshot' && !proofItems.some(p => p.data === e.data)) {
+      proofItems.push({ id: `attached:${e.data}`, type: 'screenshot', data: e.data, label: e.label, timestamp: e.timestamp })
+    }
+  }
+  const proofCheck: ProofCheckResult = checkProof({
+    findingType: args.type,
+    endpoint: args.endpoint,
+    severity: effectiveSeverity,
+    observedStatus: args.observedStatus,
+    findingId,
+    items: proofItems,
+  })
+  if (!proofCheck.passed) {
+    log.warn(`ProofRules: "${args.type} on ${args.endpoint}" fails closed - missing: ${proofCheck.missingEvidence.join('; ')} conflicts: ${proofCheck.conflicts.join('; ')}`)
+    getGlobalDecisionLedger().recordDecision({
+      kind: 'finding.proof',
+      reason: `proof check blocked ${args.type} on ${redactUrl(args.endpoint)}`,
+      routingReason: `rule=${proofCheck.ruleId} passed=false`,
+      sourceRefs: proofCheck.evidenceRefs,
+    })
+    return {
+      ok: false,
+      error: `ProofRules: finding does not meet the minimum evidence floor for ${effectiveSeverity}. ${proofCheck.missingEvidence.join('; ')}${proofCheck.conflicts.length ? ` Conflicts: ${proofCheck.conflicts.join('; ')}` : ''} Capture real evidence before writing the finding.`,
+      proofCheck,
+      missing: proofCheck.missingEvidence,
+    }
+  }
+  getGlobalDecisionLedger().recordDecision({
+    kind: 'finding.proof',
+    reason: `proof check passed for ${args.type} on ${redactUrl(args.endpoint)}`,
+    routingReason: `rule=${proofCheck.ruleId} sources=${proofCheck.evidenceRefs.length}`,
+    sourceRefs: proofCheck.evidenceRefs,
+  })
+
+  const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
+
+  const lifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
+    (effectiveSeverity === 'high' || effectiveSeverity === 'critical') && evidenceLevel === 'L1'
+      ? 'pending_verification'
+      : 'verified'
+
+  const existingNodes = store.queryNodes(NodeType.FINDING) as FindingNode[]
+  const duplicate = existingNodes.find(n => n.properties.findingId === findingId)
+
+  if (duplicate) {
+    log.warn(`Duplicate finding detected: ${findingId}, merging into existing node`)
+    duplicate.properties = {
+      ...duplicate.properties,
+      severity: effectiveSeverity,
+      evidence: evidenceTexts,
+      screenshots: screenshotPaths,
+      confidence: args.confidence,
+      lifecycleStatus,
+      evidenceLevel,
+      proofCheck,
+      ...(args.cwe ? { cwe: args.cwe } : {}),
+      ...(args.description ? { description: args.description } : {}),
+      ...(args.remediation ? { remediation: args.remediation } : {}),
+      ...(args.tags ? { tags: args.tags } : {}),
+    }
+    duplicate.updatedAt = Date.now()
+    return {
+      ok: true,
+      value: {
+        id: duplicate.id,
+        type: args.type,
+        endpoint: args.endpoint,
+        param: args.param || '',
+        method: args.method || 'GET',
+        payload: args.payload || '',
+        description: args.description || '',
+        severity: effectiveSeverity,
+        confidence: args.confidence,
+        confirmed: args.confidence >= 0.7,
+        evidence: evidenceItems,
+        graphNodeId: duplicate.id,
+        lifecycleStatus,
+        evidenceLevel,
+        findingId: duplicate.properties.findingId,
+        proofCheck,
+        deduplicated: true,
+        merged: true,
+      },
+    }
+  }
+
+  // Gap 13.2 - Validate finding properties before persisting to graph
+  const findingProps = {
+    severity: effectiveSeverity,
+    technique: args.type,
+    endpoint: args.endpoint,
+    evidence: evidenceTexts,
+    screenshots: screenshotPaths,
+    confidence: args.confidence,
+    lifecycleStatus,
+    evidenceLevel,
+    findingId,
+    proofCheck,
+    ...(args.cwe ? { cwe: args.cwe } : {}),
+    ...(args.description ? { description: args.description } : {}),
+    ...(args.remediation ? { remediation: args.remediation } : {}),
+    ...(args.tags ? { tags: args.tags } : {}),
+  }
+  const { valid, errors } = validateNodeProperties(NodeType.FINDING, findingProps)
+  if (!valid) {
+    log.warn(`writeFinding: finding ${findingId} validation issues (continuing anyway): ${errors.join('; ')}`)
+  }
+
+  const findingNode = store.addFinding(findingProps)
+  emitFindingDiscovered(findingNode.id, effectiveSeverity, args.type || 'unknown', args.endpoint, undefined, args.tool ?? 'writeFinding')
+
+  const finding = {
+    id: findingNode.id,
+    type: args.type,
+    endpoint: args.endpoint,
+    param: args.param || '',
+    method: args.method || 'GET',
+    payload: args.payload || '',
+    description: args.description || '',
+    severity: effectiveSeverity,
+    confidence: args.confidence,
+    confirmed: args.confidence >= 0.7,
+    evidence: evidenceItems,
+    graphNodeId: findingNode.id,
+    lifecycleStatus,
+    evidenceLevel,
+    findingId,
+    proofCheck,
+    deduplicated: false,
+  }
+
+  autoGenerateTest(finding).catch(() => {})
+
+  // L7: Persist a first-class exploit-proof node when the LLM supplies a real
+  // exploit. This is the exploitation-first signal - a finding WITH a proof is
+  // weaponized, not just reported. Linked to the finding via a PROVES edge.
+  let exploitProofNodeId: string | undefined
+  if (args.exploitProof) {
+    const proof = store.addExploitProof({
+      scenario: args.exploitProof.scenario,
+      relation: args.exploitProof.relation,
+      request: args.exploitProof.request,
+      response: args.exploitProof.response,
+      impact: args.exploitProof.impact,
+      findingId: findingNode.id,
+      title: args.exploitProof.scenario,
+      method: args.method ?? 'GET',
+      url: args.endpoint,
+      reproSteps: [args.exploitProof.request, `observe response: ${args.exploitProof.response.slice(0, 200)}`],
+      status: 'proposed',
+    })
+    store.addEdge({
+      type: EdgeType.PROVES,
+      fromId: proof.id,
+      toId: findingNode.id,
+      properties: {},
+    })
+    exploitProofNodeId = proof.id
+  }
+
+  // Slice 07 - track artifacts with provenance for any finding committed here.
+  getGlobalArtifactRegistry().create('finding', {
+    initialStatus: 'linked',
+    provenance: [
+      { source: 'tool', ref: args.tool ?? 'writeFinding', detail: args.type },
+      { source: 'graph', ref: findingNode.id },
+      ...(exploitProofNodeId ? [{ source: 'graph', ref: exploitProofNodeId, detail: 'EXPLOIT_PROOF (PROVES)' }] : []),
+      { source: 'evidence', detail: `evidenceItems=${evidenceItems.length}` },
+    ],
+    metadata: { endpoint: args.endpoint, severity: effectiveSeverity, evidenceLevel },
+  })
+
+  // Slice 07: record the finding-creation decision, linking evidence provenance.
+  getGlobalDecisionLedger().recordDecision({
+    kind: 'finding.create',
+    reason: `create finding ${args.type} on ${redactUrl(args.endpoint)}`,
+    routingReason: `confidence=${args.confidence} level=${evidenceLevel}`,
+    sourceRefs: [findingNode.id, ...structuredEvidenceItems.map(e => e.id), ...(exploitProofNodeId ? [exploitProofNodeId] : [])],
+  })
+
+  return { ok: true, value: { ...finding, exploitProofNodeId } }
+}
+
+/**
+ * Adapter for legacy text-evidence surfaces (addFinding tool, updateGraph
+ * addFinding, user-discovery). Prose strings become typed observed facts
+ * attached to the claimed endpoint so they participate in structural
+ * verification + the endpoint-scoped proof floor. They remain `text` kind -
+ * they can never satisfy a non-text floor (high/critical) on their own.
+ */
+export function buildTextEvidence(
+  evidence: string[] | undefined,
+  endpoint: string,
+  method?: string,
+): CommitEvidenceInput[] {
+  return (evidence ?? []).map((e, i) => ({
+    type: 'text',
+    data: e,
+    label: `evidence ${i + 1}`,
+    timestamp: Date.now() + i,
+    observed: { url: endpoint, ...(method ? { method } : {}) },
+  }))
+}
 
 export const writeFinding = createTool({
   id: 'writeFinding',
@@ -159,18 +507,15 @@ export const writeFinding = createTool({
     findingKey: z.string().optional().describe('Key matching the evidence buffer to pull previously recorded items from.'),
     observedStatus: z.number().optional().describe('HTTP status you observed that proves this finding. Used for structural evidence verification (no prose scanning).'),
     exploitProof: z.object({
-      relation: z.string().optional().describe('The relation type this proof exploits. Discover valid relation types via getGraphSchema — do not assume a fixed list.'),
+      relation: z.string().optional().describe('The relation type this proof exploits. Discover valid relation types via getGraphSchema - do not assume a fixed list.'),
       scenario: z.string().describe('The business-logic scenario class the proof demonstrates (e.g. cross-API trust boundary). Free-form, LLM-defined.'),
       request: z.string().describe('The exact request that achieves the exploit.'),
       response: z.string().describe('The exact response proving impact.'),
       impact: z.string().describe('Concrete impact achieved (e.g. read victim data, escalated role).'),
-    }).optional().describe('If supplied, persist a first-class EXPLOIT_PROOF node proving the finding is exploitable, linked to the finding via a PROVES edge. This is the exploitation-first signal — a finding with a proof is weaponized, not just reported.'),
+    }).optional().describe('If supplied, persist a first-class EXPLOIT_PROOF node proving the finding is exploitable, linked to the finding via a PROVES edge. This is the exploitation-first signal - a finding with a proof is weaponized, not just reported.'),
   }),
   execute: async (args) => {
-    const store = getGlobalGraphStore()
-    const evidenceItems = flushEvidence(args.findingKey)
-    const structuredEvidenceItems: EvidenceItem[] = evidenceItems.map((e, i) => ({
-      id: `flush_${i}`,
+    const evidenceItems: CommitEvidenceInput[] = flushEvidence(args.findingKey).map(e => ({
       type: e.type as EvidenceItemType,
       data: e.data,
       label: e.label,
@@ -188,210 +533,12 @@ export const writeFinding = createTool({
       evidenceItems.push({ type: 'screenshot', data: screenshotPath, label: `Screenshot: ${args.type}`, timestamp: Date.now() })
     }
 
-    const evidenceTexts = evidenceItems.map(e => `[${e.label}] ${e.data}`)
-
-    const evidenceLevel = determineEvidenceLevel(evidenceItems)
-    const findingId = buildFindingId(args.type, args.endpoint, args.param)
-
-    // Maker/Checker: structural verification of the claim against recorded evidence.
-    // Root-cause fix: verify typed observed facts, do NOT substring-scan prose, and
-    // HARD-REJECT unsupported claims (no severity downgrade bandaid).
-    const effectiveSeverity = args.severity
-    if (args.severity !== 'info') {
-      const claim: FindingClaim = {
-        type: args.type,
-        endpoint: args.endpoint,
-        param: args.param,
-        method: args.method,
-        observed: args.observedStatus != null ? { status: args.observedStatus } : undefined,
-      }
-      const globalCheck = verifyClaimStructured(claim)
-      const localCheck = verifyFindingClaim(claim, structuredEvidenceItems)
-      const verification: VerificationResult =
-        globalCheck.verified || localCheck.verified
-          ? { verified: true, missing: [], supporting: [...globalCheck.supporting, ...localCheck.supporting] }
-          : {
-              verified: false,
-              missing: globalCheck.missing.length ? globalCheck.missing : localCheck.missing,
-              supporting: [],
-            }
-      if (!verification.verified) {
-        log.warn(`EvidenceGate: claim "${args.type} on ${args.endpoint}" not supported by recorded evidence — missing: ${verification.missing.join(', ')}`)
-        return {
-          ok: false,
-          error: `EvidenceGate: claim not supported by recorded evidence. Missing: ${verification.missing.join(', ')}. Capture real evidence (recordEvidence with observed facts, or a tool-captured request/response) before writing the finding.`,
-          missing: verification.missing,
-        }
-      }
-    }
-
-    // Slice 09 — deterministic proof floor. Fails CLOSED: a finding that cannot
-    // meet the minimum evidence floor for its severity is never promoted to the
-    // graph or a report, even when its claim is structurally supported.
-    const proofItems = combineFindingEvidence(args.endpoint, structuredEvidenceItems, structuredLedger.all())
-    for (const e of evidenceItems) {
-      if (e.type === 'screenshot' && !proofItems.some(p => p.data === e.data)) {
-        proofItems.push({ id: `attached:${e.data}`, type: 'screenshot', data: e.data, label: e.label, timestamp: e.timestamp })
-      }
-    }
-    const proofCheck: ProofCheckResult = checkProof({
-      findingType: args.type,
-      endpoint: args.endpoint,
-      severity: effectiveSeverity,
-      observedStatus: args.observedStatus,
-      findingId,
-      items: proofItems,
-    })
-    if (!proofCheck.passed) {
-      log.warn(`ProofRules: "${args.type} on ${args.endpoint}" fails closed — missing: ${proofCheck.missingEvidence.join('; ')} conflicts: ${proofCheck.conflicts.join('; ')}`)
-      getGlobalDecisionLedger().recordDecision({
-        kind: 'finding.proof',
-        reason: `proof check blocked ${args.type} on ${redactUrl(args.endpoint)}`,
-        routingReason: `rule=${proofCheck.ruleId} passed=false`,
-        sourceRefs: proofCheck.evidenceRefs,
-      })
-      return {
-        ok: false,
-        error: `ProofRules: finding does not meet the minimum evidence floor for ${effectiveSeverity}. ${proofCheck.missingEvidence.join('; ')}${proofCheck.conflicts.length ? ` Conflicts: ${proofCheck.conflicts.join('; ')}` : ''} Capture real evidence before writing the finding.`,
-        proofCheck,
-        missing: proofCheck.missingEvidence,
-      }
-    }
-    getGlobalDecisionLedger().recordDecision({
-      kind: 'finding.proof',
-      reason: `proof check passed for ${args.type} on ${redactUrl(args.endpoint)}`,
-      routingReason: `rule=${proofCheck.ruleId} sources=${proofCheck.evidenceRefs.length}`,
-      sourceRefs: proofCheck.evidenceRefs,
-    })
-
-    const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
-
-    const lifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
-      (effectiveSeverity === 'high' || effectiveSeverity === 'critical') && evidenceLevel === 'L1'
-        ? 'pending_verification'
-        : 'verified'
-
-    const existingNodes = store.queryNodes(NodeType.FINDING) as FindingNode[]
-    const duplicate = existingNodes.find(n => n.properties.findingId === findingId)
-
-    if (duplicate) {
-      log.warn(`Duplicate finding detected: ${findingId}, merging into existing node`)
-      duplicate.properties = {
-        ...duplicate.properties,
-        severity: effectiveSeverity,
-        evidence: evidenceTexts,
-        screenshots: screenshotPaths,
-        confidence: args.confidence,
-        lifecycleStatus,
-        evidenceLevel,
-        proofCheck,
-        ...(args.cwe ? { cwe: args.cwe } : {}),
-        ...(args.remediation ? { remediation: args.remediation } : {}),
-      }
-      duplicate.updatedAt = Date.now()
-      return {
-        ok: true,
-        value: {
-          id: duplicate.id,
-          findingId: duplicate.properties.findingId,
-          deduplicated: true,
-          merged: true,
-        },
-      }
-    }
-
-    // Gap 13.2 — Validate finding properties before persisting to graph
-    const findingProps = {
-      severity: effectiveSeverity,
-      technique: args.type,
-      endpoint: args.endpoint,
-      evidence: evidenceTexts,
-      screenshots: screenshotPaths,
-      confidence: args.confidence,
-      lifecycleStatus,
-      evidenceLevel,
-      findingId,
-      proofCheck,
-      ...(args.cwe ? { cwe: args.cwe } : {}),
-      ...(args.remediation ? { remediation: args.remediation } : {}),
-    }
-    const { valid, errors } = validateNodeProperties(NodeType.FINDING, findingProps)
-    if (!valid) {
-      log.warn(`writeFinding: finding ${findingId} validation issues (continuing anyway): ${errors.join('; ')}`)
-    }
-
-    const findingNode = store.addFinding(findingProps)
-    emitFindingDiscovered(findingNode.id, effectiveSeverity, args.type || 'unknown', args.endpoint, undefined, 'writeFinding')
-
-    const finding = {
-      id: findingNode.id,
-      type: args.type,
-      endpoint: args.endpoint,
-      param: args.param || '',
-      method: args.method || 'GET',
-      payload: args.payload || '',
-      description: args.description || '',
-      severity: effectiveSeverity,
-      confidence: args.confidence,
-      confirmed: args.confidence >= 0.7,
+    return commitFinding({
+      ...args,
+      source: 'llm',
+      tool: 'writeFinding',
       evidence: evidenceItems,
-      graphNodeId: findingNode.id,
-      lifecycleStatus,
-      evidenceLevel,
-      findingId,
-      proofCheck,
-      deduplicated: !!duplicate,
-    }
-
-    autoGenerateTest(finding).catch(() => {})
-
-    // L7: Persist a first-class exploit-proof node when the LLM supplies a real
-    // exploit. This is the exploitation-first signal — a finding WITH a proof is
-    // weaponized, not just reported. Linked to the finding via a PROVES edge.
-    let exploitProofNodeId: string | undefined
-    if (args.exploitProof) {
-      const proof = store.addExploitProof({
-        scenario: args.exploitProof.scenario,
-        relation: args.exploitProof.relation,
-        request: args.exploitProof.request,
-        response: args.exploitProof.response,
-        impact: args.exploitProof.impact,
-        findingId: findingNode.id,
-        title: args.exploitProof.scenario,
-        method: args.method ?? 'GET',
-        url: args.endpoint,
-        reproSteps: [args.exploitProof.request, `observe response: ${args.exploitProof.response.slice(0, 200)}`],
-        status: 'proposed',
-      })
-      store.addEdge({
-        type: EdgeType.PROVES,
-        fromId: proof.id,
-        toId: findingNode.id,
-        properties: {},
-      })
-      exploitProofNodeId = proof.id
-    }
-
-    getGlobalArtifactRegistry().create('finding', {
-      initialStatus: 'linked',
-      provenance: [
-        { source: 'tool', ref: 'writeFinding', detail: args.type },
-        { source: 'graph', ref: findingNode.id },
-        ...(exploitProofNodeId ? [{ source: 'graph', ref: exploitProofNodeId, detail: 'EXPLOIT_PROOF (PROVES)' }] : []),
-        { source: 'evidence', detail: `evidenceItems=${evidenceItems.length}` },
-      ],
-      metadata: { endpoint: args.endpoint, severity: effectiveSeverity, evidenceLevel },
     })
-
-    // Slice 07: record the finding-creation decision, linking evidence provenance.
-    getGlobalDecisionLedger().recordDecision({
-      kind: 'finding.create',
-      reason: `create finding ${args.type} on ${redactUrl(args.endpoint)}`,
-      routingReason: `confidence=${args.confidence} level=${evidenceLevel}`,
-      sourceRefs: [findingNode.id, ...structuredEvidenceItems.map(e => e.id), ...(exploitProofNodeId ? [exploitProofNodeId] : [])],
-    })
-
-    return { ok: true, value: { ...finding, exploitProofNodeId } }
   },
 })
 
