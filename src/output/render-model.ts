@@ -34,6 +34,14 @@ export interface RenderToolCall {
   result?: string
 }
 
+export interface RenderRuntimeEvent {
+  id: number
+  event: string
+  label: string
+  status: 'info' | 'running' | 'ok' | 'warn' | 'error'
+  data?: Record<string, unknown>
+}
+
 export interface RenderModel {
   /** Model reasoning (scratch). Append-only delta buffer. */
   reasoning: string
@@ -41,6 +49,8 @@ export interface RenderModel {
   answer: string
   /** Tool-call timeline. */
   tools: RenderToolCall[]
+  /** Runtime activity timeline: model/context/memory/skill/worker/connector events. */
+  events: RenderRuntimeEvent[]
   /** Findings surfaced so far (final answer may re-emit them). */
   findings: RenderFinding[]
   /** Current phase. */
@@ -61,12 +71,14 @@ export interface RenderModel {
 }
 
 let _toolSeq = 0
+let _eventSeq = 0
 
 export function createRenderModel(): RenderModel {
   return {
     reasoning: '',
     answer: '',
     tools: [],
+    events: [],
     findings: [],
     phase: null,
     done: null,
@@ -111,6 +123,24 @@ export function appendDelta(current: string, delta: string): string {
   return current + delta
 }
 
+export function isToolIntentText(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object') return false
+    const record = parsed as Record<string, unknown>
+    return (typeof record.tool === 'string' || typeof record.tool_name === 'string') &&
+      (record.arguments === undefined || record.arguments === null || typeof record.arguments === 'object')
+  } catch {
+    return false
+  }
+}
+
+export function visibleAssistantText(text: string): string {
+  return isToolIntentText(text) ? '' : text
+}
+
 export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): RenderModel {
   switch (msg.kind) {
     case 'reasoning':
@@ -133,6 +163,15 @@ export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): Ren
       }
       break
     }
+    case 'event':
+      model.events.push({
+        id: ++_eventSeq,
+        event: msg.event,
+        label: msg.label,
+        status: msg.status ?? 'info',
+        data: msg.data,
+      })
+      break
     case 'phase':
       model.phase = msg.phase
       if (typeof msg.step === 'number') model.step = msg.step
@@ -152,7 +191,7 @@ export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): Ren
         }))
       }
       // The final answer content supersedes any partial deltas.
-      if (msg.answer.content) model.answer = msg.answer.content
+      if (msg.answer.content) model.answer = visibleAssistantText(msg.answer.content)
       if (msg.answer.reasoning) model.reasoning = msg.answer.reasoning
       break
   }

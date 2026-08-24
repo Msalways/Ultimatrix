@@ -10,6 +10,7 @@ import {
 } from './interaction'
 import { generateTestCases } from './test-generator'
 import {streamToFile} from './codegen'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export class ActionRecorder {
   private session: Session
@@ -17,7 +18,7 @@ export class ActionRecorder {
   private specFilePath: string
   private testCaseBuffer: TestCase[] = []
 
-  constructor(targetUrl: string, sessionName?: string) {
+  constructor(targetUrl: string, sessionName?: string, outputDir = resolve('output', 'recordings')) {
     const sessionId = `session-${Date.now()}-${randomUUID().slice(0, 8)}`
     const name = sessionName || `recording-${Date.now()}`
     this.session = {
@@ -28,7 +29,7 @@ export class ActionRecorder {
       interactions: [],
       testCases: [],
     }
-    this.outputDir = resolve('output', 'recordings')
+    this.outputDir = outputDir
     this.specFilePath = join(this.outputDir, `${name}.spec.ts`)
     this.ensureOutputDir()
   }
@@ -140,10 +141,17 @@ export class ActionRecorder {
 let _globalRecorder: ActionRecorder | null = null
 
 export function getGlobalRecorder(): ActionRecorder | null {
+  const owned = getEngagementServices()?.recorder
+  if (owned) return owned
   return _globalRecorder
 }
 
 export function setGlobalRecorder(recorder: ActionRecorder | null): void {
+  const owned = getEngagementServices()
+  if (owned) {
+    owned.recorder = recorder
+    return
+  }
   _globalRecorder = recorder
 }
 

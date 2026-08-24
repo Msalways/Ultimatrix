@@ -1,4 +1,4 @@
-import { z } from 'zod'
+﻿import { z } from 'zod'
 
 // HAR 1.2 Types (generic, no hardcoding)
 export const HarRequestSchema = z.object({
@@ -80,6 +80,16 @@ export const HarEntrySchema = z.object({
   serverIPAddress: z.string().optional(),
   connection: z.string().optional(),
   pageref: z.string().optional(),
+  /**
+   * Capture-fidelity metadata (C7). `wasTruncated` marks bodies withheld or
+   * cut by size policy so downstream consumers can distinguish "no body"
+   * from "body withheld" â€” mirrors the CompressionResult contract.
+   * `redirectChain` lists prior-hop URLs when a requestId carried redirects.
+   */
+  extra: z.object({
+    wasTruncated: z.boolean().optional(),
+    redirectChain: z.array(z.string()).optional(),
+  }).optional(),
 })
 
 export const HarArchiveSchema = z.object({
@@ -130,9 +140,9 @@ export interface Secret {
   location: 'header' | 'body' | 'url' | 'cookie'
   entryIndex: number
   name: string
-  /** Raw captured value — used for EVIDENCE graph nodes and replay. Never masked. */
+  /** Raw captured value â€” used for EVIDENCE graph nodes and replay. Never masked. */
   value: string
-  /** Display-only masked form — used in prompts / reports. */
+  /** Display-only masked form â€” used in prompts / reports. */
   maskedValue: string
   description: string
 }
@@ -148,9 +158,9 @@ export interface DataFlow {
     location: string
     name: string
   }
-  /** Raw captured value — used for EVIDENCE graph nodes. Never masked. */
+  /** Raw captured value â€” used for EVIDENCE graph nodes. Never masked. */
   value: string
-  /** Display-only masked form — used in prompts / reports. */
+  /** Display-only masked form â€” used in prompts / reports. */
   maskedValue: string
   type: 'token' | 'cookie' | 'header' | 'param'
 }
@@ -512,7 +522,7 @@ export function getRequestMethods(entries: HarEntry[]): Record<string, number> {
   return methods
 }
 
-// ─── CDP Network event → HAR entry builder ───────────────────────────────
+// â”€â”€â”€ CDP Network event â†’ HAR entry builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // This is the SINGLE owner of HAR assembly from CDP `Network.*` events.
 // Modern CDP splits headers/cookies across two events (`requestWillBeSent` +
 // `requestWillBeSentExtraInfo`, `responseReceived` + `responseReceivedExtraInfo`),
@@ -531,6 +541,12 @@ export interface CdpNetworkRequestWillBeSentParams {
   }
   timestamp: number
   wallTime?: number
+  /** Present when this requestId carried a server redirect (prior hop). */
+  redirectResponse?: {
+    url: string
+    status: number
+    headers?: Record<string, string>
+  }
 }
 
 export interface CdpNetworkRequestWillBeSentExtraInfoParams {
@@ -579,6 +595,10 @@ interface PendingEntry {
   startTime: number
   endTime?: number
   bodySize?: number
+  /** C7 â€” size-policy truncation marker for the response body. */
+  wasTruncated?: boolean
+  /** C7 â€” prior-hop URLs when the requestId carried redirects. */
+  redirectChain?: string[]
 }
 
 export interface HarEntryBuilder {
@@ -596,7 +616,24 @@ export interface HarEntryBuilder {
   onLoadingFailed(params: CdpNetworkLoadingFailedParams): void
   /** Attach a fetched body (from `Network.getResponseBody`/`getRequestPostData`). */
   setRequestBody(requestId: string, body: string): void
-  setResponseBody(requestId: string, body: string, encoding?: string): void
+  /** Attach a response body. `truncated` marks size-policy withholding (C7). */
+  setResponseBody(requestId: string, body: string, encoding?: string, truncated?: boolean): void
+  /** Merge a Playwright response event (Firefox/Camoufox provider path). */
+  onPlaywrightResponse(p: {
+    url: string
+    status: number
+    headers?: Record<string, string>
+    requestHeaders?: Record<string, string>
+    method: string
+    postData?: string
+  }): void
+  /**
+   * Attach a Playwright response body and finalize the entry. Matches the
+   * most recent pending entry for the URL.
+   */
+  setPlaywrightResponseBody(url: string, status: number, body: string, truncated?: boolean): void
+  /** Mark a Playwright request as failed (finalizes with a zero-status response). */
+  onPlaywrightRequestFailed(url: string, method: string): void
   /** Returns completed entries (those that reached loadingFinished/failed). */
   takeCompleted(): HarEntry[]
   /** All entries seen so far (debug / flush). */
@@ -621,8 +658,12 @@ function mergeCookies(
 export function createHarEntryBuilder(): HarEntryBuilder {
   const pending = new Map<string, PendingEntry>()
   const completed: HarEntry[] = []
+  // Playwright-native path (no requestIds under Firefox): pending entries are
+  // matched by url/status when their body arrives, then finalized directly.
+  let pwSeq = 0
+  const pendingPw: Array<{ key: string; url: string; status?: number; entry: PendingEntry }> = []
   // Spanning lookup so body/post-data setters can reach an entry that has
-  // already been finalized (moved out of `pending`) — otherwise they would
+  // already been finalized (moved out of `pending`) â€” otherwise they would
   // create orphan entries and the body would never reach the HAR entry.
   const byId = new Map<string, PendingEntry>()
 
@@ -636,7 +677,7 @@ export function createHarEntryBuilder(): HarEntryBuilder {
     return e
   }
 
-  const finalize = (entry: PendingEntry, requestId: string) => {
+  const assemble = (entry: PendingEntry): HarEntry => {
     const req = entry.request ?? {
       method: 'GET',
       url: '',
@@ -668,13 +709,34 @@ export function createHarEntryBuilder(): HarEntryBuilder {
       har.response.content = { ...har.response.content, size: entry.bodySize }
       har.response.bodySize = entry.bodySize
     }
-    completed.push(har)
+    const extra: { wasTruncated?: boolean; redirectChain?: string[] } = {}
+    if (entry.wasTruncated) extra.wasTruncated = true
+    if (entry.redirectChain && entry.redirectChain.length > 0) extra.redirectChain = [...entry.redirectChain]
+    if (Object.keys(extra).length > 0) (har as unknown as Record<string, unknown>).extra = extra
+    return har
+  }
+
+  const finalize = (entry: PendingEntry, requestId: string) => {
+    completed.push(assemble(entry))
     pending.delete(requestId)
+  }
+
+  const finalizePw = (entry: PendingEntry) => {
+    completed.push(assemble(entry))
   }
 
   return {
     onRequestWillBeSent(params) {
       const e = ensure(params.requestId)
+      // C7 â€” same-requestId redirects: the prior hop's request/response pair is
+      // folded into `extra.redirectChain` instead of vanishing; response state
+      // resets so the next `responseReceived` populates the final hop.
+      if (params.redirectResponse) {
+        const priorUrl = e.request?.url || params.redirectResponse.url
+        e.redirectChain = [...(e.redirectChain ?? []), String(priorUrl)]
+        e.response = undefined
+        e.bodySize = undefined
+      }
       const url = new URL(params.request.url)
       const queryString = Array.from(url.searchParams.entries()).map(([name, value]) => ({ name, value }))
       e.request = {
@@ -743,11 +805,78 @@ export function createHarEntryBuilder(): HarEntryBuilder {
         : { params: [], mimeType: 'application/octet-stream', text: body }
       e.request.bodySize = body.length
     },
-    setResponseBody(requestId, body, encoding) {
+    setResponseBody(requestId, body, encoding, truncated) {
       const e = ensure(requestId)
       if (!e.response) return
       e.response.content = { ...e.response.content, text: body, encoding }
       e.response.bodySize = body.length
+      if (truncated) {
+        e.wasTruncated = true
+        ;(e.response.content as Record<string, unknown>).wasTruncated = true
+      }
+    },
+    // â”€â”€â”€ Playwright-native adapters (Firefox/Camoufox provider path) â”€â”€â”€
+    onPlaywrightResponse(p) {
+      const key = `pw-${++pwSeq}`
+      const entry: PendingEntry = {
+        startedDateTime: new Date().toISOString(),
+        startTime: Date.now(),
+        request: {
+          method: p.method,
+          url: p.url,
+          httpVersion: 'HTTP/1.1',
+          cookies: [],
+          headers: toHeaders(p.requestHeaders),
+          queryString: (() => {
+            try { return Array.from(new URL(p.url).searchParams.entries()).map(([name, value]) => ({ name, value })) } catch { return [] }
+          })(),
+          ...(p.postData ? { postData: { params: [], mimeType: 'application/octet-stream', text: p.postData } } : {}),
+          headersSize: -1,
+          bodySize: p.postData ? p.postData.length : -1,
+        },
+        response: {
+          status: p.status,
+          statusText: '',
+          httpVersion: 'HTTP/1.1',
+          cookies: [],
+          headers: toHeaders(p.headers),
+          content: { size: -1 },
+          redirectURL: '',
+          headersSize: -1,
+          bodySize: -1,
+        },
+        endTime: Date.now(),
+      }
+      pendingPw.push({ key, url: p.url, status: p.status, entry })
+    },
+    setPlaywrightResponseBody(url, status, body, truncated) {
+      for (let i = pendingPw.length - 1; i >= 0; i--) {
+        const candidate = pendingPw[i]
+        if (candidate.url !== url || (status && candidate.entry.response?.status !== status)) continue
+        const e = candidate.entry
+        if (e.response) {
+          e.response.content = { ...e.response.content, text: body }
+          e.response.bodySize = body.length
+        }
+        if (truncated) {
+          e.wasTruncated = true
+          if (e.response) (e.response.content as Record<string, unknown>).wasTruncated = true
+        }
+        finalizePw(e)
+        pendingPw.splice(i, 1)
+        return
+      }
+    },
+    onPlaywrightRequestFailed(url, method) {
+      const idx = pendingPw.findIndex((c) => c.url === url)
+      if (idx === -1) return
+      const candidate = pendingPw[idx]
+      if (!candidate.entry.response) {
+        candidate.entry.response = { status: 0, statusText: 'request failed', headers: [], cookies: [], content: {}, headersSize: -1, bodySize: -1 }
+      }
+      finalizePw(candidate.entry)
+      void method
+      pendingPw.splice(idx, 1)
     },
     takeCompleted() {
       const out = completed.splice(0, completed.length)

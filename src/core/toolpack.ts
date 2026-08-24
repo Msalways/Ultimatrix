@@ -15,6 +15,7 @@ import type { StagehandBrowser } from '@mastra/stagehand'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
@@ -24,19 +25,30 @@ import { log } from '../utils/logger'
 
 // ─── Tool imports (same as brain-tools.ts) ─────────────────────────────
 import { httpRequest, followRedirects } from '../tools/http-tools'
+import { listCapturedRequests, replayCapturedRequest } from '../tools/replay-tools'
+import { manageSkills } from '../tools/skill-manage-tools'
 import { recordEvidence, writeFinding } from '../tools/control-tools'
 import { askUser } from '../tools/interaction-tools'
 import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import {
   queryGraph, upsertPage, addAction, addInput,
-  addEndpoint, addFinding, getTargetSummary, getEndpointsWithParams,
+  addEndpoint, getTargetSummary, getEndpointsWithParams,
 } from '../graph/tools'
-import { getGraphSchema, getCaptureOverview, queryRelations } from '../graph/relation-tools'
+import {
+  getGraphSchema,
+  getCaptureOverview,
+  queryRelations,
+  getGraphNeighborhood,
+  getWorkflowAround,
+  traceValue,
+  explainReachability,
+  getUntestedWorkarounds,
+} from '../graph/relation-tools'
 import { verifyChainsTool } from '../tools/detect-chains-tool'
 import { loadSkillReference, searchSkillTool, listSkills, loadSkillBodyTool } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
-import { diagnoseTargetTool, runAdvancedPlaybookTool } from '../orchestration/tools'
+import { createRunAdvancedPlaybookTool, diagnoseTargetTool } from '../orchestration/tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { scannerTools } from '../tools/scanner-tools'
 import { useSession, extractSessionCookie } from '../tools/session-tools'
@@ -45,11 +57,12 @@ import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import {
   buildResearchMap, planResearchExperiments, compareResearchResponses,
-  recordFindingCandidate, assessCandidateReportability, getResearchStatus,
+  evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
 } from '../tools/research-tools'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
 import { createSpawnSwarmTool } from '../manager/tools/spawn-swarm'
 import { createExecuteDirectTool } from '../manager/tools/execute-direct'
+import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 
@@ -69,9 +82,10 @@ export interface ToolPackOptions {
 export interface ToolPackDeps {
   config: UltimatrixConfig
   skillRegistry: SkillRegistry
-  workerPool: WorkerPool
+  workerPool?: WorkerPool
   browser?: StagehandBrowser
   modelSelector?: ModelSelector
+  taskCoordinator?: TaskCoordinator
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────
@@ -92,12 +106,16 @@ function coreTools(p: string): Record<string, any> {
     addAction: s(addAction, p),
     addInput: s(addInput, p),
     addEndpoint: s(addEndpoint, p),
-    addFinding: s(addFinding, p),
     getTargetSummary: s(getTargetSummary, p),
     getEndpointsWithParams: s(getEndpointsWithParams, p),
     getGraphSchema: s(getGraphSchema, p),
     getCaptureOverview: s(getCaptureOverview, p),
     queryRelations: s(queryRelations, p),
+    getGraphNeighborhood: s(getGraphNeighborhood, p),
+    getWorkflowAround: s(getWorkflowAround, p),
+    traceValue: s(traceValue, p),
+    explainReachability: s(explainReachability, p),
+    getUntestedWorkarounds: s(getUntestedWorkarounds, p),
     writeFinding: s(writeFinding, p),
     recordEvidence: s(recordEvidence, p),
     verifyChains: s(verifyChainsTool, p),
@@ -108,6 +126,8 @@ function httpTools(p: string): Record<string, any> {
   return {
     httpRequest: s(httpRequest, p),
     followRedirects: s(followRedirects, p),
+    listCapturedRequests: s(listCapturedRequests, p),
+    replayCapturedRequest: s(replayCapturedRequest, p),
   }
 }
 
@@ -117,6 +137,7 @@ function skillTools(p: string): Record<string, any> {
     searchSkills: s(searchSkillTool, p),
     loadSkillReference: s(loadSkillReference, p),
     loadSkillBody: s(loadSkillBodyTool, p),
+    manageSkills: s(manageSkills, p),
   }
 }
 
@@ -135,7 +156,7 @@ function miscTools(p: string): Record<string, any> {
   return {
     askUser: s(askUser, p),
     observeHumanActions: s(observeHumanActions, p),
-    getOastUrl: s(getOastUrlTool, p),
+    getOastUrlTool: s(getOastUrlTool, p),
     checkOastCallbacks: s(checkOastCallbacks, p),
     detectReactions: s(detectReactions, p),
     getDialogEvidence: s(getDialogEvidence, p),
@@ -149,6 +170,7 @@ function researchTools(p: string): Record<string, any> {
     buildResearchMap: s(buildResearchMap, p),
     planResearchExperiments: s(planResearchExperiments, p),
     compareResearchResponses: s(compareResearchResponses, p),
+    evaluateResearchExperiment: s(evaluateResearchExperiment, p),
     recordFindingCandidate: s(recordFindingCandidate, p),
     assessCandidateReportability: s(assessCandidateReportability, p),
     getResearchStatus: s(getResearchStatus, p),
@@ -158,13 +180,14 @@ function researchTools(p: string): Record<string, any> {
 function orchestrationTools(
   config: UltimatrixConfig,
   skillRegistry: SkillRegistry,
-  workerPool: WorkerPool,
+  taskCoordinator: TaskCoordinator,
   p: string,
   modelSelector?: ModelSelector,
 ): Record<string, any> {
   return {
-    spawnWorker: s(createSpawnWorkerTool(config, skillRegistry, workerPool, modelSelector), p),
-    spawnSwarm: s(createSpawnSwarmTool(config, skillRegistry, workerPool, modelSelector), p),
+    spawnWorker: s(createSpawnWorkerTool(config, skillRegistry, taskCoordinator, modelSelector), p),
+    spawnSwarm: s(createSpawnSwarmTool(config, skillRegistry, taskCoordinator, modelSelector), p),
+    runTaskGraph: s(createRunTaskGraphTool(taskCoordinator, skillRegistry, modelSelector), p),
     executeDirect: s(createExecuteDirectTool(config, skillRegistry), p),
   }
 }
@@ -208,10 +231,10 @@ function campaignTools(config: UltimatrixConfig, p: string): Record<string, any>
   }
 }
 
-function orchestrationLayerTools(p: string): Record<string, any> {
+function orchestrationLayerTools(p: string, coordinator?: TaskCoordinator): Record<string, any> {
   return {
     diagnoseTarget: s(diagnoseTargetTool, p),
-    runAdvancedPlaybook: s(runAdvancedPlaybookTool, p),
+    ...(coordinator ? { runAdvancedPlaybook: s(createRunAdvancedPlaybookTool(coordinator), p) } : {}),
   }
 }
 
@@ -268,7 +291,7 @@ export function buildToolPack(
   deps: ToolPackDeps,
   opts: ToolPackOptions = {},
 ): Record<string, any> {
-  const { config, skillRegistry, workerPool } = deps
+  const { config, skillRegistry } = deps
   const p = config.provider ?? ''
 
   const includeOrchestration = opts.includeOrchestration ?? false
@@ -286,10 +309,13 @@ export function buildToolPack(
   }
 
   if (includeResearch) Object.assign(tools, researchTools(p))
-  if (includeOrchestration) Object.assign(tools, orchestrationTools(config, skillRegistry, workerPool, p, deps.modelSelector))
+  if (includeOrchestration) {
+    if (!deps.taskCoordinator) throw new Error('TaskCoordinator is required when orchestration tools are enabled')
+    Object.assign(tools, orchestrationTools(config, skillRegistry, deps.taskCoordinator, p, deps.modelSelector))
+  }
   if (includePrimitives) Object.assign(tools, primitiveTools(p))
   if (includePrimitives) Object.assign(tools, campaignTools(config, p))
-  if (includePrimitives) Object.assign(tools, orchestrationLayerTools(p))
+  if (includePrimitives) Object.assign(tools, orchestrationLayerTools(p, deps.taskCoordinator))
 
   Object.assign(tools, modelSelectionTools(config, deps.modelSelector))
 

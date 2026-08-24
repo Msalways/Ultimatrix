@@ -2,6 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const fakeStore: any = {
   queryNodes: vi.fn(() => []),
+  getNode: vi.fn((id: string) => ({
+    id,
+    type: 'Experiment',
+    properties: {
+      outcome: { status: 'proven', proof: { experimentId: id, phase: 'initial', evidenceRefs: ['evidence:initial'] } },
+      retest: { outcome: { status: 'proven', proof: { experimentId: id, phase: 'retest', evidenceRefs: ['evidence:retest'] } } },
+    },
+  })),
+  upsertNode: vi.fn((node: any) => node),
   addFinding: vi.fn((n: any) => ({ id: 'f1', properties: n })),
   save: vi.fn(() => Promise.resolve()),
 }
@@ -10,7 +19,7 @@ vi.mock('../../src/graph/store', () => ({
   getGlobalGraphStore: () => fakeStore,
 }))
 vi.mock('../../src/graph/schema', () => ({
-  NodeType: { FINDING: 'finding' },
+  NodeType: { FINDING: 'finding', CANDIDATE_FINDING: 'CandidateFinding', EXPERIMENT: 'Experiment' },
   validateNodeProperties: vi.fn(() => ({ valid: true, errors: [] })),
 }))
 vi.mock('../../src/workspace', () => ({
@@ -50,6 +59,7 @@ describe('writeFinding — structural hard-reject (A5)', () => {
       method: 'GET',
       severity: 'high',
       confidence: 0.9,
+      experimentIds: ['experiment:proven'],
       findingKey: 'k1',
     })
     expect(r.ok).toBe(false)
@@ -71,6 +81,7 @@ describe('writeFinding — structural hard-reject (A5)', () => {
       observedStatus: 200,
       severity: 'high',
       confidence: 0.9,
+      experimentIds: ['experiment:proven'],
       findingKey: 'k2',
     })
     expect(r.ok).toBe(true)
@@ -104,6 +115,7 @@ describe('writeFinding — structural hard-reject (A5)', () => {
       observedStatus: 403,
       severity: 'high',
       confidence: 0.9,
+      experimentIds: ['experiment:proven'],
       findingKey: 'k4',
     })
     expect(r.ok).toBe(true)
@@ -122,6 +134,7 @@ describe('writeFinding — structural hard-reject (A5)', () => {
       observedStatus: 403,
       severity: 'high',
       confidence: 0.9,
+      experimentIds: ['experiment:proven'],
       findingKey: 'k5',
     })
     expect(r.ok).toBe(false)

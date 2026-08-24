@@ -78,7 +78,7 @@ export function GraphPanel() {
   const loadAll = useCallback(async (target: string) => {
     const [graphResult, workersResult, skillsResult] = await Promise.all([
       dataFetcher.loadGraphData(target),
-      dataFetcher.loadWorkers(),
+      dataFetcher.loadWorkers(target),
       dataFetcher.loadSkills(target),
     ])
     setData({ nodes: graphResult.nodes, edges: graphResult.edges })
@@ -98,16 +98,16 @@ export function GraphPanel() {
 
   useEffect(() => {
     const unsubs = [
-      dataFetcher.onSSE('graph:', refresh),
-      dataFetcher.onSSE('finding:', refresh),
-      dataFetcher.onSSE('worker:', refresh),
-      dataFetcher.onSSE('spider:', refresh),
+      dataFetcher.onSSE('graph:', refresh, activeTarget),
+      dataFetcher.onSSE('finding:', refresh, activeTarget),
+      dataFetcher.onSSE('worker:', refresh, activeTarget),
+      dataFetcher.onSSE('spider:', refresh, activeTarget),
       dataFetcher.onSSE('', (evt) => {
         setEvents((current) => [...current, evt].slice(-120))
-      }),
+      }, activeTarget),
     ]
     return () => unsubs.forEach((u) => u())
-  }, [refresh])
+  }, [activeTarget, refresh])
 
   const summary = useGraphSummary(data)
   const runningWorkers = workers.filter((worker) => worker.status === 'running').length

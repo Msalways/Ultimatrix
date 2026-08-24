@@ -1,24 +1,46 @@
 /**
- * Browser Provider Abstraction — Slice 05.
+ * Browser Provider Abstraction — Slice 05 + Phase A (Jarvis Lethality Program).
  *
  * A provider-neutral boundary over browser execution. The configured provider
  * is selected at workflow start, recorded in `WorkflowState`, and fixed for the
  * lifetime of that workflow (resume with a different provider is rejected).
  *
- * Only `stagehand` is implemented today. Unsupported providers fail clearly —
- * they never fall back silently. `camofox` is declared for forward-compat but
- * must not be constructed until its implementation lands.
+ * Two implemented providers:
+ * - `stagehand` — Stagehand v3 (Chromium, CDP-native). Default.
+ * - `camofox`   — Camoufox (anti-detection Firefox) launched through
+ *   Playwright. Root-cause fix for bot-challenge-blocked crawls: the browser
+ *   is no longer fingerprintable automation Chromium.
  *
- * No provider name is inferred from strings: `BrowserProviderName` is a closed
- * typed union and the factory rejects anything outside it.
+ * `BrowserSession.browser` is a union of provider handles. Consumers MUST NOT
+ * reach into one vendor's shape directly; use manager helpers or branch on
+ * `session.provider`. Unsupported providers fail clearly — never silent
+ * fallback.
  */
 
 import type { StagehandBrowser } from '@mastra/stagehand'
 import type { UltimatrixConfig } from '../config'
 import type { ArtifactRecord } from '../security/artifacts'
 import { StagehandProvider } from './stagehand-provider'
+import { CamoufoxProvider } from './camoufox-provider'
 
 export type BrowserProviderName = 'stagehand' | 'camofox'
+
+/**
+ * Handle returned by the Camoufox provider. Exposes Playwright objects plus
+ * the same duck-typed tool surface wrapStagehandTools consumes (getTools()),
+ * so scope-guard/reaction wrapping is provider-blind.
+ */
+export interface CamofoxBrowserHandle {
+  readonly providerName: 'camofox'
+  readonly page: unknown
+  readonly context: unknown
+  /** Same 7 tool ids as the stagehand surface (stagehand_* names kept for vocabulary stability). */
+  getTools(): Record<string, any>
+  /** Playwright BrowserContext (dialog watcher + capture attach). */
+  requireContext(): unknown
+}
+
+export type BrowserHandle = StagehandBrowser | CamofoxBrowserHandle
 
 export interface BrowserStartInput {
   config: UltimatrixConfig
@@ -30,7 +52,15 @@ export interface BrowserStartInput {
 export interface BrowserSession {
   sessionId: string
   provider: BrowserProviderName
-  browser: StagehandBrowser
+  browser: BrowserHandle
+}
+
+export function isCamofoxHandle(browser: unknown): browser is CamofoxBrowserHandle {
+  return (
+    !!browser &&
+    typeof browser === 'object' &&
+    (browser as CamofoxBrowserHandle).providerName === 'camofox'
+  )
 }
 
 export interface BrowserProvider {
@@ -43,25 +73,15 @@ export interface BrowserProvider {
   close(sessionId: string): Promise<void>
 }
 
-/** Declared providers that are planned but not yet implemented. */
-const PLANNED_PROVIDERS: ReadonlySet<BrowserProviderName> = new Set(['camofox'])
-
 /**
  * Resolve a provider instance for the configured provider. Throws a clear error
- * for unsupported or planned-but-unimplemented providers — never a silent
- * fallback to the default.
+ * for unsupported providers — never a silent fallback to the default.
  */
 export function resolveBrowserProvider(config: UltimatrixConfig): BrowserProvider {
   const requested = config.browser.provider ?? 'stagehand'
-  if (requested !== 'stagehand') {
-    if (PLANNED_PROVIDERS.has(requested)) {
-      throw new Error(
-        `Browser provider '${requested}' is planned but not yet implemented. Keep browser.provider: 'stagehand' (the default).`,
-      )
-    }
-    throw new Error(`Unsupported browser provider: '${requested}'. Supported providers: stagehand.`)
-  }
-  return new StagehandProvider()
+  if (requested === 'camofox') return new CamoufoxProvider()
+  if (requested === 'stagehand') return new StagehandProvider()
+  throw new Error(`Unsupported browser provider: '${requested}'. Supported providers: stagehand, camofox.`)
 }
 
 export function isBrowserProviderName(value: unknown): value is BrowserProviderName {

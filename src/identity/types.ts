@@ -9,7 +9,7 @@
  * (LLM-declared auth flows, held sessions), never from string matching.
  */
 
-export type IdentityKind = 'anonymous' | 'authenticated' | 'admin' | 'tenant' | 'role'
+export type IdentityKind = 'anonymous' | 'authenticated' | 'admin' | 'tenant' | 'role' | 'unknown'
 
 /** The identity under which a set of discoveries were made. */
 export interface IdentityContext {
@@ -27,6 +27,8 @@ export interface ReachabilityRecord {
   resourceId: string
   resourceType: 'page' | 'endpoint' | 'form' | 'workflow'
   reachedAt: string
+  identity: Pick<IdentityContext, 'id' | 'kind' | 'roleName' | 'tenantId'>
+  observedAt: string
 }
 
 /**

@@ -91,20 +91,9 @@ export class ToolResultStore {
   }
 }
 
-let _instance: ToolResultStore | null = null
-
-/**
- * Get or create the global ToolResultStore singleton.
- * Must be called after graph store is initialized.
- */
 export function getToolResultStore(graph: GraphStore): ToolResultStore {
-  if (!_instance) {
-    _instance = new ToolResultStore(graph)
-  }
-  return _instance
+  return new ToolResultStore(graph)
 }
 
-/** Reset singleton (for tests). */
-export function resetToolResultStore(): void {
-  _instance = null
-}
+/** @deprecated Graph-bound stores have no process-global state to reset. */
+export function resetToolResultStore(): void {}

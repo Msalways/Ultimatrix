@@ -26,8 +26,8 @@ import { WorkerCard } from './worker-card'
 import { ChatInput, type InputMode } from './chat-input'
 import { ChatSkeleton } from './skeletons'
 import { MarkdownBlock } from './markdown-block'
-import { appendDelta } from '@/output/render-model'
-import { deriveRunOutcome, type RunOutcomeKind } from '@/core/run-outcome'
+import { appendDelta, visibleAssistantText } from '@/output/render-model'
+import { deriveRunOutcome, shouldRenderRunSummary, type RunOutcomeInput, type RunOutcomeKind } from '@/core/run-outcome'
 import { dataFetcher } from '@/services/data-fetcher'
 import { spiderEventLine } from '@/spider/render'
 
@@ -50,9 +50,6 @@ function normalizeHydratedMessages(messages: unknown[]): StreamMessage[] {
         result: candidate.result || 'Interrupted before this tool returned.',
       } as StreamMessage]
     }
-    if (candidate.type === 'thinking') {
-      return [{ ...candidate, collapsed: true } as StreamMessage]
-    }
     return [candidate as StreamMessage]
   })
 }
@@ -60,7 +57,10 @@ function normalizeHydratedMessages(messages: unknown[]): StreamMessage[] {
 function isInternalTool(name?: string): boolean {
   if (!name) return false
   const normalized = name.toLowerCase()
-  return normalized.includes('memory') || normalized === 'gettargetsummary'
+  return normalized.includes('memory') ||
+    normalized === 'gettargetsummary' ||
+    normalized === 'listtools' ||
+    normalized === 'loadtool'
 }
 
 function cleanAssistantContent(content?: string): string {
@@ -138,7 +138,9 @@ export function ChatStream() {
     }
   }, [activeTarget, historyReadyTarget, isStreaming, messages])
 
-  const handleSend = useCallback((goal: string, mode: InputMode = 'run') => {
+  const handleSend = useCallback((goal: string, mode: InputMode = 'auto') => {
+    if (useChatStore.getState().isStreaming) return
+
     addMessage({
       id: nextId(),
       role: 'user',
@@ -152,10 +154,12 @@ export function ChatStream() {
 
     let answerBuffer = ''
     let thinkingBuffer = ''
-    let thinkingId: string | null = null // B1: null until first chunk
     let liveAnswerId: string | null = null // live preview message shown during streaming
+    let liveThinkingId: string | null = null
     const streamStatusId = nextId()
     let aborted = false
+    const startTime = Date.now()
+    const durationInterval = setInterval(() => setDuration(Date.now() - startTime), 1000)
 
     const abortController = new AbortController()
     eventSourceRef.current = { close: () => abortController.abort() } as any
@@ -176,37 +180,45 @@ export function ChatStream() {
           const msg = parsed
           switch (msg.kind) {
             case 'reasoning':
-              // B1: Create thinking message on FIRST chunk, then update
-              if (thinkingId === null) {
-                thinkingId = nextId()
-                thinkingBuffer = msg.text
+              thinkingBuffer = appendDelta(thinkingBuffer, msg.text)
+              if (!thinkingBuffer.trim()) break
+              if (!liveThinkingId) {
+                liveThinkingId = nextId()
                 addMessage({
-                  id: thinkingId,
+                  id: liveThinkingId,
                   type: 'thinking',
-                  content: msg.text,
-                  collapsed: true,
+                  content: thinkingBuffer,
+                  collapsed: false,
                   timestamp: Date.now(),
                 } as any)
               } else {
-                thinkingBuffer = appendDelta(thinkingBuffer, msg.text)
-                updateMessage(thinkingId, { content: thinkingBuffer } as any)
+                updateMessage(liveThinkingId, {
+                  content: thinkingBuffer,
+                  timestamp: Date.now(),
+                } as any)
               }
+              updateMessage(streamStatusId, {
+                status: 'running',
+                label: 'Thinking',
+              } as any)
               break
             case 'answer':
               // Live answer preview: stream deltas into a message node so the
               // user sees the answer forming in real-time.
               answerBuffer = appendDelta(answerBuffer, msg.text)
+              const visibleAnswer = visibleAssistantText(answerBuffer)
+              if (!visibleAnswer && answerBuffer.trim().startsWith('{')) break
               if (!liveAnswerId) {
                 liveAnswerId = nextId()
                 addMessage({
                   id: liveAnswerId,
                   role: 'assistant',
-                  content: answerBuffer,
+                  content: visibleAnswer,
                   timestamp: Date.now(),
                 })
               } else {
                 updateMessage(liveAnswerId, {
-                  content: answerBuffer,
+                  content: visibleAnswer,
                   timestamp: Date.now(),
                 } as any)
               }
@@ -258,10 +270,26 @@ export function ChatStream() {
                 updateMessage(lastTool.id, {
                   status: msg.ok ? 'done' : 'error',
                   result: msg.result,
+                  duration: msg.durationMs,
                 } as any)
               }
               break
             }
+            case 'event':
+              updateMessage(streamStatusId, {
+                status: msg.status === 'error' ? 'error' : msg.status === 'warn' ? 'running' : 'running',
+                label: msg.label,
+              } as any)
+              addMessage({
+                id: nextId(),
+                type: 'phase',
+                phase: msg.event,
+                step: 0,
+                label: msg.label,
+                status: msg.status,
+                timestamp: Date.now(),
+              } as any)
+              break
             case 'phase':
               setPhase(msg.phase, msg.step)
               updateMessage(streamStatusId, {
@@ -271,7 +299,34 @@ export function ChatStream() {
               break
             case 'done':
               // B4: Done event — live preview will be replaced by canonical answer
-              liveAnswerId = null
+              if (msg.answer?.reasoning) {
+                thinkingBuffer = msg.answer.reasoning
+                if (liveThinkingId) {
+                  updateMessage(liveThinkingId, {
+                    content: thinkingBuffer,
+                    collapsed: true,
+                    timestamp: Date.now(),
+                  } as any)
+                } else {
+                  liveThinkingId = nextId()
+                  addMessage({
+                    id: liveThinkingId,
+                    type: 'thinking',
+                    content: thinkingBuffer,
+                    collapsed: true,
+                    timestamp: Date.now(),
+                  } as any)
+                }
+              }
+              if (msg.answer?.content) {
+                answerBuffer = msg.answer.content
+                if (liveAnswerId) {
+                  updateMessage(liveAnswerId, {
+                    content: cleanAssistantContent(answerBuffer),
+                    timestamp: Date.now(),
+                  } as any)
+                }
+              }
               break
           }
         } else if (event === 'phase') {
@@ -322,22 +377,54 @@ export function ChatStream() {
           } as any)
         } else if (event === 'worker:completed') {
           const d = parsed
-          addMessage({
-            id: nextId(),
-            type: 'worker-completed',
-            workerId: d.workerId,
-            name: d.workerName || 'Worker',
-            status: 'completed',
-            duration: d.durationMs,
-            timestamp: Date.now(),
-          } as any)
+          const state = useChatStore.getState()
+          const spawned = [...state.messages].reverse().find(
+            (m): m is any =>
+              (m as any).type === 'worker-spawned' &&
+              (m as any).workerId === d.workerId
+          )
+          if (spawned) {
+            updateMessage(spawned.id, {
+              type: 'worker-completed',
+              name: d.workerName || spawned.name || 'Worker',
+              status: 'completed',
+              findings: d.findings,
+              duration: d.durationMs,
+              timestamp: Date.now(),
+            } as any)
+          } else {
+            addMessage({
+              id: nextId(),
+              type: 'worker-completed',
+              workerId: d.workerId,
+              name: d.workerName || 'Worker',
+              status: 'completed',
+              duration: d.durationMs,
+              timestamp: Date.now(),
+            } as any)
+          }
         } else if (event === 'worker:error') {
-          addMessage({
-            id: nextId(),
-            type: 'error',
-            content: parsed.message || parsed.error || `${parsed.workerName || 'Worker'} failed`,
-            timestamp: Date.now(),
-          } as any)
+          const state = useChatStore.getState()
+          const spawned = [...state.messages].reverse().find(
+            (m): m is any =>
+              (m as any).type === 'worker-spawned' &&
+              (m as any).workerId === parsed.workerId
+          )
+          if (spawned) {
+            updateMessage(spawned.id, {
+              type: 'worker-completed',
+              name: parsed.workerName || spawned.name || 'Worker',
+              status: 'error',
+              timestamp: Date.now(),
+            } as any)
+          } else {
+            addMessage({
+              id: nextId(),
+              type: 'error',
+              content: parsed.message || parsed.error || `${parsed.workerName || 'Worker'} failed`,
+              timestamp: Date.now(),
+            } as any)
+          }
         } else if (event === 'finding:discovered') {
           const d = parsed
           addMessage({
@@ -365,6 +452,37 @@ export function ChatStream() {
             status: 'running',
             label: `Linked ${parsed.type || 'graph evidence'}`,
           } as any)
+        } else if (event === 'browser:starting') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: parsed.headless === false ? 'Starting visible browser' : 'Starting browser',
+          } as any)
+          addMessage({
+            id: nextId(),
+            type: 'phase',
+            phase: 'browser',
+            step: 0,
+            label: parsed.headless === false ? 'Starting visible browser' : 'Starting browser',
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'browser:ready') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: parsed.headless === false ? 'Visible browser ready' : 'Browser ready',
+          } as any)
+          addMessage({
+            id: nextId(),
+            type: 'phase',
+            phase: 'browser',
+            step: 0,
+            label: parsed.headless === false ? 'Visible browser ready' : 'Browser ready',
+            timestamp: Date.now(),
+          } as any)
+        } else if (event === 'browser:failed') {
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: `Browser failed: ${parsed.error || 'unknown error'}`,
+          } as any)
         } else if (event === 'evidence:recorded' || event === 'reflexion:escalation' || event === 'anti-loop:stale' || event === 'browser:reaction') {
           updateMessage(streamStatusId, {
             status: 'running',
@@ -375,15 +493,22 @@ export function ChatStream() {
           // UX5: Wire budget store from final result
           if (result.durationMs) setDuration(result.durationMs)
           if (result.tokensUsed) incrementTokens(result.tokensUsed)
-          const finalContent = cleanAssistantContent(result.answer?.content || result.text || '')
+          const finalContent = cleanAssistantContent(visibleAssistantText(result.answer?.content || result.text || ''))
           const newFindings = result.newFindings ?? 0
-          const outcome = deriveRunOutcome({
+          const effectiveMode: RunOutcomeInput['interactionMode'] =
+            result.interactionMode === 'run' ? 'run' : result.interactionMode === 'ask' ? 'ask' : undefined
+          const outcomeInput: RunOutcomeInput = {
+            interactionMode: effectiveMode,
             completed: result.completed,
             reason: result.reason,
             toolCalls: result.toolCalls,
+            steps: result.steps,
             newFindings,
             durationMs: result.durationMs,
             error: result.error,
+          }
+          const outcome = deriveRunOutcome({
+            ...outcomeInput,
           })
           removeMessage(streamStatusId)
           // Remove live streaming preview if present — canonical answer replaces it
@@ -399,22 +524,33 @@ export function ChatStream() {
               timestamp: Date.now(),
             })
           }
-          addMessage({
-            id: nextId(),
-            type: 'summary',
-            content: finalContent || 'Analysis complete',
-            steps: result.steps || 0,
-            toolCalls: result.toolCalls || 0,
-            findings: newFindings,
-            durationMs: result.durationMs || 0,
-            outcome: outcome.kind,
-            label: outcome.label,
-            detail: outcome.detail,
-            reason: result.reason,
-            goal,
-            mode,
-            timestamp: Date.now(),
-          } as any)
+          if (!finalContent && !shouldRenderRunSummary(outcomeInput)) {
+            addMessage({
+              id: nextId(),
+              type: 'error',
+              content: 'No assistant answer was returned for this turn.',
+              goal,
+              timestamp: Date.now(),
+            } as any)
+          }
+          if (shouldRenderRunSummary(outcomeInput)) {
+            addMessage({
+              id: nextId(),
+              type: 'summary',
+              content: finalContent || 'Analysis complete',
+              steps: result.steps || 0,
+              toolCalls: result.toolCalls || 0,
+              findings: newFindings,
+              durationMs: result.durationMs || 0,
+              outcome: outcome.kind,
+              label: outcome.label,
+              detail: outcome.detail,
+              reason: result.reason,
+              goal,
+              mode: effectiveMode,
+              timestamp: Date.now(),
+            } as any)
+          }
         } else if (event === 'error') {
           removeMessage(streamStatusId)
           addMessage({
@@ -492,7 +628,7 @@ export function ChatStream() {
     fetch('/api/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal, target: activeTarget || '', interactionMode: mode }),
+      body: JSON.stringify({ goal, target: activeTarget || '', interactionMode: mode === 'run' ? 'run' : undefined }),
       signal: abortController.signal,
     })
       .then((res) => {
@@ -534,13 +670,12 @@ export function ChatStream() {
       })
 
     function cleanup() {
+      clearInterval(durationInterval)
       aborted = true
       eventSourceRef.current = null
       setStreaming(false)
       setRunning(false)
       answerBuffer = ''
-      thinkingBuffer = ''
-      thinkingId = null
     }
   }, [activeTarget, addMessage, updateMessage, removeMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset])
 
@@ -604,7 +739,7 @@ export function ChatStream() {
                   <QuickStart
                     icon={Sparkles}
                     label="Review session"
-                    onClick={() => handleSend('Summarize what has already been tested, what was found, and the highest-value untested areas from persisted session context.', 'ask')}
+                    onClick={() => handleSend('Summarize what has already been tested, what was found, and the highest-value untested areas from persisted session context.', 'auto')}
                   />
                 </div>
               )}
@@ -637,7 +772,7 @@ export function ChatStream() {
         onStop={handleStop}
         disabled={!activeTarget}
         isStreaming={isStreaming}
-        placeholder={activeTarget ? `Test ${activeTarget}...` : 'Add a target to begin...'}
+        placeholder={activeTarget ? `Ask about ${activeTarget}...` : 'Add a target to begin...'}
       />
     </div>
   )
@@ -664,6 +799,26 @@ function QuickStart({
   )
 }
 
+function phasePresentation(phase?: string): string {
+  switch (phase) {
+    case 'browser':
+      return 'border-cyan-900/40 bg-cyan-950/10 text-cyan-300/80'
+    case 'spider':
+      return 'border-emerald-900/40 bg-emerald-950/10 text-emerald-300/80'
+    case 'reason':
+    case 'observe':
+      return 'border-violet-900/40 bg-violet-950/10 text-violet-300/80'
+    case 'attack':
+    case 'explore':
+      return 'border-amber-900/40 bg-amber-950/10 text-amber-300/80'
+    case 'complete':
+    case 'done':
+      return 'border-emerald-900/40 bg-emerald-950/10 text-emerald-300/80'
+    default:
+      return 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
+  }
+}
+
 function MessageBubble({
   message,
   isStreaming = false,
@@ -684,11 +839,12 @@ function MessageBubble({
   }
   if ((message as any).type === 'phase') {
     const m = message as any
+    const presentation = phasePresentation(m.phase)
     return (
-      <div className="ml-4 mr-4 my-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-500 sm:ml-8">
-        <ChevronRight size={12} className="text-zinc-600" />
-        <span className="capitalize">{m.phase}</span>
-        <span className="text-zinc-700">step {m.step}</span>
+      <div className={`ml-4 mr-4 my-1 inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md border px-2.5 py-1 text-xs sm:ml-8 ${presentation}`}>
+        {m.phase === 'spider' ? <Loader2 size={12} className="animate-spin" /> : <ChevronRight size={12} />}
+        <span className="capitalize font-medium">{m.phase}</span>
+        <span className="truncate text-zinc-500">{m.label || `step ${m.step}`}</span>
       </div>
     )
   }
@@ -761,7 +917,7 @@ function MessageBubble({
         {errorMessage.goal && (
           <button
             type="button"
-            onClick={() => onSend(errorMessage.goal, errorMessage.mode || 'ask')}
+            onClick={() => onSend(errorMessage.goal, errorMessage.mode === 'run' ? 'run' : 'auto')}
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-red-900/70 px-2 text-[11px] text-red-200 transition-colors hover:bg-red-950/60"
           >
             <RotateCcw size={11} />
@@ -773,16 +929,16 @@ function MessageBubble({
   }
   if ((message as any).type === 'thinking') {
     const m = message as any
-    if (!m.content) return null
     return (
-      <details className="ml-4 mr-4 my-1 sm:ml-8" open={!m.collapsed}>
-        <summary className="cursor-pointer text-xs text-zinc-600 hover:text-zinc-500">
-          model reasoning
-        </summary>
-        <div className="mt-1 whitespace-pre-wrap text-xs italic text-zinc-500">
+      <div className="mx-4 my-1 rounded-md border border-violet-900/40 bg-violet-950/10 px-3 py-2 text-xs text-violet-200/80 sm:ml-8">
+        <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-violet-300/70">
+          <Sparkles size={12} />
+          Thinking
+        </div>
+        <div className={m.collapsed ? 'line-clamp-3 whitespace-pre-wrap text-violet-200/60' : 'whitespace-pre-wrap'}>
           {m.content}
         </div>
-      </details>
+      </div>
     )
   }
 
@@ -819,6 +975,10 @@ function outcomePresentation(kind: RunOutcomeKind) {
       return { icon: CheckCircle2, iconClass: 'text-emerald-400', frame: 'border-emerald-900/50 bg-emerald-950/10' }
     case 'answered':
       return { icon: CheckCircle2, iconClass: 'text-cyan-400', frame: 'border-zinc-800 bg-zinc-900/60' }
+    case 'run_no_actions':
+      return { icon: CircleAlert, iconClass: 'text-red-400', frame: 'border-red-900/50 bg-red-950/20' }
+    case 'grounding_failed':
+      return { icon: CircleAlert, iconClass: 'text-red-400', frame: 'border-red-900/50 bg-red-950/20' }
     case 'completed_no_findings':
       return { icon: Search, iconClass: 'text-amber-400', frame: 'border-amber-900/40 bg-amber-950/10' }
     case 'failed':
@@ -828,14 +988,15 @@ function outcomePresentation(kind: RunOutcomeKind) {
   }
 }
 
-function outcomeAction(kind: RunOutcomeKind, previousGoal?: string, previousMode: InputMode = 'run') {
+function outcomeAction(kind: RunOutcomeKind, previousGoal?: string, previousMode: InputMode = 'auto') {
+  if (kind === 'run_no_actions') {
+    return previousGoal ? { label: 'Start target grounding', goal: previousGoal, retry: true, mode: 'run' as const } : null
+  }
   if (kind === 'answered') {
-    return {
-      label: 'Run assessment',
-      goal: 'Perform a focused security assessment of the active target. Test the discovered surface, verify evidence, and record confirmed findings.',
-      retry: false,
-      mode: 'run' as const,
-    }
+    return null
+  }
+  if (kind === 'grounding_failed') {
+    return previousGoal ? { label: 'Retry grounding', goal: previousGoal, retry: true, mode: 'run' as const } : null
   }
   if (kind === 'completed_no_findings') {
     return {

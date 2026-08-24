@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { StatusGlyph } from '@/components/glyphs';
 import { cn } from '@/lib/utils';
 import { dataFetcher } from '@/services/data-fetcher';
+import { useSessionStore } from '@/stores/session-store';
 
 interface Worker {
   id: string | number;
@@ -18,21 +19,27 @@ interface Worker {
 export function WorkersPanel({ className }: { className?: string }) {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [loading, setLoading] = useState(true);
+  const activeTarget = useSessionStore((state) => state.activeTarget);
 
   const fetchWorkers = useCallback(async () => {
     setLoading(true);
-    const result = await dataFetcher.loadWorkers();
+    if (!activeTarget) {
+      setWorkers([]);
+      setLoading(false);
+      return;
+    }
+    const result = await dataFetcher.loadWorkers(activeTarget);
     setWorkers(result.workers as Worker[]);
     setLoading(false);
-  }, []);
+  }, [activeTarget]);
 
   useEffect(() => {
     fetchWorkers();
   }, [fetchWorkers]);
 
   useEffect(() => {
-    return dataFetcher.onSSE('worker:', () => { fetchWorkers(); });
-  }, [fetchWorkers]);
+    return dataFetcher.onSSE('worker:', () => { fetchWorkers(); }, activeTarget);
+  }, [activeTarget, fetchWorkers]);
 
   return (
     <div className={cn('flex flex-col h-full', className)}>

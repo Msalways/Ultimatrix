@@ -77,9 +77,9 @@ After every browser action (navigation, clicks, form submissions), check for UI 
  */
 export function buildSpiderPrompt(target: string): string {
   return [
-    `Navigate to ${target} using stagehand_navigate.`,
+    `Navigate to ${target} using the browser navigation capability.`,
     `First parse the HTML with findEndpointsInResponse to extract all links, forms, and API endpoints BEFORE guessing URLs.`,
-    `Use stagehand tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials).`,
+    `Use browser tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials).`,
     `Record everything with the graph tools. Report all findings.`,
   ].join(' ')
 }

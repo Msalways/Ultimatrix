@@ -1,16 +1,18 @@
 /**
  * Anti-Bot Detection & Challenge Handling
  *
- * Detects common bot-protection challenges (Cloudflare, Akamai, DataDome,
- * PerimeterX/HUMAN) and either waits for auto-resolution or prompts the
- * human operator to solve the challenge manually.
+ * Detects bot-protection challenges from TYPED PROTOCOL SIGNALS only — HTTP
+ * status classes, protocol header names/values, and exact challenge-platform
+ * iframe hostnames. No title/body-text regexes, no frozen CSS selector lists
+ * (both were fragile vocabulary detection and violated the standing
+ * no-keyword-detection rule).
  *
- * Design: Challenge patterns are identified by page title, body text,
- * and DOM elements — not by fragile CSS class names or resource URLs.
- * Each vendor has unique markers that survive obfuscation.
+ * Vendor attribution uses a small registry of PROTOCOL CONSTANTS (header
+ * names, platform hosts) — the same class of registry as TOOL_IDS.
  */
 
 import { log } from '../utils/logger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export type BotVendor =
   | 'cloudflare'
@@ -19,6 +21,12 @@ export type BotVendor =
   | 'perimeterx'
   | 'unknown'
 
+/** How the challenge was detected — every signal is a structured fact. */
+export interface ChallengeSignal {
+  kind: 'status' | 'header' | 'platform-frame' | 'thin-interstitial'
+  detail: string
+}
+
 export interface BotChallenge {
   detected: boolean
   vendor: BotVendor
@@ -26,213 +34,169 @@ export interface BotChallenge {
   pageTitle: string
   url: string
   timestamp: number
+  /** Typed evidence for the decision — never prose matching. */
+  signals: ChallengeSignal[]
 }
 
-interface VendorPattern {
-  vendor: BotVendor
-  challengeType: string
-  titlePatterns: RegExp[]
-  bodyPatterns: RegExp[]
-  domPatterns: string[]
+/** Optional transport-level context supplied by navigation callers. */
+export interface NavigationContext {
+  status?: number
+  headers?: Record<string, string>
 }
 
-const VENDOR_PATTERNS: VendorPattern[] = [
-  {
-    vendor: 'cloudflare',
-    challengeType: 'browser-verification',
-    titlePatterns: [
-      /just a moment/i,
-      /checking your browser/i,
-      /attention required/i,
-      /cloudflare/i,
-    ],
-    bodyPatterns: [
-      /checking if the site connection is secure/i,
-      /enable javascript and cookies to continue/i,
-      /ray id:/i,
-      /cloudflare ray/i,
-      /checking your browser.*before accessing/i,
-      /this process is automatic/i,
-      /turnstile/i,
-      /cf-challenge/i,
-      /_cf_chl_/i,
-    ],
-    domPatterns: [
-      '#challenge-running',
-      '#challenge-stage',
-      '.cf-browser-verification',
-      '#cf-challenge-running',
-      '.cf-turnstile',
-      '[data-sitekey]',
-    ],
-  },
-  {
-    vendor: 'cloudflare',
-    challengeType: 'captcha',
-    titlePatterns: [
-      /attention required/i,
-    ],
-    bodyPatterns: [
-      /captcha/i,
-      /verify you are human/i,
-      /are you a robot/i,
-    ],
-    domPatterns: [
-      '.cf-captcha',
-      '#challenge-form',
-    ],
-  },
-  {
-    vendor: 'akamai',
-    challengeType: 'bot-manager',
-    titlePatterns: [
-      /akamai/i,
-      /access denied/i,
-      /request blocked/i,
-    ],
-    bodyPatterns: [
-      /akamai.*bot.*manager/i,
-      /reference.*#\d+/i,
-      /access denied/i,
-      /unable to fulfill/i,
-      /your request has been blocked/i,
-      /ak_bmsc_/i,
-      /bm_sv=/i,
-    ],
-    domPatterns: [
-      '#akamai-bot-manager',
-      '.akamai-challenge',
-    ],
-  },
-  {
-    vendor: 'datadome',
-    challengeType: 'captcha',
-    titlePatterns: [
-      /datadome/i,
-      /access denied/i,
-    ],
-    bodyPatterns: [
-      /datadome/i,
-      /blocked by datadome/i,
-      /captcha.*datadome/i,
-      /dd_captcha/i,
-    ],
-    domPatterns: [
-      '.datadome',
-      '#datadome',
-      'iframe[src*="datadome"]',
-    ],
-  },
-  {
-    vendor: 'perimeterx',
-    challengeType: 'human-challenge',
-    titlePatterns: [
-      /perimeterx/i,
-      /please verify/i,
-      /human verification/i,
-    ],
-    bodyPatterns: [
-      /perimeterx/i,
-      /px-captcha/i,
-      /human.*verification/i,
-      /please complete.*security check/i,
-      /blocked.*perimeterx/i,
-    ],
-    domPatterns: [
-      '#px-captcha',
-      '.px-captcha',
-      '[id*="px-"]',
-    ],
-  },
+/**
+ * Statuses that (with corroboration) indicate an access-control challenge.
+ * Status alone is NOT sufficient — some sites 403 legitimately.
+ */
+const CHALLENGE_STATUS = new Set([403, 429, 503])
+
+/** Protocol headers that identify a challenge/bot-mitigation response. */
+const CHALLENGE_HEADERS: Array<{ name: string; vendor: BotVendor; challengeType: string }> = [
+  { name: 'cf-mitigated', vendor: 'cloudflare', challengeType: 'browser-verification' },
+  { name: 'x-datadome', vendor: 'datadome', challengeType: 'captcha' },
 ]
+
+/** Exact hostnames that exclusively serve challenge platforms (iframe srcs). */
+const PLATFORM_FRAME_HOSTS: Record<string, { vendor: BotVendor; challengeType: string }> = {
+  'challenges.cloudflare.com': { vendor: 'cloudflare', challengeType: 'browser-verification' },
+  'geo.captcha-delivery.com': { vendor: 'datadome', challengeType: 'captcha' },
+  'captcha-delivery.com': { vendor: 'datadome', challengeType: 'captcha' },
+}
 
 const CHALLENGE_WAIT_MS = 30_000
 const CHALLENGE_POLL_MS = 500
+
+interface PageStructureSignals {
+  url: string
+  title: string
+  bodyTextLength: number
+  formCount: number
+  iframeHosts: string[]
+}
+
+function normalizeHeaderName(name: string): string {
+  return name.toLowerCase()
+}
+
+/**
+ * Collect STRUCTURAL page facts (counts, lengths, exact hosts) — no content
+ * pattern matching inside the page.
+ */
+async function collectPageSignals(page: any): Promise<PageStructureSignals> {
+  const info = await page.evaluate(() => {
+    const iframes = Array.from(document.querySelectorAll('iframe'))
+    const hosts: string[] = []
+    for (const iframe of iframes) {
+      try {
+        // Empty src / relative frames resolve against location — skip them.
+        if (!iframe.src) continue
+        hosts.push(new URL(iframe.src).hostname.toLowerCase())
+      } catch {
+        /* malformed src — ignore */
+      }
+    }
+    return {
+      title: document.title || '',
+      bodyTextLength: (document.body?.innerText || '').length,
+      formCount: document.querySelectorAll('form').length,
+      iframeHosts: hosts,
+    }
+  })
+  return {
+    url: typeof page.url === 'function' ? page.url() : '',
+    ...info,
+  }
+}
 
 export class BotDetectionHandler {
   private challenges: BotChallenge[] = []
   private isWaiting = false
 
   /**
-   * Detect if the current page is showing a bot challenge.
-   * Returns structured challenge info without any substring hacks.
+   * Detect a bot challenge from typed signals:
+   * - mitigation headers on the navigating response (when context provided)
+   * - blocked-class status corroborated by a thin interstitial shape
+   * - exact challenge-platform iframe hostnames
    */
-  async detectChallenge(page: any): Promise<BotChallenge> {
-    const result: BotChallenge = {
-      detected: false,
-      vendor: 'unknown',
-      challengeType: 'unknown',
-      pageTitle: '',
-      url: '',
-      timestamp: Date.now(),
+  async detectChallenge(page: any, context?: NavigationContext): Promise<BotChallenge> {
+    const signals: ChallengeSignal[] = []
+    let vendor: BotVendor = 'unknown'
+    let challengeType = 'unknown'
+
+    const push = (kind: ChallengeSignal['kind'], detail: string) => signals.push({ kind, detail })
+    const attribute = (v: BotVendor, t: string) => {
+      if (vendor === 'unknown') {
+        vendor = v
+        challengeType = t
+      }
+    }
+
+    let pageSignals: PageStructureSignals = {
+      url: typeof page?.url === 'function' ? page.url() : '',
+      title: '',
+      bodyTextLength: 0,
+      formCount: 0,
+      iframeHosts: [],
     }
 
     try {
-      const url = typeof page.url === 'function' ? page.url() : ''
-      const info = await page.evaluate(() => {
-        const title = document.title || ''
-        const bodyText = document.body?.innerText || ''
-
-        // Check DOM elements for vendor-specific selectors
-        const domMatches: string[] = []
-        const selectors = [
-          '#challenge-running', '#challenge-stage', '.cf-browser-verification',
-          '#cf-challenge-running', '.cf-turnstile', '.cf-captcha', '#challenge-form',
-          '#akamai-bot-manager', '.akamai-challenge',
-          '.datadome', '#datadome',
-          '#px-captcha', '.px-captcha',
-        ]
-        for (const sel of selectors) {
-          try {
-            if (document.querySelector(sel)) domMatches.push(sel)
-          } catch { /* ignore invalid selectors */ }
-        }
-
-        // Check for iframes that might contain challenges
-        const iframes = document.querySelectorAll('iframe')
-        const challengeIframes: string[] = []
-        for (const iframe of Array.from(iframes)) {
-          const src = iframe.src || ''
-          if (src.includes('datadome') || src.includes('challenges.cloudflare.com') || src.includes('captcha')) {
-            challengeIframes.push(src)
-          }
-        }
-
-        return { title, bodyText: bodyText.slice(0, 2000), domMatches, challengeIframes }
-      })
-
-      result.url = url
-      result.pageTitle = info.title
-
-      // Match against vendor patterns
-      for (const vendor of VENDOR_PATTERNS) {
-        const titleMatch = vendor.titlePatterns.some(p => p.test(info.title))
-        const bodyMatch = vendor.bodyPatterns.some(p => p.test(info.bodyText))
-        const domMatch = vendor.domPatterns.some(sel => info.domMatches.includes(sel))
-
-        if (titleMatch || bodyMatch || domMatch) {
-          result.detected = true
-          result.vendor = vendor.vendor
-          result.challengeType = vendor.challengeType
-          break
-        }
-      }
-
-      // Check for challenge iframes
-      if (!result.detected && info.challengeIframes.length > 0) {
-        result.detected = true
-        result.challengeType = 'iframe-challenge'
-        if (info.challengeIframes.some((s: string) => s.includes('cloudflare'))) result.vendor = 'cloudflare'
-        else if (info.challengeIframes.some((s: string) => s.includes('datadome'))) result.vendor = 'datadome'
-        else result.vendor = 'unknown'
-      }
+      pageSignals = await collectPageSignals(page)
     } catch {
-      // Page may be unavailable
+      // Page may be unavailable — transport signals still apply.
     }
 
-    if (result.detected) {
+    // 1. Mitigation headers (protocol names; values compared exactly).
+    const headers = context?.headers ?? {}
+    for (const hint of CHALLENGE_HEADERS) {
+      const match = Object.keys(headers).find((k) => normalizeHeaderName(k) === hint.name)
+      if (match !== undefined) {
+        push('header', `${hint.name}: ${String(headers[match]).slice(0, 80)}`)
+        attribute(hint.vendor, hint.challengeType)
+      }
+    }
+
+    // 2. Blocked-class status + thin interstitial shape (no content matching).
+    const status = context?.status
+    let statusCorroborated = false
+    const thin =
+      pageSignals.bodyTextLength < 400 &&
+      pageSignals.formCount <= 1 &&
+      pageSignals.title.length > 0
+    if (status !== undefined && CHALLENGE_STATUS.has(status)) {
+      if (thin || signals.length > 0) {
+        statusCorroborated = true
+        push('status', `HTTP ${status} with ${thin ? 'thin interstitial' : 'corroborating signal'}`)
+        if (vendor === 'unknown') challengeType = 'access-block'
+      } else {
+        // Recorded as evidence but insufficient alone — legitimate 403s exist.
+        push('status', `HTTP ${status} without interstitial shape`)
+      }
+    }
+
+    // 3. Exact challenge-platform frame hosts.
+    for (const host of pageSignals.iframeHosts) {
+      const platform = PLATFORM_FRAME_HOSTS[host]
+      if (platform) {
+        push('platform-frame', host)
+        attribute(platform.vendor, platform.challengeType)
+      }
+    }
+
+    const detected = statusCorroborated || signals.some((s) => s.kind !== 'status')
+
+    const result: BotChallenge = {
+      detected,
+      vendor: detected ? vendor : 'unknown',
+      challengeType: detected ? challengeType : 'unknown',
+      pageTitle: pageSignals.title,
+      url: pageSignals.url,
+      timestamp: Date.now(),
+      signals,
+    }
+
+    if (detected) {
       this.challenges.push(result)
-      log.info(`[anti-bot] Detected ${result.vendor} ${result.challengeType} on ${result.url}`)
+      log.info(`[anti-bot] Detected ${result.vendor} ${result.challengeType} on ${result.url} (${signals.map(s => s.kind).join(',')})`)
     }
 
     return result
@@ -303,10 +267,17 @@ export class BotDetectionHandler {
 let globalHandler: BotDetectionHandler | null = null
 
 export function getGlobalBotHandler(): BotDetectionHandler {
+  const owned = getEngagementServices()?.botHandler
+  if (owned) return owned
   if (!globalHandler) globalHandler = new BotDetectionHandler()
   return globalHandler
 }
 
 export function resetGlobalBotHandler(): void {
+  const owned = getEngagementServices()?.botHandler
+  if (owned) {
+    owned.clear()
+    return
+  }
   globalHandler = null
 }

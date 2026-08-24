@@ -5,7 +5,7 @@
  * class of bugs where a worker is silently filtered to a non-existent tool.
  */
 import { describe, it, expect } from 'vitest'
-import { getCoreTools, resolveToolsForSkills } from '../../src/solver/skills/tool-filter'
+import { getCoreTools, getExecutionTools, resolveToolsForSkills } from '../../src/solver/skills/tool-filter'
 import { getAllSkills } from '../../src/solver/skills/loader'
 import { TOOL_IDS } from '../../src/mastra/tools'
 
@@ -15,6 +15,11 @@ describe('skill→tool wiring drift guard', () => {
   it('every CORE_TOOLS entry is a real registry tool', () => {
     const missing = getCoreTools().filter(id => !registry.has(id))
     expect(missing, `CORE_TOOLS references missing tools: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('every execution-tool marker is a real registry tool', () => {
+    const missing = getExecutionTools().filter(id => !registry.has(id))
+    expect(missing, `execution-tool markers reference missing tools: ${missing.join(', ')}`).toEqual([])
   })
 
   it('every skill toolRefs entry is a real registry tool', () => {

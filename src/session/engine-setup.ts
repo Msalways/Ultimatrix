@@ -12,7 +12,6 @@ import { EvidenceGate } from '../intelligence/evidence-gate'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { ReflexionEngine } from '../intelligence/reflexion'
 import { SkillRegistry } from '../solver/skills/registry'
-import { WorkerPool } from '../workers/pool'
 import { createSolverBrain } from '../solver/brain-tools'
 import { createAllWorkers } from '../workers/registry'
 import { createSupervisor } from '../manager/agent'
@@ -21,6 +20,13 @@ import { checkModelCapability } from '../models/capability'
 import { coreEvidenceLedger } from '../core/evidence'
 import type { CoreServices } from '../core/types'
 import { log } from '../utils/logger'
+import type { WorkflowStore } from '../workflow/store'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
+import { DynamicToolRegistry } from '../extensions/tool-registry'
+import { applyConfigExtensions } from '../extensions'
+import { LazySolverServices } from '../runtime/lazy-services'
+import type { EngagementRuntime } from '../runtime/engagement-runtime'
+import type { RuntimeIdentity } from '../runtime/identity'
 
 /**
  * Result of engine setup — all engine-specific resources.
@@ -31,22 +37,29 @@ export interface EngineServices {
   supervisor?: any
   workers?: any
   skillRegistry?: SkillRegistry
-  workerPool?: WorkerPool
+  workerPool?: import('../workers/pool').WorkerPool
   sessionBlackboard: Blackboard
   sessionEvidence: EvidenceGate
   sessionLoopDetector: LoopDetector
   sessionReflexion?: ReflexionEngine
   coreServices: CoreServices
   modelSelector?: ModelSelector
+  taskCoordinator?: TaskCoordinator
   council?: import('../council/factory').CouncilResources
+  extensionRegistry?: DynamicToolRegistry
+  lazyServices?: LazySolverServices
 }
 
 export interface EngineSetupContext {
   config: UltimatrixConfig
-  browser: any
+  browser?: any
   memory: any
   target: string
+  identity?: RuntimeIdentity
   harContextForLLM?: string
+  workflow?: WorkflowStore
+  runtime?: EngagementRuntime
+  approvedOrigins?: string[]
 }
 
 /**
@@ -56,13 +69,13 @@ export interface EngineSetupContext {
  * - Model capability contract (check)
  * - Core services (blackboard, evidence, loop detector, reflexion)
  * - Legacy path (workers + supervisor)
- * - Solver path (skill registry, worker pool, brain, council)
+ * - Solver path (skill metadata, lazy registry, brain)
  * - Model selector (non-legacy)
  *
  * Does NOT mutate any external state — returns a plain object.
  */
 export async function createEngineServices(ctx: EngineSetupContext): Promise<EngineServices> {
-  const { config, browser, memory, target, harContextForLLM } = ctx
+  const { config, browser, memory, target, workflow } = ctx
   const useSolver = config.engine !== 'legacy'
 
   // Model Capability Contract — refuse/warn on sub-16K models for complex goals.
@@ -123,27 +136,37 @@ export async function createEngineServices(ctx: EngineSetupContext): Promise<Eng
     )
     result.modelSelector = modelSelector
 
+    const extensionRegistry = new DynamicToolRegistry()
+    applyConfigExtensions(config, extensionRegistry)
     const skillRegistry = new SkillRegistry()
     skillRegistry.loadFromDirectory('skills')
-    const workerPool = new WorkerPool(config, skillRegistry, browser)
+    const lazyServices = new LazySolverServices({
+      config,
+      target,
+      identity: ctx.identity,
+      memory,
+      workflow,
+      runtime: ctx.runtime,
+      skillRegistry,
+      modelSelector,
+      extensionRegistry,
+      approvedOrigins: ctx.approvedOrigins,
+    })
 
     const solverBrain = createSolverBrain(config, {
       skillRegistry,
-      workerPool,
-      browser,
       memory,
-      extraContext: harContextForLLM,
       modelSelector,
+      extensionRegistry,
+      lazyServices,
     })
     result.solverBrain = solverBrain
     result.skillRegistry = skillRegistry
-    result.workerPool = workerPool
+    result.extensionRegistry = extensionRegistry
+    result.lazyServices = lazyServices
 
-    // Create council — available on-demand via /council command
-    const { createCouncil } = await import('../council/factory')
-    const council = createCouncil(config, { skillRegistry, workerPool, browser }, sessionBlackboard)
-    result.council = council
-    log.info('Council available (type /council <goal> to deliberate)')
+    // Council remains available on-demand via the explicit /council command.
+    log.info('Solver ready; browser, crawl, workers, connectors, and council are deferred')
   }
 
   return result

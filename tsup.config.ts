@@ -26,8 +26,25 @@ export default defineConfig([
   // Node_modules stay external so consumers install their own copies.
   {
     entry: { index: 'src/index.ts' },
-    format: ['esm', 'cjs'],
+    format: ['esm'],
     dts: true,
+    clean: false,
+    splitting: true,
+    sourcemap: true,
+    target: 'node22',
+    outDir: 'dist',
+    esbuildOptions(options) {
+      options.logOverride = { 'empty-import-meta': 'silent' };
+      options.jsx = 'automatic';
+      options.jsxImportSource = 'react';
+    },
+  },
+  // CommonJS cannot safely execute split chunks that retain import.meta.
+  // Keep the compatibility entry self-contained; ESM remains the lazy path.
+  {
+    entry: { index: 'src/index.ts' },
+    format: ['cjs'],
+    dts: false,
     clean: false,
     splitting: false,
     sourcemap: true,

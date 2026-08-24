@@ -1,4 +1,4 @@
-import {initSkillIndex, type SkillMeta} from './loader'
+import { initSkillIndex, loadSkillBody, searchSkillMetadata, type Skill, type SkillMeta } from './loader'
 
 export interface GraphSummary {
   endpointCount: number
@@ -47,21 +47,16 @@ export class SkillRegistry {
     return this.skills.has(skillId)
   }
 
+  /** Load one exact catalog entry. Unknown or unreadable skills fail closed. */
+  load(skillId: string): Skill {
+    this.get(skillId)
+    const skill = loadSkillBody(skillId)
+    if (!skill) throw new Error(`Skill body not found: ${skillId}`)
+    return skill
+  }
+
   search(query: string): SkillMeta[] {
-    const q = query.toLowerCase()
-    const results: Array<{ skill: SkillMeta; score: number }> = []
-
-    for (const skill of this.skills.values()) {
-      let score = 0
-      if (skill.id.toLowerCase().includes(q)) score += 10
-      if (skill.name.toLowerCase().includes(q)) score += 8
-      if (skill.description.toLowerCase().includes(q)) score += 5
-      if (skill.toolRefs.some(t => t.toLowerCase().includes(q))) score += 3
-
-      if (score > 0) results.push({ skill, score })
-    }
-
-    return results.sort((a, b) => b.score - a.score).map(r => r.skill)
+    return searchSkillMetadata(this.skills.values(), query)
   }
 
   /**

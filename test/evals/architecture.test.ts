@@ -4,8 +4,14 @@ vi.mock('@mastra/core/tools', () => ({
   createTool: (config: any) => config,
 }))
 
+const graphNodes = new Map<string, any>()
 const mockStore = {
   queryNodes: vi.fn().mockReturnValue([]),
+  getNode: vi.fn((id: string) => graphNodes.get(id)),
+  upsertNode: vi.fn((node: any) => {
+    graphNodes.set(node.id, node)
+    return node
+  }),
   addFinding: vi.fn(),
   save: vi.fn().mockResolvedValue(undefined),
 }
@@ -48,6 +54,7 @@ import { getGlobalDecisionLedger } from '../../src/security/decision-ledger'
 describe('architecture evals (slice 12)', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    graphNodes.clear()
     mockStore.queryNodes.mockReturnValue([])
     mockStore.addFinding.mockImplementation((data: any) => ({
       id: 'finding:eval',

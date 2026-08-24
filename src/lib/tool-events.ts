@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events'
 import { getGlobalEmitter } from '../events/emitter'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface ToolEvent {
   type: 'tool-call' | 'tool-result' | 'error' | 'info' | 'reasoning' | 'agent-start' | 'agent-end'
@@ -13,15 +14,10 @@ export interface ToolEvent {
   workerSkill?: string
 }
 
-class ToolEventEmitter extends EventEmitter {
-  private static instance: ToolEventEmitter
-
-  static getInstance(): ToolEventEmitter {
-    if (!ToolEventEmitter.instance) {
-      ToolEventEmitter.instance = new ToolEventEmitter()
-      ToolEventEmitter.instance.setMaxListeners(100)
-    }
-    return ToolEventEmitter.instance
+export class ToolEventEmitter extends EventEmitter {
+  constructor() {
+    super()
+    this.setMaxListeners(100)
   }
 
   push(event: ToolEvent): void {
@@ -88,6 +84,8 @@ class ToolEventEmitter extends EventEmitter {
   }
 }
 
+const legacyToolEvents = new ToolEventEmitter()
+
 export function getToolEventEmitter(): ToolEventEmitter {
-  return ToolEventEmitter.getInstance()
+  return getEngagementServices()?.toolEvents ?? legacyToolEvents
 }

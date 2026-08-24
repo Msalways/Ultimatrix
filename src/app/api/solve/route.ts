@@ -10,7 +10,6 @@
 
 import { NextRequest } from 'next/server'
 import { targetManager } from '@/web/target-manager'
-import { getGlobalEmitter } from '@/events/emitter'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,12 +23,14 @@ export async function POST(req: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    if (!target) {
+      return new Response(JSON.stringify({ error: 'target is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
 
-    const engine = target
-      ? await targetManager.getOrCreateEngine(target)
-      : (await targetManager.listTargets()).length > 0
-        ? targetManager.getEngine((await targetManager.listTargets()).pop()!.target)
-        : null
+    const engine = await targetManager.getOrCreateEngine(target)
 
     if (!engine) {
       return new Response(JSON.stringify({ error: 'No target configured. Create a session first.' }), {
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        const emitter = getGlobalEmitter()
+        const emitter = engine.getEvents()
         const listeners: Array<[string, (...args: any[]) => void]> = []
         const on = (event: string, handler: (...args: any[]) => void) => {
           emitter.on(event as any, handler)
@@ -75,6 +76,9 @@ export async function POST(req: NextRequest) {
         on('reflexion:escalation', (e) => send('reflexion:escalation', e))
         on('anti-loop:stale', (e) => send('anti-loop:stale', e))
         on('browser:reaction', (e) => send('browser:reaction', e))
+        on('browser:starting', (e) => send('browser:starting', e))
+        on('browser:ready', (e) => send('browser:ready', e))
+        on('browser:failed', (e) => send('browser:failed', e))
         on('spider:progress', (e) => send('spider:progress', e))
         // Slice 10 — forward the full typed spider event stream (parity with
         // the CLI). The UI renders typed fields, not text deltas.
@@ -101,7 +105,7 @@ export async function POST(req: NextRequest) {
           send('started', { target: engine.target, goal, timestamp: Date.now() })
           const result = await engine.solve({
             goal,
-            interactionMode: interactionMode === 'ask' ? 'ask' : 'run',
+            interactionMode: interactionMode === 'run' ? 'run' : undefined,
             solverConfig,
             onMessage: (msg) => send('solver', msg),
             onPhase: (event) => send('phase', event),

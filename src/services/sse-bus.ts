@@ -10,10 +10,11 @@ class SSEBus {
   private source: EventSource | null = null
   private listeners = new Map<string, Set<Listener>>()
   private connected = false
+  private target: string | null = null
 
   connect() {
-    if (this.connected) return
-    this.source = new EventSource('/api/swarm-events')
+    if (this.connected || !this.target) return
+    this.source = new EventSource(`/api/swarm-events?target=${encodeURIComponent(this.target)}`)
     this.connected = true
 
     this.source.onmessage = (event) => {
@@ -42,12 +43,24 @@ class SSEBus {
     }
   }
 
-  on(prefix: string, cb: Listener): () => void {
+  on(prefix: string, cb: Listener, target: string | null = null): () => void {
+    if (target !== this.target) {
+      this.source?.close()
+      this.source = null
+      this.connected = false
+      this.target = target
+    }
     if (!this.listeners.has(prefix)) this.listeners.set(prefix, new Set())
     this.listeners.get(prefix)!.add(cb)
     if (!this.connected) this.connect()
     return () => {
       this.listeners.get(prefix)?.delete(cb)
+      const hasListeners = [...this.listeners.values()].some(callbacks => callbacks.size > 0)
+      if (!hasListeners) {
+        this.source?.close()
+        this.source = null
+        this.connected = false
+      }
     }
   }
 

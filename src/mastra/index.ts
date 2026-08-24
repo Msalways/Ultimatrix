@@ -73,6 +73,8 @@ export function createAgent(
 ): Agent {
   const log = options?.logger || new Logger('AgentFactory')
   const fullRegistry = options?.tools || createToolRegistry(log)
+  const candidates: Record<string, any> = { ...fullRegistry, ...(options?.extraTools ?? {}) }
+  if (options?.browser) Object.assign(candidates, wrapStagehandTools(options.browser))
 
   // Build the skill-derived allow-set (existing behavior).
   let allowSet: Set<string> | undefined
@@ -92,7 +94,7 @@ export function createAgent(
   let allTools: Record<string, any>
   if (effectiveAllow) {
     allTools = {}
-    for (const [key, tool] of Object.entries(fullRegistry)) {
+    for (const [key, tool] of Object.entries(candidates)) {
       if (effectiveAllow.has(key)) {
         allTools[key] = tool
       }
@@ -100,24 +102,16 @@ export function createAgent(
     // Surface allow-set IDs that don't match any registered tool (typo in a
     // skill's toolRefs or CORE_TOOLS). These are silently dropped above, so
     // warn loudly to prevent silent capability gaps.
-    const unknown = [...effectiveAllow].filter(id => !(id in fullRegistry))
+    const unknown = [...effectiveAllow].filter(id => !(id in candidates))
     if (unknown.length > 0) {
       log.warn(`Tool-filtered allow-set references ${unknown.length} unknown tool ID(s), silently dropped: ${unknown.join(', ')}`)
     }
     const source = options?.toolIds?.length
       ? `toolIds [${options.toolIds.join(', ')}]`
       : `skills [${options!.skillIds!.join(', ')}]`
-    log.info(`Tool-filtered (${source}): ${Object.keys(allTools).length}/${Object.keys(fullRegistry).length} tools`)
+    log.info(`Tool-filtered (${source}): ${Object.keys(allTools).length}/${Object.keys(candidates).length} tools`)
   } else {
-    allTools = { ...fullRegistry }
-  }
-
-  if (options?.extraTools) {
-    Object.assign(allTools, options.extraTools)
-  }
-
-  if (options?.browser) {
-    Object.assign(allTools, wrapStagehandTools(options.browser))
+    allTools = candidates
   }
 
   const skillInstructions = options?.skills

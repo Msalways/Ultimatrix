@@ -1,5 +1,6 @@
 import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 interface ProviderQuota {
   used: number
@@ -115,6 +116,8 @@ export class QuotaTracker {
 let _globalQuotaTracker: QuotaTracker | null = null
 
 export function getGlobalQuotaTracker(): QuotaTracker {
+  const owned = getEngagementServices()?.quota
+  if (owned) return owned
   if (!_globalQuotaTracker) {
     _globalQuotaTracker = new QuotaTracker()
   }

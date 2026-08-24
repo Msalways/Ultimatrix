@@ -7,13 +7,12 @@
  * - Configures additional skill directories + exclusions (Phase 7.1).
  */
 
-import { getGlobalToolRegistry } from './tool-registry'
+import type { DynamicToolRegistry } from './tool-registry'
 import { resolveEnvVars } from './resolve-env'
 import { configureSkillSources } from '../solver/skills/loader'
 import type { UltimatrixConfig } from '../config'
 
-export function applyConfigExtensions(config: UltimatrixConfig): void {
-  const reg = getGlobalToolRegistry()
+export function applyConfigExtensions(config: UltimatrixConfig, reg: DynamicToolRegistry): void {
 
   for (const server of config.mcp ?? []) {
     reg.registerMcp(resolveEnvVars(server))
@@ -25,3 +24,6 @@ export function applyConfigExtensions(config: UltimatrixConfig): void {
 
   configureSkillSources(config.skillsDirs ?? [], config.skills?.exclude ?? [])
 }
+
+export { DynamicToolRegistry, CapabilityActivationError } from './tool-registry'
+export type { ToolDescriptor, ToolInfo, MastraTool } from './types'

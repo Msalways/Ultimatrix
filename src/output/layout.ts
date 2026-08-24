@@ -34,6 +34,7 @@ import {
   type RenderModel,
   argsSummary,
   resultSummary,
+  visibleAssistantText,
 } from './render-model'
 
 const ESC = {
@@ -73,6 +74,23 @@ function widthOf(opts: ChatOptions): number {
   return opts.width ?? (typeof process !== 'undefined' ? process.stdout?.columns : undefined) ?? 80
 }
 
+function formatDuration(ms = 0): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+function footer(model: RenderModel): string {
+  const done = model.done
+  const steps = done?.steps ?? model.step
+  const tools = done?.toolCalls ?? model.tools.length
+  const findings = done?.findings?.length ?? model.findings.length
+  const status = done?.status ?? (model.complete ? 'done' : 'stopped')
+  const duration = done?.durationMs ? ` · ${formatDuration(done.durationMs)}` : ''
+  return `${status} · ${steps} ${steps === 1 ? 'step' : 'steps'} · ${tools} ${tools === 1 ? 'tool' : 'tools'} · ${findings} ${findings === 1 ? 'finding' : 'findings'}${duration}`
+}
+
 /**
  * Inline chat-card renderer. One instance per interactive turn. Drives the
  * structured `RenderModel` as messages arrive; paints a bounded, scrollable card.
@@ -84,6 +102,7 @@ export class ChatStream {
 
   private begun = false
   private toolRows = new Map<number, string>() // id → last rendered tool line
+  private eventRows = new Set<number>()
   private liveThinkingRows = 0
   private liveAnswerRows = 0
   private paintedReasoningLen = 0 // chars of model.reasoning already written to the live region
@@ -127,8 +146,22 @@ export class ChatStream {
   push(model: RenderModel): void {
     if (!this.begun) this.begin(model.goal, model.goal)
     this.renderThinking(model)
+    this.renderEvents(model)
     this.renderTools(model)
     this.renderAnswer(model)
+  }
+
+  private renderEvents(model: RenderModel): void {
+    for (const e of model.events) {
+      if (this.eventRows.has(e.id)) continue
+      const mark = e.status === 'ok' ? `${this.c(ESC.green)}✓${this.c(ESC.reset)}`
+        : e.status === 'warn' ? `${this.c(ESC.yellow)}!${this.c(ESC.reset)}`
+          : e.status === 'error' ? `${this.c(ESC.red)}✗${this.c(ESC.reset)}`
+            : e.status === 'running' ? `${this.c(ESC.cyan)}…${this.c(ESC.reset)}`
+              : `${this.c(ESC.dim)}·${this.c(ESC.reset)}`
+      this.write(`  ${mark} ${this.c(ESC.dim)}${e.label}${this.c(ESC.reset)}\n`)
+      this.eventRows.add(e.id)
+    }
   }
 
   /**
@@ -157,6 +190,7 @@ export class ChatStream {
 
   /** Toggle the collapsed reasoning block open/closed (Ctrl-R / /r). */
   toggleReasoning(model?: RenderModel): void {
+    if (this.opts.showReasoning === false) return
     if (this.finalized && model?.reasoning.trim()) {
       if (this.finalizedReasoningShown) {
         this.write(`${this.c(ESC.dim)}reasoning already shown${this.c(ESC.reset)}\n`)
@@ -187,17 +221,19 @@ export class ChatStream {
         this.write(line + '\n')
         this.toolRows.set(t.id, line)
       } else if (prev !== line) {
-        // Update in place: move up to the row, clear, rewrite.
-        this.write(`${ESC.up(1)}${ESC.clearLine}${line}\n`)
+        // Append updates instead of cursor surgery; tool results can arrive
+        // after answer output, so moving up one row corrupts the wrong line.
+        this.write(line + '\n')
         this.toolRows.set(t.id, line)
       }
     }
   }
 
   private renderAnswer(model: RenderModel): void {
-    if (!model.answer.trim()) return
+    const answer = visibleAssistantText(model.answer)
+    if (!answer.trim()) return
     const width = widthOf(this.opts)
-    const rendered = renderMarkdown(model.answer, { ...this.opts, isTTY: this.tty })
+    const rendered = renderMarkdown(answer, { ...this.opts, isTTY: this.tty })
     const rows = countVisualRows(rendered, width)
 
     if (this.tty && !this.answerCapped && rows <= LIVE_CAP) {
@@ -208,13 +244,22 @@ export class ChatStream {
       const caret = !model.complete ? `${this.c(ESC.dim)}▊${this.c(ESC.reset)}` : ''
       this.write(rendered + caret + '\n')
       this.liveAnswerRows = rows + (model.complete ? 0 : 1)
+      this.paintedAnswerLen = answer.length
     } else {
       // Non-TTY or answer exceeded the live cap → append-only plain stream.
       if (!this.answerCapped) {
         // First time hitting the cap: flush what we have as plain text once.
+        if (this.liveAnswerRows > 0 && this.tty) {
+          this.write(ESC.up(this.liveAnswerRows) + ESC.clearDown)
+          this.liveAnswerRows = 0
+          this.paintedAnswerLen = 0
+        }
         this.answerCapped = true
-        this.write(renderMarkdown(model.answer, { ...this.opts, isTTY: false }) + '\n')
       }
+      const tail = answer.slice(this.paintedAnswerLen)
+      if (!tail) return
+      this.paintedAnswerLen = answer.length
+      this.write(renderMarkdown(tail, { ...this.opts, isTTY: false }))
     }
   }
 
@@ -232,8 +277,9 @@ export class ChatStream {
     if (this.liveAnswerRows > 0 && this.tty && !this.answerCapped) {
       this.write(ESC.up(this.liveAnswerRows) + ESC.clearDown)
     }
-    if (model.answer.trim() && !this.answerCapped) {
-      const rendered = renderMarkdown(model.answer, { ...this.opts, isTTY: this.tty })
+    const answer = visibleAssistantText(model.answer)
+    if (answer.trim() && !this.answerCapped) {
+      const rendered = renderMarkdown(answer, { ...this.opts, isTTY: this.tty })
       this.write(rendered + '\n')
     }
     // Collapsed / expanded reasoning block (cyan), above the footer. Only when
@@ -253,6 +299,8 @@ export class ChatStream {
     if (!model.reasoning.trim() && model.tools.length === 0 && !model.answer.trim()) {
       this.write(`${this.c(ESC.dim)}(no output — model returned no steps)${this.c(ESC.reset)}\n`)
     }
+    this.write(`${this.c(ESC.dim)}─────── ${footer(model)} ───────${this.c(ESC.reset)}\n`)
+    return
     const status = model.complete ? `${this.c(ESC.dim)}done${this.c(ESC.reset)}` : `${this.c(ESC.green)}stopped${this.c(ESC.reset)}`
     this.write(`${this.c(ESC.dim)}─────── ${status} · ${model.step} steps · ${model.tools.length} tools ───────${this.c(ESC.reset)}\n`)
   }

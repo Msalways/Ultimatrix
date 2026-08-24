@@ -92,7 +92,7 @@ export function wireRenderTrace(page: any): void {
   if (renderWiredPages.has(page)) return
   renderWiredPages.add(page)
 
-  page.on('response', (response: any) => {
+  const handler = (response: any) => {
     const run = async () => {
       try {
         const ct = (response.headers?.()?.['content-type'] ?? '').toLowerCase()
@@ -113,5 +113,10 @@ export function wireRenderTrace(page: any): void {
       }
     }
     run()
-  })
+  }
+  try {
+    page.on('response', handler)
+  } catch {
+    renderWiredPages.delete(page)
+  }
 }

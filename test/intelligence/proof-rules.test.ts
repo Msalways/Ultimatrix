@@ -209,7 +209,7 @@ describe('proof-rules — evidence combining', () => {
 })
 
 describe('proof-rules — report generator gate', () => {
-  it('excludes findings with a failed proof check from reports', () => {
+  it('excludes findings with failed or missing proof checks from reports', () => {
     const failed: ProofCheckResult = {
       ruleId: 'floor-high',
       findingId: 'f1',
@@ -233,10 +233,10 @@ describe('proof-rules — report generator gate', () => {
     ]
     const json = generateReport(findings, [], { format: 'json' })
     const report = JSON.parse(json)
-    expect(report.summary.totalFindings).toBe(2)
+    expect(report.summary.totalFindings).toBe(1)
     const ids = report.findings.map((f: any) => f.id)
     expect(ids).not.toContain('f1')
-    expect(ids).toEqual(['f2', 'f3'])
+    expect(ids).toEqual(['f2'])
   })
 
   it('includes proof-check metadata on reported findings', () => {

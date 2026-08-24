@@ -1,10 +1,10 @@
-import { createTool } from '@mastra/core/tools'
+﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type AuthFlowNode, type ActionNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { getGlobalObserver } from '../capture/human-observer'
-import {getActiveBrowser, getActivePage} from '../browser/manager'
+import { getActiveBrowser, getActiveBrowserContext, getActivePage } from '../browser/manager'
 import { log } from '../utils/logger'
 import { createHash } from 'node:crypto'
 import { isUrlInScope } from '../safety/scope-guard'
@@ -47,7 +47,7 @@ async function verifySessionAfterRestore(page: any, _targetUrl: string): Promise
     }
     const hasLoginForm = await page.$('input[type="password"]').catch(() => null)
     if (hasLoginForm) {
-      return { authenticated: false, reason: 'Page contains a login form — session may be expired' }
+      return { authenticated: false, reason: 'Page contains a login form â€” session may be expired' }
     }
     return { authenticated: true }
   } catch {
@@ -74,12 +74,12 @@ export const saveSession = createTool({
     const target = workspace.getCurrentTarget()
 
     const browser = getActiveBrowser()
-    if (!browser) return { ok: false, error: 'No browser available' }
+    if (!browser && !getActiveBrowserContext()) return { ok: false, error: 'No browser available' }
+    const context = getActiveBrowserContext()
 
-    const stagehand = (browser as any).requireStagehand?.()
-    if (!stagehand?.context) return { ok: false, error: 'Stagehand context not available' }
+    if (!context) return { ok: false, error: 'Browser context not available' }
 
-    const cookies = await stagehand.context.cookies().catch(() => [])
+    const cookies = await context.cookies().catch(() => [])
 
     const page = getActivePage()
     let localStorage: Record<string, string> = {}
@@ -169,10 +169,10 @@ export const restoreSession = createTool({
     }
 
     const browser = getActiveBrowser()
-    if (!browser) return { ok: false, error: 'No browser available' }
+    if (!browser && !getActiveBrowserContext()) return { ok: false, error: 'No browser available' }
+    const context = getActiveBrowserContext()
 
-    const stagehand = (browser as any).requireStagehand?.()
-    if (!stagehand?.context) return { ok: false, error: 'Stagehand context not available' }
+    if (!context) return { ok: false, error: 'Browser context not available' }
 
     const allCookies = flow.properties.cookies as any[] || []
     const { valid: cookies, expired: expiredCount } = filterValidCookies(allCookies)
@@ -187,7 +187,7 @@ export const restoreSession = createTool({
     }
 
     if (cookies.length > 0) {
-      await stagehand.context.addCookies(cookies.map((c: any) => ({
+      await context.addCookies(cookies.map((c: any) => ({
         name: c.name,
         value: c.value,
         domain: c.domain,
@@ -209,7 +209,7 @@ export const restoreSession = createTool({
 
     const sessionCheck = page ? await verifySessionAfterRestore(page, '') : { authenticated: true }
 
-    log.dim(`🔑 Session "${name}" restored: ${cookies.length} cookies, ${Object.keys(localStorage).length} localStorage items${expiredCount > 0 ? ` (${expiredCount} expired, skipped)` : ''}`)
+    log.dim(`ðŸ”‘ Session "${name}" restored: ${cookies.length} cookies, ${Object.keys(localStorage).length} localStorage items${expiredCount > 0 ? ` (${expiredCount} expired, skipped)` : ''}`)
 
     return {
       ok: true,
@@ -383,9 +383,9 @@ export const reproduceFlow = createTool({
 
     if (flow.properties.flowType === 'login' && flow.properties.cookies) {
       const browser = getActiveBrowser()
-      if (browser) {
-        const stagehand = (browser as any).requireStagehand?.()
-        if (stagehand?.context) {
+      const context = getActiveBrowserContext()
+      if (context) {
+            if (context) {
           const allCookies = flow.properties.cookies as any[]
           const { valid: cookies, expired: expiredCount } = filterValidCookies(allCookies)
 
@@ -397,7 +397,7 @@ export const reproduceFlow = createTool({
             }
           }
 
-          await stagehand.context.addCookies(cookies.map((c: any) => ({
+          await context.addCookies(cookies.map((c: any) => ({
             name: c.name,
             value: c.value,
             domain: c.domain,
@@ -458,7 +458,7 @@ export const reproduceFlow = createTool({
             if (step.url) {
               const scopeCheck = isUrlInScope(step.url)
               if (!scopeCheck.allowed) {
-                log.warn(`ScopeGuard: skipping navigate to ${step.url} — ${scopeCheck.reason}`)
+                log.warn(`ScopeGuard: skipping navigate to ${step.url} â€” ${scopeCheck.reason}`)
                 break
               }
               await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 15000 })
@@ -479,7 +479,7 @@ export const reproduceFlow = createTool({
         }
         executed++
       } catch (err) {
-        log.dim(`Flow step failed: ${step.action} — ${err instanceof Error ? err.message : String(err)}`)
+        log.dim(`Flow step failed: ${step.action} â€” ${err instanceof Error ? err.message : String(err)}`)
         break
       }
     }

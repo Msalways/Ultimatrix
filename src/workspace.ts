@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import { GraphStore, setGlobalGraphStore } from './graph/store'
 import { OastStore, setGlobalOastStore } from './oast/store'
 import { log } from './utils/logger'
+import { getEngagementServices } from './runtime/engagement-context'
 
 function slugify(target: string): string {
   return target
@@ -12,6 +13,10 @@ function slugify(target: string): string {
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase()
+}
+
+export function getTargetWorkspaceDir(target: string, baseDir = resolve(process.cwd(), 'output')): string {
+  return resolve(baseDir, slugify(target))
 }
 
 export class WorkspaceManager {
@@ -26,7 +31,7 @@ export class WorkspaceManager {
   }
 
   getTargetDir(target: string): string {
-    return resolve(this.baseDir, slugify(target))
+    return getTargetWorkspaceDir(target, this.baseDir)
   }
 
   getScansDir(target: string): string {
@@ -36,7 +41,7 @@ export class WorkspaceManager {
   /**
    * Tenant-isolated state root: <baseDir>/tenants/<tenantId>/.
    * Logical isolation — each tenant gets its own graph/oast/log/evidence namespace.
-   * (NOT OS-level container sandboxing; see dispatchSlices/WorkerPool for usage.)
+   * This is logical isolation, not OS-level container sandboxing.
    */
   getTenantDir(tenantId: string): string {
     return resolve(this.baseDir, 'tenants', slugify(tenantId))
@@ -76,6 +81,13 @@ export class WorkspaceManager {
     log.info(`Workspace: ${this.getTargetDir(target)}`)
 
     return { graphStore: this.graphStore, oastStore: this.oastStore }
+  }
+
+  /** Bind stores created by an engagement composition root without changing globals. */
+  useTargetStores(target: string, graphStore: GraphStore, oastStore: OastStore): void {
+    this.currentTarget = target
+    this.graphStore = graphStore
+    this.oastStore = oastStore
   }
 
   /**
@@ -158,6 +170,8 @@ export class WorkspaceManager {
 let _globalWorkspace: WorkspaceManager | null = null
 
 export function getGlobalWorkspace(): WorkspaceManager {
+  const owned = getEngagementServices()?.workspace
+  if (owned) return owned
   if (!_globalWorkspace) {
     _globalWorkspace = new WorkspaceManager()
   }

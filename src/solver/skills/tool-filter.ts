@@ -3,45 +3,59 @@ import { initSkillIndex } from './loader'
 const CORE_TOOLS = [
   'listTools',
   'loadTool',
-  'writeFinding',
   'askUser',
+  'manageSkills',
   'loadSkillReference',
   'searchSkills',
   'encodeDecode',
   'queryGraph',
+  'getGraphSchema',
+  'getCaptureOverview',
+  'queryRelations',
+  'getGraphNeighborhood',
+  'getWorkflowAround',
+  'traceValue',
+  'explainReachability',
+  'getUntestedWorkarounds',
   'verifyChains',
   'recordEvidence',
-  'detectReactions',
   'getDialogEvidence',
   'getRecentChanges',
   'getTargetSummary',
   'getEndpointsWithParams',
-  'upsertPage',
-  'addAction',
-  'addInput',
-  'addEndpoint',
-  'addFinding',
   'saveSession',
   'restoreSession',
   'getCapturedHeaders',
   'storeSession',
   'useSession',
   'extractSessionCookie',
-  'buildResearchMap',
-  'planResearchExperiments',
-  'compareResearchResponses',
-  'recordFindingCandidate',
-  'assessCandidateReportability',
   'getResearchStatus',
-  'runPrimitive',
   'getOastUrlTool',
-  'recordOutcome',
+]
+
+const EXECUTION_TOOLS = [
+  'writeFinding',
+  'runPrimitive',
   'runCampaign',
   'runRecon',
+  'listCapturedRequests',
+  'replayCapturedRequest',
   'graphqlIntrospect',
   'jwtDecode',
   'frameworkFingerprint',
   'cloudMetadataProbe',
+  'recordOutcome',
+  'recordFindingCandidate',
+  'assessCandidateReportability',
+  'buildResearchMap',
+  'planResearchExperiments',
+  'compareResearchResponses',
+  'evaluateResearchExperiment',
+  'detectReactions',
+  'upsertPage',
+  'addAction',
+  'addInput',
+  'addEndpoint',
 ]
 
 export function resolveToolsForSkills(skillIds: string[]): string[] {
@@ -50,10 +64,11 @@ export function resolveToolsForSkills(skillIds: string[]): string[] {
 
   for (const id of skillIds) {
     const meta = index.get(id)
-    if (meta) {
-      for (const t of meta.toolRefs) {
-        tools.add(t)
-      }
+    if (!meta) {
+      throw new Error(`Skill not found: ${id}`)
+    }
+    for (const t of meta.toolRefs) {
+      tools.add(t)
     }
   }
 
@@ -62,4 +77,8 @@ export function resolveToolsForSkills(skillIds: string[]): string[] {
 
 export function getCoreTools(): string[] {
   return [...CORE_TOOLS]
+}
+
+export function getExecutionTools(): string[] {
+  return [...EXECUTION_TOOLS]
 }

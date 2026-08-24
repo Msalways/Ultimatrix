@@ -17,6 +17,7 @@ function printCliHelp(): void {
     '  web                                Open the web workspace',
     '  interact -t <url>                  Interactive research session',
     '  solve -t <url>                     Run an autonomous assessment',
+    '  ci -t <url> [--fail-on <severity>] Run assessment and emit versioned JSON',
     '  learn -t <url>                     Capture and model the target',
     '  scan -t <url>                      Learn, test, and report',
     '  resume -t <url>                    Resume persisted target context',
@@ -27,6 +28,7 @@ function printCliHelp(): void {
     '  replay [-o <dir>]                  Replay generated tests',
     '  models | tools | mcp | budget      Inspect runtime capabilities',
     '  providers list|set|remove          Manage project provider keys',
+    '  config doctor                      Check setup health and effective routing',
     '  config path                        Show the canonical config file',
     '  config migrate-credentials         Import the legacy credential store',
     '  init                               Configure providers and defaults',
@@ -84,7 +86,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
   }
 
   const knownCommands = new Set([
-    'init', 'learn', 'generate', 'replay', 'report', 'scan', 'solve', 'assess',
+    'init', 'learn', 'generate', 'replay', 'report', 'scan', 'solve', 'ci', 'assess',
     'verify', 'interact', 'resume', 'web', 'models', 'budget', 'ratelimit', 'tools', 'mcp', 'config', 'providers',
   ])
   if (subcommand && !subcommand.startsWith('-') && !knownCommands.has(subcommand)) {
@@ -100,12 +102,12 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
     sessionModule, configModule, initModule, assessModule, verifyModule,
     interactModule, webModule, solveModule, modelsModule, budgetModule,
     ratelimitModule, toolsModule, mcpModule, providersModule, loggerModule, observabilityModule,
-    sdkModule, authorizationModule, workspaceModule, reportToolsModule, reportModule, artifactsModule,
+    sdkModule, authorizationModule, reportModule, effectiveConfigModule,
   ] = await Promise.all([
     import('../session'), import('../config'), import('./init'), import('./assess'), import('./verify'),
     import('./interact'), import('./web'), import('./solve'), import('./models'), import('./budget'),
     import('./ratelimit'), import('./tools'), import('./mcp'), import('./providers'), import('../utils/logger'), import('../observability'),
-    import('../sdk'), import('../authorization'), import('../workspace'), import('../tools/report-tools'), import('../report/generator'), import('../security/artifacts'),
+    import('../sdk'), import('../authorization'), import('../report/generator'), import('../models/effective-config'),
   ])
 
   const { main } = sessionModule
@@ -126,10 +128,8 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
   const { initLogger, initObservability } = observabilityModule
   const { Ultimatrix } = sdkModule
   const { showDisclaimer } = authorizationModule
-  const { getGlobalWorkspace } = workspaceModule
-  const { getForensicLog } = reportToolsModule
   const { generateReport } = reportModule
-  const { getGlobalArtifactRegistry } = artifactsModule
+  const { resolveEffectiveConfig } = effectiveConfigModule
 
   setPinoLogger(initLogger())
   initObservability()
@@ -184,12 +184,15 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
 
       // REPORT-1: Load findings from graph store if target specified
       let findings: Finding[] = []
+      let runtime: Awaited<ReturnType<typeof import('../runtime/engagement-runtime').createEngagementRuntime>> | undefined
       if (target) {
         try {
-          const workspace = getGlobalWorkspace()
-          await workspace.switchTarget(target)
-          const store = workspace.getGraphStore()
-          if (store) {
+          const config = loadConfig()
+          config.target = target
+          const { createEngagementRuntime } = await import('../runtime/engagement-runtime')
+          runtime = await createEngagementRuntime(config, target, { outputDir })
+          await runtime.run(async () => {
+            const store = runtime!.graph
             const allNodes = store.queryNodes()
             const findingNodes = allNodes.filter(n => n.type === 'Finding')
             findings = findingNodes.map(n => {
@@ -207,14 +210,14 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
                 status: 'open' as const,
               }
             })
-          }
+          })
         } catch (err) {
           log.dim('Could not load graph: ' + (err instanceof Error ? err.message : String(err)))
         }
       }
 
       // Get forensic log data if available
-      const forensicLog = getForensicLog()
+      const forensicLog = runtime?.forensicLog
       const forensicEvents = forensicLog?.getEvents() || []
       const forensicSummary = forensicLog?.getSummary() || ''
 
@@ -226,8 +229,8 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       })
 
       // REPORT-3: Save to file
-      const reportDir = target
-        ? resolve(getGlobalWorkspace().getTargetDir(target), 'reports')
+      const reportDir = target && runtime
+        ? resolve(runtime.workspace.getTargetDir(target), 'reports')
         : outputDir
       if (!existsSync(reportDir)) {
         const { mkdirSync } = await import('node:fs')
@@ -236,11 +239,17 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       const reportPath = resolve(reportDir, `report-${new Date().toISOString().replace(/[:.]/g, '-')}.${format}`)
       writeFileSync(reportPath, report, 'utf-8')
       log.success('Report saved: ' + reportPath)
-      getGlobalArtifactRegistry().create('report', {
-        path: reportPath,
-        initialStatus: 'redacted',
-        provenance: [{ source: 'report-generator', ref: 'generateReport' }],
-      })
+      if (runtime) {
+        await runtime.run(async () => {
+          runtime!.artifacts.create('report', {
+            path: reportPath,
+            initialStatus: 'redacted',
+            provenance: [{ source: 'report-generator', ref: 'generateReport' }],
+          })
+          await runtime!.saveCheckpoint('cli:report')
+        })
+        await runtime.dispose()
+      }
       break
     }
 
@@ -261,7 +270,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       const reportPath = resolve(scanReportDir, `scan-${new Date().toISOString().replace(/[:.]/g, '-')}.md`)
       writeFileSync(reportPath, report, 'utf-8')
       log.success('Report saved: ' + reportPath)
-      getGlobalArtifactRegistry().create('report', {
+      await scanner.registerArtifact('report', {
         path: reportPath,
         initialStatus: 'redacted',
         provenance: [{ source: 'report-generator', ref: 'scanner.exportReport' }],
@@ -276,6 +285,43 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       if (!target) { log.error('solve requires a target: ultimatrix solve -t <url>'); process.exit(1) }
       showDisclaimer(target)
       await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)))
+      break
+    }
+
+    case 'ci': {
+      const target = getTarget(args.slice(1), loadConfig)
+      const outputDir = getOutputDir(args.slice(1))
+      if (!target) { process.stderr.write('ci requires a target: ultimatrix ci -t <url>\n'); process.exitCode = 2; break }
+      const failOnIndex = args.indexOf('--fail-on')
+      const failOn = (failOnIndex >= 0 ? args[failOnIndex + 1] : 'high') as import('../ci/result').CiSeverityThreshold
+      if (!['low', 'medium', 'high', 'critical', 'none'].includes(failOn)) {
+        process.stderr.write('--fail-on must be low, medium, high, critical, or none\n')
+        process.exitCode = 2
+        break
+      }
+      const { buildCiAssessmentResult, ciExitCode } = await import('../ci/result')
+      loggerModule.setLogSink(() => {})
+      try {
+        const solved = await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)), { quiet: true })
+        const result = buildCiAssessmentResult(solved.caseFile, solved.workflowRef, solved.durationMs)
+        process.stdout.write(`${JSON.stringify(result)}\n`)
+        process.exitCode = ciExitCode(result, failOn)
+      } catch (error) {
+        const result = {
+          schemaVersion: 1,
+          workflowRef: '',
+          status: 'failed' as const,
+          verifiedFindings: [],
+          candidates: [],
+          executionErrors: [{ message: error instanceof Error ? error.message : String(error) }],
+          artifactRefs: [],
+          metrics: { durationMs: 0, verifiedFindings: 0, incompleteCandidates: 0 },
+        }
+        process.stdout.write(`${JSON.stringify(result)}\n`)
+        process.exitCode = 2
+      } finally {
+        loggerModule.setLogSink(null)
+      }
       break
     }
 
@@ -347,10 +393,59 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       break
     }
 
+    case 'skills': {
+      // Phase D — first-class skill management: list / add <path> / remove <id>.
+      const { manageSkills } = await import('../tools/skill-manage-tools')
+      const sub = args[1] || 'list'
+      const exec = (input: unknown) => (manageSkills as any).execute(input)
+      if (sub === 'list') {
+        const res = await exec({ action: 'list' })
+        for (const s of res.skills ?? []) {
+          process.stdout.write(`${s.source === 'imported' ? '[imported]' : '[bundled] '} ${s.id} — ${s.name}\n`)
+        }
+        process.stdout.write(`${(res.skills ?? []).length} skill(s)\n`)
+      } else if (sub === 'add') {
+        const target = args[2]
+        if (!target) { log.error('usage: ultimatrix skills add <path-to-SKILL.md | skill-dir>'); process.exit(1) }
+        const res = await exec({ action: 'add', path: target })
+        if (res.ok) log.success(res.message ?? 'imported')
+        else { for (const e of res.errors ?? ['import failed']) log.error(e); process.exit(1) }
+      } else if (sub === 'remove') {
+        const id = args[2]
+        if (!id) { log.error('usage: ultimatrix skills remove <id>'); process.exit(1) }
+        const res = await exec({ action: 'remove', id })
+        if (res.ok) log.success(res.message ?? 'removed')
+        else { for (const e of res.errors ?? ['remove failed']) log.error(e); process.exit(1) }
+      } else {
+        log.error('usage: ultimatrix skills [list|add|remove]')
+        process.exit(1)
+      }
+      break
+    }
+
     case 'config': {
       const action = args[1] || 'path'
       if (action === 'path') {
         process.stdout.write(`Config: ${getConfigPath()}\nProviders: ${getProvidersPath()}\n`)
+      } else if (action === 'doctor') {
+        const config = loadConfig({ requireCredentials: false })
+        const effective = resolveEffectiveConfig(config)
+        log.info(`Config health: ${effective.status}`)
+        for (const error of effective.errors) log.error(`  ${error}`)
+        for (const warning of effective.warnings) log.warn(`  ${warning}`)
+        log.info('\nEffective routing:')
+        for (const role of ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'] as const) {
+          const route = effective.modules[role]
+          const cap = route.capability
+          log.info(`  ${role.padEnd(15)} ${route.tier.padEnd(8)} ${route.modelId} ${cap ? `${cap.contextWindow.toLocaleString()} ctx / ${cap.maxOutputTokens.toLocaleString()} out` : 'unknown limits'}`)
+        }
+        log.info('\nWorkers: low->fast, medium->balanced, high/critical->powerful')
+        if (effective.mcp.length > 0) {
+          log.info('\nConnectors:')
+          for (const server of effective.mcp) {
+            log.info(`  ${server.name} ${server.type} ${server.trusted ? 'trusted' : 'untrusted'} ${server.location}`)
+          }
+        }
       } else if (action === 'migrate-credentials') {
         const result = migrateLegacyCredentialsToProject()
         log.success(`Credential source: ${result.providersPath}`)
@@ -358,7 +453,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
         if (result.skipped.length > 0) log.dim(`Already configured: ${result.skipped.join(', ')}`)
       } else {
         log.error(`Unknown config action: ${action}`)
-        log.dim('Use `ultimatrix config path` or `ultimatrix config migrate-credentials`.')
+        log.dim('Use `ultimatrix config doctor`, `ultimatrix config path`, or `ultimatrix config migrate-credentials`.')
         process.exitCode = 1
       }
       break

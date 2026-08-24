@@ -2,6 +2,7 @@ import type { Page } from 'playwright'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export type HumanActionType = 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
 
@@ -294,25 +295,14 @@ export class HumanObserver {
       }
     })
 
-    const isStagehand = typeof (page as any).sendCDP === 'function'
-
-    if (isStagehand) {
-      this.attachStagehand(page)
-    } else {
-      this.attachPlaywright(page)
-    }
+    this.attachInjectedObserver(page)
   }
 
-  private attachStagehand(page: Page): void {
+  private attachInjectedObserver(page: Page): void {
     const sp = page as any
 
-    // In headless mode, Stagehand init script is not needed and can cause issues
-    const isHeadless = typeof (page as any).isClosed === 'function' || 
-                        typeof process !== 'undefined' && process.env.HEADLESS === 'true'
-
-    if (!isHeadless) {
-      sp.addInitScript(STAGEHAND_INIT_SCRIPT).catch(() => {})
-    }
+    if (typeof sp.addInitScript === 'function') sp.addInitScript(STAGEHAND_INIT_SCRIPT).catch(() => {})
+    if (typeof sp.evaluate === 'function') sp.evaluate(STAGEHAND_INIT_SCRIPT).catch(() => {})
 
     const consoleHandler = (msg: any) => {
       if (!this.capturing) return
@@ -337,68 +327,22 @@ export class HumanObserver {
       })
     }
 
-    page.on('console', consoleHandler)
-
-    this.listeners = [
-      () => { try { page.off('console', consoleHandler) } catch {} },
-    ]
-  }
-
-  private attachPlaywright(page: Page): void {
-    const onNavigate = (url: string) => {
-      if (!this.capturing) return
-      this.record({ type: 'navigate', url, timestamp: Date.now() })
-    }
-
-    const onClick = (element: any) => {
-      if (!this.capturing) return
-      const selector = this.buildSelector(element)
-      const url = page.url()
-      this.record({ type: 'click', selector, url, timestamp: Date.now(), label: element?.textContent?.trim()?.slice(0, 100) })
-    }
-
-    const onInput = (element: any) => {
-      if (!this.capturing) return
-      const selector = this.buildSelector(element)
-      const inputType = element?.getAttribute?.('type') || ''
-
-      const rawValue = element?.value || ''
-      const value = maskValue(rawValue, selector, inputType)
-      const url = page.url()
-      this.record({ type: 'fill', selector, value, url, timestamp: Date.now(), metadata: { inputType } })
-    }
-
-    const onSelect = (element: any) => {
-      if (!this.capturing) return
-      const selector = this.buildSelector(element)
-      const value = element?.value || ''
-      const url = page.url()
-      this.record({ type: 'select', selector, value, url, timestamp: Date.now() })
-    }
-
-    const onKeyDown = (element: any, event: any) => {
-      if (!this.capturing) return
-      if (event.key === 'Enter' && element?.tagName === 'INPUT') {
-        const selector = this.buildSelector(element)
-        this.record({ type: 'submit', selector, url: page.url(), timestamp: Date.now() })
+    const cleaners: Array<() => void> = []
+    if (typeof (page as any).on === 'function') {
+      try {
+        ;(page as any).on('console', consoleHandler)
+        cleaners.push(() => {
+          try {
+            const off = (page as any).off ?? (page as any).removeListener
+            if (typeof off === 'function') off.call(page, 'console', consoleHandler)
+          } catch {}
+        })
+      } catch (error) {
+        log.dim(`[human-observer] console events unavailable: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
-    page.on('framenavigated', (frame: any) => {
-      if (frame === page.mainFrame()) onNavigate(frame.url())
-    })
-    page.on('click' as any, onClick as any)
-    page.on('input' as any, onInput as any)
-    page.on('select' as any, onSelect as any)
-    page.on('keydown' as any, onKeyDown as any)
-
-    this.listeners = [
-      () => { try { page.removeListener('navigate' as any, onNavigate as any) } catch {} },
-      () => { try { page.removeListener('click' as any, onClick as any) } catch {} },
-      () => { try { page.removeListener('input' as any, onInput as any) } catch {} },
-      () => { try { page.removeListener('select' as any, onSelect as any) } catch {} },
-      () => { try { page.removeListener('keydown' as any, onKeyDown as any) } catch {} },
-    ]
+    this.listeners = cleaners
   }
 
   detach(): void {
@@ -488,23 +432,6 @@ export class HumanObserver {
     }
   }
 
-  private buildSelector(element: any): string {
-    if (!element) return 'unknown'
-
-    const id = element.id ? `#${element.id}` : ''
-    if (id) return id
-
-    const testId = element.getAttribute?.('data-testid')
-    if (testId) return `[data-testid="${testId}"]`
-
-    const name = element.getAttribute?.('name')
-    if (name) return `[name="${name}"]`
-
-    const tagName = element.tagName?.toLowerCase() || 'unknown'
-    const className = element.className ? `.${String(element.className).split(' ')[0]}` : ''
-    return tagName + className
-  }
-
   clear(): void {
     this.actions = []
     this.snapshotBeforeAsk = []
@@ -521,10 +448,17 @@ export class HumanObserver {
 let globalObserver: HumanObserver | null = null
 
 export function getGlobalObserver(): HumanObserver {
+  const owned = getEngagementServices()?.humanObserver
+  if (owned) return owned
   if (!globalObserver) globalObserver = new HumanObserver()
   return globalObserver
 }
 
 export function setGlobalObserver(observer: HumanObserver): void {
+  const owned = getEngagementServices()
+  if (owned) {
+    owned.humanObserver = observer
+    return
+  }
   globalObserver = observer
 }

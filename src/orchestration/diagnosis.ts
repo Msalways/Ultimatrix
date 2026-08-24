@@ -476,7 +476,6 @@ export function diagnoseTargetState(input: DiagnosisInput): DiagnosisProfile {
   const eps = readEndpoints(store, input.target)
   const relations = readRelations(store)
 
-  const authSchemes = (store.queryNodes(NodeType.AUTH_SCHEME) as Array<any>) ?? []
   const authFlows = (store.queryNodes(NodeType.AUTH_FLOW) as Array<any>) ?? []
   const rbacRoles = (store.queryNodes(NodeType.RBAC_ROLE) as Array<any>) ?? []
   const findings = (store.queryNodes(NodeType.FINDING) as Array<any>) ?? []

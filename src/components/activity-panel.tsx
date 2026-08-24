@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { ScrollArea } from './ui/scroll-area'
 import { X, Pause, Play, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useSessionStore } from '@/stores/session-store'
 
 interface ActivityEntry {
   id: number
@@ -54,6 +55,7 @@ const FILTER_OPTIONS: FilterType[] = ['all', 'tool-call', 'tool-result', 'error'
 let nextId = 1
 
 export function ActivityPanel({ onClose }: { onClose?: () => void }) {
+  const activeTarget = useSessionStore((state) => state.activeTarget)
   const [entries, setEntries] = useState<ActivityEntry[]>([])
   const [paused, setPaused] = useState(false)
   const [filter, setFilter] = useState<FilterType>('all')
@@ -68,7 +70,8 @@ export function ActivityPanel({ onClose }: { onClose?: () => void }) {
       esRef.current.close()
     }
 
-    const es = new EventSource('/api/swarm-events')
+    if (!activeTarget) return
+    const es = new EventSource(`/api/swarm-events?target=${encodeURIComponent(activeTarget)}`)
     esRef.current = es
 
     es.onopen = () => setConnected(true)
@@ -97,7 +100,7 @@ export function ActivityPanel({ onClose }: { onClose?: () => void }) {
       // Reconnect after 3s
       reconnectTimer.current = setTimeout(connect, 3000)
     }
-  }, [])
+  }, [activeTarget])
 
   useEffect(() => {
     connect()

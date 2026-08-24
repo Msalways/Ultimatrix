@@ -1,16 +1,3 @@
-/**
- * Solver Brain — Orchestrator agent with shared tool pack.
- *
- * Created ONCE and reused across all REPL messages.
- * The brain observes, plans, and delegates — workers do the actual testing.
- *
- * Uses buildToolPack() as the base (same as council) for tool parity,
- * then adds brain-specific extras (auth detection, council, reports,
- * extension discovery, ref-store).
- * When engine is 'multi-model', brain gets selectModel tool for model-aware delegation.
- */
-
-import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
 import { Agent } from '@mastra/core/agent'
 import { createTool } from '@mastra/core/tools'
@@ -24,259 +11,243 @@ import { getBrainInstructions } from './brain-instructions'
 import { buildToolPack } from '../core/toolpack'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from './skills/registry'
-import type { WorkerPool } from '../workers/pool'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { getActivePage } from '../browser/manager'
-import { log } from '../utils/logger'
 import { getToolResultStore } from '../graph/tool-result-store'
 import { getGlobalGraphStore } from '../graph/store'
-import { listToolsTool, loadToolTool, getAcquiredToolMap } from '../extensions/tool-tools'
+import { createExtensionTools } from '../extensions/tool-tools'
+import type { DynamicToolRegistry } from '../extensions/tool-registry'
+import type { LazySolverServices } from '../runtime/lazy-services'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 import { getGlobalObserver } from '../capture/human-observer'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
-  workerPool: WorkerPool
-  browser?: StagehandBrowser
   memory?: MastraMemory
   extraContext?: string
   modelSelector?: import('../models/selector').ModelSelector
+  extensionRegistry: DynamicToolRegistry
+  lazyServices?: LazySolverServices
 }
 
 function sanitizeTool(tool: any, provider?: string): any {
-  if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in (tool.inputSchema as object)) {
+  if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in tool.inputSchema) {
     return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider) }
   }
   return tool
 }
 
-/**
- * Create the solver brain — orchestrator agent with the shared tool pack.
- *
- * Base tools come from buildToolPack() (same set as council): core graph,
- * HTTP, skills, session, misc, external scanners, research, orchestration,
- * primitives, campaign, model-selection, browser.
- *
- * Brain-specific extras added on top: extension discovery, ref-store,
- * auth detection, council suggestion, on-demand report.
- */
-export function createSolverBrain(
-  config: UltimatrixConfig,
-  options: SolverBrainOptions,
-) {
-  const p = config.provider
+const READ_ONLY = new Set([
+  'queryGraph', 'getTargetSummary', 'getEndpointsWithParams', 'getGraphSchema', 'getCaptureOverview',
+  'queryRelations', 'getGraphNeighborhood', 'getWorkflowAround', 'traceValue', 'explainReachability', 'getUntestedWorkarounds',
+  'listSkills', 'searchSkills', 'loadSkillReference', 'loadSkillBody', 'getCapturedHeaders',
+  'getDialogEvidence', 'getRecentChanges', 'getResearchStatus', 'getPriorPatterns', 'getToolResult', 'selectModel',
+])
 
-  // ─── Base tools via shared toolpack ──────────────────────────────
-  // Same set as council: core (incl. getGraphSchema, getCaptureOverview,
-  // queryRelations), http, skill (incl. loadSkillBody), session, misc,
-  // external scanners (nuclei/sqlmap/ffuf/etc), research, orchestration,
-  // primitives, campaign, model-selection, browser.
-  const baseTools = buildToolPack(
-    {
-      config,
-      skillRegistry: options.skillRegistry,
-      workerPool: options.workerPool,
-      browser: options.browser,
-      modelSelector: options.modelSelector,
-    },
-    {
-      includeOrchestration: true,
-      includeResearch: true,
-      includePrimitives: true,
-    },
-  )
+const BROWSER_DESCRIPTORS: Record<string, string> = {
+  stagehand_navigate: 'Navigate the authorized browser session to a URL.',
+  stagehand_act: 'Perform one described action in the authorized browser session.',
+  stagehand_extract: 'Extract structured information from the current browser page.',
+  stagehand_observe: 'Observe actionable elements on the current browser page.',
+  stagehand_screenshot: 'Capture a screenshot of the current browser page.',
+  stagehand_tabs: 'Inspect or change tabs in the current browser session.',
+}
 
-  // ─── Brain-specific extras (not in toolpack) ────────────────────
-  const brainExtras: Record<string, any> = {}
+const WORKER_CAPABILITIES = new Set(['spawnWorker', 'spawnSwarm', 'runTaskGraph', 'executeDirect', 'runAdvancedPlaybook'])
+const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
+const CAPTURE_DEPENDENT = new Set(['observeHumanActions'])
+const OAST_DEPENDENT = new Set(['getOastUrlTool', 'checkOastCallbacks'])
 
-  // Extension discovery tools (MCP/plugin)
-  brainExtras.listTools = sanitizeTool(listToolsTool, p)
-  brainExtras.loadTool = sanitizeTool(loadToolTool, p)
+export function createSolverBrain(config: UltimatrixConfig, options: SolverBrainOptions) {
+  const provider = config.provider
+  const baseTools = buildToolPack({
+    config,
+    skillRegistry: options.skillRegistry,
+    modelSelector: options.modelSelector,
+  }, { includeResearch: true, includePrimitives: true })
 
-  // Tool Result Ref-Store (graph-as-database for large tool outputs)
+  const extras: Record<string, any> = {}
+  const extensionTools = createExtensionTools(options.extensionRegistry)
   const toolResultStore = getToolResultStore(getGlobalGraphStore())
-  brainExtras.getToolResult = sanitizeTool(createTool({
-    id: 'getToolResult',
-    description: 'Retrieve full data from a previous tool result by its graph node reference. Use this when you need the complete response body, auth data, or other large tool output that was stored in the graph.',
-    inputSchema: z.object({
-      graphNodeId: z.string().describe('The graph node ID returned in a tool result bodyRef field'),
-    }),
-    execute: async ({ graphNodeId }) => {
-      const data = toolResultStore.get(graphNodeId)
-      if (!data) return { ok: false, error: `Result not found for node ${graphNodeId}` }
-      return { ok: true, value: data }
-    },
-  }), p)
 
-  // Auth flow tools (autonomous auth detection via browser)
-  brainExtras.detectAuthFlows = sanitizeTool(createTool({
+  extras.getToolResult = sanitizeTool(createTool({
+    id: 'getToolResult',
+    description: 'Retrieve a stored large tool result by its graph reference.',
+    inputSchema: z.object({ graphNodeId: z.string() }),
+    execute: async ({ graphNodeId }) => {
+      const value = toolResultStore.get(graphNodeId)
+      return value === undefined ? { ok: false, error: `Result not found for node ${graphNodeId}` } : { ok: true, value }
+    },
+  }), provider)
+
+  extras.detectAuthFlows = sanitizeTool(createTool({
     id: 'detectAuthFlows',
-    description: 'Scan the current page for login forms, OAuth buttons, SAML redirects, and session tokens. Returns structured auth state including form fields, providers, and login endpoint.',
-    inputSchema: z.object({
-      url: z.string().optional().describe('URL to navigate to before scanning (optional — scans current page if omitted)'),
-    }),
+    description: 'Inspect the current page for typed authentication state and entry points.',
+    inputSchema: z.object({ url: z.string().optional() }),
     execute: async ({ url }) => {
       const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
-      try {
-        if (url) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
-        const observer = getGlobalObserver()
-        const detector = observer.getAuthDetector()
-        const state = await detector.detectAuthState(page as any)
-        const result: Record<string, unknown> = {
-          ok: true,
-          hasLoginForm: state.hasLoginForm,
-          authType: state.authType,
-          hasPasswordField: state.hasPasswordField,
-          hasRememberMe: state.hasRememberMe,
-          formCount: state.formCount,
-          oauthProviders: state.oauthProviders,
-        }
-        if (state.loginEndpoint) result.loginEndpoint = state.loginEndpoint
-        return result
-      } catch (error) {
-        return { ok: false, error: `Auth detection failed: ${error instanceof Error ? error.message : String(error)}` }
-      }
+      if (url) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+      const state = await getGlobalObserver().getAuthDetector().detectAuthState(page as any)
+      return { ok: true, ...state }
     },
-  }), p)
+  }), provider)
 
-  brainExtras.testSessionValid = sanitizeTool(createTool({
+  extras.testSessionValid = sanitizeTool(createTool({
     id: 'testSessionValid',
-    description: 'Test if the current session is authenticated by sending a request to the target and checking for redirects to login pages or presence of login forms. Returns whether the session is valid.',
-    inputSchema: z.object({
-      testUrl: z.string().optional().describe('URL to test (defaults to target)'),
-      protectedPaths: z.array(z.string()).optional().describe('Paths that require auth (e.g. ["/dashboard", "/api/me"])'),
-    }),
-    execute: async ({ testUrl, protectedPaths }) => {
+    description: 'Check whether the current browser session can reach specified protected URLs.',
+    inputSchema: z.object({ urls: z.array(z.string()).min(1) }),
+    execute: async ({ urls }) => {
       const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
-      const targetUrl = testUrl || config.target || ''
-      const paths = protectedPaths || ['/dashboard', '/api/me', '/profile', '/account']
-      const results: Array<{ path: string; authenticated: boolean; reason?: string }> = []
-      for (const path of paths) {
-        const url = path.startsWith('http') ? path : `${targetUrl}${path}`
+      const results = []
+      for (const url of urls) {
         try {
           const response = await (page as any).goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 })
-          const finalUrl = (page as any).url?.() || ''
-          const loginPatterns = [/\/login/i, /\/signin/i, /\/auth\/login/i, /\/sso/i, /session\/new/i]
-          const isLoginPage = loginPatterns.some(p => p.test(finalUrl))
-          if (isLoginPage) { results.push({ path, authenticated: false, reason: `Redirected to login: ${finalUrl}` }); continue }
-          const hasPwField = await (page as any).$('input[type="password"]').catch(() => null)
-          if (hasPwField) { results.push({ path, authenticated: false, reason: 'Page contains password field' }); continue }
-          const status = response?.status?.() || 200
-          if (status === 401 || status === 403) { results.push({ path, authenticated: false, reason: `HTTP ${status}` }); continue }
-          results.push({ path, authenticated: true })
+          results.push({ url, status: response?.status?.() ?? 0, finalUrl: (page as any).url?.() ?? url })
         } catch (error) {
-          results.push({ path, authenticated: false, reason: `Request failed: ${error instanceof Error ? error.message : String(error)}` })
+          results.push({ url, error: error instanceof Error ? error.message : String(error) })
         }
       }
-      return {
-        ok: true,
-        authenticated: results.every(r => r.authenticated),
-        partiallyAuthenticated: results.some(r => r.authenticated) && !results.every(r => r.authenticated),
-        results,
-      }
+      return { ok: true, results }
     },
-  }), p)
+  }), provider)
 
-  // Council request tool (brain suggests council, user decides)
-  brainExtras.requestCouncil = sanitizeTool(createTool({
-    id: 'requestCouncil',
-    description: 'Suggest bringing in the council for complex decisions. The brain recommends a council deliberation when a task requires multiple perspectives or strategic debate. The user decides whether to run /council.',
-    inputSchema: z.object({
-      goal: z.string().describe('What the council should deliberate on'),
-      reason: z.string().describe('Why council input is needed — what makes this too complex for solo reasoning'),
-    }),
-    execute: async ({ goal, reason }) => {
-      log.info(`\n🧠 Brain suggests council deliberation:\n   Goal: ${goal}\n   Reason: ${reason}\n   → Type: /council ${goal}`)
-      return { suggest: true, goal, reason }
-    },
-  }), p)
-
-  // On-demand report generation
-  brainExtras.generateReport = sanitizeTool(createTool({
+  extras.generateReport = sanitizeTool(createTool({
     id: 'generateReport',
-    description: 'Write a Markdown report to disk on demand. scope "engagement" covers all findings; scope "finding" (with findingId) reports a single bug. Returns the file path. The report includes real exploit proofs (request/response/impact) when present, so it is a deliverable, not just a list.',
-    inputSchema: z.object({
-      scope: z.enum(['engagement', 'finding']).describe('engagement = whole report; finding = one bug'),
-      findingId: z.string().optional().describe('Required when scope is "finding"'),
-    }),
-    execute: async ({ scope, findingId }) => {
-      const { writeOnDemandReport } = await import('../report/on-demand')
-      const res = writeOnDemandReport(scope, findingId)
-      if (!res.ok) return { ok: false, error: res.error }
-      return { ok: true, path: res.path, findingCount: res.findingCount }
-    },
-  }), p)
+    description: 'Write an evidence-backed Markdown report for the engagement or one finding.',
+    inputSchema: z.object({ scope: z.enum(['engagement', 'finding']), findingId: z.string().optional() }),
+    execute: async ({ scope, findingId }) => (await import('../report/on-demand')).writeOnDemandReport(scope, findingId),
+  }), provider)
 
-  // Cross-engagement priors (anonymized pattern memory)
-  brainExtras.getPriorPatterns = sanitizeTool(createTool({
+  extras.getPriorPatterns = sanitizeTool(createTool({
     id: 'getPriorPatterns',
-    description: 'Consult anonymized cross-engagement pattern memory to prioritize techniques, vulnerable endpoint shapes, and parameter names. Stores only structural features — never raw URLs, hostnames, or target identity.',
-    inputSchema: z.object({
-      vulnType: z.string().optional().describe('Optional vulnerability class to bias priors toward (e.g. "idor", "ssrf", "sqli")'),
-    }),
+    description: 'Retrieve anonymized cross-engagement structural priors.',
+    inputSchema: z.object({ vulnType: z.string().optional() }),
     execute: async ({ vulnType }) => {
-      const mem = new CrossEngagementMemory()
-      await mem.load()
-      const priors = mem.getPriorPatterns(vulnType)
-      return {
-        ok: true,
-        value: {
-          engagementCount: priors.engagementCount,
-          vulnType: priors.vulnType,
-          topTechniques: priors.topTechniques,
-          vulnerableShapes: priors.vulnerableShapes,
-          commonParams: priors.commonParams,
-          failurePatterns: priors.failurePatterns,
-          effectiveSequences: priors.effectiveSequences,
-          promptBlock: priors.promptBlock,
-        },
-      }
+      const memory = new CrossEngagementMemory()
+      await memory.load()
+      return { ok: true, value: memory.getPriorPatterns(vulnType) }
     },
-  }), p)
+  }), provider)
 
-  // ─── Merge base + brain extras ─────────────────────────────────
-  const allTools: Record<string, any> = { ...baseTools, ...brainExtras }
+  const catalog = { ...baseTools, ...extras }
+  for (const [id, tool] of Object.entries(catalog)) {
+    const requirements = CAPTURE_DEPENDENT.has(id)
+      ? ['browser', 'capture']
+      : BROWSER_DEPENDENT.has(id)
+        ? ['browser']
+        : OAST_DEPENDENT.has(id)
+          ? ['oast']
+          : []
+    options.extensionRegistry.registerLazyBuiltin({
+      id,
+      description: String((tool as any).description ?? id),
+      namespace: 'builtin',
+      source: 'builtin',
+      requirements,
+      activity: READ_ONLY.has(id) ? 'inspect' : 'execute',
+      readOnly: READ_ONLY.has(id),
+    }, async () => {
+      if (CAPTURE_DEPENDENT.has(id)) await options.lazyServices?.ensureCapture()
+      else if (BROWSER_DEPENDENT.has(id)) await options.lazyServices?.ensureBrowser()
+      if (OAST_DEPENDENT.has(id)) await options.lazyServices?.ensureOast()
+      return tool as any
+    })
+  }
 
-  // Merge explicitly-acquired extension tools (MCP/plugin)
-  try { Object.assign(allTools, getAcquiredToolMap()) } catch {}
+  if (options.lazyServices) {
+    for (const [id, description] of Object.entries(BROWSER_DESCRIPTORS)) {
+      options.extensionRegistry.registerLazyBuiltin({
+        id,
+        description,
+        namespace: 'browser',
+        source: 'builtin',
+        requirements: ['browser'],
+        activity: id === 'stagehand_observe' || id === 'stagehand_extract' || id === 'stagehand_screenshot' ? 'inspect' : 'browser-action',
+        readOnly: id === 'stagehand_observe' || id === 'stagehand_extract' || id === 'stagehand_screenshot',
+      }, async () => {
+        const tool = (await options.lazyServices!.getBrowserTools())[id]
+        if (!tool) throw new Error(`Browser provider does not supply ${id}`)
+        return sanitizeTool(tool, provider)
+      })
+    }
 
-  // Browser tools (wrapped with dialog evidence injection) are
-  // already included by buildToolPack when browser is passed.
+    options.extensionRegistry.registerLazyBuiltin({
+      id: 'crawlTarget',
+      description: 'Discover the authorized target surface with the configured crawler and persist references to the graph and capture artifacts.',
+      namespace: 'crawl',
+      source: 'builtin',
+      requirements: ['browser', 'capture', 'oast', 'crawl'],
+      activity: 'crawl',
+      readOnly: false,
+    }, async () => {
+      await options.lazyServices!.ensureCapture()
+      return createTool({
+        id: 'crawlTarget',
+        description: 'Run the configured crawler against the authorized target.',
+        inputSchema: z.object({}),
+        execute: async () => ({ ok: true, state: await options.lazyServices!.crawl() }),
+      })
+    })
 
-  // ─── Build agent ───────────────────────────────────────────────
-  const toolCount = Object.keys(allTools).length
+    for (const id of WORKER_CAPABILITIES) {
+      options.extensionRegistry.registerLazyBuiltin({
+        id,
+        description: `Initialize worker orchestration and activate ${id}.`,
+        namespace: 'workers',
+        source: 'builtin',
+        requirements: ['workers'],
+        activity: 'delegate',
+        readOnly: false,
+      }, async () => {
+        const workers = await options.lazyServices!.ensureWorkers()
+        const tools = buildToolPack({
+          config,
+          skillRegistry: options.skillRegistry,
+          workerPool: workers.workerPool,
+          taskCoordinator: workers.taskCoordinator,
+          modelSelector: options.modelSelector,
+        }, { includeOrchestration: true, includeResearch: false, includePrimitives: true })
+        const tool = tools[id]
+        if (!tool) throw new Error(`Worker runtime does not supply ${id}`)
+        return tool
+      })
+    }
+  }
 
-  // TokenLimiter: intra-turn pruning — limit = 70% of context window
-  const registry = new ContextWindowRegistry(config)
-  const brainModel = resolveModelRef(config, { role: 'brain' })
-  const contextWindow = registry.getContextWindow(brainModel.modelId) || registry.getContextWindow(brainModel.model) || 128_000
-  const tokenLimit = Math.floor(contextWindow * 0.7)
-  const tokenLimiter = new TokenLimiterProcessor({
-    limit: tokenLimit,
-    trimMode: 'best-fit',
+  let turnToolsOverride: Record<string, any> | undefined
+  const discoveryTools = Object.fromEntries(Object.entries(extensionTools).map(([id, tool]) => [id, sanitizeTool(tool, provider)]))
+  const currentTools = () => turnToolsOverride ?? ({
+    ...discoveryTools,
+    ...options.extensionRegistry.getActiveToolset(),
   })
+  const modelRef = resolveModelRef(config, { role: 'brain' })
+  const contextWindow = new ContextWindowRegistry(config).getContextWindow(modelRef.modelId)
+    || new ContextWindowRegistry(config).getContextWindow(modelRef.model)
+    || 128_000
 
-  const agentConfig: any = {
+  const agent = new Agent({
     name: 'ultimatrix-solver-brain',
     model: resolveModel(config, { role: 'brain' }),
     target: config.target,
-    tools: allTools,
-    instructions: getBrainInstructions(config, options.extraContext),
-    inputProcessors: [tokenLimiter],
-  }
+    tools: currentTools,
+    instructions: getBrainInstructions(config),
+    inputProcessors: [new TokenLimiterProcessor({ limit: Math.floor(contextWindow * 0.7), trimMode: 'best-fit' })],
+    defaultOptions: {
+      activeTools: Object.keys(discoveryTools),
+      prepareStep: () => ({ tools: currentTools(), activeTools: Object.keys(currentTools()) }),
+      ...(modelRef.maxOutputTokens ? { modelSettings: { maxTokens: modelRef.maxOutputTokens } } : {}),
+    },
+    ...(options.memory ? { memory: options.memory } : {}),
+  } as any)
 
-  if (brainModel.maxOutputTokens) {
-    agentConfig.defaultOptions = { modelSettings: { maxTokens: brainModel.maxOutputTokens } }
-  }
-
-  if (options.memory) agentConfig.memory = options.memory
-  if (options.browser) agentConfig.context = { browser: options.browser }
-
-  const agent = new Agent(agentConfig)
   agent.id = 'ultimatrix-solver-brain'
-  agent.name = `Ultimatrix Solver Brain (${toolCount} tools)`
-
+  agent.name = 'Ultimatrix Solver Brain'
+  ;(agent as any).capabilityRegistry = options.extensionRegistry
+  ;(agent as any).lazyServices = options.lazyServices
+  ;(agent as any).setTurnToolsOverride = (tools?: Record<string, any>) => {
+    turnToolsOverride = tools
+  }
   return agent
 }

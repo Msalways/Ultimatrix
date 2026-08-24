@@ -1,22 +1,51 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
-import { getGlobalOastStore, OastCallback } from './store'
+import { getGlobalOastStore, OastCallback, type OastStore } from './store'
 import { recordStructuredEvidence } from '../tools/control-tools'
 import type { OastConfig } from '../config'
+import { getEngagementServices, runWithEngagementServices, type EngagementServices } from '../runtime/engagement-context'
 
 let server: ReturnType<typeof createServer> | null = null
 let serverPort = 0
+let serverReady: Promise<number> | null = null
 const oastHost = 'localhost'
+
+interface OastBinding {
+  key: string
+  store: OastStore
+  config: OastConfig | null
+  services?: EngagementServices
+}
+
+const bindings = new Map<string, OastBinding>()
+const storeKeys = new WeakMap<OastStore, string>()
+let legacyStore: OastStore | null = null
 
 let _oastConfig: OastConfig | null = null
 
+function getCurrentConfig(): OastConfig | null {
+  return getEngagementServices()?.oastConfig ?? _oastConfig
+}
+
+function getCurrentStore(): OastStore {
+  return getEngagementServices()?.oast ?? legacyStore ?? getGlobalOastStore()
+}
+
 export function setOastConfig(config: OastConfig | null): void {
+  const services = getEngagementServices()
+  if (services) {
+    services.oastConfig = config
+    const key = storeKeys.get(services.oast)
+    const binding = key ? bindings.get(key) : undefined
+    if (binding) binding.config = config
+    return
+  }
   _oastConfig = config
 }
 
 /** Callback TTL in ms. Default 1h. */
-function getCallbackTtlMs(): number {
-  if (_oastConfig?.callbackTtlMs !== undefined) return _oastConfig.callbackTtlMs
+function getCallbackTtlMs(config = getCurrentConfig()): number {
+  if (config?.callbackTtlMs !== undefined) return config.callbackTtlMs
   const envTtl = process.env.OAST_CALLBACK_TTL_MS
   if (envTtl) {
     const n = Number(envTtl)
@@ -29,19 +58,21 @@ function getCallbackTtlMs(): number {
  * Build the OAST callback URL.
  * Priority: OAST_CALLBACK_HOST env > config.oast.externalHost > local server.
  */
-export function getOastUrl(): string {
-  const ext = process.env.OAST_CALLBACK_HOST || _oastConfig?.externalHost
+export function getOastUrl(store = getEngagementServices()?.oast): string {
+  const routeKey = store ? storeKeys.get(store) : undefined
+  const config = routeKey ? bindings.get(routeKey)?.config ?? getCurrentConfig() : getCurrentConfig()
+  const ext = process.env.OAST_CALLBACK_HOST || config?.externalHost
+  const suffix = routeKey && bindings.has(routeKey) ? `/_oast/${routeKey}` : ''
   if (ext) {
-    return `https://${ext}`
+    return `https://${ext}${suffix}`
   }
   if (serverPort === 0) return 'http://oast-not-started'
-  return `http://${oastHost}:${serverPort}`
+  return `http://${oastHost}:${serverPort}${suffix}`
 }
 
 /** Prune callbacks older than TTL from the store. Returns count removed. */
-export function pruneExpiredCallbacks(): number {
-  const store = getGlobalOastStore()
-  const ttlMs = getCallbackTtlMs()
+function pruneStore(store: OastStore, config: OastConfig | null): number {
+  const ttlMs = getCallbackTtlMs(config)
   const cutoff = Date.now() - ttlMs
   const all = store.getAll()
   const before = all.length
@@ -54,6 +85,10 @@ export function pruneExpiredCallbacks(): number {
     }
   }
   return before - kept
+}
+
+export function pruneExpiredCallbacks(): number {
+  return pruneStore(getCurrentStore(), getCurrentConfig())
 }
 
 function parseBody(req: IncomingMessage): Promise<string> {
@@ -85,33 +120,36 @@ function jsonResponse(res: ServerResponse, status: number, data: unknown): void 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url || '/'
   const method = (req.method || 'GET').toUpperCase()
-  const path = url.split('?')[0]
+  const rawPath = url.split('?')[0]
+  const routeMatch = rawPath.match(/^\/_oast\/([^/]+)(\/.*)?$/)
+  const binding = routeMatch ? bindings.get(decodeURIComponent(routeMatch[1])) : undefined
+  if (routeMatch && !binding) return jsonResponse(res, 404, { ok: false, error: 'unknown OAST engagement' })
+  const path = routeMatch ? routeMatch[2] || '/' : rawPath
+  const store = binding?.store ?? legacyStore ?? getGlobalOastStore()
+  const config = binding?.config ?? _oastConfig
 
   if (path === '/callbacks' && method === 'GET') {
-    pruneExpiredCallbacks()
-    const store = getGlobalOastStore()
+    pruneStore(store, config)
     return jsonResponse(res, 200, { ok: true, count: store.count(), callbacks: store.getAll() })
   }
 
   if (path.startsWith('/callbacks/') && method === 'GET') {
     const id = path.replace('/callbacks/', '')
-    const store = getGlobalOastStore()
     const cb = store.getById(id)
     if (!cb) return jsonResponse(res, 404, { ok: false, error: 'callback not found' })
-    if (cb.timestamp < Date.now() - getCallbackTtlMs()) {
+    if (cb.timestamp < Date.now() - getCallbackTtlMs(config)) {
       return jsonResponse(res, 410, { ok: false, error: 'callback expired' })
     }
     return jsonResponse(res, 200, { ok: true, callback: cb })
   }
 
   if (path === '/callbacks' && method === 'DELETE') {
-    const store = getGlobalOastStore()
     store.clear()
     return jsonResponse(res, 200, { ok: true, cleared: true })
   }
 
   if (path === '/health' || path === '/') {
-    return jsonResponse(res, 200, { ok: true, service: 'oast', port: serverPort, callbacks: getGlobalOastStore().count(), externalHost: process.env.OAST_CALLBACK_HOST || _oastConfig?.externalHost || null })
+    return jsonResponse(res, 200, { ok: true, service: 'oast', port: serverPort, callbacks: store.count(), externalHost: process.env.OAST_CALLBACK_HOST || config?.externalHost || null })
   }
 
   // Catch-all: record any request as a callback
@@ -132,26 +170,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     sourceIp: req.socket?.remoteAddress || 'unknown',
   }
 
-  getGlobalOastStore().add(callback)
+  store.add(callback)
 
   // Structured evidence: an out-of-band callback is hard proof of SSRF/XXE/RCE.
-  recordStructuredEvidence({
-    type: 'raw_request',
-    data: `${method} ${url}`,
-    label: `OAST callback from ${callback.sourceIp}`,
-    observed: { method, url: `http://${oastHost}:${serverPort}${path}` },
-  })
+  const recordEvidence = () => recordStructuredEvidence({
+      type: 'raw_request',
+      data: `${method} ${url}`,
+      label: `OAST callback from ${callback.sourceIp}`,
+      observed: { method, url: `http://${oastHost}:${serverPort}${path}` },
+    })
+  if (binding?.services) runWithEngagementServices(binding.services, recordEvidence)
+  else recordEvidence()
 
   jsonResponse(res, 200, { ok: true, recorded: callback.id })
 }
 
-export async function startOastServer(port = 0): Promise<number> {
-  return new Promise((resolve, reject) => {
-    if (server) {
-      resolve(serverPort)
-      return
+export async function startOastServer(port = 0, store?: OastStore): Promise<number> {
+  const services = getEngagementServices()
+  const ownedStore = store ?? services?.oast
+  if (ownedStore) {
+    const existingKey = storeKeys.get(ownedStore)
+    if (!existingKey || !bindings.has(existingKey)) {
+      const key = randomBytes(18).toString('base64url')
+      storeKeys.set(ownedStore, key)
+      bindings.set(key, { key, store: ownedStore, config: services?.oastConfig ?? _oastConfig, services })
     }
+  } else {
+    legacyStore ??= getGlobalOastStore()
+  }
 
+  if (serverReady) return serverReady
+  serverReady = new Promise((resolve, reject) => {
     server = createServer(handleRequest)
     server.listen(port, oastHost, () => {
       const addr = server?.address()
@@ -160,11 +209,25 @@ export async function startOastServer(port = 0): Promise<number> {
       }
       resolve(serverPort)
     })
-    server.on('error', reject)
+    server.on('error', (error) => {
+      server = null
+      serverPort = 0
+      serverReady = null
+      reject(error)
+    })
   })
+  return serverReady
 }
 
-export async function stopOastServer(): Promise<void> {
+export async function stopOastServer(store = getEngagementServices()?.oast): Promise<void> {
+  if (store) {
+    const key = storeKeys.get(store)
+    if (key) bindings.delete(key)
+    if (bindings.size > 0 || legacyStore) return
+  } else {
+    bindings.clear()
+    legacyStore = null
+  }
   return new Promise((resolve) => {
     if (!server) {
       resolve()
@@ -173,6 +236,9 @@ export async function stopOastServer(): Promise<void> {
     server.close(() => {
       server = null
       serverPort = 0
+      serverReady = null
+      bindings.clear()
+      legacyStore = null
       resolve()
     })
   })

@@ -3,68 +3,46 @@ import type {UltimatrixConfig} from '../config'
 import { DEFAULTS } from '../config'
 import { WorkerFactory, type WorkerConfig } from './factory'
 import type { SkillRegistry } from '../solver/skills/registry'
-import { loadSkill } from '../solver/skills/loader'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { ContextBudgetManager } from '../models/context-manager'
-import type { ModelSelector, WorkerTask } from '../models/selector'
 import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
-import { getForensicLog } from '../tools/report-tools'
 import { emitWorkerTimeout, emitWorkerKilled } from '../events/emitter'
+import type { DynamicToolRegistry } from '../extensions/tool-registry'
 
 /**
  * Wrap a promise with a wall-clock timeout. Timer is `.unref()`'d so it doesn't
  * keep the process alive if the promise resolves first.
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`Timeout: ${label} exceeded ${ms}ms`))
-    }, ms)
+function waitForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Worker execution cancelled'))
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }
+    const timer = setTimeout(finish, ms)
+    const abort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new Error('Worker execution cancelled'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
   })
-  if (typeof timer! === 'object' && 'unref' in timer!) timer!.unref()
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!))
 }
 
-/**
- * A unit of fan-out work for `dispatchSlices`. Each slice is routed to a model
- * via the `ModelSelector` (slice-level multi-model fan-out) and executed as a
- * specialized worker.
- */
-export interface DispatchSlice {
-  id: string
-  skillId: string
-  task: string
-  complexity: 'low' | 'medium' | 'high' | 'critical'
-  requiredCapabilities?: string[]
-  tenant?: string
-  sandboxId?: string
-  context?: any
-  tokenBudget?: number
+export interface ManagedWorkerInfo {
+  workerId: string
+  workerName: string
 }
 
-export interface DispatchOptions {
-  /** When provided, each slice is routed to a model via selectForTask(). */
-  modelSelector?: ModelSelector
-  /** Role passed to ModelSelector.selectForTask for every slice. */
-  perSliceRole?: 'brain' | 'worker' | 'spider'
-  /**
-   * Per-slice worker timeout in ms. Threaded into each slice's WorkerConfig.timeoutMs.
-   * If a worker doesn't complete within this deadline, the slice returns an error.
-   */
-  perSliceTimeoutMs?: number
+export interface ManagedWorkerResult extends ManagedWorkerInfo {
+  result: any
+  durationMs: number
 }
 
-export interface DispatchResult {
-  sliceId: string
-  modelId?: string
-  provider?: string
-  tier?: string
-  tenant?: string
-  sandboxId?: string
-  result?: any
-  error?: string
+export interface ManagedWorkerOptions {
+  signal?: AbortSignal
+  onStarted?: (worker: ManagedWorkerInfo) => void | Promise<void>
 }
 
 export class WorkerPool {
@@ -82,11 +60,12 @@ export class WorkerPool {
 
   constructor(
     config: UltimatrixConfig,
-    skillRegistry: SkillRegistry,
+    private skillRegistry: SkillRegistry,
     browser?: StagehandBrowser,
     workspace?: WorkspaceManager,
+    extensionRegistry?: DynamicToolRegistry,
   ) {
-    this.factory = new WorkerFactory(config, skillRegistry)
+    this.factory = new WorkerFactory(config, skillRegistry, extensionRegistry)
     this.browser = browser || null
     this.workspace = workspace || null
     this.maxConcurrency = config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel
@@ -118,9 +97,7 @@ export class WorkerPool {
   /**
    * Scope the pool's state namespace under an isolated tenant. Delegates to the
    * WorkspaceManager so the global graph/oast stores point at the tenant path.
-   * NOTE: tenant switching mutates the pool-global state namespace; callers
-   * dispatching a cross-tenant batch should group slices by tenant (the iterator
-   * in dispatchSlices switches once per tenant grouping).
+   * NOTE: tenant switching mutates the pool-global state namespace.
    */
   async switchTenant(tenantId: string, sandboxId?: string): Promise<void> {
     this.tenant = tenantId
@@ -139,7 +116,7 @@ export class WorkerPool {
    */
   validateWorkerContext(config: WorkerConfig, modelId: string): ReturnType<ContextBudgetManager['validateContextFit']> | null {
     if (!this.contextManager) return null
-    const skill = loadSkill(config.skillId)
+    const skill = this.skillRegistry.load(config.skillId)
     return this.contextManager.validateContextFit({
       modelId,
       systemPrompt: skill?.instructions || '',
@@ -149,7 +126,7 @@ export class WorkerPool {
     })
   }
 
-  spawn(config: WorkerConfig): Agent {
+  private spawn(config: WorkerConfig): Agent {
     const workerConfig = {
       ...config,
       browser: config.browser || this.browser || undefined,
@@ -183,16 +160,10 @@ export class WorkerPool {
     this.workers.clear()
   }
 
-  /**
-   * Execute a single worker with concurrency gating.
-   * Optional `tenant`/`sandboxId` on the config (or pool-level via setTenant)
-   * are threaded into the spawned worker for logical isolation bookkeeping.
-   * Signature preserved (config only) — new fields are optional.
-   */
-  async execute(config: WorkerConfig): Promise<any> {
-    while (this.running >= this.maxConcurrency) {
-      await new Promise(r => setTimeout(r, 100))
-    }
+  /** Execute one identified worker attempt and propagate cancellation into Mastra. */
+  async executeManaged(config: WorkerConfig, options: ManagedWorkerOptions = {}): Promise<ManagedWorkerResult> {
+    while (this.running >= this.maxConcurrency) await waitForAdmission(100, options.signal)
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('Worker execution cancelled')
     this.running++
     const workerConfig: WorkerConfig = {
       ...config,
@@ -201,24 +172,15 @@ export class WorkerPool {
       sandboxId: config.sandboxId ?? this.sandboxId ?? undefined,
     }
     const worker = this.spawn(workerConfig)
+    const workerName = (worker as any).name ?? `${workerConfig.skillId} Specialist`
     const startTime = Date.now()
     try {
-      let result: any
-      if (workerConfig.timeoutMs) {
-        result = await withTimeout(
-          worker.generate(workerConfig.task),
-          workerConfig.timeoutMs,
-          `worker:${workerConfig.skillId}`,
-        )
-      } else {
-        result = await worker.generate(workerConfig.task)
-      }
-      return result
+      await options.onStarted?.({ workerId: worker.id, workerName })
+      const result = await worker.generate(workerConfig.task, { abortSignal: options.signal })
+      return { workerId: worker.id, workerName, result, durationMs: Date.now() - startTime }
     } catch (err) {
       const durationMs = Date.now() - startTime
       const errorMsg = (err as Error).message ?? String(err)
-      const workerName = (worker as any).name ?? `${workerConfig.skillId} Specialist`
-
       // Detect timeout specifically
       if (errorMsg.includes('exceeded') && errorMsg.includes('ms')) {
         emitWorkerTimeout(worker.id, workerName, workerConfig.skillId, workerConfig.task, workerConfig.timeoutMs ?? 0, durationMs)
@@ -226,102 +188,9 @@ export class WorkerPool {
 
       throw err
     } finally {
-      this.kill(worker.id)
+      this.workers.delete(worker.id)
       this.running--
     }
   }
 
-  /**
-   * Slice-level multi-model fan-out.
-   *
-   * For each slice this:
-   *   1. Routes the slice to a model via `ModelSelector.selectForTask({ complexity, requiredCapabilities })`
-   *      (skipped when no selector is supplied — falls back to config/tier model).
-   *   2. Spawns the appropriate specialized worker for `skillId` with the chosen `modelId`/`tier`.
-   *   3. Respect the pool's `maxConcurrency` gate (execute() serializes admission).
-   *
-   * Each slice may carry its own `tenant`/`sandboxId`; when present and a workspace
-   * is attached, the pool switches its state namespace to that tenant before the
-   * slice runs (logical multi-tenant isolation). Slices are dispatched concurrently
-   * up to `maxConcurrency`; results are returned in input order.
-   */
-  async dispatchSlices(
-    slices: DispatchSlice[],
-    options: DispatchOptions = {},
-  ): Promise<DispatchResult[]> {
-    const role = options.perSliceRole ?? 'worker'
-
-    const runOne = async (slice: DispatchSlice): Promise<DispatchResult> => {
-      let modelId: string | undefined
-      let tier: string | undefined
-      let provider: string | undefined
-
-      if (options.modelSelector) {
-        const task: WorkerTask = {
-          skillId: slice.skillId,
-          taskDescription: slice.task,
-          complexity: slice.complexity,
-          requiredCapabilities: slice.requiredCapabilities,
-        }
-        const selection = options.modelSelector.selectForTask(task, role)
-        modelId = selection.modelId
-        tier = selection.tier
-        provider = selection.provider
-        log.info(`[pool] slice ${slice.id} → ${modelId} (${tier}) [${role}]`)
-
-        // Forensic model-selection: record the routing decision per slice so the
-        // multi-model allocation is observable and attributable to each task.
-        getForensicLog()?.log({
-          type: 'model-selection',
-          agent: 'pool',
-          tool: 'dispatchSlices',
-          args: { sliceId: slice.id, complexity: slice.complexity, skillId: slice.skillId },
-          metadata: { provider: provider!, modelId: modelId!, tier: tier! },
-        })
-      }
-
-      // Scope state namespace to the slice's tenant if it differs from the pool tenant.
-      if (slice.tenant && slice.tenant !== this.tenant && this.workspace) {
-        await this.switchTenant(slice.tenant, slice.sandboxId)
-      }
-
-      const config: WorkerConfig = {
-        skillId: slice.skillId,
-        task: slice.task,
-        tier: tier as WorkerConfig['tier'],
-        modelId,
-        complexity: slice.complexity,
-        context: slice.context,
-        tokenBudget: slice.tokenBudget,
-        tenant: slice.tenant ?? this.tenant ?? undefined,
-        sandboxId: slice.sandboxId ?? this.sandboxId ?? undefined,
-        timeoutMs: options.perSliceTimeoutMs,
-      }
-
-      try {
-        const result = await this.execute(config)
-        return {
-          sliceId: slice.id,
-          modelId,
-          provider,
-          tier,
-          tenant: config.tenant,
-          sandboxId: config.sandboxId,
-          result,
-        }
-      } catch (err) {
-        return {
-          sliceId: slice.id,
-          modelId,
-          provider,
-          tier,
-          tenant: config.tenant,
-          sandboxId: config.sandboxId,
-          error: (err as Error).message,
-        }
-      }
-    }
-
-    return Promise.all(slices.map(runOne))
-  }
 }

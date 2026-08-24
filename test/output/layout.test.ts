@@ -5,6 +5,7 @@ import {
   reduceMessage,
   argsSummary,
   resultSummary,
+  visibleAssistantText,
   type RenderModel,
 } from '../../src/output/render-model'
 import type { SolverStreamMessage } from '../../src/solver/solver'
@@ -38,11 +39,28 @@ describe('chat: contract reducer (tool-result.result)', () => {
     expect(m.tools[0].result).toBeUndefined()
   })
 
+  it('stores runtime assistant events for activity rendering', () => {
+    const m = feed([
+      { kind: 'event', event: 'model.selected', label: 'brain openai/gpt-4o', status: 'ok', data: { role: 'brain' } },
+      { kind: 'event', event: 'memory.loaded', label: 'graph memory 2 endpoints', status: 'ok' },
+    ] as SolverStreamMessage[])
+    expect(m.events).toHaveLength(2)
+    expect(m.events[0].event).toBe('model.selected')
+    expect(m.events[1].label).toContain('graph memory')
+  })
+
   it('argsSummary reads structural keys only (no vocab enumeration)', () => {
     expect(argsSummary({ method: 'post', url: 'https://x/a' })).toBe('POST https://x/a')
     expect(argsSummary({ endpoint: '/api/login', technique: 'sqli' })).toBe('/api/login sqli')
     expect(argsSummary({ severity: 'high' })).toBe('sev:high')
     expect(argsSummary({ foo: 'bar' })).toContain('foo')
+  })
+
+  it('hides JSON-shaped fake tool calls from assistant output', () => {
+    const text = '{"tool":"listTools","arguments":{"prefix":""}}'
+    expect(visibleAssistantText(text)).toBe('')
+    const m = feed([{ kind: 'done', answer: { content: text, reasoning: '', findings: [], completed: false, status: 'response_complete', durationMs: 1, steps: 0, toolCalls: 0, newFindings: 0 } }])
+    expect(m.answer).toBe('')
   })
 
   it('resultSummary compacts whitespace and truncates', () => {
@@ -102,7 +120,7 @@ describe('chat: delta dedup (no N× repetition of reasoning/answer)', () => {
 describe('chat: live paint writes only the new tail (not the full variable)', () => {
   it('nvidia-style cumulative reasoning prints each advance once, never re-echoed', () => {
     const writes: string[] = []
-    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), showReasoning: true })
     cs.begin('g')
     // nvidia sends the full text-so-far each chunk, advancing by a few chars.
     const chunks = [
@@ -122,7 +140,7 @@ describe('chat: live paint writes only the new tail (not the full variable)', ()
 
   it('incremental reasoning typewriter prints only new suffix each push', () => {
     const writes: string[] = []
-    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), showReasoning: true })
     cs.begin('g')
     cs.push(feed([{ kind: 'reasoning', text: 'think', index: 0 }]))
     cs.push(feed([{ kind: 'reasoning', text: 'think more', index: 0 }]))
@@ -184,13 +202,13 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
 
   it('renders live reasoning in violet on TTY, plain on non-TTY', () => {
     const ttyWrites: string[] = []
-    const tty = new ChatStream({ isTTY: true, write: (s) => ttyWrites.push(s) })
+    const tty = new ChatStream({ isTTY: true, write: (s) => ttyWrites.push(s), showReasoning: true })
     tty.begin('g')
     tty.push(feed([{ kind: 'reasoning', text: 'I will probe the login', index: 0 }]))
     expect(ttyWrites.join('')).toContain('\x1b[35m') // violet
 
     const plainWrites: string[] = []
-    const plain = new ChatStream({ isTTY: false, write: (s) => plainWrites.push(s) })
+    const plain = new ChatStream({ isTTY: false, write: (s) => plainWrites.push(s), showReasoning: true })
     plain.begin('g')
     plain.push(feed([{ kind: 'reasoning', text: 'I will probe the login', index: 0 }]))
     expect(plainWrites.join('')).not.toContain('\x1b[35m')
@@ -199,7 +217,7 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
 
   it('collapses reasoning into a cyan header on final', () => {
     const writes: string[] = []
-    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), showReasoning: true })
     cs.begin('g')
     cs.push(feed([{ kind: 'reasoning', text: 'line one\nline two', index: 0 }]))
     cs.final(feed([{ kind: 'reasoning', text: 'line one\nline two', index: 0 }]))
@@ -214,7 +232,7 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
 
   it('toggleReasoning expands the full reasoning in cyan', () => {
     const writes: string[] = []
-    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), showReasoning: true })
     cs.begin('g')
     cs.push(feed([{ kind: 'reasoning', text: 'line one\nline two', index: 0 }]))
     cs.final(feed([{ kind: 'reasoning', text: 'line one\nline two', index: 0 }]))
@@ -245,12 +263,33 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     // The deliverable is still shown.
     expect(joined).toContain('the answer')
   })
+
+  it('shows reasoning by default', () => {
+    const writes: string[] = []
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })
+    const model = feed([{ kind: 'reasoning', text: 'private scratch', index: 0 }])
+    cs.begin('g')
+    cs.push(model)
+    cs.final(model)
+    expect(writes.join('')).toContain('private scratch')
+  })
   it('cap-renders into plain stream when answer exceeds live cap (no throw)', () => {
     const writes: string[] = []
     const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), width: 80 })
     const big = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
     const m = feed([{ kind: 'answer', text: big, index: 0 }])
     expect(() => { cs.begin('g'); cs.push(m); cs.final(m) }).not.toThrow()
+  })
+
+  it('keeps appending answer chunks after live cap is exceeded', () => {
+    const writes: string[] = []
+    const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s), width: 80 })
+    const big = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
+    cs.begin('g')
+    cs.push(feed([{ kind: 'answer', text: 'short', index: 0 }]))
+    cs.push(feed([{ kind: 'answer', text: big, index: 1 }]))
+    cs.push(feed([{ kind: 'answer', text: `${big}\ntail-final`, index: 2 }]))
+    expect(writes.join('')).toContain('tail-final')
   })
 
   it('empty turn shows a no-output note with footer', () => {

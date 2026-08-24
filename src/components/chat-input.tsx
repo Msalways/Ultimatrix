@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { MessageCircle, Play, Send, Square } from 'lucide-react'
+import { Send, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface ChatInputProps {
@@ -12,11 +12,11 @@ interface ChatInputProps {
   placeholder?: string
 }
 
-export type InputMode = 'ask' | 'run'
+export type InputMode = 'auto' | 'run'
 
 export function ChatInput({ onSend, onStop, disabled, isStreaming, placeholder = 'Type a message...' }: ChatInputProps) {
   const [value, setValue] = useState('')
-  const [mode, setMode] = useState<InputMode>('run')
+  const mode: InputMode = 'auto'
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const handleSubmit = useCallback(() => {
@@ -51,37 +51,13 @@ export function ChatInput({ onSend, onStop, disabled, isStreaming, placeholder =
   return (
     <div className="border-t border-zinc-800/80 bg-zinc-950 p-3">
       <div className="mx-auto max-w-4xl">
-        <div className="mb-2 flex items-center gap-1" role="group" aria-label="Interaction mode">
-          <button
-            type="button"
-            onClick={() => setMode('ask')}
-            disabled={isStreaming}
-            className={cn(
-              'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium transition-colors',
-              mode === 'ask' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300',
-            )}
-          >
-            <MessageCircle size={12} /> Ask
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('run')}
-            disabled={isStreaming}
-            className={cn(
-              'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium transition-colors',
-              mode === 'run' ? 'bg-emerald-950/60 text-emerald-300' : 'text-zinc-500 hover:text-zinc-300',
-            )}
-          >
-            <Play size={12} /> Run
-          </button>
-        </div>
         <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
           value={value}
           onChange={(e) => { setValue(e.target.value); handleInput() }}
           onKeyDown={handleKeyDown}
-          placeholder={mode === 'run' ? 'Describe the assessment task to execute...' : placeholder}
+          placeholder={placeholder}
           disabled={disabled || isStreaming}
           rows={1}
           className={cn(

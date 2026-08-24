@@ -7,7 +7,7 @@ import { useAppStore, type SwarmEvent } from '@/stores/app-store'
  * SSE hook that subscribes to /api/swarm-events and feeds events into the Zustand store.
  * Auto-reconnects on disconnect with exponential backoff (3s, 6s, 12s, max 30s).
  */
-export function useSwarmEvents(opts?: { types?: string[]; workerId?: string }) {
+export function useSwarmEvents(opts?: { target?: string; types?: string[]; workerId?: string }) {
   const onSwarmEvent = useAppStore(s => s.onSwarmEvent)
   const setSwarmConnected = useAppStore(s => s.setSwarmConnected)
   const backoffRef = useRef(3000)
@@ -22,6 +22,8 @@ export function useSwarmEvents(opts?: { types?: string[]; workerId?: string }) {
       if (!activeRef.current) return
 
       const params = new URLSearchParams()
+      if (!opts?.target) return
+      params.set('target', opts.target)
       if (opts?.types?.length) params.set('types', opts.types.join(','))
       if (opts?.workerId) params.set('workerId', opts.workerId)
 
@@ -68,5 +70,5 @@ export function useSwarmEvents(opts?: { types?: string[]; workerId?: string }) {
       source?.close()
       setSwarmConnected(false)
     }
-  }, [onSwarmEvent, setSwarmConnected, opts?.types?.join(','), opts?.workerId])
+  }, [onSwarmEvent, setSwarmConnected, opts?.target, opts?.types?.join(','), opts?.workerId])
 }

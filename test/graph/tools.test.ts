@@ -41,6 +41,11 @@ describe('graph tools', () => {
     resetStructuredLedger()
   })
 
+  it('does not expose direct finding creation through updateGraph', async () => {
+    const { graphActionEnum } = await import('../../src/graph/tools')
+    expect(graphActionEnum.safeParse('addFinding').success).toBe(false)
+  })
+
   describe('queryGraph', () => {
     it('returns ok with nodes', async () => {
       const { queryGraph } = await import('../../src/graph/tools')
@@ -136,40 +141,6 @@ describe('graph tools', () => {
 
       const result = await callTool(updateGraph, { action: 'addTest', pageId: 'p1', testData: { testType: 'xss' } })
       expect(result.ok).toBe(true)
-    })
-
-    it('addFinding action routes through the gate (info passes, save runs)', async () => {
-      const { updateGraph } = await import('../../src/graph/tools')
-      mockStore.addFinding.mockReturnValue({ id: 'finding:1' })
-
-      const result = await callTool(updateGraph, {
-        action: 'addFinding',
-        findingData: { technique: 'xss', endpoint: '/search', severity: 'info', confidence: 0.9, description: 'reflected' },
-      })
-      expect(result.ok).toBe(true)
-      expect(mockStore.addFinding).toHaveBeenCalledWith(
-        expect.objectContaining({ technique: 'xss', endpoint: '/search', findingId: 'xss:/search:*', description: 'reflected' }),
-      )
-      expect(mockStore.save).toHaveBeenCalled()
-    })
-
-    it('addFinding action fails CLOSED when a high finding has no evidence', async () => {
-      const { updateGraph } = await import('../../src/graph/tools')
-      mockStore.addFinding.mockReturnValue({ id: 'finding:1' })
-
-      const result = await callTool(updateGraph, {
-        action: 'addFinding',
-        findingData: { technique: 'rce', endpoint: '/exec', severity: 'high', confidence: 0.9 },
-      })
-      expect(result.ok).toBe(false)
-      expect(mockStore.addFinding).not.toHaveBeenCalled()
-      expect(mockStore.save).not.toHaveBeenCalled()
-    })
-
-    it('addFinding returns error without findingData', async () => {
-      const { updateGraph } = await import('../../src/graph/tools')
-      const result = await callTool(updateGraph, { action: 'addFinding' })
-      expect(result.ok).toBe(false)
     })
 
     it('addAuthFlow action', async () => {
@@ -339,42 +310,6 @@ describe('graph tools', () => {
       expect(result.ok).toBe(true)
       expect(mockStore.addEndpoint).toHaveBeenCalledWith({ url: 'http://test.com/api', method: 'GET', authRequired: true })
       expect(mockStore.save).toHaveBeenCalled()
-    })
-
-    it('addFinding records finding and saves (through the gate)', async () => {
-      const { addFinding } = await import('../../src/graph/tools')
-      const { recordEvidence } = await import('../../src/tools/control-tools')
-      mockStore.addFinding.mockReturnValue({ id: 'finding:1' })
-
-      await callTool(recordEvidence, {
-        type: 'raw_request',
-        data: 'GET /api HTTP/1.1',
-        label: 'raw capture',
-        url: '/api',
-        method: 'GET',
-        status: 200,
-      })
-
-      const result = await callTool(addFinding, { endpoint: '/api', technique: 'SQLi', severity: 'high', confidence: 0.9, description: 'Test' })
-      expect(result.ok).toBe(true)
-      expect(mockStore.addFinding).toHaveBeenCalledWith(
-        expect.objectContaining({
-          technique: 'SQLi',
-          endpoint: '/api',
-          findingId: 'SQLi:/api:*',
-          description: 'Test',
-          severity: 'high',
-        }),
-      )
-      expect(mockStore.save).toHaveBeenCalled()
-    })
-
-    it('addFinding HARD-REJECTS a high finding with no recorded evidence', async () => {
-      const { addFinding } = await import('../../src/graph/tools')
-
-      const result = await callTool(addFinding, { endpoint: '/api', technique: 'RCE', severity: 'high', confidence: 0.9, description: 'Test' })
-      expect(result.ok).toBe(false)
-      expect(mockStore.addFinding).not.toHaveBeenCalled()
     })
 
     it('addAuthFlow records auth flow and saves', async () => {

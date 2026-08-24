@@ -6,6 +6,8 @@ vi.mock('@mastra/core/tools', () => ({
 
 const mockStore = {
   queryNodes: vi.fn(),
+  getNode: vi.fn(),
+  upsertNode: vi.fn((node: any) => node),
   addEndpoint: vi.fn(),
   addFinding: vi.fn(),
   save: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +29,14 @@ describe('addDiscovery — user-reported findings through the shared gate (F1)',
   beforeEach(async () => {
     vi.clearAllMocks()
     mockStore.queryNodes.mockReturnValue([])
+    mockStore.getNode.mockImplementation((id: string) => ({
+      id,
+      type: 'Experiment',
+      properties: {
+        outcome: { status: 'proven', proof: { experimentId: id, phase: 'initial', evidenceRefs: ['evidence:initial'] } },
+        retest: { outcome: { status: 'proven', proof: { experimentId: id, phase: 'retest', evidenceRefs: ['evidence:retest'] } } },
+      },
+    }))
     mockStore.addFinding.mockImplementation((data: any) => ({
       id: 'finding:1',
       type: 'Finding',
@@ -51,6 +61,7 @@ describe('addDiscovery — user-reported findings through the shared gate (F1)',
       confidence: 0.8,
       description: 'user said they read another account',
       evidence: ['response included victim email for id=2'],
+      experimentIds: ['experiment:user-proof'],
     })
     expect(result.ok).toBe(true)
     expect(result.value.findingId).toBe('IDOR:/api/users/2:*')
@@ -72,6 +83,7 @@ describe('addDiscovery — user-reported findings through the shared gate (F1)',
       confidence: 0.9,
       description: 'user says they executed commands',
       evidence: ['the server echoed id output'],
+      experimentIds: ['experiment:user-proof'],
     })
     expect(result.ok).toBe(false)
     expect(mockStore.addFinding).not.toHaveBeenCalled()
@@ -99,6 +111,7 @@ describe('addDiscovery — user-reported findings through the shared gate (F1)',
       severity: 'medium',
       confidence: 0.8,
       description: 'user reported IDOR without detail',
+      experimentIds: ['experiment:user-proof'],
     })
     expect(result.ok).toBe(false)
     expect(mockStore.addFinding).not.toHaveBeenCalled()

@@ -1,9 +1,10 @@
-﻿---
+---
 name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
 tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
+primitives: [authBypass, idorSwapper, authzMatrix, tenantIsolation]
 triggers: ["authorization testing", "access control", "broken access control", "idor", "privilege escalation", "session management", "authorization flaws", "access control testing", "privilege testing", "security testing"]
 contextBoosts: [auth]
 mitreAttack: ["T1190", "T1078"]
@@ -457,3 +458,17 @@ Capture auth context via `getCapturedHeaders` per role. For IDOR, run the protoc
 ## Verification & Impact
 
 CONFIRMED when reproduced evidence shows cross-user/role data access (IDOR/BOLA/BFLA), accepted forged JWT, successful OAuth redirect/scope abuse, or session flaw (fixation/non-invalidation). SUSPECTED when an anomaly appears but isn't reproduced — record as candidate. Document impact by access-control class (A01 Broken Access Control, A07 Auth Failures) and severity (data exposure, privilege escalation). Capture request/response pairs, role comparisons, and token evidence via `recordEvidence`.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `authBypass` | login bypass / default creds / JWT alg:none |
+| `idorSwapper` | object-reference swap across sessions |
+| `authzMatrix` | role x endpoint authorization matrix |
+| `tenantIsolation` | cross-tenant isolation checks |

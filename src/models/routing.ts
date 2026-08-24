@@ -1,14 +1,24 @@
-import type { TaskComplexity, TierConfig, UltimatrixConfig } from '../config'
+import type { ModelModuleRole, ModelTierName, TaskComplexity, TierConfig, UltimatrixConfig } from '../config'
 
 export type ModelRole = 'brain' | 'worker' | 'spider' | 'crawlSummarizer' | 'verifier' | 'reporter' | 'council'
 export type ModelTier = 'fast' | 'balanced' | 'powerful' | 'default'
 export type { TaskComplexity }
+export type StableModelRole = ModelModuleRole
 
 export const COMPLEXITY_TIER_MAP: Record<TaskComplexity, Exclude<ModelTier, 'default'>> = {
   low: 'fast',
   medium: 'balanced',
   high: 'powerful',
   critical: 'powerful',
+}
+
+export const DEFAULT_MODULE_TIERS: Record<StableModelRole, ModelTierName> = {
+  brain: 'balanced',
+  spider: 'fast',
+  crawlSummarizer: 'fast',
+  verifier: 'balanced',
+  reporter: 'balanced',
+  council: 'powerful',
 }
 
 export interface ModelRouteOptions {
@@ -40,10 +50,18 @@ export function fullModelId(provider: string, model: string): string {
 function tierFromOptions(config: UltimatrixConfig, options: ModelRouteOptions): TierConfig | undefined {
   const requestedTier = options.tier === 'default' || !options.tier ? undefined : options.tier
   if (requestedTier) return config.modelTiers?.[requestedTier as keyof typeof config.modelTiers]
-  if (options.role === 'spider' || options.role === 'crawlSummarizer') return config.modelTiers?.fast
-  if (options.role === 'verifier' || options.role === 'reporter' || options.role === 'council') return config.modelTiers?.balanced
+  if (options.role && options.role !== 'worker') {
+    const tier = config.modelRoleTiers?.[options.role] ?? DEFAULT_MODULE_TIERS[options.role]
+    return config.modelTiers?.[tier]
+  }
   if (options.role === 'worker' && options.complexity) return config.modelTiers?.[COMPLEXITY_TIER_MAP[options.complexity]]
   return config.modelTiers?.balanced
+}
+
+function tierNameForOptions(config: UltimatrixConfig, options: ModelRouteOptions): Exclude<ModelTier, 'default'> | string {
+  if (options.role === 'worker' && options.complexity) return COMPLEXITY_TIER_MAP[options.complexity]
+  if (options.role && options.role !== 'worker') return config.modelRoleTiers?.[options.role] ?? DEFAULT_MODULE_TIERS[options.role]
+  return options.tier === 'default' || !options.tier ? 'balanced' : options.tier
 }
 
 export function resolveModelRef(config: UltimatrixConfig, options: ModelRouteOptions = {}): ResolvedModelRef {
@@ -86,33 +104,21 @@ export function resolveModelRef(config: UltimatrixConfig, options: ModelRouteOpt
   } else {
     cfg = tierFromOptions(config, options)
     if (cfg) {
-      const tier = options.role === 'worker' && options.complexity
-        ? COMPLEXITY_TIER_MAP[options.complexity]
-        : options.role === 'spider' || options.role === 'crawlSummarizer'
-          ? 'fast'
-          : options.tier === 'default' || !options.tier
-            ? 'balanced'
-            : options.tier
+      const tier = tierNameForOptions(config, options)
       reason = `configured modelTiers.${tier}`
     }
   }
 
   const provider = cfg?.provider ?? config.provider
   const model = cfg?.model ?? config.model
-  const tier = options.role === 'worker' && options.complexity
-    ? COMPLEXITY_TIER_MAP[options.complexity]
-    : options.role === 'spider' || options.role === 'crawlSummarizer'
-      ? 'fast'
-      : options.tier === 'default' || !options.tier
-        ? 'balanced'
-        : options.tier
+  const tier = tierNameForOptions(config, options)
 
   return {
     provider,
     model,
     modelId: fullModelId(provider, model),
     tier,
-    maxOutputTokens: cfg?.maxOutputTokens ?? findMaxOutputTokens(config, provider, model),
+    maxOutputTokens: findMaxOutputTokens(config, provider, model),
     reason,
   }
 }

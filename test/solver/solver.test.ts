@@ -397,6 +397,124 @@ describe('solve', () => {
     expect(done.answer.content).toContain('The final answer is here.')
   })
 
+  it('uses structured output response as the final assistant answer', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockImplementation(async (_prompt: string) => ({
+        fullStream: (async function* () {
+          yield { type: 'reasoning-delta', payload: { text: 'thinking...' } }
+        })(),
+        toolCalls: [],
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve('thinking...'),
+        object: Promise.resolve({ response: 'Hello. How can I help with this target?' }),
+      })),
+    }
+    const messages: any[] = []
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'hi',
+      onMessage: (m) => messages.push(m),
+    })
+    const done = messages.find(m => m.kind === 'done')
+    expect(result.text).toBe('Hello. How can I help with this target?')
+    expect(done.answer.content).toBe('Hello. How can I help with this target?')
+  })
+
+  it('does not force structured output for normal assistant turns', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockImplementation(async (_prompt: string, opts?: any) => {
+        if (opts?.structuredOutput) {
+          return {
+            fullStream: (async function* () {})(),
+            toolCalls: [],
+            text: Promise.resolve(''),
+            object: Promise.resolve(undefined),
+          }
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: 'text-delta', payload: { text: 'Hello from plain text.' } }
+          })(),
+          toolCalls: [],
+          text: Promise.resolve('Hello from plain text.'),
+        }
+      }),
+    }
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'hi',
+    })
+    expect(agent.stream).toHaveBeenCalled()
+    expect(agent.stream.mock.calls[0][1]?.structuredOutput).toBeUndefined()
+    expect(result.text).toBe('Hello from plain text.')
+  })
+
+  it('answers directly when the typed router chooses respond', async () => {
+    let currentTools: Record<string, any> | undefined
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      setTurnToolsOverride: vi.fn((tools?: Record<string, any>) => {
+        currentTools = tools
+      }),
+      stream: vi.fn().mockImplementation(async () => ({
+        fullStream: (async function* () {
+          await currentTools?.decideTurn.execute({ action: 'respond', response: 'Hi. What would you like to inspect?' })
+        })(),
+        toolCalls: [],
+        text: Promise.resolve(''),
+      })),
+    }
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'hi',
+    })
+    expect(agent.setTurnToolsOverride.mock.calls[0][0]).toHaveProperty('decideTurn')
+    expect(agent.setTurnToolsOverride).toHaveBeenLastCalledWith(undefined)
+    expect(agent.stream).toHaveBeenCalledTimes(1)
+    expect(result.toolCalls).toBe(0)
+    expect(result.text).toContain('Hi')
+  })
+
+  it('runs a capability turn from the original goal without serializing the decision back to the model', async () => {
+    let currentTools: Record<string, any> | undefined
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      setTurnToolsOverride: vi.fn((tools?: Record<string, any>) => {
+        currentTools = tools
+      }),
+      stream: vi.fn().mockImplementation(async () => {
+        const isRouterPass = Boolean(currentTools?.decideTurn)
+        return {
+          fullStream: (async function* () {
+            if (isRouterPass) {
+              await currentTools?.decideTurn.execute({ action: 'use_capability', objective: 'map the target surface' })
+            } else {
+              yield { type: 'text-delta', payload: { text: 'I will map the target surface.' } }
+            }
+          })(),
+          toolCalls: [],
+          text: Promise.resolve(isRouterPass ? '' : 'I will map the target surface.'),
+        }
+      }),
+    }
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'map the target attack surface',
+      interactionMode: 'run',
+    })
+    expect(agent.stream).toHaveBeenCalledTimes(2)
+    const secondPrompt = agent.stream.mock.calls[1][0]
+    expect(secondPrompt).toContain('map the target attack surface')
+    expect(secondPrompt).not.toContain('Turn decision')
+    expect(secondPrompt).not.toContain('use_capability')
+  })
+
   it('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
     // Real provider behavior (e.g. nvidia): the model streams reasoning/scratch
     // AND an echoed answer through `text-delta`, but the SDK normalizes the true

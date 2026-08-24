@@ -17,9 +17,11 @@ import { checkProof } from '../intelligence/proof-rules'
 import type { EvidenceItem } from '../intelligence/evidence-ledger'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { getGlobalGraphStore } from '../graph/store'
+import { NodeType } from '../graph/schema'
 import { isCategoryAuthorized } from '../safety/scope-guard'
 import type { ArchitectureEvalSuite } from './types'
-import { evalConfig, eventCapturer, fakeModelSelector, fakeWorkerPool } from './harness'
+import { evalConfig, eventCapturer, fakeModelSelector, fakeTaskRuntime, fakeWorkerPool } from './harness'
 
 const callTool = (tool: any, args: any) => (tool as any).execute(args, {})
 
@@ -137,21 +139,26 @@ export const architectureEvals: ArchitectureEvalSuite = {
       execute: async () => {
         const cfg = evalConfig()
         const pool = fakeWorkerPool()
+        const runtime = await fakeTaskRuntime(pool)
         const selector = fakeModelSelector({ tier: 'powerful', modelId: 'groq/llama-3.3-70b-versatile', provider: 'groq', reasoning: 'eval: deterministic routing' })
-        const tool = createSpawnWorkerTool(cfg, {} as Parameters<typeof createSpawnWorkerTool>[1], pool as never, selector as never)
-        const result = await callTool(tool, { skillId: 'web-pentest', task: 'probe', tier: 'fast', complexity: 'high' })
-        const value = result.value
-        const decisions = getGlobalDecisionLedger().listDecisions('worker.spawn')
-        return {
-          events: [],
-          state: {
-            spawnedSkill: pool.spawned[0]?.skillId,
-            routedTier: value.routing?.tier,
-            routedModel: value.routing?.modelId,
-            status: value.status,
-            resultSummary: value.result && typeof value.result === 'object' && typeof value.result.text === 'string' ? 'compact' : 'unexpected',
-            workerDecisionPersisted: decisions.some((d) => d.model === 'groq/llama-3.3-70b-versatile'),
-          },
+        try {
+          const tool = createSpawnWorkerTool(cfg, { has: () => true } as never, runtime.coordinator, selector as never)
+          const result = await callTool(tool, { skillId: 'web-pentest', task: 'probe', tier: 'fast', complexity: 'high' })
+          const value = result.value ?? result
+          const decisions = getGlobalDecisionLedger().listDecisions('worker.spawn')
+          return {
+            events: [],
+            state: {
+              spawnedSkill: pool.spawned[0]?.skillId,
+              routedTier: value.routing?.tier,
+              routedModel: value.routing?.modelId,
+              status: value.status,
+              resultSummary: value.result && typeof value.result === 'object' && typeof value.result.text === 'string' ? 'compact' : 'unexpected',
+              workerDecisionPersisted: decisions.some((d) => d.model === 'groq/llama-3.3-70b-versatile'),
+            },
+          }
+        } finally {
+          await runtime.cleanup()
         }
       },
     },
@@ -169,11 +176,23 @@ export const architectureEvals: ArchitectureEvalSuite = {
       },
       execute: async () => {
         const { writeFinding, recordEvidence, resetStructuredLedger } = await import('../tools/control-tools')
+        const experimentId = 'experiment:eval-proof-rule'
+        getGlobalGraphStore().upsertNode({
+          id: experimentId,
+          type: NodeType.EXPERIMENT,
+          label: 'Proven eval experiment',
+          properties: {
+            outcome: { status: 'proven', proof: { assertionId: 'proof:eval-initial', experimentId, phase: 'initial', oracleType: 'unique-marker', evidenceRefs: ['evidence:eval-initial'], verifiedAt: new Date().toISOString() } },
+            retest: { outcome: { status: 'proven', proof: { assertionId: 'proof:eval-retest', experimentId, phase: 'retest', oracleType: 'unique-marker', evidenceRefs: ['evidence:eval-retest'], verifiedAt: new Date().toISOString() } } },
+          },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        } as any)
 
         // End-to-end: high severity + raw_request capture → accepted.
         resetStructuredLedger()
         await callTool(recordEvidence, { type: 'raw_request', data: 'GET /api/users HTTP/1.1', label: 'req', url: '/api/users', method: 'GET', status: 200 })
-        const high = await callTool(writeFinding, { type: 'idor', endpoint: '/api/users', param: 'id', severity: 'high', confidence: 0.8, observedStatus: 200 })
+        const high = await callTool(writeFinding, { type: 'idor', endpoint: '/api/users', param: 'id', severity: 'high', confidence: 0.8, observedStatus: 200, experimentIds: [experimentId] })
 
         // Floor contract (deterministic, no write path): critical needs ≥2 structured captures.
         const itemReq: EvidenceItem = { id: 'e1', type: 'raw_request', data: 'GET /api/admin HTTP/1.1', label: 'req', timestamp: Date.now(), observed: { url: '/api/admin', status: 200 } }
@@ -201,7 +220,7 @@ export const architectureEvals: ArchitectureEvalSuite = {
       expectedState: {
         resumeSameProvider: 'ok',
         resumeMismatchedProvider: 'rejected',
-        plannedCamofox: 'throws',
+        camofoxResolves: 'camofox',
       },
       execute: async () => {
         const dir = mkdtempSync(join(tmpdir(), 'ultimatrix-eval-browser-'))
@@ -227,15 +246,10 @@ export const architectureEvals: ArchitectureEvalSuite = {
             resumeMismatchedProvider = err instanceof Error && err.message.includes('browser provider') ? 'rejected' : 'other'
           }
 
-          let plannedCamofox = 'throws'
-          try {
-            resolveBrowserProvider(evalConfig({ browser: { provider: 'camofox' } } as never))
-            plannedCamofox = 'no-throw'
-          } catch {
-            plannedCamofox = 'throws'
-          }
+          const camofoxProvider = resolveBrowserProvider(evalConfig({ browser: { provider: 'camofox' } } as never))
+          const camofoxResolves = camofoxProvider.name
 
-          return { events: [], state: { resumeSameProvider, resumeMismatchedProvider, plannedCamofox } }
+          return { events: [], state: { resumeSameProvider, resumeMismatchedProvider, camofoxResolves } }
         } finally {
           rmSync(dir, { recursive: true, force: true })
         }
@@ -294,18 +308,23 @@ export const architectureEvals: ArchitectureEvalSuite = {
         runtime.stop('stale')
 
         const pool = fakeWorkerPool({ fail: true })
+        const taskRuntime = await fakeTaskRuntime(pool)
         const selector = fakeModelSelector()
-        const tool = createSpawnWorkerTool(cfg, {} as Parameters<typeof createSpawnWorkerTool>[1], pool as never, selector as never)
-        const result = await callTool(tool, { skillId: 'web-pentest', task: 'probe', complexity: 'medium' })
-        const workerDecisions = getGlobalDecisionLedger().listDecisions('worker.spawn')
+        try {
+          const tool = createSpawnWorkerTool(cfg, { has: () => true } as never, taskRuntime.coordinator, selector as never)
+          const result = await callTool(tool, { skillId: 'web-pentest', task: 'probe', complexity: 'medium' })
+          const workerDecisions = getGlobalDecisionLedger().listDecisions('worker.spawn')
 
-        return {
-          events: cap.events,
-          state: {
-            stopReason: runtime.snapshot().stopReason,
-            workerStatus: result.value.status,
-            workerDecisionPersistedOnFailure: workerDecisions.some((d) => d.model === 'groq/llama-3.3-70b-versatile'),
-          },
+          return {
+            events: cap.events,
+            state: {
+              stopReason: runtime.snapshot().stopReason,
+              workerStatus: (result.value ?? result).status,
+              workerDecisionPersistedOnFailure: workerDecisions.some((d) => d.model === 'groq/llama-3.3-70b-versatile'),
+            },
+          }
+        } finally {
+          await taskRuntime.cleanup()
         }
       },
     },

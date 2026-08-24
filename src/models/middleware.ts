@@ -1,6 +1,6 @@
 import type { LanguageModelV2 } from '@ai-sdk/provider'
 import type { UltimatrixConfig } from '../config'
-import { DEFAULTS, PROVIDER_INFO, resolveProviderAlias } from '../config'
+import { DEFAULTS } from '../config'
 import { log } from '../utils/logger'
 import { getForensicLog } from '../tools/report-tools'
 import { getGlobalUsageTracker } from '../usage/tracker'
@@ -8,6 +8,24 @@ import { createProviderLimiter, getProviderFromModelId } from './limiter-factory
 import { getGlobalQuotaTracker } from './quota-tracker'
 import { ContextWindowRegistry } from './context-window-registry'
 import { withOverflowRecovery } from './overflow-handler'
+import { beginModelCall, getTaskAttribution, reportModelUsage } from '../runtime/task-attribution'
+
+function normalizeUsage(value: unknown): { inputTokens: number; outputTokens: number; totalTokens: number } | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  const token = (field: string) => typeof raw[field] === 'number' && Number.isFinite(raw[field]) && raw[field] >= 0
+    ? raw[field] as number
+    : undefined
+  const inputTokens = token('inputTokens')
+  const outputTokens = token('outputTokens')
+  const totalTokens = token('totalTokens')
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined
+  return {
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    totalTokens: totalTokens ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+  }
+}
 
 function isRateLimitError(err: any): boolean {
   const msg = String(err?.message || err || '')
@@ -75,10 +93,6 @@ function sanitizeMessageOrdering(messages: any[]): any[] {
 export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): LanguageModelV2 {
   const rl = config.rateLimit ?? { requestsPerMinute: DEFAULTS.rateLimit.requestsPerMinute, maxConcurrent: DEFAULTS.rateLimit.maxConcurrent, retryOnLimit: DEFAULTS.rateLimit.retryOnLimit, maxRetries: DEFAULTS.rateLimit.maxRetries, backoffStrategy: DEFAULTS.rateLimit.backoffStrategy, backoffSteps: DEFAULTS.rateLimit.backoffSteps, baseBackoffMs: DEFAULTS.rateLimit.baseBackoffMs, maxBackoffMs: DEFAULTS.rateLimit.maxBackoffMs, useHeaders: DEFAULTS.rateLimit.useHeaders }
 
-  if (rl.requestsPerMinute <= 0) {
-    return model
-  }
-
   return new Proxy(model, {
     get(target, prop, receiver) {
       if (prop !== 'doStream' && prop !== 'doGenerate') {
@@ -106,16 +120,18 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
         return withOverflowRecovery(
           async (compactedArgs) => {
             // Get per-provider limiter
-            const providerLimiter = createProviderLimiter(provider, config)
+            const providerLimiter = rl.requestsPerMinute > 0 ? createProviderLimiter(provider, config) : undefined
 
             // Acquire both window slot and concurrency permit
-            const releaseSemaphore = await providerLimiter.acquire()
+            const releaseSemaphore = providerLimiter ? await providerLimiter.acquire() : () => {}
             try {
               const start = performance.now()
               let lastError: any = null
               const attempts = rl.retryOnLimit ? rl.maxRetries + 1 : 1
 
               for (let attempt = 0; attempt < attempts; attempt++) {
+                const taskAttribution = getTaskAttribution()
+                beginModelCall(taskAttribution)
                 try {
                   const result = await originalMethod.call(target, compactedArgs)
 
@@ -129,23 +145,51 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
 
                   // Sync from response headers if available
                   if ((result as any)?.headers && typeof (result as any).headers === 'object') {
-                    providerLimiter.syncFromHeaders((result as any).headers)
+                    providerLimiter?.syncFromHeaders((result as any).headers)
                   }
 
                   // Record request in quota tracker
                   getGlobalQuotaTracker().recordRequest(provider)
 
-                  // Capture token usage from doGenerate responses
-                  let inputTokens = 0
-                  let outputTokens = 0
-                  if (prop === 'doGenerate' && (result as any)?.usage) {
-                    inputTokens = (result as any).usage.inputTokens ?? 0
-                    outputTokens = (result as any).usage.outputTokens ?? 0
+                  const usage = prop === 'doGenerate' ? normalizeUsage((result as any)?.usage) : undefined
+                  let budgetError: Error | undefined
+                  if (usage) {
+                    const { inputTokens, outputTokens } = usage
                     if (inputTokens > 0 || outputTokens > 0) {
                       const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
                       getGlobalUsageTracker().record(prov, model, inputTokens, outputTokens)
                     }
+                    budgetError = reportModelUsage(usage, taskAttribution)
                   }
+
+                  if (prop === 'doStream' && (result as any)?.stream instanceof ReadableStream) {
+                    const stream = (result as any).stream.pipeThrough(new TransformStream({
+                      transform(part: any, controller) {
+                        if (part?.type === 'finish') {
+                          const streamUsage = normalizeUsage(part.usage)
+                          const streamBudgetError = streamUsage ? reportModelUsage(streamUsage, taskAttribution) : undefined
+                          if (streamUsage && (streamUsage.inputTokens > 0 || streamUsage.outputTokens > 0)) {
+                            const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
+                            getGlobalUsageTracker().record(prov, model, streamUsage.inputTokens, streamUsage.outputTokens)
+                          }
+                          if (streamBudgetError) {
+                            controller.error(streamBudgetError)
+                            return
+                          }
+                        }
+                        controller.enqueue(part)
+                      },
+                    }))
+                    getForensicLog()?.log({
+                      type: 'model-call', agent: provider, tool: String(prop), duration,
+                      metadata: { provider, modelId: String(modelIdStr), inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+                    })
+                    return { ...(result as any), stream }
+                  }
+
+                  const inputTokens = usage?.inputTokens ?? 0
+                  const outputTokens = usage?.outputTokens ?? 0
+                  const totalTokens = usage?.totalTokens ?? 0
 
                   // Forensic model-call: record which model actually served the request
                   // so every dispatched task is attributable to a concrete modelId/tier.
@@ -159,10 +203,11 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                       modelId: String(modelIdStr),
                       inputTokens,
                       outputTokens,
-                      totalTokens: inputTokens + outputTokens,
+                      totalTokens,
                     },
                   })
 
+                  if (budgetError) throw budgetError
                   return result
                 } catch (err: any) {
                   lastError = err
@@ -195,7 +240,7 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
 
                   // Cumulative quota — activate cooldown for provider
                   if (isCumulativeQuotaExhausted(err)) {
-                    providerLimiter.recordExhaustion()
+                    providerLimiter?.recordExhaustion()
                     getGlobalQuotaTracker().recordExhaustion(provider)
                   }
 

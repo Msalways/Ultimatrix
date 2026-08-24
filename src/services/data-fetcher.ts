@@ -122,11 +122,11 @@ class DataFetcher {
     })
   }
 
-  async loadWorkers(): Promise<WorkersResult> {
-    return this.dedup('workers', async () => {
+  async loadWorkers(target: string): Promise<WorkersResult> {
+    return this.dedup(`workers:${target}`, async () => {
       mark('workers', 'loading')
       try {
-        const res = await fetch('/api/workers')
+        const res = await fetch(`/api/workers?target=${encodeURIComponent(target)}`)
         const json = await res.json()
         mark('workers', 'ready')
         return {
@@ -156,10 +156,11 @@ class DataFetcher {
     })
   }
 
-  async loadStatus(): Promise<StatusResult> {
-    return this.dedup('status', async () => {
+  async loadStatus(target?: string | null): Promise<StatusResult> {
+    return this.dedup(`status:${target ?? ''}`, async () => {
       try {
-        const res = await fetch('/api/status')
+        const query = target ? `?target=${encodeURIComponent(target)}` : ''
+        const res = await fetch(`/api/status${query}`)
         const data = await res.json()
         return data as StatusResult
       } catch {
@@ -202,14 +203,14 @@ class DataFetcher {
     const [graph, history, workers, skills] = await Promise.all([
       this.loadGraphData(target),
       this.loadChatHistory(target),
-      this.loadWorkers(),
+      this.loadWorkers(target),
       this.loadSkills(target),
     ])
     return { graph, history, workers, skills }
   }
 
-  onSSE(prefix: string, cb: (evt: SSEEvent) => void): Unsubscribe {
-    const unsub = sseBus.on(prefix, cb)
+  onSSE(prefix: string, cb: (evt: SSEEvent) => void, target: string | null = null): Unsubscribe {
+    const unsub = sseBus.on(prefix, cb, target)
     this.cleanupFns.push(unsub)
     return unsub
   }

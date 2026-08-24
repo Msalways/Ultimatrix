@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { X, Save, Check, Settings, Key, Layers, Shield, Globe, Cpu, Gauge, Wrench } from 'lucide-react'
+import { X, Save, Check, Settings, Key, Layers, Shield, Plug, Wrench } from 'lucide-react'
 import { useUIStore } from '@/stores/ui-store'
 import { useConfigStore } from '@/stores/config-store'
 import { RestartBanner } from './settings/restart-banner'
@@ -9,20 +9,17 @@ import { GeneralTab } from './settings/tabs/general-tab'
 import { ProvidersTab } from './settings/tabs/providers-tab'
 import { ModelTiersTab } from './settings/tabs/model-tiers-tab'
 import { ScopeSafetyTab } from './settings/tabs/scope-safety-tab'
-import { BrowserTab } from './settings/tabs/browser-tab'
-import { SolverTab } from './settings/tabs/solver-tab'
-import { BudgetTab } from './settings/tabs/budget-tab'
-import { AdvancedTab } from './settings/tabs/advanced-tab'
+import { SetupHealthTab } from './settings/tabs/setup-health-tab'
+import { ConnectorsTab } from './settings/tabs/connectors-tab'
+import { AdvancedWorkspaceTab } from './settings/tabs/advanced-workspace-tab'
 import { cn } from '@/lib/utils'
 
 const TABS = [
-  { id: 'general', label: 'General', icon: Settings },
+  { id: 'health', label: 'Setup Health', icon: Settings },
   { id: 'providers', label: 'Providers', icon: Key },
-  { id: 'tiers', label: 'Model Tiers', icon: Layers },
-  { id: 'scope', label: 'Scope & Safety', icon: Shield },
-  { id: 'browser', label: 'Browser', icon: Globe },
-  { id: 'solver', label: 'Solver', icon: Cpu },
-  { id: 'budget', label: 'Budget', icon: Gauge },
+  { id: 'tiers', label: 'Models & Routing', icon: Layers },
+  { id: 'scope', label: 'Safety', icon: Shield },
+  { id: 'connectors', label: 'Connectors', icon: Plug },
   { id: 'advanced', label: 'Advanced', icon: Wrench },
 ] as const
 
@@ -41,13 +38,13 @@ export function SettingsModal() {
   const error = useConfigStore((s) => s.error)
   const needsRestart = useConfigStore((s) => s.needsRestart)
 
-  const [activeTab, setActiveTab] = useState<TabId>('general')
+  const [activeTab, setActiveTab] = useState<TabId>('health')
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
 
   useEffect(() => {
     if (open) {
       loadConfig()
-      setActiveTab('general')
+      setActiveTab('health')
     }
   }, [open, loadConfig])
 
@@ -90,21 +87,19 @@ export function SettingsModal() {
 
   const renderTab = () => {
     switch (activeTab) {
-      case 'general': return <GeneralTab />
+      case 'health': return <SetupHealthTab />
       case 'providers': return <ProvidersTab />
       case 'tiers': return <ModelTiersTab />
       case 'scope': return <ScopeSafetyTab />
-      case 'browser': return <BrowserTab />
-      case 'solver': return <SolverTab />
-      case 'budget': return <BudgetTab />
-      case 'advanced': return <AdvancedTab />
+      case 'connectors': return <ConnectorsTab />
+      case 'advanced': return <AdvancedWorkspaceTab />
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3" onClick={handleClose}>
       <div
-        className="flex max-h-[88vh] w-full max-w-[860px] flex-col overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 shadow-2xl"
+        className="flex max-h-[88vh] w-full max-w-[1120px] flex-col overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -124,37 +119,41 @@ export function SettingsModal() {
           </div>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex overflow-x-auto border-b border-zinc-800">
-          {TABS.map((tab) => {
-            const Icon = tab.icon
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  'flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700',
-                  activeTab === tab.id
-                    ? 'text-zinc-200 border-zinc-200'
-                    : 'text-zinc-500 hover:text-zinc-300 border-transparent',
-                )}
-              >
-                <Icon size={12} />
-                {tab.label}
-              </button>
-            )
-          })}
-        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[170px_minmax(0,1fr)_230px]">
+          <div className="overflow-y-auto border-b border-zinc-800 p-2 md:border-b-0 md:border-r">
+            {TABS.map((tab) => {
+              const Icon = tab.icon
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={cn(
+                    'mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700',
+                    activeTab === tab.id
+                      ? 'bg-zinc-800 text-zinc-100'
+                      : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300',
+                  )}
+                >
+                  <Icon size={13} />
+                  {tab.label}
+                </button>
+              )
+            })}
+          </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-          {!config ? (
-            <div className="flex h-full items-center justify-center text-xs text-zinc-500">
-              Loading config...
-            </div>
-          ) : (
-            renderTab()
-          )}
+          <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
+            {!config ? (
+              <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+                Loading config...
+              </div>
+            ) : (
+              renderTab()
+            )}
+          </div>
+
+          <div className="hidden min-h-0 overflow-y-auto border-l border-zinc-800 p-3 md:block">
+            <EffectiveSummary />
+          </div>
         </div>
 
         {/* Footer */}
@@ -209,6 +208,53 @@ export function SettingsModal() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function EffectiveSummary() {
+  const config = useConfigStore((s) => s.config)
+  const [effective, setEffective] = useState<any>(null)
+
+  useEffect(() => {
+    if (!config) return
+    fetch('/api/config/effective', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => setEffective(data.effective ?? null))
+      .catch(() => setEffective(null))
+  }, [config])
+
+  if (!effective) return <div className="text-xs text-zinc-600">Effective config loading...</div>
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-xs font-medium text-zinc-300">Effective config</div>
+        <div className="mt-1 text-[11px] text-zinc-500">Saved health: {effective.status}</div>
+      </div>
+      <div className="space-y-1">
+        <div className="text-[11px] font-medium text-zinc-500">Tiers</div>
+        {(['fast', 'balanced', 'powerful'] as const).map((tier) => (
+          <div key={tier} className="text-[11px] text-zinc-400">
+            <span className="text-zinc-600">{tier}: </span>{effective.tiers[tier]?.modelId ?? 'unset'}
+          </div>
+        ))}
+      </div>
+      <div className="space-y-1">
+        <div className="text-[11px] font-medium text-zinc-500">Modules</div>
+        {Object.entries(effective.modules || {}).map(([role, route]: [string, any]) => (
+          <div key={role} className="text-[11px] text-zinc-400">
+            <span className="text-zinc-600">{role}: </span>{route.tier}
+          </div>
+        ))}
+      </div>
+      {(effective.errors?.length > 0 || effective.warnings?.length > 0) && (
+        <div className="space-y-1 border-t border-zinc-800 pt-3">
+          {[...(effective.errors || []), ...(effective.warnings || [])].slice(0, 5).map((msg: string) => (
+            <div key={msg} className="text-[11px] text-amber-400">{msg}</div>
+          ))}
         </div>
       )}
     </div>

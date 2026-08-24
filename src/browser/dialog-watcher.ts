@@ -16,6 +16,7 @@
  */
 
 import { log } from "../utils/logger";
+import { getEngagementServices } from "../runtime/engagement-context";
 
 export interface DialogEvent {
   type: "alert" | "confirm" | "prompt" | "beforeunload";
@@ -65,7 +66,7 @@ const INTERCEPTOR_SCRIPT = `(function() {
   }
 })()`;
 
-class DialogWatcher {
+export class DialogWatcher {
   private dialogs: DialogEvent[] = [];
   private attached = false;
   private browser: any = null;
@@ -81,13 +82,16 @@ class DialogWatcher {
     this.browser = browser;
 
     try {
-      const stagehand = browser.requireStagehand?.();
-      if (!stagehand?.context) {
-        log.dim("[dialog-watcher] Stagehand context not available");
+      // Phase A — provider-blind context resolution: Stagehand V3Context or a
+      // Playwright BrowserContext (both expose addInitScript + pages).
+      let context: any = browser?.requireStagehand?.()?.context ?? null;
+      if (!context && typeof browser?.requireContext === 'function') {
+        context = browser.requireContext();
+      }
+      if (!context) {
+        log.dim("[dialog-watcher] Browser context not available");
         return;
       }
-
-      const context = stagehand.context;
 
       // Register interceptor for all future document loads
       if (typeof context.addInitScript === "function") {
@@ -240,6 +244,8 @@ class DialogWatcher {
 let globalWatcher: DialogWatcher | null = null;
 
 export function getGlobalDialogWatcher(): DialogWatcher {
+  const owned = getEngagementServices()?.dialogWatcher;
+  if (owned) return owned;
   if (!globalWatcher) globalWatcher = new DialogWatcher();
   return globalWatcher;
 }
@@ -251,6 +257,11 @@ export function startDialogWatcher(browser: any): DialogWatcher {
 }
 
 export function stopDialogWatcher(): void {
+  const owned = getEngagementServices()?.dialogWatcher;
+  if (owned) {
+    owned.detach();
+    return;
+  }
   if (globalWatcher) {
     globalWatcher.detach();
     globalWatcher = null;

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
+﻿import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
 import { join, basename, dirname } from 'path'
 import { load as yamlLoad } from 'js-yaml'
 import { SKILLS_DIR } from '../../lib/project-root'
@@ -37,6 +37,8 @@ export interface SkillMeta {
   tier: SkillTier
   description: string
   toolRefs: string[]
+  /** Primitive ids (see src/primitives) this skill drives via the execution seam. */
+  primitives: string[]
   triggers: string[]
   contextBoosts: string[]
   toolChains: ToolChain[]
@@ -54,10 +56,10 @@ export interface Skill extends SkillMeta {
 let metaCache: Map<string, SkillMeta> | null = null
 let fullCache: Map<string, Skill> | null = null
 
-/** Phase 7.1 — additional user-provided skill directories and exclusions. */
+/** Phase 7.1 â€” additional user-provided skill directories and exclusions. */
 let extraSkillDirs: string[] = []
 let excludedSkillIds = new Set<string>()
-/** id → absolute file path, so namespaced `user/<id>` skills resolve correctly. */
+/** id â†’ absolute file path, so namespaced `user/<id>` skills resolve correctly. */
 let idToPath = new Map<string, string>()
 
 export function configureSkillSources(dirs: string[] = [], exclude: string[] = []): void {
@@ -93,6 +95,7 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
       || name
 
     const toolRefs = Array.isArray(meta.toolRefs) ? meta.toolRefs.filter((t): t is string => typeof t === 'string') : []
+    const primitives = Array.isArray(meta.primitives) ? meta.primitives.filter((p): p is string => typeof p === 'string') : []
     const triggers = Array.isArray(meta.triggers) ? meta.triggers.filter((t): t is string => typeof t === 'string') : []
     const contextBoosts = Array.isArray(meta.contextBoosts) ? meta.contextBoosts.filter((b): b is string => typeof b === 'string') : []
 
@@ -127,7 +130,7 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
 
     return {
       id, name, domain, category: domain, tier, description,
-      toolRefs, triggers, contextBoosts, toolChains, compositionRules,
+      toolRefs, primitives, triggers, contextBoosts, toolChains, compositionRules,
       mitreAttack, owaspRefs,
     }
   } catch {
@@ -189,6 +192,30 @@ function scanSkillDir(dir: string, namespace: string | null): void {
         if (!excludedSkillIds.has(id)) initSkillIndexImplCache.set(id, meta)
       }
     }
+    // Folder-per-skill layout (agentskills.io standard): <dir>/<name>/SKILL.md
+    // plus optional refs/. Subdirectories take precedence over nothing â€” ids
+    // derive from the FOLDER name so refs/ resolution works via dirname.
+    const entries = readdirSync(dir)
+    for (const entry of entries) {
+      const entryPath = join(dir, entry)
+      let entryStat: ReturnType<typeof statSync>
+      try {
+        entryStat = statSync(entryPath)
+      } catch {
+        continue
+      }
+      if (!entryStat.isDirectory()) continue
+      const skllFile = join(entryPath, 'SKILL.md')
+      void skllFile
+      const skillFile = join(entryPath, 'SKILL.md')
+      if (!existsSync(skillFile)) continue
+      const meta = parseSkillMeta(skillFile, namespace ?? dir)
+      if (meta) {
+        meta.id = namespace ? `${namespace}/${entry}` : entry
+        idToPath.set(meta.id, skillFile)
+        if (!excludedSkillIds.has(meta.id)) initSkillIndexImplCache.set(meta.id, meta)
+      }
+    }
   } catch {}
 }
 
@@ -209,7 +236,7 @@ function initSkillIndexImpl(): Map<string, SkillMeta> {
     } catch {}
   }
 
-  // Phase7.1 — user-provided skill directories, namespaced as `user/<id>`
+  // Phase7.1 â€” user-provided skill directories, namespaced as `user/<id>`
   for (const dir of extraSkillDirs) {
     scanSkillDir(dir, 'user')
   }
@@ -219,7 +246,7 @@ function initSkillIndexImpl(): Map<string, SkillMeta> {
 
 /**
  * Shared skill index singleton. Both the REPL (session.ts via tool-filter) and
- * the worker pool (WorkerPool → SkillRegistry) must resolve skills from ONE
+ * the worker pool (WorkerPool â†’ SkillRegistry) must resolve skills from ONE
  * index so a skill added/observed at runtime is visible to every component.
  */
 let sharedMetaCache: Map<string, SkillMeta> | null = null
@@ -242,7 +269,7 @@ export function resetSharedSkillIndex(): void {
 
 /**
  * Phase 1: Scan all domain directories, parse ONLY frontmatter.
- * Fast init — ~80 lines of metadata for 16 skills.
+ * Fast init â€” ~80 lines of metadata for 16 skills.
  */
 export function initSkillIndex(): Map<string, SkillMeta> {
   if (metaCache) return metaCache
@@ -294,24 +321,28 @@ export function getAllSkills(): SkillMeta[] {
   return [...initSkillIndex().values()]
 }
 
+export function searchSkillMetadata(skills: Iterable<SkillMeta>, query: string): SkillMeta[] {
+  const q = query.toLowerCase()
+  return [...skills]
+    .map((skill) => {
+      let score = 0
+      if (skill.id.toLowerCase().includes(q)) score += 10
+      if (skill.name.toLowerCase().includes(q)) score += 8
+      if (skill.description.toLowerCase().includes(q)) score += 5
+      if (skill.toolRefs.some((tool) => tool.toLowerCase().includes(q))) score += 3
+      if (skill.triggers?.some((trigger) => trigger.toLowerCase().includes(q))) score += 6
+      return { skill, score }
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(({ skill }) => skill)
+}
+
 /**
  * Search skills by query. Uses metadata only (no body scanning).
  */
 export function searchSkills(query: string): SkillMeta[] {
-  const q = query.toLowerCase()
-  const all = getAllSkills()
-
-  const scored = all.map(skill => {
-    let score = 0
-    if (skill.id.toLowerCase().includes(q)) score += 10
-    if (skill.name.toLowerCase().includes(q)) score += 8
-    if (skill.description.toLowerCase().includes(q)) score += 5
-    if (skill.toolRefs.some(t => t.toLowerCase().includes(q))) score += 3
-    if (skill.triggers.some(t => t.toLowerCase().includes(q))) score += 6
-    return { skill, score }
-  })
-
-  return scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).map(s => s.skill)
+  return searchSkillMetadata(getAllSkills(), query)
 }
 
 export function loadReference(skillId: string, referenceId: string): string | null {

@@ -3,6 +3,11 @@ import { generateReport } from '../../src/report/generator'
 import type { Finding } from '../../src/generation/test-generator'
 import type { TestResult } from '../../src/replay/test-runner'
 import type { ForensicEvent } from '../../src/logging/forensic-log'
+import type { ProofCheckResult } from '../../src/intelligence/proof-rules'
+
+const passingProof = (findingId: string): ProofCheckResult => ({
+  ruleId: 'test-proof', findingId, passed: true, missingEvidence: [], conflicts: [], evidenceRefs: [`evidence-${findingId}`],
+})
 
 const mockFindings: Finding[] = [
   {
@@ -38,6 +43,7 @@ const mockFindings: Finding[] = [
     firstSeen: new Date('2026-01-01'),
     lastSeen: new Date('2026-01-01'),
     status: 'open',
+    proofCheck: passingProof('finding-001'),
     cwe: 'CWE-89',
     remediation: 'Use parameterized queries for all database interactions.',
     impact: 'An attacker can extract all data from the database, including credentials.',
@@ -62,6 +68,7 @@ const mockFindings: Finding[] = [
     firstSeen: new Date('2026-01-01'),
     lastSeen: new Date('2026-01-01'),
     status: 'open',
+    proofCheck: passingProof('finding-002'),
   },
   {
     id: 'finding-003',
@@ -77,6 +84,7 @@ const mockFindings: Finding[] = [
     firstSeen: new Date('2026-01-01'),
     lastSeen: new Date('2026-01-01'),
     status: 'open',
+    proofCheck: passingProof('finding-003'),
   },
 ]
 

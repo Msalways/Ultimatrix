@@ -30,6 +30,15 @@ import {
   AnyNodeData,
 } from './schema'
 import type { ReachabilityRecord } from '../identity/types'
+import { attributeGraphRef } from '../runtime/task-attribution'
+import { getEngagementServices } from '../runtime/engagement-context'
+
+class AttributedNodeMap extends Map<string, GraphNodeData> {
+  override set(id: string, node: GraphNodeData): this {
+    attributeGraphRef(id)
+    return super.set(id, node)
+  }
+}
 
 interface SerializedGraph {
   nodes: GraphNodeData[]
@@ -39,7 +48,7 @@ interface SerializedGraph {
 import type { LibSQLGraphStore } from './store-libsql'
 
 export class GraphStore {
-  private nodes: Map<string, GraphNodeData> = new Map()
+  private nodes: Map<string, GraphNodeData> = new AttributedNodeMap()
   private edges: GraphEdgeData[] = []
   private readonly savePath: string
   private useLibSQL: boolean
@@ -844,6 +853,7 @@ export class GraphStore {
   }
 
   updateNode(node: AnyNodeData): void {
+    attributeGraphRef(node.id)
     if (this.useLibSQL && this.libSQLStore) {
       this.libSQLStore.updateNode(node)
       return
@@ -881,6 +891,8 @@ export class GraphStore {
   }
 
   addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData {
+    attributeGraphRef(edgeData.fromId)
+    attributeGraphRef(edgeData.toId)
     if (this.useLibSQL && this.libSQLStore) {
       return this.libSQLStore.addEdge(edgeData)
     }
@@ -1120,7 +1132,7 @@ export class GraphStore {
       if (data.nodes) {
         this.nodes.clear()
         for (const n of data.nodes) {
-          this.nodes.set(n.id, n)
+          Map.prototype.set.call(this.nodes, n.id, n)
         }
       }
       if (data.edges) this.edges = data.edges
@@ -1134,7 +1146,7 @@ export class GraphStore {
           if (data.nodes) {
             this.nodes.clear()
             for (const n of data.nodes) {
-              this.nodes.set(n.id, n)
+              Map.prototype.set.call(this.nodes, n.id, n)
             }
           }
           if (data.edges) this.edges = data.edges
@@ -1199,6 +1211,8 @@ export class GraphStore {
 let _globalGraphStore: GraphStore | null = null
 
 export function getGlobalGraphStore(): GraphStore {
+  const owned = getEngagementServices()?.graph
+  if (owned) return owned
   if (!_globalGraphStore) {
     throw new Error('Graph store not initialized. Ensure workspace.switchTarget() is called before accessing the graph store.')
   }

@@ -1,4 +1,5 @@
 import { HttpClient } from './client'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface Session {
   name: string
@@ -127,6 +128,8 @@ export class SessionManager {
 let _globalSessionManager: SessionManager | null = null
 
 export function getGlobalSessionManager(): SessionManager {
+  const owned = getEngagementServices()?.httpSessions
+  if (owned) return owned
   if (!_globalSessionManager) {
     _globalSessionManager = new SessionManager()
   }

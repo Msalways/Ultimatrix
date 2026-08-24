@@ -11,6 +11,7 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { diagnoseTargetState } from './diagnosis'
 import { runAdvancedPlaybook } from './playbook-runner'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
 
 export const diagnoseTargetTool = createTool({
   id: 'diagnoseTarget',
@@ -32,29 +33,46 @@ export const diagnoseTargetTool = createTool({
   },
 })
 
-export const runAdvancedPlaybookTool = createTool({
-  id: 'runAdvancedPlaybook',
-  description:
-    'Run the diagnosed technique plan against the target. ' +
-    'Executes the highest-ranked primitive candidates (or the ones you select ' +
-    'by id from a diagnoseTarget result). Direct primitives run evidence-gated ' +
-    'and only confirmed results persist. Candidates that require worker ' +
-    'exploration are reported as skipped when no worker delegate is configured. ' +
-    'Returns per-candidate results, confirmation counts, and the remaining ' +
-    'missing-context gaps.',
-  inputSchema: z.object({
+const runAdvancedPlaybookDescription =
+  'Run the diagnosed technique plan against the target. ' +
+  'Direct primitives run evidence-gated and worker candidates delegate through the runtime coordinator.'
+
+const runAdvancedPlaybookInput = z.object({
     candidateIds: z
       .array(z.string())
       .optional()
       .describe('Candidate ids from a diagnoseTarget result to run. Omit to run the highest-ranked'),
     maxCandidates: z.number().int().positive().optional().describe('Cap on candidates to execute'),
     commit: z.boolean().optional().default(true).describe('Persist evidence-gated confirmed findings to the graph'),
-  }),
-  execute: async ({ candidateIds, maxCandidates, commit }) => {
-    const result = await runAdvancedPlaybook({ candidateIds, maxCandidates, commit })
-    return { ok: true, result }
-  },
 })
+
+export function createRunAdvancedPlaybookTool(
+  coordinator: TaskCoordinator,
+  runner: typeof runAdvancedPlaybook = runAdvancedPlaybook,
+) {
+  return createTool({
+    id: 'runAdvancedPlaybook',
+    description: runAdvancedPlaybookDescription,
+    inputSchema: runAdvancedPlaybookInput,
+    execute: async ({ candidateIds, maxCandidates, commit }) => ({
+      ok: true,
+      result: await runner({ candidateIds, maxCandidates, commit }, {
+        delegateWorker: async (candidate) => {
+          if (!candidate.workerId) throw new Error(`Candidate ${candidate.id} has no worker skill`)
+          const task = await coordinator.run({
+            objective: candidate.reason,
+            skillId: candidate.workerId,
+            complexity: 'medium',
+          })
+          return {
+            ok: task.status === 'completed',
+            note: task.resultSummary ?? task.error ?? `Task ended as ${task.status}`,
+          }
+        },
+      }),
+    }),
+  })
+}
 
 export { diagnoseTargetState } from './diagnosis'
 export { runAdvancedPlaybook } from './playbook-runner'

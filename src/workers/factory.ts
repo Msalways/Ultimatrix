@@ -3,7 +3,7 @@ import type { UltimatrixConfig } from '../config'
 import type { TaskComplexity } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import { createAgent } from '../mastra/index'
-import { loadSkill } from '../solver/skills/loader'
+import type { DynamicToolRegistry } from '../extensions/tool-registry'
 
 export interface WorkerConfig {
   skillId: string
@@ -32,10 +32,11 @@ export class WorkerFactory {
   constructor(
     private config: UltimatrixConfig,
     private skillRegistry: SkillRegistry,
+    _extensionRegistry?: DynamicToolRegistry,
   ) {}
 
   create(workerConfig: WorkerConfig): any {
-    const skill = loadSkill(workerConfig.skillId)
+    const skill = this.skillRegistry.load(workerConfig.skillId)
 
     const agent = createAgent(this.config, {
       browser: workerConfig.browser,
@@ -44,12 +45,14 @@ export class WorkerFactory {
       role: 'worker',
       complexity: workerConfig.complexity,
       skillIds: [workerConfig.skillId],
-      skills: skill ? [skill] : undefined,
-      taskInstructions: workerConfig.task,
+      skills: [skill],
+      taskInstructions: workerConfig.context === undefined
+        ? workerConfig.task
+        : `${workerConfig.task}\n\n## Runtime Task Context\n${JSON.stringify(workerConfig.context)}`,
     })
 
     agent.id = `${workerConfig.skillId}-${Date.now()}`
-    agent.name = skill ? `${skill.name} Specialist` : `${workerConfig.skillId} Specialist`
+    agent.name = `${skill.name} Specialist`
 
     return agent
   }

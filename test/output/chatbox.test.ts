@@ -121,4 +121,16 @@ describe('ChatBox — terminal owner for interact', () => {
     expect(text).not.toContain('system events')
     expect(text).not.toContain('Steps: 0')
   })
+
+  it('reports an empty pure chat answer without run telemetry', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [], completed: false, status: 'response_complete', durationMs: 1, steps: 0, toolCalls: 0, newFindings: 0 } })
+    box.endAssistant()
+    const text = join(out)
+    expect(text).toContain('[no assistant answer returned]')
+    expect(text).not.toContain('response_complete')
+    expect(text).not.toContain('system events')
+    expect(text).not.toContain('steps')
+  })
 })

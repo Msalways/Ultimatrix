@@ -211,7 +211,7 @@ describe('ModelSelector', () => {
     const config = makeConfig({
       modelRoles: {
         worker: {
-          critical: { provider: 'openai', model: 'gpt-4o', maxOutputTokens: 12000 },
+          critical: { provider: 'openai', model: 'gpt-4o' },
         },
       },
     })
@@ -221,6 +221,6 @@ describe('ModelSelector', () => {
     expect(selection.provider).toBe('openai')
     expect(selection.modelId).toBe('openai/gpt-4o')
     expect(selection.reasoning).toContain('configured modelRoles.worker.critical')
-    expect(selection.reasoning).toContain('max output')
+    expect(selection.reasoning).toContain('max output 16384')
   })
 })

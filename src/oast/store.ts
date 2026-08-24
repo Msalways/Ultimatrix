@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface OastCallback {
   id: string
@@ -75,6 +76,8 @@ export class OastStore {
 let _globalOastStore: OastStore | null = null
 
 export function getGlobalOastStore(): OastStore {
+  const owned = getEngagementServices()?.oast
+  if (owned) return owned
   if (!_globalOastStore) {
     _globalOastStore = new OastStore()
   }

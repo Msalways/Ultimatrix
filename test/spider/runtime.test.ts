@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { EngagementBoundary, SpiderRuntime } from '../../src/spider/runtime'
+import { describe, expect, it, vi } from 'vitest'
+import { createSpiderFinalizer, EngagementBoundary, SpiderRuntime, runSpiderRuntime } from '../../src/spider/runtime'
 import { getGlobalEmitter } from '../../src/events/emitter'
 import type { UltimatrixConfig } from '../../src/config'
 
@@ -51,6 +51,29 @@ describe('EngagementBoundary', () => {
 })
 
 describe('SpiderRuntime', () => {
+  it('requires memory identity when memory is enabled', async () => {
+    await expect(runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com',
+      browser: {},
+      memory: {},
+    })).rejects.toThrow('threadId and resourceId')
+  })
+
+  it('fails crawl initialization when no browser navigation surface exists', async () => {
+    const result = await runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com',
+      browser: {},
+    })
+
+    expect(result.outcome).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('Target grounding failed'),
+    })
+    expect(result.state.pagesSeen).toBe(0)
+  })
+
   it('threads explicit allowAny into its boundary', () => {
     const runtime = new SpiderRuntime({
       workflowId: 'wf1',
@@ -101,6 +124,50 @@ describe('SpiderRuntime', () => {
     expect(state.discoveredForms).toHaveLength(1)
     expect(state.authStates).toHaveLength(1)
     expect(runtime.shouldStopByLimits(1, 2)).toBe('max_pages')
+  })
+
+  it('finalizes once and uses one terminal state for event, persistence, and result', async () => {
+    const events: any[] = []
+    const order: string[] = []
+    const runtime = new SpiderRuntime({
+      workflowId: 'wf-final',
+      target: 'https://example.com',
+      config: config(),
+      onEvent: event => {
+        events.push(event)
+        if (event.type === 'crawl_completed') order.push('completed')
+      },
+    })
+    runtime.recordPage('https://example.com/a')
+    runtime.setIdentity({ id: 'admin:one', kind: 'admin', label: 'Admin', roleName: 'Administrator' })
+    const addReachability = vi.fn()
+    const onFinalize = vi.fn(async () => {
+      order.push('checkpoint')
+      return 'checkpoint:1'
+    })
+    const finalize = createSpiderFinalizer(runtime, {
+      config: config(),
+      target: 'https://example.com',
+      browser: {},
+      graphStore: { addReachability },
+      onFinalize,
+    }, Date.now())
+
+    const first = await finalize('frontier_exhausted')
+    const second = await finalize('error', 'late error')
+    const completed = events.find(event => event.type === 'crawl_completed')
+
+    expect(second).toEqual(first)
+    expect(first).toMatchObject({ outcome: { status: 'completed', stopReason: 'frontier_exhausted' }, checkpointId: 'checkpoint:1' })
+    expect(completed.state).toEqual(first.state)
+    expect(first.state.stopReason).toBe('frontier_exhausted')
+    expect(onFinalize).toHaveBeenCalledOnce()
+    expect(order).toEqual(['checkpoint', 'completed'])
+    expect(addReachability).toHaveBeenCalledOnce()
+    expect(addReachability).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: 'anonymous',
+      identityKind: 'anonymous',
+    }))
   })
 })
 
@@ -259,6 +326,7 @@ describe('SpiderRuntime identity & reachability (Slice 06)', () => {
 
     const state = runtime.snapshot()
     expect(state.reachability).toHaveLength(3)
+    expect(state.reachability[0].identity).toMatchObject({ id: 'anonymous', kind: 'anonymous' })
     expect(state.endpoints[0].identity).toMatchObject({ kind: 'authenticated' })
     expect(state.discoveredForms[0].identity).toMatchObject({ kind: 'authenticated' })
   })

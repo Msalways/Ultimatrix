@@ -8,8 +8,8 @@
  * Intelligence layers (EvidenceGate, Reflexion, LoopDetector) observe
  * passively — they record state but do NOT gate or interrupt the agent.
  *
- * The agent arrives fully wired (via createSolverBrain → createAgent).
- * No instruction or tool overrides here. Goal is the user message.
+ * The agent starts cold with catalog discovery and exact capability loading.
+ * No semantic routing or workflow prompt is added here.
  */
 
 import type { Agent } from "@mastra/core/agent";
@@ -22,85 +22,24 @@ import { getForensicLog } from "../tools/report-tools";
 import { saveReflexionState } from "../intelligence/reflexion-store";
 import { getGlobalGraphStore } from "../graph/store";
 import { NodeType } from "../graph/schema";
-import { DEFAULTS, CONTEXT_WINDOW_MAP, getConfig, type UltimatrixConfig } from "../config";
+import { DEFAULTS, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
 import { ContextWindowRegistry } from "../models/context-window-registry";
-import { compactText } from "../output/compaction";
-import { appendDelta } from "../output/render-model";
+import { resolveModelRef } from "../models/routing";
+import { appendDelta, visibleAssistantText } from "../output/render-model";
+import { buildRuntimeEnvelope, type RuntimeAlert } from "../runtime/context-envelope";
+import { getCapturedRequestStore } from "../capture/captured-request-store";
+import { CrossEngagementMemory } from "../intelligence/cross-engagement";
+import type { WorkflowStore } from "../workflow/store";
+import type { DynamicToolRegistry } from "../extensions/tool-registry";
+import { decideTurnRoute } from "./turn-router";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
-const FALLBACK_CONTEXT_WINDOW: Record<string, number> = CONTEXT_WINDOW_MAP;
-
-function getEnrichedGoalCap(model?: string): number {
-  if (!model) return 8000;
-  const ctx = FALLBACK_CONTEXT_WINDOW[model];
-  if (!ctx) return 8000;
-  if (ctx <= 8192) return 4000;
-  if (ctx <= 32000) return 8000;
-  if (ctx <= 131072) return 16000;
-  return 32000;
-}
-
 /**
  * Truncate enriched goal to fit within model context budget.
  * Preserves user's original goal. Trims injected context from least to most important.
  */
-function truncateEnrichedGoal(
-  full: string,
-  originalGoal: string,
-  maxChars: number,
-): string {
-  if (full.length <= maxChars) return full;
-
-  // Strategy: keep original goal + truncate injected sections
-  const sections = full.split(/(?=^## )/m);
-  const goalSection = sections[0]; // user's original goal (first section before any ## header)
-  const injectedSections = sections.slice(1);
-
-  if (goalSection.length >= maxChars) {
-    return goalSection.slice(0, maxChars) + "\n... [truncated]";
-  }
-
-  let budget = maxChars - goalSection.length;
-  const kept: string[] = [];
-
-  // Priority order (keep most important first): stale/hallucination warnings > graph state > blackboard > reflexion hints
-  const priorityOrder = [
-    "WARNING",
-    "Current Graph State",
-    "Accumulated Knowledge",
-    "Lessons from Past",
-    "Captured Traffic",
-  ];
-  const sorted: string[] = [];
-
-  for (const keyword of priorityOrder) {
-    const idx = injectedSections.findIndex((s) => s.includes(keyword));
-    if (idx >= 0) {
-      sorted.push(injectedSections[idx]);
-      injectedSections.splice(idx, 1);
-    }
-  }
-  // Add remaining sections in original order
-  sorted.push(...injectedSections);
-
-  for (const section of sorted) {
-    if (budget <= 0) break;
-    if (section.length <= budget) {
-      kept.push(section);
-      budget -= section.length;
-    } else {
-      // Compact the overflowing section (head+tail) instead of a blind cut.
-      const tokenBudget = Math.max(1, Math.floor(budget / 4));
-      kept.push(compactText(section, { tokenBudget, strategy: "head-tail" }).text);
-      budget = 0;
-    }
-  }
-
-  return goalSection + kept.join("");
-}
-
 /**
  * Structured solver output contract.
  *
@@ -160,6 +99,7 @@ export type SolverStreamMessage =
   | { kind: "tool"; name: string; args?: Record<string, unknown>; workerId?: string; workerName?: string }
   | { kind: "tool-result"; name: string; ok: boolean; result?: string; workerId?: string; workerName?: string }
   | { kind: "phase"; phase: SolverPhase; step: number }
+  | { kind: "event"; event: string; label: string; status?: "info" | "running" | "ok" | "warn" | "error"; data?: Record<string, unknown> }
   | { kind: "done"; answer: SolverAnswer };
 
 export interface SolverConfig {
@@ -189,6 +129,8 @@ export interface PhaseEvent {
   toolArgs?: Record<string, unknown>;
   toolResult?: unknown;
   reason?: string;
+  /** Non-behavioral descriptor metadata for UI and forensic display. */
+  activity?: string;
   progress?: {
     endpoints: number;
     findings: number;
@@ -203,10 +145,12 @@ export interface PhaseEvent {
 }
 
 export interface SolveResult {
+  interactionMode?: "ask" | "run";
   completed: boolean;
   reason:
     | "goal_achieved"
     | "response_complete"
+    | "grounding_failed"
     | "frontier_exhausted"
     | "budget_reached"
     | "stale"
@@ -232,14 +176,6 @@ export interface SolveParams {
   goal: string;
   interactionMode?: "ask" | "run";
   hints?: string[];
-  matchedSkills?: Array<{
-    id: string;
-    name: string;
-    description: string;
-    instructions?: string;
-    toolChains?: Array<{ name: string; description: string; steps: string[] }>;
-    compositionRules?: { requires?: string[]; enhances?: string[]; conflicts?: string[] };
-  }>;
   model?: string;
   config?: SolverConfig;
   ultimatrixConfig?: UltimatrixConfig;
@@ -255,6 +191,12 @@ export interface SolveParams {
   onToolComplete?: (toolName: string, result?: unknown) => void;
   modelCapabilities?: import("../config").ModelCapabilities;
   budgetPolicy?: import("../config").BudgetPolicy;
+  workflow?: WorkflowStore;
+  /**
+   * Cross-engagement priors prompt block. When absent, the solver loads it
+   * from the anonymized cross-engagement memory (no-op when empty/unavailable).
+   */
+  priorsPromptBlock?: string;
 }
 
 const SOLVER_DEFAULTS: Required<SolverConfig> = {
@@ -264,88 +206,32 @@ const SOLVER_DEFAULTS: Required<SolverConfig> = {
   maxParallel: DEFAULTS.solver.maxParallel,
 };
 
-const PRIMITIVE_TO_VULN_TYPE: Record<string, string> = {
-  classicInjection: "sqli",
-  secondOrderSqli: "sqli",
-  nosqlInjection: "nosql-injection",
-  sstiBlind: "ssti",
-  ssrfMultiCloud: "ssrf",
-  ssrfOast: "ssrf",
-  authBypass: "auth-bypass",
-  authzMatrix: "authz",
-  idorSwapper: "idor",
-  invariantProbe: "invariant-bypass",
-  workflowBypass: "workflow-bypass",
-  configTrust: "config-trust",
-  ldapXpathInjection: "ldap-injection",
-  rceClass: "rce",
-  headerInjection: "header-injection",
-  concurrencyHarness: "race-condition",
-  aiTrust: "ai-prompt-injection",
-};
-
-let previousTurnSnapshot: { endpoints: number; findings: number; tests: number; authFlows: number; untestedActions: number } | undefined;
-
-function detectPhase(toolName?: string): SolverPhase {
-  if (!toolName) return "reason";
-
-  const upper = toolName.toUpperCase();
-
-  if (
-    [
-      "GETTARGETSUMMARY",
-      "QUERYGRAPH",
-      "GETENDPOINTSWITHPARAMS",
-      "GETFULLCONTEXT",
-    ].includes(upper)
-  ) {
-    return "observe";
-  }
-  if (
-    ["SKILLSEARCH", "SKILLLOAD", "SEARCHSKILLS", "LOADSKILLREFERENCE"].includes(
-      upper,
-    )
-  ) {
-    return "learn";
-  }
-  if (
-    [
-      "SPAWNWORKER",
-      "SPAWNSWARM",
-      "EXECUTEDIRECT",
-      "HTTPREQUEST",
-      "STAGEHAND_NAVIGATE",
-      "STAGEHAND_ACT",
-    ].includes(upper)
-  ) {
-    return "attack";
-  }
-  if (["WRITEFINDING", "RECORDEVIDENCE", "UPDATEGRAPH"].includes(upper)) {
-    return "record";
-  }
-
-  return "reason";
-}
-
 function extractVulnType(
-  toolName: string | undefined,
   args: Record<string, unknown> | undefined,
 ): string {
-  if (!toolName) return "";
-  const upper = toolName.toUpperCase();
-  if (upper === "RUNPRIMITIVE" && args) {
-    const primitiveId = String(args.primitiveId ?? args.primitive ?? "");
-    return PRIMITIVE_TO_VULN_TYPE[primitiveId] ?? primitiveId ?? "";
-  }
-  if (upper === "RUNCAMPAIGN" && args) {
-    return String(args.technique ?? args.vulnType ?? "");
-  }
-  return "";
+  return String(args?.technique ?? args?.vulnType ?? args?.primitiveId ?? args?.primitive ?? "");
 }
 
 interface CompletionResult {
   completed: boolean;
   reason: SolveResult["reason"];
+}
+
+/**
+ * Load the cross-engagement priors prompt block. Read-only against the
+ * anonymized global memory (content was policy-gated at write time); empty
+ * when no prior engagements exist or the store is unavailable.
+ */
+async function loadPriorsBlock(): Promise<string | undefined> {
+  try {
+    const mem = new CrossEngagementMemory();
+    await mem.load();
+    if (mem.getEngagementCount() === 0) return undefined;
+    const priors = mem.getPriorPatterns();
+    return priors.promptBlock || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -363,8 +249,8 @@ function checkCompletion(
   reasoningText: string,
   newFindings: number,
 ): CompletionResult {
-  // Nothing happened at all (no deliverable answer and no reasoning)
-  if (toolCallCount === 0 && bodyText.length === 0 && reasoningText.length === 0) {
+  // Nothing user-visible happened. Reasoning-only output is not a valid turn.
+  if (toolCallCount === 0 && bodyText.length === 0) {
     return { completed: false, reason: "stale" };
   }
 
@@ -381,11 +267,15 @@ function checkCompletion(
   return { completed: false, reason: "frontier_exhausted" };
 }
 
+
+
+
 /**
  * Solve — single agent.stream() call per REPL turn.
  *
- * The agent arrives fully wired (all tools, browser, instructions).
- * Goal is the user message. Intelligence layers observe passively.
+ * The agent starts with catalog discovery only. Activated native tools are
+ * refreshed between model steps. Goal is the user message plus a bounded
+ * deterministic runtime index.
  */
 export async function solve(
   agent: Agent,
@@ -420,233 +310,75 @@ export async function solve(
     }
   }
 
-  // ─── Auto campaign (Phase 2 / T2.6) ──────────────────────────────────
-  // When config.engine === 'solver' AND config.campaign.auto is set, plan + run
-  // a coverage campaign before the OODA loop, feeding confirmed findings into
-  // the blackboard so the loop reasons over them. The loop still runs after.
-  let autoCampaignFindings = 0;
-  let previousCampaignPlan: import("../campaign/types").CampaignPlan | null = null;
-  if (
-    params.ultimatrixConfig?.engine === "solver" &&
-    params.ultimatrixConfig.campaign?.auto
-  ) {
-    emit({ phase: "observe", step: 0, text: "[campaign] auto-planning coverage campaign..." });
-    try {
-      const { planCampaign } = await import("../campaign/planner");
-      const { runCampaign } = await import("../campaign/executor");
-      const { createPrimitiveRunner } = await import("../campaign/runner");
-      const { listPrimitives } = await import("../primitives");
-      const gate = new EvidenceGate();
-      const { setEvidenceGateForFindings: setGate } = await import("../tools/control-tools");
-      setGate(gate);
-      const autoConfig = params.ultimatrixConfig;
-      const executor = createPrimitiveRunner(
-        getGlobalGraphStore(),
-        autoConfig,
-        gate,
-      );
-      const autoPlan = planCampaign(getGlobalGraphStore(), {
-        primitives: listPrimitives().map((p) => ({
-          id: p.id,
-          description: p.description,
-          tags: [],
-        })),
-        maxSlices: autoConfig.campaign?.maxSlices,
-      });
-      previousCampaignPlan = autoPlan;
-      const autoResult = await runCampaign(autoPlan, {
-        graphStore: getGlobalGraphStore(),
-        config: autoConfig,
-        executor,
-        evidenceGate: gate,
-        maxConcurrency: autoConfig.campaign?.maxConcurrency,
-      });
-      // Feed confirmed findings into the blackboard for the OODA loop to use.
-      for (const f of autoResult.findings) {
-        board.addFact(
-          `Campaign confirmed: ${f.type} on ${f.endpoint} (${f.severity})`,
-          "finding",
-        );
-      }
-      autoCampaignFindings = autoResult.findings.length;
-      log.dim(
-        `[campaign] auto-run: ${autoResult.slicesRun} slices, ${autoResult.findings.length} findings`,
-      );
-    } catch (err) {
-      log.warn(`[campaign] auto-run failed: ${(err as Error).message}`);
-    }
-  }
+  const capabilityRegistry = (agent as any).capabilityRegistry as DynamicToolRegistry | undefined;
+  capabilityRegistry?.resetTurn();
 
-  // Auto-inject graph context + blackboard state into the goal message
-  let enrichedGoal = params.goal;
-  if (params.interactionMode === "ask") {
-    enrichedGoal += "\n\n## Interaction Mode\nAnswer from persisted session context. Do not start new assessment actions unless the user explicitly changes to run mode.";
-  } else if (params.interactionMode === "run") {
-    enrichedGoal += "\n\n## Interaction Mode\nExecute the requested assessment work with the available tools. Record evidence and confirmed findings; do not merely offer to do the work.";
+  const contextRegistry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as UltimatrixConfig);
+  const resolvedContextModel = params.ultimatrixConfig?.model
+    ? resolveModelRef(params.ultimatrixConfig, { role: "brain" })
+    : undefined;
+  const contextModelId = [resolvedContextModel?.modelId, resolvedContextModel?.model, params.model]
+    .find(modelId => modelId && contextRegistry.getContextWindow(modelId))
+    ?? resolvedContextModel?.modelId
+    ?? params.model
+    ?? "";
+  const contextWindow = contextRegistry.getContextWindow(contextModelId)
+    || 128_000;
+  if (resolvedContextModel) {
+    emitMessage({
+      kind: "event",
+      event: "model.selected",
+      label: `brain ${resolvedContextModel.provider}/${resolvedContextModel.model}`,
+      status: "ok",
+      data: {
+        role: "brain",
+        provider: resolvedContextModel.provider,
+        model: resolvedContextModel.model,
+        modelId: resolvedContextModel.modelId,
+        tier: resolvedContextModel.tier,
+        reason: resolvedContextModel.reason,
+      },
+    });
   }
+  const alerts: RuntimeAlert[] = [];
+  if (loopDetector.isStale(cfg.staleThreshold)) alerts.push({ type: "stale-execution", count: cfg.staleThreshold });
+  const unsupported = evidence.getUnsupportedClaims?.() ?? [];
+  if (unsupported.length) alerts.push({ type: "unsupported-claims", count: unsupported.length });
 
-  // Surface pre-confirmed campaign findings to the LLM strategist.
-  if (autoCampaignFindings > 0) {
-    const existing = getGlobalGraphStore().queryNodes?.(NodeType.FINDING) || [];
-    const lines = existing
-      .slice(-autoCampaignFindings)
-      .map((n: any) => `- ${n.properties.type} on ${n.properties.endpoint} [${n.properties.severity}]`);
-    if (lines.length > 0) {
-      enrichedGoal +=
-        `\n\n## Pre-confirmed Findings (Auto Campaign)\n` + lines.join("\n");
-    }
-  }
-
+  // Bounded recent blackboard facts — sanitized, length-capped, never bodies.
+  const factStrings = board.getFactStrings();
+  const recentFacts = factStrings.slice(-8).map((f) => f.length > 240 ? f.slice(0, 237) + "..." : f);
+  let capturedRequestTotal = 0;
   try {
-    const store = getGlobalGraphStore();
-    const summary = store.getTargetSummary();
-    if (summary.totalEndpoints > 0 || summary.totalFindings > 0) {
-      const graphContext = [
-        `\n\n## Current Graph State`,
-        `- ${summary.totalEndpoints} endpoints discovered (${summary.totalCapturedHeaders} with captured headers)`,
-        `- ${summary.totalFindings} findings: ${
-          Object.entries(summary.findingsBySeverity)
-            .map(([s, c]) => `${s}=${c}`)
-            .join(", ") || "none"
-        }`,
-        `- ${summary.totalTests} tests run`,
-        `- ${summary.authFlows} auth flows, ${summary.rbacRoles} RBAC roles`,
-        `- ${summary.untestedActions} untested actions`,
-      ];
-      if (summary.endpoints.length > 0) {
-        graphContext.push("Top endpoints:");
-        for (const ep of summary.endpoints.slice(0, 10)) {
-          graphContext.push(
-            `  - ${ep.method} ${ep.url} (params: ${ep.params}, auth: ${ep.authRequired ? "yes" : "no"}, headers: ${ep.headerCount})`,
-          );
-        }
-      }
-      enrichedGoal += "\n" + graphContext.join("\n");
-    }
+    capturedRequestTotal = getCapturedRequestStore().size;
   } catch {
-    // Graph store not available
+    capturedRequestTotal = 0;
   }
 
-  // Inject recent discoveries (diff from previous turn's snapshot)
-  try {
-    const store = getGlobalGraphStore();
-    const currentSummary = store.getTargetSummary();
-    const config = getConfig()
-    const maxPerLine = config.context?.maxFindingsPerTurn || 20
+  const runtimeEnvelope = buildRuntimeEnvelope({
+    target: params.origin,
+    contextWindow,
+    graph: getGlobalGraphStore(),
+    workflow: params.workflow,
+    blackboard: board,
+    alerts,
+    blackboardFacts: { total: factStrings.length, recent: recentFacts },
+    capturedRequests: { total: capturedRequestTotal },
+  });
+  let enrichedGoal = `${params.goal}${runtimeEnvelope}`;
 
-    if (previousTurnSnapshot) {
-      const newEndpoints = currentSummary.totalEndpoints - previousTurnSnapshot.endpoints;
-      const newFindings = currentSummary.totalFindings - previousTurnSnapshot.findings;
-      const newTests = currentSummary.totalTests - previousTurnSnapshot.tests;
-      const newAuthFlows = currentSummary.authFlows - previousTurnSnapshot.authFlows;
-      const newUntested = currentSummary.untestedActions - previousTurnSnapshot.untestedActions;
-      if (newEndpoints > 0 || newFindings > 0 || newTests > 0 || newAuthFlows > 0) {
-        const discoveries: string[] = [];
-        if (newEndpoints > 0) discoveries.push(`- New endpoints: ${newEndpoints}`);
-        if (newFindings > 0) {
-          // Only take last maxPerLine findings (not ALL new findings)
-          const newFindingNodes = (store.queryNodes(NodeType.FINDING) as any[])
-            .slice(-newFindings)
-            .slice(-maxPerLine)
-
-          const findingText = newFindingNodes.map((n: any) =>
-            n.properties.technique + ' on ' + n.properties.endpoint + ' [' + n.properties.severity + ']'
-          ).join(', ')
-
-          discoveries.push(`- New findings: ${newFindings} (${findingText})`)
-
-          // If there are more findings than maxPerLine, add a note
-          if (newFindings > maxPerLine) {
-            const remaining = newFindings - maxPerLine
-            discoveries.push(`  - ... and ${remaining} more findings (not shown)`)
-          }
-        }
-        if (newTests > 0) discoveries.push(`- New tests: ${newTests}`);
-        if (newAuthFlows > 0) discoveries.push(`- New auth flows: ${newAuthFlows}`);
-        if (newUntested > 0) discoveries.push(`- New untested actions: ${newUntested}`);
-        enrichedGoal += `\n\n## Recent Discoveries (since last turn)\n${discoveries.join('\n')}`;
-      }
-    }
-    previousTurnSnapshot = {
-      endpoints: currentSummary.totalEndpoints,
-      findings: currentSummary.totalFindings,
-      tests: currentSummary.totalTests,
-      authFlows: currentSummary.authFlows,
-      untestedActions: currentSummary.untestedActions,
-    };
-  } catch {
-    // Graph store not available
-  }
-
-  // Inject blackboard state (accumulated across REPL turns)
-  const boardState = board.toPromptGraph();
-  if (boardState && board.facts.length > 1) {
-    enrichedGoal += `\n\n## Accumulated Knowledge (Blackboard)\n\`\`\`\n${boardState}\n\`\`\``;
-  }
-
-  // Inject reflexion hints from past sessions (target-scoped)
-  try {
-    const { loadRelevantHints } =
-      await import("../intelligence/reflexion-store");
-    const hints = loadRelevantHints("", params.origin);
-    if (hints.length > 0) {
-      enrichedGoal += `\n\n## Lessons from Past Sessions\n${hints.map((h) => `- ${h}`).join("\n")}`;
-    }
-  } catch {
-    // Reflexion store not available
-  }
-
-  // Inject cross-engagement priors (anonymized patterns from past engagements)
-  try {
-    const { CrossEngagementMemory } = await import('../intelligence/cross-engagement')
-    const mem = new CrossEngagementMemory()
-    await mem.load()
-    const priors = mem.getPriorPatterns()
-    if (priors.engagementCount > 0) {
-      enrichedGoal += `\n\n${priors.promptBlock}`
-    }
-  } catch {
-    // Cross-engagement memory not available
-  }
-
-  // Inject matched skill methodology (from per-message skill matching)
-  if (params.matchedSkills && params.matchedSkills.length > 0) {
-    const skillBlock = params.matchedSkills
-      .map((s) => {
-        let block = s.instructions
-          ? `### ${s.name}\n${s.instructions}`
-          : `### ${s.name}\n${s.description}`;
-
-        // Inject tool chain guidance if available
-        if (s.toolChains && s.toolChains.length > 0) {
-          const chainBlock = s.toolChains
-            .map(c => `#### ${c.name}: ${c.description}\nSteps: ${c.steps.join(' → ')}`)
-            .join('\n');
-          block += `\n\n**Recommended Tool Chains:**\n${chainBlock}`;
-        }
-
-        // Inject composition hints if available
-        if (s.compositionRules) {
-          const comp = s.compositionRules;
-          if (comp.requires?.length) {
-            block += `\n**Prerequisites:** Load ${comp.requires.join(', ')} first`;
-          }
-          if (comp.enhances?.length) {
-            block += `\n**Enhances:** Combine with ${comp.enhances.join(', ')} for complete coverage`;
-          }
-        }
-
-        return block;
-      })
-      .join("\n\n");
-    enrichedGoal += `\n\n## Relevant Methodology\n\n${skillBlock}`;
-  }
+  // Reflexion lessons + cross-engagement priors flow INTO the turn context
+  // (previously pull-only). Both blocks are English prose designed for this.
+  // Computed once; re-applied verbatim if a capability turn rebuilds the goal.
+  const reflexionBlock = reflexion.toPromptBlock();
+  const priorsBlock = params.priorsPromptBlock ?? (await loadPriorsBlock());
+  const contextSuffix =
+    (reflexionBlock ? `\n\n${reflexionBlock}` : "") +
+    (priorsBlock ? `\n\n${priorsBlock}` : "");
+  enrichedGoal += contextSuffix;
 
   // Inject stale detection context
-  if (loopDetector.isStale(cfg.staleThreshold)) {
-    enrichedGoal += `\n\n## WARNING: Stale detection triggered`;
-    enrichedGoal += `\nThe agent has repeated the same attack path ${cfg.staleThreshold} times.`;
-    enrichedGoal += `\nSwitch strategy immediately. Try a completely different approach or ask the user for guidance.`;
+  if (alerts.some(alert => alert.type === "stale-execution")) {
     emit({
       phase: "stale",
       step: 0,
@@ -654,48 +386,10 @@ export async function solve(
     });
   }
 
-  // Inject hallucination warnings from evidence gate
-  const unsupported = evidence.getUnsupportedClaims?.();
-  if (unsupported && unsupported.length > 0) {
-    enrichedGoal += `\n\n## WARNING: Hallucinated claims detected`;
-    enrichedGoal += `\nThe agent previously claimed things without tool evidence. VERIFY all claims with tools before reporting.`;
-    for (const claim of unsupported.slice(0, 5)) {
-      enrichedGoal += `\n- Unsupported: "${claim}"`;
-    }
-  }
-
-  // Inject reflexion strategy suggestions (if any failures recorded)
-  if (reflexion.shouldReflect()) {
-    const reflexionBlock = reflexion.toPromptBlock();
-    if (reflexionBlock) {
-      enrichedGoal += `\n\n## Strategy Adjustment\n${reflexionBlock}`;
-    }
-    const reflectionPrompt = reflexion.toReflectionPrompt();
-    if (reflectionPrompt) {
-      enrichedGoal += `\n\n${reflectionPrompt}`;
-    }
-    const escalationLevel = reflexion.getEscalationLevel();
-    if (escalationLevel >= 3) {
-      const hints = reflexion.getEscalationHints();
-      if (hints.length > 0) {
-        enrichedGoal += `\n\n## L${escalationLevel} Escalation — Mandatory Strategy Switch`;
-        enrichedGoal += `\nYou MUST switch to a different vulnerability class or attack surface. Do not retry the same approach.`;
-        enrichedGoal += `\nBypass hints:\n${hints.map((h) => `- ${h}`).join("\n")}`;
-      }
-    }
-  }
-
-  // Truncate enriched goal to fit model context budget
-  // If ModelCapabilities are provided, use ContextBudgetManager for smarter truncation
-  const caps = params.modelCapabilities;
+  const caps = params.modelCapabilities ?? params.ultimatrixConfig?.modelCapabilities;
   const budgetPolicy = params.budgetPolicy;
   const registry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as any);
-
-  // Registry-based lookup: modelCapabilities → null
-  const hasModelConfig = params.model && registry.getContextWindow(params.model) > 0;
-
-  if (hasModelConfig) {
-    const ctxManager = new ContextBudgetManager(caps ?? {}, registry);
+  const ctxManager = new ContextBudgetManager(caps ?? {}, registry);
     // Mastra Agent exposes instructions/tools via async accessors (getters were
     // removed). Resolve once for the context-budget estimate.
     let agentInstructions: string;
@@ -707,25 +401,51 @@ export async function solve(
     let toolSchemasStr: string;
     try {
       const toolMap = await agent.listTools();
-      toolSchemasStr = JSON.stringify(Object.keys(toolMap || {}));
+      toolSchemasStr = JSON.stringify(Object.fromEntries(Object.entries(toolMap).map(([id, tool]) => [id, (tool as any).inputSchema ?? null])));
     } catch {
       toolSchemasStr = "[]";
     }
 
+    let conversationHistory = "";
+    if (params.memory) {
+      try {
+        const memory = await agent.getMemory();
+        const recalled = await memory?.recall({
+          threadId: params.memory.thread,
+          resourceId: params.memory.resource,
+          perPage: params.ultimatrixConfig?.memory.lastMessages ?? 20,
+        } as any);
+        conversationHistory = JSON.stringify(recalled?.messages ?? []);
+      } catch {}
+    }
     const ctxCheck = ctxManager.validateContextFit({
-      modelId: params.model ?? "",
+      modelId: contextModelId,
       systemPrompt: agentInstructions,
       toolSchemas: toolSchemasStr,
-      conversationHistory: "",
+      conversationHistory,
       enrichedGoal,
+      expectedOutputTokens: registry.getMaxOutput(contextModelId) || 2048,
     });
 
     // Log context validation
     log.dim(
-      `[context] ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(params.model ?? "")} tokens (${ctxCheck.severity})`,
+      `[context] ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(contextModelId)} tokens (${ctxCheck.severity})`,
     );
+    emitMessage({
+      kind: "event",
+      event: "context.checked",
+      label: `context ${ctxCheck.severity}: ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(contextModelId) || contextWindow} tokens`,
+      status: ctxCheck.severity === "critical" ? "error" : ctxCheck.severity === "warning" ? "warn" : "ok",
+      data: {
+        modelId: contextModelId,
+        totalInputTokens: ctxCheck.totalInputTokens,
+        availableForOutput: ctxCheck.availableForOutput,
+        severity: ctxCheck.severity,
+        fits: ctxCheck.fits,
+      },
+    });
 
-    if (ctxCheck.severity === "critical") {
+    if (!ctxCheck.fits || ctxCheck.severity === "critical") {
       const enforcement = budgetPolicy?.enforcement ?? "soft";
 
       if (enforcement === "hard") {
@@ -737,25 +457,19 @@ export async function solve(
 
       if (enforcement === "soft") {
         const truncated = ctxManager.truncateToFit({
-          modelId: params.model ?? "",
+          modelId: contextModelId,
           systemPrompt: agentInstructions,
           toolSchemas: toolSchemasStr,
-          conversationHistory: "",
+          conversationHistory,
           enrichedGoal,
+          expectedOutputTokens: registry.getMaxOutput(contextModelId) || 2048,
         });
         enrichedGoal = truncated.enrichedGoal;
         log.dim(
           `[context] Auto-truncated enriched goal to ${ctxManager.estimateTokens(enrichedGoal)} tokens`,
         );
       }
-      // 'warn' — just log; the ContextBudgetManager path owns sizing, so we do
-      // NOT run the legacy truncateEnrichedGoal again (would double-slice).
     }
-  } else {
-    // No ModelCapabilities configured — use legacy cap (now CONTEXT_WINDOW_MAP-backed)
-    const goalCap = getEnrichedGoalCap(params.model);
-    enrichedGoal = truncateEnrichedGoal(enrichedGoal, params.goal, goalCap);
-  }
 
   emit({ phase: "observe", step: 0, text: "" });
 
@@ -770,6 +484,7 @@ export async function solve(
   let totalOutputTokens = 0;
   let totalTokens = 0;
   let lastError: string | undefined;
+  let ranCapabilityTurn = false;
   const timeoutSignal = AbortSignal.timeout(cfg.maxDurationMs);
   const streamSignal = params.signal
     ? AbortSignal.any([params.signal, timeoutSignal])
@@ -783,13 +498,40 @@ export async function solve(
     graphStateSnapshot.findings = initialSummary.totalFindings;
     graphStateSnapshot.endpoints = initialSummary.totalEndpoints;
     graphStateSnapshot.tests = initialSummary.totalTests;
+    emitMessage({
+      kind: "event",
+      event: "memory.loaded",
+      label: `graph memory ${initialSummary.totalEndpoints} endpoints · ${initialSummary.totalFindings} findings · ${initialSummary.totalTests} tests`,
+      status: "ok",
+      data: {
+        source: "graph",
+        endpoints: initialSummary.totalEndpoints,
+        findings: initialSummary.totalFindings,
+        tests: initialSummary.totalTests,
+      },
+    });
   } catch {
     // Graph store not available
   }
 
   try {
-    // Single stream call — Mastra handles tool loops internally (like v7)
-    // The combined signal covers both stream creation and consumption.
+    const route = await decideTurnRoute(agent, {
+      goal: params.goal,
+      runtimeEnvelope,
+      interactionMode: params.interactionMode,
+      memory: params.memory,
+      signal: streamSignal,
+    });
+    if (route.reasoning?.trim()) reasoningText = route.reasoning;
+    if (route.kind === "direct") {
+      answerText = route.response;
+      if (route.response.trim()) emitMessage({ kind: "answer", text: route.response, index: streamIndex++ });
+    }
+
+    if (route.kind === "capability") {
+    ranCapabilityTurn = true;
+    enrichedGoal = `${params.goal}${runtimeEnvelope}${contextSuffix}`;
+
     const stream = await agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
@@ -797,7 +539,7 @@ export async function solve(
     });
 
     let lastToolCallArgs: Record<string, unknown> | undefined;
-    let lastToolCallName: string | undefined;
+    const workerToolNames = new Set(["spawnWorker", "spawn-worker", "spawnSwarm", "spawn-swarm", "runTaskGraph", "run-task-graph"]);
 
     for await (const chunk of stream.fullStream) {
       if (streamSignal.aborted) {
@@ -827,20 +569,37 @@ export async function solve(
         case "tool-call":
           if (chunk.payload.toolName && chunk.payload.toolName !== "askUser") {
             toolCallCount++;
-            lastToolCallName = chunk.payload.toolName;
             lastToolCallArgs = chunk.payload.args as Record<string, unknown> | undefined;
 
+            const descriptor = await capabilityRegistry?.describe(chunk.payload.toolName);
             emit({
-              phase: detectPhase(chunk.payload.toolName),
+              phase: "reason",
               step: toolCallCount,
               toolName: chunk.payload.toolName,
               toolArgs: chunk.payload.args,
+              activity: descriptor?.activity,
             });
             emitMessage({
               kind: "tool",
               name: chunk.payload.toolName,
               args: chunk.payload.args as Record<string, unknown> | undefined,
             });
+            if (workerToolNames.has(chunk.payload.toolName)) {
+              const args = chunk.payload.args as Record<string, unknown> | undefined;
+              emitMessage({
+                kind: "event",
+                event: "worker.spawned",
+                label: `worker ${String(args?.skillId ?? chunk.payload.toolName)} ${String(args?.complexity ?? "medium")}`,
+                status: "running",
+                data: {
+                  tool: chunk.payload.toolName,
+                  skillId: args?.skillId,
+                  complexity: args?.complexity ?? "medium",
+                  tier: args?.tier,
+                  modelId: args?.modelId,
+                },
+              });
+            }
           }
           break;
 
@@ -861,6 +620,23 @@ export async function solve(
             evidence.recordToolOutput(output);
 
             emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: toolOk, result: output });
+            if (workerToolNames.has(chunk.payload.toolName) && result && typeof result === "object") {
+              const routing = result.routing && typeof result.routing === "object" ? result.routing : undefined;
+              emitMessage({
+                kind: "event",
+                event: toolOk ? "worker.completed" : "worker.failed",
+                label: routing?.modelId
+                  ? `worker ${result.status ?? (toolOk ? "completed" : "failed")} ${routing.provider ? `${routing.provider}/` : ""}${routing.modelId}`
+                  : `worker ${result.status ?? (toolOk ? "completed" : "failed")}`,
+                status: toolOk ? "ok" : "error",
+                data: {
+                  workerId: result.workerId,
+                  status: result.status,
+                  routing,
+                  graphDiff: result.graphDiff,
+                },
+              });
+            }
 
             // Track attack paths
             const detectedPath = extractAttackPath(output);
@@ -870,7 +646,6 @@ export async function solve(
 
             // Determine if this tool call produced graph changes (not just tool name substring)
             let hasNewFinding = false;
-            let hasNewEndpoints = false;
             try {
               const graphAfter = getGlobalGraphStore();
               const summaryAfter = graphAfter.getTargetSummary();
@@ -878,9 +653,6 @@ export async function solve(
                   summaryAfter.totalEndpoints > graphStateSnapshot.endpoints ||
                   summaryAfter.totalTests > graphStateSnapshot.tests) {
                 hasNewFinding = true;
-              }
-              if (summaryAfter.totalEndpoints > graphStateSnapshot.endpoints) {
-                hasNewEndpoints = true;
               }
               // Update snapshot for next iteration
               graphStateSnapshot.findings = summaryAfter.totalFindings;
@@ -893,32 +665,9 @@ export async function solve(
             // Update loop detector (stale tracking)
             loopDetector.recordRound(hasNewFinding);
 
-            // Re-plan campaign when new endpoints discovered mid-loop
-            if (hasNewEndpoints && params.ultimatrixConfig?.campaign?.auto && previousCampaignPlan) {
-              try {
-                const { replanCampaign } = await import("../campaign/planner");
-                const { listPrimitives } = await import("../primitives");
-                const freshPlan = replanCampaign(
-                  getGlobalGraphStore(),
-                  previousCampaignPlan,
-                  {
-                    primitives: listPrimitives().map(p => ({ id: p.id, description: p.description, tags: [] })),
-                    maxSlices: params.ultimatrixConfig.campaign?.maxSlices,
-                  },
-                );
-                if (freshPlan.slices.length > 0) {
-                  board.addFact(`Campaign re-planned: ${freshPlan.slices.length} new slices for newly discovered endpoints`, "campaign");
-                  emit({ phase: "observe", step: toolCallCount, text: `[campaign] re-planned: ${freshPlan.slices.length} new slices for ${freshPlan.slices.length} new endpoints` });
-                  previousCampaignPlan = { slices: [...previousCampaignPlan.slices, ...freshPlan.slices], coverage: freshPlan.coverage, generatedAt: Date.now(), options: freshPlan.options };
-                }
-              } catch (err) {
-                log.warn(`[campaign] re-plan failed: ${(err as Error).message}`);
-              }
-            }
-
             // Record failures in reflexion engine
             if (!toolOk) {
-                const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
+                const vulnType = extractVulnType(lastToolCallArgs);
                 reflexion.recordAttempt(
                   chunk.payload.toolName,
                   false,
@@ -926,6 +675,9 @@ export async function solve(
                   result.error || output,
                   vulnType,
                 );
+                if (vulnType) {
+                  import("../intelligence/evolution").then(({ recordTechniqueFailed }) => recordTechniqueFailed(vulnType)).catch(() => {});
+                }
             }
 
             // Notify caller (graph save, etc.)
@@ -952,7 +704,7 @@ export async function solve(
             });
 
             // Record failure in reflexion engine
-              const vulnType = extractVulnType(lastToolCallName, lastToolCallArgs);
+              const vulnType = extractVulnType(lastToolCallArgs);
               reflexion.recordAttempt(
                 chunk.payload.toolName,
                 false,
@@ -960,6 +712,9 @@ export async function solve(
                 error,
                 vulnType,
               );
+              if (vulnType) {
+                import("../intelligence/evolution").then(({ recordTechniqueFailed }) => recordTechniqueFailed(vulnType)).catch(() => {});
+              }
 
             // Record error in loop detector (counts as no progress)
             loopDetector.recordRound(false);
@@ -1009,12 +764,18 @@ export async function solve(
       // Await the SDK canonical promises directly — they are the deduplicated,
       // provider-normalized final text. No timeout: the outer
       // AbortSignal.timeout(maxDurationMs) already bounds wall-clock time.
-      const [resolvedText, resolvedReasoning] = await Promise.all([
+      const [resolvedObject, resolvedText, resolvedReasoning] = await Promise.all([
+        ((stream as any).object ?? Promise.resolve(undefined)) as Promise<unknown>,
         stream.text as Promise<string | undefined>,
         stream.reasoningText as Promise<string | undefined>,
       ]);
+      const objectResponse = resolvedObject && typeof resolvedObject === "object" && "response" in resolvedObject
+        ? (resolvedObject as { response?: unknown }).response
+        : undefined;
 
-      if (resolvedText && resolvedText.trim().length > 0) {
+      if (typeof objectResponse === "string" && objectResponse.trim().length > 0) {
+        canonicalAnswer = objectResponse;
+      } else if (resolvedText && resolvedText.trim().length > 0) {
         canonicalAnswer = resolvedText;
       }
       if (resolvedReasoning && resolvedReasoning.trim().length > 0) {
@@ -1036,6 +797,7 @@ export async function solve(
     // reasoning-delta chunks; otherwise keep what was captured live.
     if (canonicalReasoning) {
       reasoningText = canonicalReasoning;
+    }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1075,6 +837,8 @@ export async function solve(
     ? { completed: false, reason: "interrupted" as const }
     : timeoutSignal.aborted
       ? { completed: false, reason: "budget_reached" as const }
+    : lastError?.startsWith("Target grounding failed:")
+      ? { completed: false, reason: "grounding_failed" as const }
       : checkCompletion(
           toolCallCount,
           answerText,
@@ -1108,7 +872,7 @@ export async function solve(
   // Structured pre-flight before the escalation spine: surface high-priority
   // missing context + ranked candidates so the next brain turn plans on real
   // state (diagnose before advanced testing). Best-effort; never a blocker.
-  if (!lastError) {
+  if (!lastError && ranCapabilityTurn) {
     try {
       const { diagnoseTargetState } = await import("../orchestration/diagnosis");
       const profile = diagnoseTargetState({});
@@ -1134,6 +898,7 @@ export async function solve(
   // maxActiveChainSteps so it never hijacks the turn's budget.
   if (
     !lastError &&
+    ranCapabilityTurn &&
     (params.ultimatrixConfig?.engine === "solver" ||
       params.ultimatrixConfig?.engine === "multi-model")
   ) {
@@ -1183,7 +948,7 @@ export async function solve(
   }
 
   // Assemble the structured final answer (single source of truth for UI).
-  const answerContent = answerText.trim();
+  const answerContent = visibleAssistantText(answerText).trim();
   const answerReasoning = reasoningText.trim();
   let findingRefs: SolverAnswer["findings"] = [];
   try {
@@ -1218,6 +983,7 @@ export async function solve(
   emitMessage({ kind: "done", answer });
 
   return {
+    interactionMode: params.interactionMode,
     completed,
     reason,
     steps: toolCallCount,
@@ -1228,7 +994,7 @@ export async function solve(
     facts: board.facts?.length || 0,
     intents: board.intents?.length || 0,
     planSummary: board.planSummary?.() || "",
-    text: answerContent || fullText || undefined,
+    text: answerContent || undefined,
     answer,
     error: lastError || undefined,
   };

@@ -19,7 +19,7 @@ interface ConfigState {
   clearSaved: () => void
 }
 
-const RESTART_FIELDS = ['provider', 'model', 'engine', 'modelTiers']
+const RESTART_FIELDS = ['provider', 'model', 'engine', 'browser', 'modelTiers', 'modelRoleTiers', 'modelRoles', 'modelCapabilities', 'creds', 'mcp', 'plugins', 'skillsDirs']
 
 function hasChanges(a: any, b: any): boolean {
   if (!a || !b) return a !== b

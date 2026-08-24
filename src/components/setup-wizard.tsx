@@ -1,20 +1,16 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
-import { Loader2, CheckCircle2, AlertCircle, ArrowRight, ArrowLeft } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react'
 import { useResourceStore } from '@/stores/resource-store'
 import { useConfigStore } from '@/stores/config-store'
 import { cn } from '@/lib/utils'
-import { ProviderPicker, getDefaultModel, type ProviderInfo } from './provider-picker'
 import { ProviderConfigForm, type CredentialValue } from './provider-config-form'
+import { ProviderPicker, getDefaultModel, type ProviderInfo } from './provider-picker'
 
-type Step = 'provider' | 'credentials' | 'engine' | 'testing' | 'done'
+type Step = 'provider' | 'credentials' | 'capability' | 'tiers' | 'testing' | 'done'
 
-const ENGINES = [
-  { id: 'solver', label: 'Solver', desc: 'OODA loop — best for most targets' },
-  { id: 'multi-model', label: 'Multi-Model', desc: 'Model-aware delegation across tiers' },
-  { id: 'legacy', label: 'Legacy', desc: 'Supervisor + 4 worker agents' },
-] as const
+const STEPS: Step[] = ['provider', 'credentials', 'capability', 'tiers', 'testing', 'done']
 
 export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const markResource = useResourceStore((s) => s.mark)
@@ -22,7 +18,9 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<Step>('provider')
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
   const [creds, setCreds] = useState<CredentialValue>({})
-  const [engine, setEngine] = useState('solver')
+  const [contextWindow, setContextWindow] = useState(8192)
+  const [maxOutputTokens, setMaxOutputTokens] = useState(2048)
+  const [tierModels, setTierModels] = useState({ fast: '', balanced: '', powerful: '' })
   const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -33,19 +31,19 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   }, [])
 
   const handleProviderSelect = useCallback((p: ProviderInfo) => {
-    setProvider(p)
     const model = getDefaultModel(p.id)
+    setProvider(p)
     setCreds({ model, baseUrl: p.defaultBaseUrl })
+    setTierModels({ fast: model, balanced: model, powerful: model })
     setStep('credentials')
   }, [])
 
-  const handleCredChange = useCallback((field: string, value: string) => {
-    setCreds((c) => ({ ...c, [field]: value }))
-  }, [])
-
   const handleSubmit = useCallback(async () => {
-    if (!provider || !creds.model || !creds.apiKey) {
-      setError('All fields are required')
+    const hasAuth = provider?.id === 'bedrock' && creds.authMethod !== 'api_key'
+      ? Boolean(creds.accessKeyId && creds.secretAccessKey && creds.region)
+      : Boolean(creds.apiKey)
+    if (!provider || !creds.model || !hasAuth) {
+      setError('Provider, model, and credentials are required')
       return
     }
 
@@ -54,12 +52,35 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
     setError(null)
 
     try {
+      const modelId = `${provider.id}/${creds.model}`
       const body: Record<string, unknown> = {
         provider: provider.id,
         model: creds.model,
         apiKey: creds.apiKey,
         baseUrl: creds.baseUrl || provider.defaultBaseUrl,
-        engine,
+        engine: 'multi-model',
+        modelCapabilities: {
+          [modelId]: {
+            contextWindow,
+            maxOutputTokens,
+            strengths: [],
+            supportsStreaming: true,
+            supportsStructuredOutput: false,
+          },
+        },
+        modelTiers: {
+          fast: { provider: provider.id, model: tierModels.fast || creds.model },
+          balanced: { provider: provider.id, model: tierModels.balanced || creds.model },
+          powerful: { provider: provider.id, model: tierModels.powerful || creds.model },
+        },
+        modelRoleTiers: {
+          brain: 'balanced',
+          spider: 'fast',
+          crawlSummarizer: 'fast',
+          verifier: 'balanced',
+          reporter: 'balanced',
+          council: 'powerful',
+        },
       }
 
       if (provider.id === 'azure') {
@@ -69,14 +90,13 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
       }
       if (provider.id === 'bedrock') {
         body.authMethod = creds.authMethod || 'iam'
+        body.region = creds.region
         if (creds.authMethod === 'iam') {
           body.accessKeyId = creds.accessKeyId
           body.secretAccessKey = creds.secretAccessKey
           body.sessionToken = creds.sessionToken
-          body.region = creds.region
         } else {
           body.apiKey = creds.apiKey
-          body.region = creds.region
         }
       }
 
@@ -86,170 +106,147 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
         body: JSON.stringify(body),
       })
       const result = await res.json()
-
-      if (result.ok) {
-        markResource('config', 'ready')
-        await loadConfig()
-        setStep('done')
-        setTimeout(onComplete, 800)
-      } else {
+      if (!result.ok) {
         setError(result.errors?.join('\n') || 'Setup failed')
         setStep('credentials')
+        return
       }
+
+      markResource('config', 'ready')
+      await loadConfig()
+      setStep('done')
+      setTimeout(onComplete, 800)
     } catch (e) {
       setError((e as Error).message)
       setStep('credentials')
     } finally {
       setTesting(false)
     }
-  }, [provider, creds, engine, markResource, loadConfig, onComplete])
+  }, [provider, creds, contextWindow, maxOutputTokens, tierModels, markResource, loadConfig, onComplete])
+
+  const canContinueCredentials = provider?.id === 'bedrock' && creds.authMethod !== 'api_key'
+    ? Boolean(creds.model && creds.accessKeyId && creds.secretAccessKey && creds.region)
+    : Boolean(creds.model && creds.apiKey)
 
   return (
-    <div className={cn(
-      'fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 transition-all duration-500',
-      mounted ? 'opacity-100' : 'opacity-0',
-    )}>
-      <div className="flex flex-col h-full w-full max-w-lg">
-        {/* Sticky header */}
-        <div className="flex-shrink-0 px-6 pt-8 pb-4">
-          <div className="flex items-center gap-3 mb-5">
-            <div className="h-9 w-9 rounded-lg bg-zinc-800 flex items-center justify-center">
-              <span className="text-sm font-bold text-zinc-300">U</span>
-            </div>
+    <div className={cn('fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 transition-all duration-500', mounted ? 'opacity-100' : 'opacity-0')}>
+      <div className="flex h-full w-full max-w-lg flex-col">
+        <div className="flex-shrink-0 px-6 pb-4 pt-8">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold text-zinc-300">U</div>
             <div>
               <h1 className="text-base font-semibold text-zinc-100">Welcome to Ultimatrix</h1>
-              <p className="text-[11px] text-zinc-500">Set up your first provider to get started</p>
+              <p className="text-[11px] text-zinc-500">Configure provider, model limits, and tiers</p>
             </div>
           </div>
 
           {error && (
-            <div className="flex items-center gap-2 rounded-md border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-400 mb-4">
+            <div className="mb-4 flex items-center gap-2 rounded-md border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-400">
               <AlertCircle size={14} className="shrink-0" />
               <span className="whitespace-pre-wrap">{error}</span>
             </div>
           )}
 
-          {/* Step indicators */}
           <div className="flex items-center gap-1.5">
-            {(['provider', 'credentials', 'engine', 'testing', 'done'] as Step[]).map((s, i) => {
+            {STEPS.map((s, i) => {
               const isCurrent = step === s
-              const isDone = (['provider', 'credentials', 'engine', 'testing', 'done'].indexOf(step) > i)
+              const isDone = STEPS.indexOf(step) > i
               return (
-                <div key={s} className="flex items-center gap-1.5 flex-1">
-                  <div className={cn(
-                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-medium transition-colors',
-                    isCurrent ? 'bg-zinc-700 text-zinc-100 ring-2 ring-zinc-600' :
-                    isDone ? 'bg-emerald-900/60 text-emerald-400' :
-                    'bg-zinc-800 text-zinc-600',
-                  )}>
+                <div key={s} className="flex flex-1 items-center gap-1.5">
+                  <div className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-medium transition-colors', isCurrent ? 'bg-zinc-700 text-zinc-100 ring-2 ring-zinc-600' : isDone ? 'bg-emerald-900/60 text-emerald-400' : 'bg-zinc-800 text-zinc-600')}>
                     {isDone ? <CheckCircle2 size={12} /> : i + 1}
                   </div>
-                  <div className={cn(
-                    'h-px flex-1 transition-colors',
-                    isDone ? 'bg-emerald-900/40' : 'bg-zinc-800',
-                  )} />
+                  <div className={cn('h-px flex-1 transition-colors', isDone ? 'bg-emerald-900/40' : 'bg-zinc-800')} />
                 </div>
               )
             })}
           </div>
         </div>
 
-        {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto px-6 pb-8">
-          <div className="min-h-[300px]">
-            {step === 'provider' && (
-              <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <label className="text-xs font-medium text-zinc-400">Choose a provider</label>
-                <ProviderPicker onSelect={handleProviderSelect} />
+          {step === 'provider' && (
+            <div className="space-y-3">
+              <label className="text-xs font-medium text-zinc-400">Choose a provider</label>
+              <ProviderPicker onSelect={handleProviderSelect} />
+            </div>
+          )}
+
+          {step === 'credentials' && provider && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <button onClick={() => setStep('provider')} className="hover:text-zinc-200"><ArrowLeft size={14} /></button>
+                <span>Credentials for <strong className="text-zinc-200">{provider.name}</strong></span>
               </div>
-            )}
+              <ProviderConfigForm provider={provider} value={creds} onChange={(field, value) => setCreds((c) => ({ ...c, [field]: value }))} />
+              <button onClick={() => setStep('capability')} disabled={!canContinueCredentials} className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-800 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40">
+                Continue <ArrowRight size={14} />
+              </button>
+            </div>
+          )}
 
-            {step === 'credentials' && provider && (
-              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
-                  <button onClick={() => setStep('provider')} className="hover:text-zinc-200 transition-colors">
-                    <ArrowLeft size={14} />
-                  </button>
-                  <span>Setting up <strong className="text-zinc-200">{provider.name}</strong></span>
-                </div>
-
-                <ProviderConfigForm provider={provider} value={creds} onChange={handleCredChange} />
-
-                <button
-                  onClick={() => setStep('engine')}
-                  disabled={!creds.apiKey}
-                  className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-800 text-xs font-medium text-zinc-200 transition-all hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Continue
-                  <ArrowRight size={14} />
-                </button>
+          {step === 'capability' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <button onClick={() => setStep('credentials')} className="hover:text-zinc-200"><ArrowLeft size={14} /></button>
+                <span>Model limits for <strong className="text-zinc-200">{creds.model}</strong></span>
               </div>
-            )}
+              <NumberField label="Context window" value={contextWindow} onChange={setContextWindow} />
+              <NumberField label="Max output tokens" value={maxOutputTokens} onChange={setMaxOutputTokens} />
+              <button onClick={() => setStep('tiers')} className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-800 text-xs font-medium text-zinc-200 hover:bg-zinc-700">
+                Continue <ArrowRight size={14} />
+              </button>
+            </div>
+          )}
 
-            {step === 'engine' && (
-              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-zinc-400">Engine</label>
-                  <div className="space-y-2">
-                    {ENGINES.map((e) => (
-                      <button
-                        key={e.id}
-                        onClick={() => setEngine(e.id)}
-                        className={cn(
-                          'flex w-full items-center justify-between rounded-md border px-3 py-3 text-left text-xs transition-all',
-                          engine === e.id
-                            ? 'border-zinc-600 bg-zinc-800/80 text-zinc-100 ring-1 ring-zinc-700'
-                            : 'border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900',
-                        )}
-                      >
-                        <div className="space-y-0.5">
-                          <div className="font-medium text-zinc-200">{e.label}</div>
-                          <div className="text-[10px] text-zinc-500">{e.desc}</div>
-                        </div>
-                        {e.id === 'solver' && (
-                          <span className="text-[10px] text-emerald-500 bg-emerald-950/50 px-1.5 py-0.5 rounded">recommended</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleSubmit}
-                  disabled={testing}
-                  className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 text-xs font-medium text-white transition-all hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {testing ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                  {testing ? 'Testing connection…' : 'Create configuration'}
-                </button>
+          {step === 'tiers' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <button onClick={() => setStep('capability')} className="hover:text-zinc-200"><ArrowLeft size={14} /></button>
+                <span>Assign model tiers</span>
               </div>
-            )}
-
-            {(step === 'testing' || step === 'done') && (
-              <div className="flex flex-col items-center gap-4 py-12 animate-in fade-in duration-300">
-                <div className={cn(
-                  'h-12 w-12 rounded-full flex items-center justify-center',
-                  step === 'done' ? 'bg-emerald-900/50' : 'bg-zinc-800',
-                )}>
-                  {step === 'done' ? (
-                    <CheckCircle2 size={24} className="text-emerald-400" />
-                  ) : (
-                    <Loader2 size={24} className="animate-spin text-zinc-400" />
-                  )}
-                </div>
-                <div className="text-center space-y-1">
-                  <div className="text-sm font-medium text-zinc-200">
-                    {step === 'done' ? 'Configuration created!' : 'Testing connection…'}
-                  </div>
-                  <div className="text-xs text-zinc-500">
-                    {step === 'done' ? 'Redirecting to workspace…' : 'Verifying credentials and saving'}
-                  </div>
-                </div>
+              {(['fast', 'balanced', 'powerful'] as const).map((tier) => (
+                <TextField key={tier} label={tier} value={tierModels[tier]} onChange={(value) => setTierModels((m) => ({ ...m, [tier]: value }))} />
+              ))}
+              <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3 text-[11px] text-zinc-500">
+                Defaults: brain uses balanced, spider uses fast, council uses powerful. Workers derive from tiers internally.
               </div>
-            )}
-          </div>
+              <button onClick={handleSubmit} disabled={testing} className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
+                {testing ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                {testing ? 'Testing connection...' : 'Create configuration'}
+              </button>
+            </div>
+          )}
+
+          {(step === 'testing' || step === 'done') && (
+            <div className="flex flex-col items-center gap-4 py-12">
+              <div className={cn('flex h-12 w-12 items-center justify-center rounded-full', step === 'done' ? 'bg-emerald-900/50' : 'bg-zinc-800')}>
+                {step === 'done' ? <CheckCircle2 size={24} className="text-emerald-400" /> : <Loader2 size={24} className="animate-spin text-zinc-400" />}
+              </div>
+              <div className="space-y-1 text-center">
+                <div className="text-sm font-medium text-zinc-200">{step === 'done' ? 'Configuration created' : 'Testing connection...'}</div>
+                <div className="text-xs text-zinc-500">{step === 'done' ? 'Redirecting to workspace...' : 'Verifying credentials and saving'}</div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
+  )
+}
+function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label className="space-y-1 text-xs text-zinc-400">
+      <span>{label}</span>
+      <input type="number" min={1} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200" />
+    </label>
+  )
+}
+
+function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="space-y-1 text-xs text-zinc-400">
+      <span className="capitalize">{label}</span>
+      <input value={value} onChange={(e) => onChange(e.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200" />
+    </label>
   )
 }

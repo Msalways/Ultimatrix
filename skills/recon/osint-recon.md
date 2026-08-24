@@ -17,17 +17,102 @@ Open Source Intelligence (OSINT) gathering uses publicly available information t
 ## Methodology
 1. **Define the Scope** — What are you looking for? Domain infrastructure, employee information, technology choices, leaked credentials, business relationships?
 2. **Search Engine Research** — Use advanced search operators to find indexed pages, cached content, file types, and subdomains. Google dorking reveals exposed admin panels, error pages, and configuration files.
+
+```text
+site:target.com inurl:admin
+site:target.com ext:env | ext:sql | ext:bak | ext:log
+site:target.com intitle:"index of" "parent directory"
+site:target.com filetype:xlsx "password"
+inurl:"/phpinfo.php" site:target.com
+site:pastebin.com OR site:gist.github.com "target.com" password
+```
 3. **Domain and IP Intelligence** — WHOIS records, DNS history, IP ownership (ARIN/RIPE), BGP announcements, reverse DNS, SSL certificate history reveal infrastructure evolution.
+
+```bash
+whois target.com
+dig target.com ANY +noall +answer
+dig @ns1.target.com target.com AXFR          # DNS zone transfer attempt
+host -l target.com ns1.target.com
+
+# Reverse-DNS sweep of a known netblock
+for ip in $(seq 1 254); do host 10.20.30.$ip 2>/dev/null | grep -v NXDOMAIN; done
+
+# ASN / netblock lookup
+curl -s "https://api.bgpview.io/asn/64512" | jq '.data'
+curl -s "https://api.hackertarget.com/reverseiplookup/?q=target.com"   # shared hosting neighbors
+```
+
 4. **Certificate Transparency Logs** — crt.sh, Censys, and CT logs show every SSL certificate issued for a domain, revealing subdomains and internal hostnames.
+
+```bash
+# crt.sh — all certs ever issued for the domain
+curl -s "https://crt.sh/?q=%25.target.com&output=json" | \
+  jq -r '.[].name_value' | tr '\n' '\n' | sed 's/\*\.//' | sort -u > ct-subs.txt
+
+# certspotter fallback
+curl -s "https://api.certspotter.com/v1/issuances?domain=target.com&include_subdomains=true&expand=dns_names" | \
+  jq -r '.[].dns_names[]' | sort -u
+
+# Validate which CT subdomains actually resolve
+httpx -l ct-subs.txt -silent -status-code -title
+```
 5. **Social Media and People** — LinkedIn reveals organizational structure and tech stack. GitHub exposes code, credentials, and internal tools. Job postings indicate technologies in use.
+
+```bash
+# GitHub code search for leaked secrets tied to the org (authenticated gh CLI)
+gh search code "target.com" --filename .env --limit 20
+gh search code "AKIA" --owner target-org
+# gitleaks over a cloned repo
+git clone https://github.com/target-org/public-repo && \
+  gitleaks detect -s public-repo --report-path leaks.json
+
+# theHarvester: emails, hosts, subdomains from public sources
+theHarvester -d target.com -b all -l 500
+
+# amass passive enumeration (no direct target contact)
+amass enum -passive -d target.com -o amass-passive.txt
+```
 6. **Data Breach Intelligence** — Check if employees or systems appear in known breaches. Credentials from other services often work on the target.
+
+```bash
+# Breach lookup via HIBP (API key required)
+curl -s -H "hibp-api-key: $HIBP_KEY" "https://haveibeenpwned.com/api/v3/breachedaccount/employee@target.com?truncateResponse=false" | jq '.[].Name'
+# DeHashed-style searches are out of scope for automation here; verify any hit manually before treating a credential as live.
+```
 
 ## Key Concepts
 - **Passive Intelligence**: Gathering information without any interaction with the target systems
 - **Metadata as Intel**: File metadata, EXIF data, document properties, and version control history reveal more than the content itself
+
+```bash
+# Metadata harvest from public documents on the target site
+metagoofil -d target.com -t pdf,xlsx,docx -l 20 -o docs/ -w meta.html
+exiftool *.pdf | grep -iE 'author|creator|email|company'
+FOCA (Windows GUI) — full metadata extraction from public documents
+```
+
 - **Temporal Analysis**: Wayback Machine snapshots show how a target has changed over time — old admin panels, forgotten subdomains
+
+```bash
+# Wayback historical URLs
+curl -s "http://web.archive.org/cdx/search/cdx?url=target.com*&output=text&fl=original&collapse=urlkey&limit=500" | \
+  grep -iE 'admin|login|backup|old|test|dev|api' | sort -u
+```
+
 - **Relationship Mapping**: Connections between people, domains, IP ranges, and organizations reveal trust relationships
 - **Operational Security**: Be aware that your queries may be logged. Use appropriate infrastructure for research.
+
+```bash
+# Shodan infrastructure search (API key required)
+shodan org "Target Corp"
+shodan search 'hostname:.target.com' --fields ip_str,port,product
+shodan domain target.com
+
+# Common Shodan web-search dorks for the target's exposed services
+#   ssl.cert.subject.CN:"target.com"        -> everything serving its certs
+#   http.favicon.hash:<hash>                -> find all copies of their favicon
+#   org:"AS64512" port:"3389"               -> RDP on their netblock
+```
 
 ## Evidence to Collect
 - Discovered domains, subdomains, and IP ranges

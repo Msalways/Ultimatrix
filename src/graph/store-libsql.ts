@@ -24,6 +24,7 @@ import {
 } from './schema'
 import type { ReachabilityRecord } from '../identity/types'
 import { log } from '../utils/logger'
+import { attributeGraphRef } from '../runtime/task-attribution'
 
 interface SerializedGraph {
   nodes: GraphNodeData[]
@@ -666,6 +667,7 @@ export class LibSQLGraphStore {
   }
 
   private insertNode(node: GraphNodeData): void {
+    attributeGraphRef(node.id)
     this.executeWithTransaction(async () => {
       await this.db.execute(`
         INSERT INTO nodes (id, type, label, properties, created_at, updated_at)
@@ -705,6 +707,7 @@ export class LibSQLGraphStore {
   }
 
   updateNode(node: GraphNodeData): void {
+    attributeGraphRef(node.id)
     this.executeWithTransaction(async () => {
       await this.db.execute(`
         UPDATE nodes
@@ -751,6 +754,8 @@ export class LibSQLGraphStore {
   }
 
   addEdge(edgeData: { fromId: string; toId: string; type: EdgeType; properties?: Record<string, unknown> }): GraphEdgeData {
+    attributeGraphRef(edgeData.fromId)
+    attributeGraphRef(edgeData.toId)
     const id = `edge:${edgeData.fromId}:${edgeData.toId}:${edgeData.type}`
 
     // Check if edge already exists

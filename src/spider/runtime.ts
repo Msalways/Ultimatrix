@@ -26,9 +26,16 @@ import {
   reachabilityKey,
 } from '../identity/reachability'
 import type { AuthFlowType } from '../types/shared'
+import { z } from 'zod'
 
 export type ScopeClassification = 'allowed' | 'proposed' | 'denied'
-export type SpiderStopReason = 'frontier_exhausted' | 'max_pages' | 'max_depth' | 'max_duration' | 'stale' | 'aborted' | 'error'
+/**
+ * Why the crawl ended. `agent_stopped` means the model stream ended while
+ * actionable frontier items (allowed, within depth) remained — the frontier
+ * was NOT exhausted; the driver simply quit. Kept distinct from
+ * `frontier_exhausted` so coverage reporting never lies about exploration.
+ */
+export type SpiderStopReason = 'frontier_exhausted' | 'agent_stopped' | 'max_pages' | 'max_depth' | 'max_duration' | 'stale' | 'aborted' | 'error'
 export type SpiderRuntimeEventName =
   | 'crawl_started'
   | 'page_seen'
@@ -72,6 +79,8 @@ export interface SpiderRuntimeState {
   /** Slice 06 — identity → resource reachability observations. */
   reachability: ReachabilityRecord[]
   stopReason?: SpiderStopReason
+  /** A8 — typed bot-challenge observations at grounding/navigate time. */
+  challengeSignals?: Array<{ vendor: string; signals: string[]; at: number }>
   startedAt: number
   updatedAt: number
   pagesSeen: number
@@ -211,6 +220,8 @@ export class SpiderRuntime {
   private seenForms = new Set<string>()
   private seenAuthFlows = new Set<string>()
   private seenReachability = new Set<string>()
+  private terminalSnapshot?: SpiderRuntimeState
+  private terminalEventEmitted = false
 
   constructor(private opts: SpiderRuntimeOptions) {
     const now = Date.now()
@@ -245,18 +256,23 @@ export class SpiderRuntime {
   }
 
   snapshot(): SpiderRuntimeState {
+    return this.copyState(this.state)
+  }
+
+  private copyState(state: SpiderRuntimeState): SpiderRuntimeState {
     return {
-      ...this.state,
-      frontier: [...this.state.frontier],
-      visitedUrls: [...this.state.visitedUrls],
-      discoveredForms: [...this.state.discoveredForms],
-      endpoints: [...this.state.endpoints],
-      authStates: [...this.state.authStates],
-      proposedOrigins: [...this.state.proposedOrigins],
-      workflows: [...this.state.workflows],
-      assets: [...this.state.assets],
-      authTransitions: [...this.state.authTransitions],
-      reachability: [...this.state.reachability],
+      ...state,
+      frontier: [...state.frontier],
+      visitedUrls: [...state.visitedUrls],
+      discoveredForms: [...state.discoveredForms],
+      endpoints: [...state.endpoints],
+      authStates: [...state.authStates],
+      proposedOrigins: [...state.proposedOrigins],
+      workflows: [...state.workflows],
+      assets: [...state.assets],
+      authTransitions: [...state.authTransitions],
+      reachability: [...state.reachability],
+      ...(state.challengeSignals ? { challengeSignals: [...state.challengeSignals] } : {}),
     }
   }
 
@@ -405,8 +421,13 @@ export class SpiderRuntime {
     this.state.reachability = pushReachability(this.state.reachability, record)
   }
 
-  recordProgress(useful: boolean, staleThreshold: number): SpiderStopReason | undefined {
-    this.state.staleRounds = useful ? 0 : this.state.staleRounds + 1
+  /** A8 — record a typed bot-challenge observation (surfaced in state + events). */
+  recordChallengeSignal(vendor: string, signals: string[]): void {
+    this.state.challengeSignals = [...(this.state.challengeSignals ?? []), { vendor, signals, at: Date.now() }]
+    this.touch()
+  }
+
+  recordProgress(useful: boolean, staleThreshold: number): SpiderStopReason | undefined {    this.state.staleRounds = useful ? 0 : this.state.staleRounds + 1
     this.touch()
     this.emit({
       type: 'crawl_progress',
@@ -423,15 +444,46 @@ export class SpiderRuntime {
     return undefined
   }
 
-  stop(reason: SpiderStopReason): void {
+  stop(reason: SpiderStopReason, emitCompletion = true): SpiderRuntimeState {
+    if (this.terminalSnapshot) return this.copyState(this.terminalSnapshot)
     this.state.stopReason = reason
     this.touch()
-    this.emit({ type: 'crawl_completed', reason, state: this.snapshot() })
+    this.terminalSnapshot = this.snapshot()
+    if (emitCompletion) this.emitCompletion()
+    return this.copyState(this.terminalSnapshot)
+  }
+
+  emitCompletion(): void {
+    if (!this.terminalSnapshot || this.terminalEventEmitted) return
+    this.terminalEventEmitted = true
+    this.emit({
+      type: 'crawl_completed',
+      reason: this.terminalSnapshot.stopReason!,
+      state: this.copyState(this.terminalSnapshot),
+    })
+  }
+
+  /**
+   * Pop the next actionable frontier entry (FIFO, allowed scope only).
+   * Dequeue is the honest traversal primitive: limits and stop reasons are
+   * computed against what could still be visited, not what merely sat queued.
+   */
+  dequeue(): FrontierItem | null {
+    const idx = this.state.frontier.findIndex((item) => item.scope === 'allowed')
+    if (idx === -1) return null
+    const [entry] = this.state.frontier.splice(idx, 1)
+    this.touch()
+    return entry
+  }
+
+  /** Count frontier items that could legitimately still be visited. */
+  countActionable(maxDepth: number): number {
+    return this.state.frontier.filter((item) => item.scope === 'allowed' && item.depth <= maxDepth).length
   }
 
   shouldStopByLimits(maxPages: number, maxDepth: number): SpiderStopReason | undefined {
     if (this.state.pagesSeen >= maxPages) return 'max_pages'
-    if (this.state.frontier.some((item) => item.scope === 'allowed' && item.depth <= maxDepth)) return undefined
+    if (this.countActionable(maxDepth) > 0) return undefined
     return this.state.frontier.length > 0 ? 'max_depth' : undefined
   }
 
@@ -456,6 +508,8 @@ export interface SpiderRunOptions {
   graphStore?: {
     queryNodes?: (type?: NodeType) => GraphNodeData[]
     save?: () => Promise<void>
+    mergePage?: (url: string, data?: Record<string, unknown>) => unknown
+    mergeEndpoint?: (data: Record<string, unknown> & { url: string; method: string }) => unknown
     addReachability?: (record: ReachabilityRecord & { identityKind?: string; roleName?: string; tenantId?: string }) => unknown
   }
   workflowId?: string
@@ -471,10 +525,45 @@ export interface SpiderRunOptions {
   approvedOrigins?: string[]
   /** Retains the live runtime handle (for mid-crawl approval / live state). */
   onRuntime?: (runtime: SpiderRuntime) => void
+  onFinalize?: (state: SpiderRuntimeState, outcome: SpiderRunOutcome) => Promise<string | void>
 }
 
-export async function runSpiderRuntime(options: SpiderRunOptions): Promise<SpiderRuntimeState> {
+export type SpiderRunOutcome =
+  | { status: 'completed'; stopReason: Exclude<SpiderStopReason, 'aborted' | 'error'> }
+  | { status: 'aborted'; reason: string }
+  | { status: 'failed'; error: string }
+
+export interface SpiderRunResult {
+  state: SpiderRuntimeState
+  outcome: SpiderRunOutcome
+  checkpointId: string
+}
+
+export function createSpiderFinalizer(runtime: SpiderRuntime, options: SpiderRunOptions, startedAt: number) {
+  let finalized: Promise<SpiderRunResult> | undefined
+  return (reason: SpiderStopReason, error?: string): Promise<SpiderRunResult> => finalized ??= (async () => {
+    const state = runtime.stop(reason, false)
+    persistReachability(options.graphStore, state)
+    const outcome: SpiderRunOutcome = reason === 'error'
+      ? { status: 'failed', error: error ?? 'Spider failed' }
+      : reason === 'aborted'
+        ? { status: 'aborted', reason: 'Spider aborted' }
+        : { status: 'completed', stopReason: reason }
+    const checkpointId = await options.onFinalize?.(state, outcome)
+    if (!options.onFinalize) await options.graphStore?.save?.()
+    runtime.emitCompletion()
+    if (outcome.status === 'completed') emitSpiderComplete(state.pagesSeen, state.endpoints.length, Date.now() - startedAt)
+    return { state, outcome, checkpointId: checkpointId ?? `${state.workflowId}:${state.updatedAt}` }
+  })()
+}
+
+export async function runSpiderRuntime(options: SpiderRunOptions): Promise<SpiderRunResult> {
+  // C2 — text-only output coalesces into progress rounds at this granularity.
+  const TEXT_ROUND_CHARS = 4000
   const { config, target, browser, memory, threadId, resourceId, graphStore } = options
+  if (memory && (!threadId || !resourceId)) {
+    throw new Error('Spider runtime requires threadId and resourceId when memory is enabled')
+  }
   const maxPages = config.spider?.maxPages ?? config.spider?.maxSteps ?? DEFAULTS.spider.maxPages
   const maxDepth = config.spider?.maxDepth ?? DEFAULTS.spider.maxDepth
   const maxDurationMs = config.spider?.maxDurationMs ?? DEFAULTS.spider.maxDurationMs
@@ -491,10 +580,20 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
   options.onRuntime?.(runtime)
   const startedAt = Date.now()
   const deadline = startedAt + maxDurationMs
+  const finalize = createSpiderFinalizer(runtime, options, startedAt)
 
   runtime.start()
   runtime.enqueue(target, 0)
   emitSpiderStart(target, maxPages, maxDurationMs)
+
+  try {
+    await groundLandingPage(runtime, options, browser)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    log.error(message)
+    emitSpiderError(target, message)
+    return finalize('error', message)
+  }
 
   let counts = collectGraphState(graphStore)
   let stopReason: SpiderStopReason | undefined
@@ -504,10 +603,9 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     const streamPrompt = buildSpiderPrompt(target)
     const result = await Promise.race([
       spiderAgent.stream(streamPrompt, {
-        memory: threadId && resourceId
-          ? { thread: `${threadId}-spider`, resource: `${resourceId}-spider` }
-          : undefined,
+        memory: memory ? { thread: `${threadId}-spider`, resource: `${resourceId}-spider` } : undefined,
         maxSteps: config.spider?.maxSteps ?? config.agent.maxSteps,
+        structuredOutput: { schema: z.any() },
       }),
       new Promise<never>((_, reject) => {
         const timer = setTimeout(() => reject(new Error(`Spider stream init timed out after ${maxDurationMs}ms`)), maxDurationMs)
@@ -516,6 +614,11 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     ])
 
     const stream = (result as any).fullStream ?? textStreamAsChunks((result as any).textStream)
+    // C2 — stale accounting on every model round, not only tool results.
+    // A model that streams text without calling tools still consumes budget;
+    // coalesce its deltas into rounds (per TEXT_ROUND_CHARS) so staleness
+    // accrues there too. Tool results remain one round each.
+    let pendingTextChars = 0
     for await (const chunk of stream) {
       if (options.signal?.aborted) {
         stopReason = 'aborted'
@@ -530,12 +633,24 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
       if (stopReason) break
 
       if (chunk?.type === 'tool-result') {
+        pendingTextChars = 0
         const nextCounts = collectGraphState(graphStore)
         ingestGraphDiff(runtime, counts, nextCounts)
         const useful = nextCounts.endpoints.size > counts.endpoints.size || nextCounts.pages.size > counts.pages.size || nextCounts.forms.size > counts.forms.size
         counts = nextCounts
         stopReason = runtime.recordProgress(useful, staleThreshold)
         if (stopReason) break
+      } else if (chunk?.type === 'text-delta') {
+        pendingTextChars += String(chunk.payload?.text ?? '').length
+        if (pendingTextChars >= TEXT_ROUND_CHARS) {
+          pendingTextChars = 0
+          const nextCounts = collectGraphState(graphStore)
+          ingestGraphDiff(runtime, counts, nextCounts)
+          const useful = nextCounts.endpoints.size > counts.endpoints.size || nextCounts.pages.size > counts.pages.size || nextCounts.forms.size > counts.forms.size
+          counts = nextCounts
+          stopReason = runtime.recordProgress(useful, staleThreshold)
+          if (stopReason) break
+        }
       }
 
       stopReason = runtime.shouldStopByLimits(maxPages, maxDepth)
@@ -545,21 +660,168 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     const finalCounts = collectGraphState(graphStore)
     ingestGraphDiff(runtime, counts, finalCounts)
 
-    const finalState = runtime.snapshot()
-    persistReachability(graphStore, finalState)
-    await graphStore?.save?.()
-    stopReason ??= 'frontier_exhausted'
-    runtime.stop(stopReason)
-    emitSpiderComplete(finalState.pagesSeen, finalState.endpoints.length, Date.now() - startedAt)
-    return finalState
+    // C1 — honest terminal reason: `frontier_exhausted` only when nothing
+    // actionable remains; if allowed in-depth items are still queued, the
+    // agent driver quit early and that is reported as `agent_stopped`.
+    if (runtime.countActionable(maxDepth) > 0) {
+      stopReason ??= 'agent_stopped'
+    } else {
+      stopReason ??= 'frontier_exhausted'
+    }
+    if (runtime.snapshot().pagesSeen === 0 && finalCounts.pages.size === 0) {
+      return finalize('error', 'Target grounding failed: no page was observed after browser navigation')
+    }
+    return finalize(stopReason)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     log.error(message)
     emitSpiderError(target, message)
-    runtime.stop('error')
-    persistReachability(graphStore, runtime.snapshot())
-    await graphStore?.save?.().catch(() => {})
-    return runtime.snapshot()
+    return finalize('error', message)
+  }
+}
+
+async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptions, browser: unknown): Promise<void> {
+  const page = getStagehandPage(browser)
+  let finalUrl: string
+  let status = 0
+
+  if (page?.goto) {
+    const response = await page.goto(options.target, {
+      waitUntil: 'domcontentloaded',
+      timeout: options.config.timeout ?? DEFAULTS.timeout,
+    })
+    finalUrl = typeof page.url === 'function' ? page.url() : options.target
+    status = typeof response?.status === 'function' ? response.status() : 0
+  } else {
+    const tools = typeof (browser as any)?.getTools === 'function' ? (browser as any).getTools() : {}
+    const navigate = tools?.stagehand_navigate
+    if (typeof navigate?.execute !== 'function') {
+      throw new Error('Target grounding failed: browser has no page.goto or stagehand_navigate tool')
+    }
+    const result = await navigate.execute({ url: options.target }, { page })
+    if (result?.success === false) throw new Error(String(result.error ?? 'stagehand_navigate failed'))
+    finalUrl = String(result?.url ?? options.target)
+  }
+
+  const title = await safePageTitle(page)
+  const links = await readLinks(page, finalUrl)
+  const forms = await readForms(page, finalUrl)
+
+  // A8 — challenge detection at grounding: if the landing page is a bot
+  // challenge, grounding cannot produce real surface data. Surface a typed
+  // signal so the run degrades honestly instead of recording a fake page.
+  try {
+    const { getGlobalBotHandler } = await import('../browser/anti-bot')
+    const handler = getGlobalBotHandler()
+    const status = typeof page?.goto === 'function' ? 0 : 0
+    void status
+    const challenge = await handler.detectChallenge(page)
+    if (challenge.detected) {
+      runtime.recordChallengeSignal(challenge.vendor, challenge.signals.map(s => `${s.kind}:${s.detail.slice(0, 60)}`))
+      throw new Error(
+        `Bot challenge detected at landing (${challenge.vendor}/${challenge.challengeType}). ` +
+        `Crawl cannot proceed through the browser. Signals: ${challenge.signals.map(s => s.kind).join(',')}`,
+      )
+    }
+  } catch (err) {
+    // Re-throw only genuine challenge failures; detector unavailability is non-fatal.
+    if (err instanceof Error && err.message.startsWith('Bot challenge detected')) throw err
+  }
+
+  options.graphStore?.mergePage?.(finalUrl, {
+    title,
+    contentType: 'text/html',
+    contentLength: 0,
+    timestamp: Date.now(),
+    tags: ['baseline-grounding'],
+  })
+  runtime.recordPage(finalUrl, status, links.length, forms.length)
+  // C3 — endpoint hygiene: plain navigation links are queued for traversal
+  // only; they are NOT endpoints. A link becomes an Endpoint node when it
+  // carries a query string (param-bearing request surface). This keeps
+  // campaign matrices and coverage stats free of nav/footer/social noise.
+  for (const link of links.slice(0, 100)) {
+    runtime.enqueue(link, 1, finalUrl, 'baseline-link')
+    const params = linkQueryParams(link)
+    if (params.length > 0) {
+      runtime.recordEndpoint('GET', link, params, finalUrl)
+      options.graphStore?.mergeEndpoint?.({
+        method: 'GET',
+        url: link,
+        params: params.map((name) => ({ name })),
+        source: 'baseline-grounding',
+        tags: ['baseline-link', 'param-bearing'],
+      })
+    }
+  }
+  for (const form of forms.slice(0, 50)) {
+    runtime.recordForm(finalUrl, form.selector, form.method, form.action)
+  }
+}
+
+/** Query-parameter names of a URL (empty when the link has no query string). */
+function linkQueryParams(link: string): string[] {
+  try {
+    return [...new URL(link).searchParams.keys()]
+  } catch {
+    return []
+  }
+}
+
+function getStagehandPage(browser: unknown): any {
+  try {
+    // Phase A — provider handles expose their Playwright page directly.
+    if (browser && typeof browser === 'object' && (browser as any).providerName === 'camofox') {
+      return (browser as any).page ?? null
+    }
+    const stagehand = (browser as any)?.requireStagehand?.()
+    const context = stagehand?.context
+    if (!context) return null
+    if (typeof context.activePage === 'function') return context.activePage()
+    const pages = typeof context.pages === 'function' ? context.pages() : context.pages
+    return Array.isArray(pages) ? pages[0] : null
+  } catch {
+    return null
+  }
+}
+
+async function safePageTitle(page: any): Promise<string | undefined> {
+  try {
+    return typeof page?.title === 'function' ? await page.title() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readLinks(page: any, baseUrl: string): Promise<string[]> {
+  try {
+    const hrefs: string[] = typeof page?.$$eval === 'function'
+      ? await page.$$eval('a[href]', (els: Element[]) => els.map((el) => (el as HTMLAnchorElement).href || el.getAttribute('href') || ''))
+      : []
+    return [...new Set(hrefs.map((href: string) => {
+      try { return new URL(href, baseUrl).toString() } catch { return '' }
+    }).filter(Boolean))]
+  } catch {
+    return []
+  }
+}
+
+async function readForms(page: any, baseUrl: string): Promise<Array<{ selector: string; method: string; action?: string }>> {
+  try {
+    if (typeof page?.$$eval !== 'function') return []
+    return await page.$$eval('form', (els: Element[], base: string) => els.map((el, index) => {
+      const form = el as HTMLFormElement
+      const rawAction = form.getAttribute('action') || base
+      let action = rawAction
+      try { action = new URL(rawAction, base).toString() } catch {}
+      return {
+        selector: form.id ? `form#${form.id}` : `form:nth-of-type(${index + 1})`,
+        method: (form.getAttribute('method') || 'GET').toUpperCase(),
+        action,
+      }
+    }), baseUrl)
+  } catch {
+    return []
   }
 }
 
@@ -571,9 +833,9 @@ function persistReachability(
   for (const record of state.reachability) {
     graphStore?.addReachability?.({
       ...record,
-      identityKind: state.currentIdentity.kind,
-      roleName: state.currentIdentity.roleName,
-      tenantId: state.currentIdentity.tenantId,
+      identityKind: record.identity.kind,
+      roleName: record.identity.roleName,
+      tenantId: record.identity.tenantId,
     })
   }
 }

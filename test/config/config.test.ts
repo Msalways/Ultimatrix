@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { validateConfig, ENGINE_COERCION } from '../../src/config'
 import { resolveModel } from '../../src/models/factory'
+import { resolveModelRef } from '../../src/models/routing'
 import type { UltimatrixConfig } from '../../src/config'
 import { DEFAULTS } from '../../src/config'
 
@@ -330,7 +331,7 @@ describe('resolveModel', () => {
     expect((model as any).modelId).toBe('llama3-8b-8192')
   })
 
-  it('accepts model-specific max output tokens on tiers and roles', () => {
+  it('parses legacy max output tokens on tiers and roles', () => {
     const config = validateConfig({
       provider: 'groq',
       model: 'llama3-8b-8192',
@@ -363,6 +364,40 @@ describe('resolveModel', () => {
     expect(config.modelRoles?.reporter?.model).toBe('gpt-4o-mini')
     expect(config.modelRoles?.council?.model).toBe('gpt-4o')
     expect(config.modelRoles?.worker?.critical?.maxOutputTokens).toBe(12000)
+  })
+
+  it('uses modelCapabilities, not module routes, for runtime max output tokens', () => {
+    const config = baseConfig({
+      modelCapabilities: {
+        'openai/gpt-4o': {
+          contextWindow: 128000,
+          maxOutputTokens: 16384,
+          strengths: [],
+          supportsStreaming: true,
+          supportsStructuredOutput: true,
+        },
+      },
+      modelRoles: {
+        brain: { provider: 'openai', model: 'gpt-4o', maxOutputTokens: 8192 },
+      },
+    })
+
+    expect(resolveModelRef(config, { role: 'brain' }).maxOutputTokens).toBe(16384)
+  })
+
+  it('routes stable modules through modelRoleTiers', () => {
+    const config = baseConfig({
+      creds: { openai: { apiKey: 'test-key' }, groq: { apiKey: 'gsk_xxx' } },
+      modelTiers: {
+        fast: { provider: 'groq', model: 'llama3-8b-8192' },
+        balanced: { provider: 'openai', model: 'gpt-4o-mini' },
+        powerful: { provider: 'openai', model: 'gpt-4o' },
+      },
+      modelRoleTiers: { brain: 'powerful', spider: 'fast' },
+    })
+
+    expect(resolveModelRef(config, { role: 'brain' }).modelId).toBe('openai/gpt-4o')
+    expect(resolveModelRef(config, { role: 'spider' }).modelId).toBe('groq/llama3-8b-8192')
   })
 
   it('resolves brain and spider role models from config', () => {

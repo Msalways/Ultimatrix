@@ -2,7 +2,7 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { log } from '../utils/logger'
-import { commitFinding, buildTextEvidence } from './control-tools'
+import { promoteFindingCandidate, buildTextEvidence } from './control-tools'
 
 export const addDiscovery = createTool({
   id: 'addDiscovery',
@@ -15,9 +15,10 @@ export const addDiscovery = createTool({
     confidence: z.number().min(0).max(1).default(0.8),
     description: z.string().describe('Description of the finding'),
     evidence: z.array(z.string()).optional().describe('Evidence items'),
+    experimentIds: z.array(z.string()).optional().describe('Proven experiment IDs required for non-informational promotion'),
     tags: z.array(z.string()).optional().describe('Tags for categorization'),
   }),
-  execute: async ({ endpoint, method, technique, severity, confidence, description, evidence, tags }) => {
+  execute: async ({ endpoint, method, technique, severity, confidence, description, evidence, experimentIds, tags }) => {
     try {
       const store = getGlobalGraphStore()
 
@@ -28,13 +29,14 @@ export const addDiscovery = createTool({
         source: 'user-input',
       })
 
-      const gateResult = await commitFinding({
+      const gateResult = await promoteFindingCandidate({
         type: technique,
         endpoint,
         method: method || 'GET',
         severity,
         confidence,
         description,
+        experimentIds,
         tags: [...(tags || []), 'user-reported'],
         source: 'human',
         tool: 'addDiscovery',

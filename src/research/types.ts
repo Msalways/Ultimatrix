@@ -80,7 +80,39 @@ export interface ResearchExperiment {
   status: ExperimentStatus
   resultSummary?: string
   differential?: DifferentialResult
+  oracle?: EvidenceOracle
+  outcome?: ExperimentOutcome
+  retest?: ExperimentRetest
 }
+
+export type EvidenceOracle =
+  | { type: 'unique-marker'; baselineEvidenceId: string; mutationEvidenceId: string; marker: string }
+  | { type: 'cross-identity'; victimEvidenceId: string; attackerEvidenceId: string; victimActorRef: string; attackerActorRef: string; marker: string }
+  | { type: 'state-transition'; beforeEvidenceId: string; afterEvidenceId: string; stateKey: string; beforeValue: string; afterValue: string }
+  | { type: 'oast-callback'; evidenceId: string; correlationToken: string }
+  | { type: 'timing-differential'; baselineEvidenceIds: string[]; mutationEvidenceIds: string[]; minSamples: number; minDeltaMs: number }
+  | { type: 'browser-effect'; evidenceId: string; effectKey: string; expectedValue: string }
+
+export interface ProofAssertion {
+  assertionId: string
+  experimentId: string
+  phase: 'initial' | 'retest'
+  oracleType: EvidenceOracle['type']
+  evidenceRefs: string[]
+  verifiedAt: string
+}
+
+export interface ExperimentRetest {
+  oracle: EvidenceOracle
+  outcome: ExperimentOutcome
+  evaluatedAt: string
+}
+
+export type ExperimentOutcome =
+  | { status: 'proven'; proof: ProofAssertion }
+  | { status: 'disproven'; evidenceRefs: string[] }
+  | { status: 'inconclusive'; reason: string; evidenceRefs: string[] }
+  | { status: 'failed'; error: string }
 
 export interface ResponseLike {
   status: number
@@ -97,6 +129,11 @@ export interface DifferentialResult {
   authorizationMismatch: boolean
   interesting: boolean
   reason: string
+}
+
+export interface DifferentialAssertion {
+  markers?: string[]
+  jsonFields?: string[]
 }
 
 export interface FindingCandidate {

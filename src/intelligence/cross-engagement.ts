@@ -1,14 +1,14 @@
-/**
- * Cross-Engagement Pattern Memory — OPTIONAL privacy-preserving learner.
+﻿/**
+ * Cross-Engagement Pattern Memory â€” OPTIONAL privacy-preserving learner.
  *
  * This module aggregates ANONYMIZED, structural patterns across engagements so
  * the strategist/planner can prioritize where techniques have historically
  * fired. The privacy guarantee is enforced structurally:
  *
- *   • NEVER persists raw URLs, hostnames, secrets, or target identifiers.
- *   • Only stores path-token SHAPES (e.g. `/api/{resource}/:id`), parameter
+ *   â€¢ NEVER persists raw URLs, hostnames, secrets, or target identifiers.
+ *   â€¢ Only stores path-token SHAPES (e.g. `/api/{resource}/:id`), parameter
  *     NAMES, technique ids, and aggregate COUNTS.
- *   • `targetOrigin` is accepted at record time ONLY as a scoping guard
+ *   â€¢ `targetOrigin` is accepted at record time ONLY as a scoping guard
  *     (mirrors reflexion-store.ts) and is NEVER written to the store.
  *
  * Persisted to a SEPARATE global JSON file (see WorkspaceManager.getCrossEngagementPath),
@@ -24,14 +24,14 @@ import type { GraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
 import { evaluateMemoryWrite, recordMemoryPolicyDecision, MemoryPolicyError } from '../memory/policy'
 
-// ─── Structural feature extraction (anonymization) ───────────────────
+// â”€â”€â”€ Structural feature extraction (anonymization) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Convert a raw URL into anonymized path tokens.
  * Strips origin, scheme, host, port, and query string. Replaces:
- *   • purely numeric segments        -> ':id'
- *   • uuid / long hex segments       -> ':token'
- *   • everything else                -> lowercased literal token
+ *   â€¢ purely numeric segments        -> ':id'
+ *   â€¢ uuid / long hex segments       -> ':token'
+ *   â€¢ everything else                -> lowercased literal token
  */
 export function anonymizePath(url: string): string[] {
   let path: string
@@ -69,7 +69,7 @@ export function extractQueryParamNames(url: string): string[] {
   return [...names]
 }
 
-// ─── Public types ────────────────────────────────────────────────────
+// â”€â”€â”€ Public types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface EndpointShape {
   /** Anonymized path tokens, e.g. ['api', 'users', ':id'] */
@@ -95,7 +95,7 @@ export interface EngagementFinding {
 
 export interface EngagementSummary {
   /**
-   * Origin (scheme://host) used ONLY as a scoping guard — exactly like
+   * Origin (scheme://host) used ONLY as a scoping guard â€” exactly like
    * reflexion-store.ts. It is consumed but NEVER persisted.
    */
   targetOrigin: string
@@ -107,7 +107,7 @@ export interface EngagementSummary {
   effectiveSequences: string[][]
 }
 
-// ─── Aggregated store shape (the only thing persisted) ───────────────
+// â”€â”€â”€ Aggregated store shape (the only thing persisted) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface TechniqueStat {
   engagements: number
@@ -155,7 +155,7 @@ function emptyMemory(): AggregatedMemory {
   }
 }
 
-// ─── CrossEngagementMemory ───────────────────────────────────────────
+// â”€â”€â”€ CrossEngagementMemory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export class CrossEngagementMemory {
   private mem: AggregatedMemory
@@ -201,7 +201,7 @@ export class CrossEngagementMemory {
   /**
    * Record an engagement's anonymized summary. The `targetOrigin` is
    * validated as a scoping token but never stored. All other fields are
-   * routed through the memory-policy gate (slice 11) before aggregation —
+   * routed through the memory-policy gate (slice 11) before aggregation â€”
    * any target-sensitive content fails CLOSED (anonymization guarantee).
    */
   async recordEngagementSummary(summary: EngagementSummary): Promise<void> {
@@ -372,25 +372,25 @@ export class CrossEngagementMemory {
     if (techniques.length > 0) {
       lines.push('- Techniques by historical firing rate (techniqueId: firedIn/rate):')
       for (const t of techniques.slice(0, 8)) {
-        lines.push(`    • ${t.techniqueId}: fired ${t.firedIn}x (${(t.firingRate * 100).toFixed(0)}%)`)
+        lines.push(`    â€¢ ${t.techniqueId}: fired ${t.firedIn}x (${(t.firingRate * 100).toFixed(0)}%)`)
       }
     }
     if (shapes.length > 0) {
       lines.push('- Endpoint shapes where techniques historically fired:')
       for (const s of shapes.slice(0, 6)) {
-        lines.push(`    • ${s.shape} <- ${s.techniques.join(', ')}`)
+        lines.push(`    â€¢ ${s.shape} <- ${s.techniques.join(', ')}`)
       }
     }
     if (params.length > 0) {
       lines.push('- Parameter names commonly associated with findings:')
       for (const p of params.slice(0, 6)) {
-        lines.push(`    • ${p.param} <- ${p.associatedTechniques.join(', ')}`)
+        lines.push(`    â€¢ ${p.param} <- ${p.associatedTechniques.join(', ')}`)
       }
     }
     if (sequences.length > 0) {
       lines.push('- Effective primitive sequences observed:')
       for (const seq of sequences.slice(0, 4)) {
-        lines.push(`    • ${seq.sequence.join(' → ')} (${seq.occurrences}x)`)
+        lines.push(`    â€¢ ${seq.sequence.join(' â†’ ')} (${seq.occurrences}x)`)
       }
     }
     if (failures.length > 0) {
@@ -413,18 +413,20 @@ export interface PriorPatterns {
 
 /**
  * Lightweight hook: build an anonymized EngagementSummary from a per-target
- * GraphStore and record it. ONLY structural features are extracted — raw URLs
+ * GraphStore and record it. ONLY structural features are extracted â€” raw URLs
  * never leave this function. The `targetOrigin` is used as a scoping token and
  * is never persisted.
  *
- * Intended to be called at engagement end (e.g. from lifecycle cleanup), but
- * lifecycle.ts is intentionally NOT modified here; callers opt in.
+ * Intended to be called at engagement end (lifecycle + web-engine cleanup).
+ * `store` may be omitted; the global graph store resolves internally so
+ * entrypoint modules never need to name global getters themselves.
  */
 export async function finalizeEngagementMemory(
-  store: GraphStore,
+  store: GraphStore | undefined,
   targetOrigin: string,
 ): Promise<void> {
-  const endpoints = store.queryNodes(NodeType.ENDPOINT) as unknown as Array<{
+  const resolved = store ?? (await import('../graph/store')).getGlobalGraphStore()
+  const endpoints = resolved.queryNodes(NodeType.ENDPOINT) as unknown as Array<{
     properties: { url: string; method: string; params: Array<{ name: string }> }
   }>
 
@@ -442,7 +444,7 @@ export async function finalizeEngagementMemory(
     })
   }
 
-  const findings = store.queryNodes(NodeType.FINDING) as unknown as Array<{
+  const findings = resolved.queryNodes(NodeType.FINDING) as unknown as Array<{
     properties: { technique: string; endpoint: string; confidence: number; vulnType?: string }
   }>
 

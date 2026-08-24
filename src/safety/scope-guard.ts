@@ -1,25 +1,30 @@
 import type { ScopeConfig, AuthorizationCategory, ExternalToolsConfig } from '../config'
 import { log } from '../utils/logger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 let _config: ScopeConfig | null = null
 let _allowAny = false
 let _externalTools: ExternalToolsConfig | null = null
 
 export function setScopeConfig(config: ScopeConfig | null): void {
-  _config = config
+  const owned = getEngagementServices()
+  if (owned) owned.scopeConfig = config
+  else _config = config
 }
 
 export function getScopeConfig(): ScopeConfig | null {
-  return _config
+  return getEngagementServices()?.scopeConfig ?? _config
 }
 
 /** Ambient external-tool policy. Opt-in only — deny by default. */
 export function setExternalToolsConfig(config: ExternalToolsConfig | null): void {
-  _externalTools = config
+  const owned = getEngagementServices()
+  if (owned) owned.externalTools = config
+  else _externalTools = config
 }
 
 export function getExternalToolsConfig(): ExternalToolsConfig | null {
-  return _externalTools
+  return getEngagementServices()?.externalTools ?? _externalTools
 }
 
 /**
@@ -28,8 +33,9 @@ export function getExternalToolsConfig(): ExternalToolsConfig | null {
  * Without `toolId`, the map is not consulted (the flag alone decides).
  */
 export function isExternalToolEnabled(toolId?: string): boolean {
-  if (!_externalTools?.enabled) return false
-  const tools = _externalTools.tools
+  const externalTools = getExternalToolsConfig()
+  if (!externalTools?.enabled) return false
+  const tools = externalTools.tools
   if (!tools || Object.keys(tools).length === 0) return true
   if (!toolId) return true
   return tools[toolId as keyof typeof tools] === true
@@ -57,8 +63,9 @@ export function isCategoryAuthorized(
 
 /** Ambient authorization gate — reads the global scope config + external-tools config. */
 export function isActionAuthorized(category: AuthorizationCategory, opts?: { toolId?: string }): boolean {
+  const scopeConfig = getScopeConfig()
   return isCategoryAuthorized(category, {
-    allowedCategories: _config?.allowedCategories,
+    allowedCategories: scopeConfig?.allowedCategories,
     externalToolsEnabled: isExternalToolEnabled(opts?.toolId),
   })
 }
@@ -79,7 +86,8 @@ export function enforceAction(category: AuthorizationCategory, opts?: { toolId?:
  * ambient scope config.
  */
 export function approveScopeOrigin(url: string): void {
-  if (!_config) return
+  const config = getScopeConfig()
+  if (!config) return
   let hostname: string
   try {
     hostname = new URL(url).hostname.toLowerCase()
@@ -87,17 +95,19 @@ export function approveScopeOrigin(url: string): void {
     return
   }
   if (!hostname) return
-  const domains = _config.allowedDomains ?? (_config.allowedDomains = [])
+  const domains = config.allowedDomains ?? (config.allowedDomains = [])
   if (!domains.includes(hostname)) domains.push(hostname)
 }
 
 /** Explicit opt-out (runtime `--allow-any`). Off by default = deny-by-default. */
 export function setAllowAny(value: boolean): void {
-  _allowAny = value
+  const owned = getEngagementServices()
+  if (owned) owned.allowAny = value
+  else _allowAny = value
 }
 
 export function isAllowAny(): boolean {
-  return _allowAny
+  return getEngagementServices()?.allowAny ?? _allowAny
 }
 
 export interface ScopeCheckResult {
@@ -115,9 +125,9 @@ export interface ScopeCheckOptions {
   allowAny?: boolean
 }
 
-export function isUrlInScope(url: string, config: ScopeConfig | null = _config, opts: ScopeCheckOptions = {}): ScopeCheckResult {
+export function isUrlInScope(url: string, config: ScopeConfig | null = getScopeConfig(), opts: ScopeCheckOptions = {}): ScopeCheckResult {
   // Explicit opt-out overrides everything.
-  if (opts.allowAny ?? _allowAny) return { allowed: true }
+  if (opts.allowAny ?? isAllowAny()) return { allowed: true }
 
   // Scope is OPTIONAL. When no scope policy is configured (or the policy has
   // no allowedDomains), the tool is free-for-all — any URL is permitted.

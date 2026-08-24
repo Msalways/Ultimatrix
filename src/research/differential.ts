@@ -1,8 +1,4 @@
-import type { DifferentialResult, ResponseLike } from './types'
-
-const SENSITIVE_FIELD_PATTERNS = [
-  /"?(email|phone|address|token|secret|api[_-]?key|password|role|permission|billing|ssn|dob)"?\s*[:=]/ig,
-]
+import type { DifferentialAssertion, DifferentialResult, ResponseLike } from './types'
 
 function shingles(input: string): Set<string> {
   const normalized = input.toLowerCase().replace(/\s+/g, ' ').slice(0, 20000)
@@ -26,36 +22,38 @@ function similarity(a = '', b = ''): number {
   return intersection / Math.max(1, new Set([...left, ...right]).size)
 }
 
-function leakedFields(body = ''): string[] {
-  const fields = new Set<string>()
-  for (const pattern of SENSITIVE_FIELD_PATTERNS) {
-    for (const match of body.matchAll(pattern)) {
-      fields.add(match[1])
-    }
+function hasJsonPath(value: unknown, path: string): boolean {
+  let current = value
+  for (const part of path.split('.').filter(Boolean)) {
+    if (!current || typeof current !== 'object' || !(part in current)) return false
+    current = (current as Record<string, unknown>)[part]
   }
-  return [...fields]
+  return true
 }
 
-export function compareResearchResponses(baseline: ResponseLike, mutated: ResponseLike): DifferentialResult {
+export function compareResearchResponses(baseline: ResponseLike, mutated: ResponseLike, assertion: DifferentialAssertion = {}): DifferentialResult {
   const sameStatus = baseline.status === mutated.status
   const statusDelta = `${baseline.status} -> ${mutated.status}`
   const bodySimilarity = similarity(baseline.body, mutated.body)
-  const leaked = leakedFields(mutated.body)
+  let parsed: unknown
+  try { parsed = JSON.parse(mutated.body ?? '') } catch { parsed = undefined }
+  const matchedMarkers = (assertion.markers ?? []).filter(marker => marker.length > 0 && (mutated.body ?? '').includes(marker))
+  const matchedFields = (assertion.jsonFields ?? []).filter(path => hasJsonPath(parsed, path))
+  const leaked = [...matchedMarkers.map(marker => `marker:${marker}`), ...matchedFields]
   const baselineDenied = [401, 403, 404].includes(baseline.status)
   const mutatedAllowed = mutated.status >= 200 && mutated.status < 300
-  const authorizationMismatch = baselineDenied && mutatedAllowed || (!sameStatus && mutatedAllowed && leaked.length > 0)
+  const authorizationMismatch = baselineDenied && mutatedAllowed && leaked.length > 0
 
   const interesting =
     authorizationMismatch ||
-    (mutatedAllowed && leaked.length > 0 && bodySimilarity > 0.2) ||
-    (!sameStatus && mutatedAllowed && bodySimilarity > 0.5)
+    (mutatedAllowed && leaked.length > 0 && bodySimilarity > 0.2)
 
   const reason = interesting
     ? authorizationMismatch
       ? `Authorization boundary shifted (${statusDelta}) and the mutated response was allowed.`
       : leaked.length > 0
-        ? `Mutated response contains sensitive-looking fields: ${leaked.join(', ')}.`
-        : `Mutated response is allowed and similar enough to baseline (${bodySimilarity.toFixed(2)}).`
+        ? `Mutated response satisfies declared observables: ${leaked.join(', ')}.`
+        : `Mutated response satisfies the declared differential.`
     : `No strong differential signal (${statusDelta}, similarity=${bodySimilarity.toFixed(2)}).`
 
   return {

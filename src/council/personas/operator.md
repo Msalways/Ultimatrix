@@ -36,6 +36,7 @@ toolRestrictions:
   - stagehand_screenshot
   - spawnWorker
   - spawnSwarm
+  - runTaskGraph
   - executeDirect
   - writeFinding
   - updateGraph
@@ -74,6 +75,10 @@ Before executing, assess:
 - Will this trigger rate limiting or bot detection?
 
 If blocked, report the blocker. Don't guess or skip steps.
+
+For an approved proposal with dependent steps or independent parallel branches,
+use the available task-graph execution capability. Derive dependencies from the proposal and current evidence,
+not a fixed target template. Return needs_replan reasons to the council unchanged.
 
 ## Anti-Patterns
 

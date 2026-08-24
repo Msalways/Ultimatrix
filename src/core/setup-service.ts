@@ -1,17 +1,27 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { dump, load } from 'js-yaml'
-import { PROVIDER_INFO, DEFAULTS, getConfigPath, getProvidersPath, validateConfig } from '../config'
-import type { EngineType } from '../config'
+import { PROVIDER_INFO, DEFAULTS, getConfigPath, getProvidersPath } from '../config'
+import type { EngineType, ModelCapabilities, ModelRoleTiers } from '../config'
 
 // ─── Types ─────────────────────────────────────────────────────────
 
 export interface SetupInput {
   provider: string
   model: string
-  apiKey: string
+  apiKey?: string
   baseUrl?: string
+  endpoint?: string
+  deployment?: string
+  apiVersion?: string
+  authMethod?: 'iam' | 'api_key'
+  accessKeyId?: string
+  secretAccessKey?: string
+  sessionToken?: string
+  region?: string
   engine?: EngineType
   modelTiers?: Record<string, { provider: string; model: string }>
+  modelCapabilities?: ModelCapabilities
+  modelRoleTiers?: ModelRoleTiers
   crossProviderKeys?: Record<string, { apiKey: string; baseUrl?: string }>
 }
 
@@ -61,14 +71,24 @@ export async function runSetup(input: SetupInput): Promise<SetupResult> {
     errors.push('Model name is required')
     return { ok: false, errors }
   }
-  if (!input.apiKey?.trim()) {
+  if (input.provider === 'bedrock' && (input.authMethod ?? 'iam') === 'iam') {
+    if (!input.accessKeyId?.trim()) errors.push('Access key ID is required')
+    if (!input.secretAccessKey?.trim()) errors.push('Secret access key is required')
+    if (!input.region?.trim()) errors.push('Region is required')
+  } else if (!input.apiKey?.trim()) {
     errors.push('API key is required')
+  }
+  if (input.provider === 'azure') {
+    if (!input.endpoint?.trim()) errors.push('Azure endpoint is required')
+    if (!input.deployment?.trim()) errors.push('Azure deployment is required')
+  }
+  if (errors.length > 0) {
     return { ok: false, errors }
   }
 
   const projectPath = getConfigPath()
   const providersPath = getProvidersPath()
-  const engine: EngineType = input.engine ?? 'solver'
+  const engine: EngineType = input.engine ?? 'multi-model'
 
   // ── Build project config ──
   let projectData: Record<string, unknown> = {}
@@ -86,6 +106,12 @@ export async function runSetup(input: SetupInput): Promise<SetupResult> {
   if (input.modelTiers && Object.keys(input.modelTiers).length > 0) {
     projectData.modelTiers = input.modelTiers
   }
+  if (input.modelCapabilities && Object.keys(input.modelCapabilities).length > 0) {
+    projectData.modelCapabilities = input.modelCapabilities
+  }
+  if (input.modelRoleTiers && Object.keys(input.modelRoleTiers).length > 0) {
+    projectData.modelRoleTiers = input.modelRoleTiers
+  }
 
   // ── Build credentials ──
   let credentials: Record<string, unknown> = {}
@@ -96,9 +122,28 @@ export async function runSetup(input: SetupInput): Promise<SetupResult> {
     } catch { /* ignore */ }
   }
 
-  credentials[input.provider] = {
-    apiKey: input.apiKey,
-    ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+  if (input.provider === 'azure') {
+    credentials[input.provider] = {
+      apiKey: input.apiKey,
+      endpoint: input.endpoint,
+      deployment: input.deployment,
+      apiVersion: input.apiVersion || '2024-10-21',
+    }
+  } else if (input.provider === 'bedrock') {
+    credentials[input.provider] = (input.authMethod ?? 'iam') === 'api_key'
+      ? { authMethod: 'api_key', apiKey: input.apiKey, region: input.region }
+      : {
+          authMethod: 'iam',
+          accessKeyId: input.accessKeyId,
+          secretAccessKey: input.secretAccessKey,
+          ...(input.sessionToken ? { sessionToken: input.sessionToken } : {}),
+          region: input.region,
+        }
+  } else {
+    credentials[input.provider] = {
+      apiKey: input.apiKey,
+      ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+    }
   }
 
   // Cross-provider keys for multi-model tiers

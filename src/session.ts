@@ -6,14 +6,14 @@ import { solve } from './solver/solver'
 import type { SolverStreamMessage } from './solver/solver'
 import { getGlobalWorkspace } from './workspace'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
-import { loadSkill } from './solver/skills/loader'
 import { askUserConfirm } from './tools/interaction-tools'
 import type {IntelligenceContext} from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
 import { getGlobalGraphStore } from './graph/store'
 import { appendDelta, createRenderModel, reduceMessage, type RenderModel } from './output/render-model'
 import { ChatStream } from './output/layout'
-import type { ChatBox } from './output/chatbox'
+import { ChatBox } from './output/chatbox'
+import { z } from 'zod'
 
 import { setLogSink, type LogSink } from './utils/logger'
 import { logSolveSummary } from './utils/solver-summary'
@@ -157,9 +157,9 @@ export function createSolverRenderer(
   model.target = ctx.target
   model.goal = ctx.goal
 
-  // Display policy: config-driven, default on. These are product preferences,
+  // Display policy: config-driven. Reasoning is opt-in; system events default on.
   // never agent behavior.
-  const showReasoning = opts.interaction?.showReasoning ?? true
+  const showReasoning = opts.interaction?.showReasoning !== false
   const showSystemEvents = opts.interaction?.showSystemEvents ?? true
 
   // Chat-box mode: one session-wide renderer owns all terminal output. The
@@ -168,6 +168,7 @@ export function createSolverRenderer(
   // so this adapter never installs/restores it.
   if (opts.chatbox) {
     const cb = opts.chatbox
+    cb.installSink()
     cb.printUserMessage(ctx.prompt ?? ctx.goal ?? '')
     cb.beginAssistant()
     const render = (msg: SolverStreamMessage): void => {
@@ -177,9 +178,9 @@ export function createSolverRenderer(
     render.final = (): void => {
       cb.endAssistant()
     }
-    render.flush = (): void => { /* ChatBox.endAssistant already flushed/cleared sink */ }
+    render.flush = (): void => { cb.uninstallSink() }
     render.toggleReasoning = (): void => cb.toggleReasoning()
-    render.exit = (): void => { /* sink owned by session */ }
+    render.exit = (): void => { cb.uninstallSink() }
     return render
   }
 
@@ -294,37 +295,22 @@ function renderMarkdownPlain(text: string): string {
 export async function main(targetUrl?: string, _opts: { plain?: boolean; approvedOrigins?: string[] } = {}) {
   const lifecycle = new SessionLifecycle()
   /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
-  let lastRenderMsg: SolverRenderer | undefined  // eslint-disable-line no-unassigned-vars
+  let lastRenderMsg: SolverRenderer | undefined
 
-  // Native terminal console: the plain `log.*` + streamed-answer path. The
-  // termcn/Ink TUI (src/ui/*) is retained on disk but disabled â€” we do not
-  // construct a ChatBox or UiStore here, so stdin stays owned by readline and
-  // no in-place cursor rewrites can erase the user's typed line.
-
-  // Initialize: config ? resources ? browser ? infrastructure
+  // Initialize only the lightweight interactive control plane.
   const resources = await lifecycle.init(targetUrl, { approvedOrigins: _opts.approvedOrigins })
 
-
-  // Both renderers are disabled in the native terminal: the REPL uses the
-  // plain `log.*` / stdout streamer and a simple `> ` prompt.
-  const _chatbox = null
-
-  // Spider: crawl ? HAR bridge (no activity sink in native terminal)
-  await lifecycle.runSpider()
-
-  // Engine: solver brain or legacy workers
-  await lifecycle.setupEngine()
+  const chatbox = !_opts.plain && resources.config.interaction?.chat !== false
+    ? new ChatBox({
+        isTTY: process.stdout.isTTY,
+        showReasoning: resources.config.interaction?.showReasoning !== false,
+        showSystemEvents: resources.config.interaction?.showSystemEvents === true && process.env.ULTIMATRIX_DEBUG_EVENTS === '1',
+      })
+    : null
 
   // REPL loop
   await lifecycle.runREPL(async (line: string) => {
-    // Coordinate the in-place markdown painter with the readline input line so
-    // The native terminal owns stdin via readline; there is no ink/card surface
-    // to coordinate with, so the solver stream writes directly to stdout.
-    const _rl = resources.readline
-
-    // Activity sink is disabled in the native terminal: all output routes
-    // through `log.*` / stdout below.
-    const sink: ChatBox | null = null as ChatBox | null
+    const sink: ChatBox | null = chatbox
 
     // Commands
     if (line.trim() === '/exit' || line.trim() === '/quit') {
@@ -350,11 +336,43 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       return
     }
 
+    // Phase D — deterministic briefing (relation-native, no LLM).
+    if (line.trim() === '/brief') {
+      const { buildBriefing } = await import('./runtime/briefing')
+      const briefing = buildBriefing()
+      if (sink) sink.printReport(briefing.prose)
+      else for (const l of briefing.prose.split('\n')) log.info(l)
+      sink?.flushSystem()
+      return
+    }
+
+    // Phase D / spec 05 — evolution visibility: what the system learned.
+    if (line.trim() === '/learned') {
+      const { getEvolutionSummary } = await import('./intelligence/evolution')
+      const evo = getEvolutionSummary()
+      const lines: string[] = []
+      if (evo.techniques.length === 0) {
+        lines.push('Nothing learned yet this session — confirmed findings and failed attempts feed the loop.')
+      } else {
+        lines.push('Technique outcomes this session (confirmed/failed):')
+        for (const t of evo.techniques) lines.push(`  ${t.techniqueId}: +${t.confirmed} / -${t.failed}`)
+        if (evo.promoted.length > 0) lines.push(`Weight promoted: ${evo.promoted.join(', ')}`)
+        if (evo.demoted.length > 0) lines.push(`Weight demoted: ${evo.demoted.join(', ')}`)
+        lines.push('Cross-session memory updates on engagement close; draft skills land in skills-drafts/.')
+      }
+      if (sink) sink.printReport(lines.join('\n'))
+      else for (const l of lines) log.info(l)
+      sink?.flushSystem()
+      return
+    }
+
     if (line.trim() === '/help') {
       const helpText = [
         'Commands:',
         '  /council <goal>  â€” deliberate with the council (strategist / operator / skeptic / analyst)',
         '  /report [id]     â€” write a Markdown report (whole engagement, or one finding by id)',
+        '  /brief           — engagement briefing (state, gaps, suggested moves)',
+        '  /learned         — what the system learned this session (technique outcomes, weight shifts)',
         '  /reasoning (/r)  â€” show the last turn\'s reasoning',
         '  /status          â€” show target, engine, model, and graph counts',
         '  /clear           â€” clear the terminal view',
@@ -392,20 +410,9 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       return
     }
 
-    // Phase 7.2 — pure-discovery skill selection. The brain and council
-    // select skills themselves via listSkills / searchSkills tools.
-    // Pre-load top-matching skill bodies so the council path can forward
-    // instructions to workers, and the enriched goal includes methodology.
-    let matchedWithInstructions: any[] = []
-    if (resources.skillRegistry && line.trim().length > 3) {
-      const candidates = resources.skillRegistry.search(line.trim()).slice(0, 3)
-      matchedWithInstructions = candidates
-        .map(m => loadSkill(m.id))
-        .filter(Boolean)
-    }
-
     const { config, target, threadId, resourceId } = resources
     const councilMatch = line.match(/^\/council(?:\s+(.*))?$/)
+    if (!councilMatch && config.engine === 'legacy') await lifecycle.ensureResearchReady()
 
     if (councilMatch) {
       const goal = (councilMatch[1] ?? '').trim()
@@ -413,10 +420,15 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         log.warn('Usage: /council <goal>')
         return
       }
-      if (!target || !resources.council) {
+      if (!target) {
         log.warn('Council requires a target URL. Set one with: ultimatrix solve -t <url>')
         return
       }
+      if (!resources.lazyServices || !resources.sessionBlackboard) throw new Error('Council engine is unavailable')
+      const workerServices = await resources.lazyServices.ensureWorkers()
+      resources.workerPool = workerServices.workerPool
+      resources.taskCoordinator = workerServices.taskCoordinator
+      resources.council = await resources.lazyServices.ensureCouncil(resources.sessionBlackboard)
 
       // Council path ï¿½ one debate cycle per REPL turn (not a blocking loop).
       // The human can interject between turns. Structured output, no text parsing.
@@ -424,45 +436,31 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       const { proposalToWorkerConfig } = await import('./council/types')
       const council = resources.council
 
-      // Matched skills for this turn (progressive disclosure): full skill bodies
-      // are loaded only for the skills the REPL matched from user input. When the
-      // council proposes one of these skills, the worker receives its instructions.
-      const matchedById = new Map(matchedWithInstructions.map(s => [s.id, s]))
-
-      // Wire execute callback ï¿½ proposals actually spawn workers via dispatchSlices
-      // so multi-model routing, tier selection, concurrency, and tenant isolation apply.
+      // Council proposals execute as durable tasks; the coordinator owns attempts,
+      // cancellation, budgets, attribution, and restart-safe checkpoints.
       const execute = async (proposal: import('./council/types').MemberOutput) => {
         if (!proposal.proposal) return 'no proposal'
         try {
-          const matched = matchedById.get(proposal.proposal.skillId)
-          const workerConfig = proposalToWorkerConfig(proposal.proposal, {
-            context: matched
-              ? { skillInstructions: matched.instructions, skillReferences: matched.references }
-              : undefined,
-          })
-
-          const slice: import('./workers/pool').DispatchSlice = {
-            id: `council-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          const workerConfig = proposalToWorkerConfig(proposal.proposal)
+          if (!resources.taskCoordinator) throw new Error('Task coordinator is unavailable')
+          const selection = resources.modelSelector?.selectForTask({
             skillId: workerConfig.skillId,
-            task: workerConfig.task,
+            taskDescription: workerConfig.task,
             complexity: proposal.proposal.complexity,
             requiredCapabilities: [],
-            context: workerConfig.context,
-            tenant: resources.tenant,
-            sandboxId: resources.sandboxId,
-          }
-
-          const results = await resources.workerPool!.dispatchSlices([slice], {
-            modelSelector: resources.modelSelector,
-            perSliceRole: 'worker',
-            perSliceTimeoutMs: config.council?.executeTimeoutMs ?? 120_000,
+          }, 'worker')
+          const task = await resources.taskCoordinator.run({
+            taskId: `council-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            objective: workerConfig.task,
+            skillId: workerConfig.skillId,
+            complexity: proposal.proposal.complexity,
+            timeoutMs: config.council?.executeTimeoutMs ?? 120_000,
+            modelId: selection?.modelId,
+            provider: selection?.provider,
+            tier: selection?.tier ?? workerConfig.tier,
           })
-
-          const sliceResult = results[0]
-          if (sliceResult.error) throw new Error(sliceResult.error)
-          const r = sliceResult.result
-          if (!r) return 'no result'
-          const text = typeof r.text === 'string' ? r.text : String(r.text ?? '')
+          if (task.status !== 'completed') throw new Error(task.error ?? `Task ended as ${task.status}`)
+          const text = task.resultSummary ?? ''
           // B3: accumulate this execution's real result for the next turn's
           // results debate (carry-over, deterministic ï¿½ no meaning scanning).
           resources.councilPreviousResults =
@@ -564,7 +562,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         log.dim(`[council] debate persist skipped: ${err.message}`)
       }
       sink?.flushSystem()
-    } else if (target && resources.coreServices) {
+    } else if (config.engine !== 'legacy' && resources.coreServices) {
       // B3: Solver bypasses runner ï¿½ calls solve() directly with real brain agent
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
       const renderMsg = createSolverRenderer({}, {
@@ -575,14 +573,14 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       }, {
         plain: _opts.plain,
         interaction: config.interaction,
+        chatbox,
       })
       lastRenderMsg = renderMsg
       const result = await solve(resources.solverBrain!, {
-        origin: target,
+        origin: target || 'conversation',
         goal: line,
         model: config.model,
         memory: { thread: threadId, resource: resourceId },
-        matchedSkills: matchedWithInstructions.length > 0 ? matchedWithInstructions : undefined,
         blackboard: resources.coreServices.blackboard,
         evidence: resources.sessionEvidence,
         loopDetector: resources.coreServices.loopDetector,
@@ -607,9 +605,12 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
               toolName: event.toolName,
               toolArgs: event.toolArgs,
               reason: event.reason,
+              activity: event.activity,
             },
           })
         },
+        workflow: resources.workflow,
+        ultimatrixConfig: config,
       })
 
       renderMsg.final()
@@ -630,68 +631,12 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         log.info(result.planSummary)
       }
       renderMsg.flush()
-    } else if (target) {
-      // Fallback: solver without pre-built coreServices (backward compat)
-      const renderMsg = createSolverRenderer({}, {
-        engine: config.engine,
-        provider: `${config.provider}/${config.model}`,
-        target,
-        prompt: line,
-      }, {
-        plain: _opts.plain,
-        interaction: config.interaction,
-      })
-      lastRenderMsg = renderMsg
-      const result = await solve(resources.solverBrain!, {
-        origin: target,
-        goal: line,
-        model: config.model,
-        memory: { thread: threadId, resource: resourceId },
-        matchedSkills: matchedWithInstructions.length > 0 ? matchedWithInstructions : undefined,
-        blackboard: resources.sessionBlackboard,
-        evidence: resources.sessionEvidence,
-        loopDetector: resources.sessionLoopDetector,
-        reflexion: resources.sessionReflexion,
-        config: {
-          maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
-          maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
-          staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
-          maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
-        },
-        onToolComplete: (_toolName: string, _result?: unknown) => {
-          getGlobalWorkspace().getGraphStore()?.scheduleSave()
-        },
-        onMessage: renderMsg,
-        onPhase: (event) => {
-          resources.forensicLog.log({
-            type: 'solver-phase',
-            agent: 'solver-brain',
-            args: {
-              phase: event.phase,
-              step: event.step,
-              toolName: event.toolName,
-              toolArgs: event.toolArgs,
-              reason: event.reason,
-            },
-          })
-        },
-      })
-
-      renderMsg.final()
-      if (result.toolCalls > 0 || result.error) {
-        logSolveSummary(result)
-        log.info(`Facts: ${result.facts} | Intents: ${result.intents}`)
-      }
-      if (result.planSummary) {
-        log.info('Plan summary:')
-        log.info(result.planSummary)
-      }
-      renderMsg.flush()
     } else {
       // @deprecated Legacy supervisor path — kept for backward compatibility with web UI
       const result = await resources.supervisor!.stream(line, {
         memory: { thread: threadId, resource: resourceId },
         maxSteps: config.agent.maxSteps,
+        structuredOutput: { schema: z.any() },
       })
       await consumeStream(result.fullStream, 'supervisor', resources)
     }

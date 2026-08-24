@@ -1,82 +1,58 @@
-/**
- * Extension discovery tools (Phase 3): `listTools` and `loadTool`.
- *
- * Pure-discovery by design — the LLM/brain never auto-loads tools; it must
- * explicitly call `loadTool`. `listTools` enumerates all available tools
- * (built-in, MCP, plugin) with their source and a discovery hint. No substring
- * scanning of free-form text.
- *
- * Acquired extension tools are tracked in a module-level set so the runner can
- * merge exactly those into the agent's active tool pack.
- */
-
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { getGlobalToolRegistry } from './tool-registry'
+import { DynamicToolRegistry } from './tool-registry'
 
-const acquired = new Map<string, unknown>()
+export function createExtensionTools(registry: DynamicToolRegistry) {
+  const listTools = createTool({
+    id: 'listTools',
+    description: 'List known tool metadata and connector health. Pass one exact connector id to discover its tools on demand.',
+    inputSchema: z.object({
+      prefix: z.string().optional(),
+      connector: z.string().optional().describe('Exact connector id, such as mcp:github or plugin:protocol-surface.'),
+    }),
+    execute: async ({ prefix, connector }) => {
+      if (connector) await registry.discover(connector)
+      const known = await registry.list()
+      const filtered = prefix ? known.filter((tool) => tool.id.startsWith(prefix)) : known
+      const summarize = (tool: typeof filtered[number]) => ({
+        id: tool.id,
+        description: tool.description,
+        namespace: tool.namespace,
+        source: tool.source,
+        requirements: tool.requirements,
+        ...(tool.activity ? { activity: tool.activity } : {}),
+        ...(tool.readOnly !== undefined ? { readOnly: tool.readOnly } : {}),
+      })
+      const tools = {
+        builtin: filtered.filter((tool) => tool.source === 'builtin').map(summarize),
+        mcp: filtered.filter((tool) => tool.source === 'mcp').map((tool) => ({ ...summarize(tool), server: tool.server })),
+        plugin: filtered.filter((tool) => tool.source === 'plugin').map(summarize),
+      }
+      return { content: { type: 'text', text: JSON.stringify({ tools, connectors: registry.listConnectors() }, null, 2) }, tools, connectors: registry.listConnectors() }
+    },
+  })
 
-export function getAcquiredTools(): string[] {
-  return [...acquired.keys()]
+  const loadTool = createTool({
+    id: 'loadTool',
+    description: 'Resolve one exact extension tool id on demand and verify that it is ready. This does not scan free-form text.',
+    inputSchema: z.object({ id: z.string() }),
+    execute: async ({ id }) => {
+      try {
+        await registry.activate(id)
+        const metadata = await registry.describe(id)
+        return { content: { type: 'text', text: JSON.stringify(metadata ?? { id }, null, 2) }, ok: true, tool: metadata ?? { id } }
+      } catch (error) {
+        const failure = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code: 'CAPABILITY_INITIALIZATION_FAILED',
+          capabilityId: id,
+          retryable: true,
+        }
+        return { content: { type: 'text', text: JSON.stringify(failure, null, 2) }, ...failure }
+      }
+    },
+  })
+
+  return { listTools, loadTool }
 }
-
-/** Returns the resolved tool instances acquired via loadTool (synchronous). */
-export function getAcquiredToolMap(): Record<string, unknown> {
-  return Object.fromEntries(acquired)
-}
-
-export function acquireTool(id: string, tool?: unknown): void {
-  acquired.set(id, tool)
-}
-
-export function resetAcquiredTools(): void {
-  acquired.clear()
-}
-
-const listTools = createTool({
-  id: 'listTools',
-  description:
-    'List every available tool across sources: builtin (core), mcp__<server>__<tool>, plugin__<id>__<tool>. ' +
-    'Use this to discover what is installed before explicitly loading any extension tool with loadTool.',
-  inputSchema: z.object({
-    prefix: z.string().optional().describe('Optional id prefix filter, e.g. "mcp__" or "plugin__".'),
-  }),
-  execute: async ({ prefix }) => {
-    const reg = getGlobalToolRegistry()
-    const all = await reg.list()
-    const filtered = prefix ? all.filter((t) => t.id.startsWith(prefix)) : all
-    const grouped = {
-      builtin: filtered.filter((t) => t.source === 'builtin').map((t) => t.id),
-      mcp: filtered.filter((t) => t.source === 'mcp').map((t) => ({ id: t.id, server: t.server })),
-      plugin: filtered.filter((t) => t.source === 'plugin').map((t) => t.id),
-    }
-    return { content: { type: 'text', text: JSON.stringify(grouped, null, 2) }, tools: grouped }
-  },
-})
-
-const loadTool = createTool({
-  id: 'loadTool',
-  description:
-    'Explicitly acquire a tool by id (e.g. "mcp__github__search" or "plugin__myplugin__run"). ' +
-    'Connects to the server/plugin if needed and adds it to the active tool set. Nothing is loaded without an explicit call.',
-  inputSchema: z.object({
-    id: z.string().describe('Tool id to load. Use listTools to discover ids.'),
-    acquire: z.boolean().default(true).describe('If false, only test connectivity without acquiring.'),
-  }),
-  execute: async ({ id, acquire }) => {
-    const reg = getGlobalToolRegistry()
-    const tool = await reg.resolve(id)
-    if (!tool) {
-      return { content: { type: 'text', text: `Tool "${id}" not found or not reachable.` }, ok: false }
-    }
-    if (acquire) acquireTool(id, tool)
-    return {
-      content: { type: 'text', text: `Tool "${id}" ${acquire ? 'acquired' : 'reachable'} and ready.` },
-      ok: true,
-      id,
-    }
-  },
-})
-
-export const listToolsTool = listTools
-export const loadToolTool = loadTool

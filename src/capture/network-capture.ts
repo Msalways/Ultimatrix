@@ -37,7 +37,8 @@ export class NetworkCapture {
     this.capturing = true
     this.attachedPages.add(page)
 
-    page.on('response', (response: Response) => {
+    try {
+      page.on('response', (response: Response) => {
       if (!this.capturing) return
       const promise = this.captureResponse(response).catch(() => {})
       this.pendingCaptures.push(promise)
@@ -45,7 +46,10 @@ export class NetworkCapture {
         const idx = this.pendingCaptures.indexOf(promise)
         if (idx >= 0) this.pendingCaptures.splice(idx, 1)
       })
-    })
+      })
+    } catch {
+      this.attachedPages.delete(page)
+    }
   }
 
   async flush(): Promise<void> {

@@ -18,6 +18,10 @@ const findingNode: any = {
     evidenceLevel: 'L3',
     cwe: 'CWE-287',
     impact: 'Full admin takeover',
+    proofCheck: {
+      ruleId: 'floor-critical', findingId: 'f1', passed: true,
+      missingEvidence: [], conflicts: [], evidenceRefs: ['proof:f1'],
+    },
   },
 }
 const proofNode: any = {
@@ -82,6 +86,16 @@ describe('on-demand report (W-R)', () => {
     expect(res.findingCount).toBe(1)
     const md = readFileSync(res.path!, 'utf8')
     expect(md.toLowerCase()).toContain('engagement')
+  })
+
+  it('does not report a graph finding whose proof check is missing', () => {
+    const proofCheck = findingNode.properties.proofCheck
+    delete findingNode.properties.proofCheck
+    try {
+      expect(writeOnDemandReport('finding', 'f1')).toMatchObject({ ok: false, error: 'no finding with id f1' })
+    } finally {
+      findingNode.properties.proofCheck = proofCheck
+    }
   })
 })
 

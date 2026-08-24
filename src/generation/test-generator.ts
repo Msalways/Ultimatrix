@@ -30,7 +30,7 @@ export interface Finding {
   payload?: Record<string, any>
   param?: Record<string, any>
   evidenceMarkers?: string[]
-  /** Slice 09 — proof-check metadata. Findings with a failed proof are excluded from reports. */
+  /** Required for reportability. Missing or failed proof is excluded from reports. */
   proofCheck?: ProofCheckResult
 }
 

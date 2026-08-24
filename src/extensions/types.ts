@@ -58,12 +58,40 @@ export type McpClientFactory = (config: McpServerConfig) => McpClient
 
 export type ToolSource = 'builtin' | 'mcp' | 'plugin'
 
-export interface ToolInfo {
+/** Metadata that is safe to expose before a capability is initialized. */
+export interface ToolDescriptor {
+  id: string
+  description: string
+  namespace: string
+  source: ToolSource
+  requirements: string[]
+  activity?: string
+  /** Ask-only entrypoints expose only descriptors explicitly marked read-only. */
+  readOnly?: boolean
+}
+
+/** Minimal Mastra tool shape used by the lazy registry. */
+export interface MastraTool {
+  id?: string
+  description?: string
+  inputSchema?: unknown
+  execute?: (input: any, context?: any) => unknown
+}
+
+export interface ToolInfo extends ToolDescriptor {
   id: string
   description: string
   inputSchema?: unknown
-  source: ToolSource
   server?: string
+}
+
+export type ConnectorState = 'registered' | 'connecting' | 'ready' | 'failed' | 'closed'
+
+export interface ConnectorInfo {
+  id: string
+  source: 'mcp' | 'plugin'
+  state: ConnectorState
+  error?: string
 }
 
 /** A loaded plugin exposes one or more tools keyed by local tool name. */

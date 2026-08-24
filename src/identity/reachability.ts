@@ -72,7 +72,20 @@ export function createReachability(
   resourceId: string,
   reachedAt = new Date().toISOString(),
 ): ReachabilityRecord {
-  return { workflowId, identityId: identity.id, resourceId, resourceType, reachedAt }
+  return {
+    workflowId,
+    identityId: identity.id,
+    resourceId,
+    resourceType,
+    reachedAt,
+    identity: {
+      id: identity.id,
+      kind: identity.kind,
+      ...(identity.roleName ? { roleName: identity.roleName } : {}),
+      ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+    },
+    observedAt: reachedAt,
+  }
 }
 
 /** Dedupe key — one reachability record per (identity, resource). */

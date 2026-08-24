@@ -43,7 +43,7 @@ export function redactHarJson(harJson: string): string {
 export function redactObject(value: unknown, key = ''): unknown {
   if (typeof value === 'string') {
     if (SECRET_NAME.test(key)) return redactValue(value)
-    if (key === 'url') return redactUrl(value)
+    if (['url', 'target', 'pageUrl', 'endpoint'].includes(key)) return redactUrl(value)
     return redactString(value)
   }
   if (Array.isArray(value)) return value.map((item) => redactObject(item, key))
@@ -76,11 +76,16 @@ export function redactArtifactMetadata(meta: Record<string, unknown>): Record<st
 
 export function redactUrl(value: string): string {
   try {
+    const implicitRoot = /^https?:\/\/[^/?#]+$/i.test(value)
     const url = new URL(value)
+    if (url.username) url.username = redactValue(url.username)
+    if (url.password) url.password = redactValue(url.password)
     for (const name of Array.from(url.searchParams.keys())) {
       if (SECRET_NAME.test(name)) url.searchParams.set(name, redactValue(url.searchParams.get(name) ?? ''))
     }
-    return url.toString().replace(JWT_VALUE, (match) => redactValue(match))
+    url.hash = ''
+    const redacted = url.toString().replace(JWT_VALUE, (match) => redactValue(match))
+    return implicitRoot && redacted.endsWith('/') ? redacted.slice(0, -1) : redacted
   } catch {
     return value.replace(JWT_VALUE, (match) => redactValue(match))
   }

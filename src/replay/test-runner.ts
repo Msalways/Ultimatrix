@@ -1,9 +1,10 @@
-import { exec } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 
 export interface TestResult {
   testFile: string
@@ -42,8 +43,9 @@ export class TestRunner {
     const startTime = Date.now()
 
     try {
-      const { stdout, stderr } = await execAsync(
-        `npx playwright test "${testFile}" --reporter=json`,
+      const { stdout, stderr } = await execFileAsync(
+        npx,
+        ['playwright', 'test', testFile, '--reporter=json'],
         {
           cwd: this.projectDir,
           timeout: 60000,
@@ -64,6 +66,18 @@ export class TestRunner {
       }
     } catch (error: any) {
       const duration = Date.now() - startTime
+      const parsed = this.parsePlaywrightOutput(error.stdout ?? '')
+      if (parsed.status && parsed.status !== 'not-run') {
+        return {
+          testFile,
+          testName: parsed.name || testFile,
+          status: parsed.status,
+          duration,
+          stdout: error.stdout,
+          stderr: error.stderr,
+          executed: true,
+        }
+      }
       return {
         testFile,
         testName: testFile,
@@ -90,8 +104,9 @@ export class TestRunner {
     const startTime = Date.now()
 
     try {
-      const { stdout } = await execAsync(
-        `npx playwright test "${testDir}" --reporter=json`,
+      const { stdout } = await execFileAsync(
+        npx,
+        ['playwright', 'test', testDir, '--reporter=json'],
         {
           cwd: this.projectDir,
           timeout,
@@ -113,6 +128,18 @@ export class TestRunner {
       }
     } catch (error: any) {
       const duration = Date.now() - startTime
+      const parsed = this.parsePlaywrightOutput(error.stdout ?? '')
+      if (parsed.total > 0) {
+        return {
+          total: parsed.total,
+          passed: parsed.passed,
+          failed: parsed.failed,
+          skipped: parsed.skipped,
+          errors: parsed.errors,
+          duration,
+          results: parsed.results ?? [],
+        }
+      }
       return {
         total: 0,
         passed: 0,
@@ -191,11 +218,25 @@ export class TestRunner {
 
   private parsePlaywrightOutput(stdout: string): any {
     try {
-      const lines = stdout.split('\n')
-      for (const line of lines) {
-        if (line.startsWith('{') && line.includes('"stats"')) {
-          return JSON.parse(line)
-        }
+      const start = stdout.indexOf('{')
+      const end = stdout.lastIndexOf('}')
+      if (start === -1 || end < start) throw new Error('missing JSON report')
+      const report = JSON.parse(stdout.slice(start, end + 1))
+      const stats = report.stats ?? {}
+      const passed = Number(stats.expected ?? 0)
+      const failed = Number(stats.unexpected ?? 0)
+      const skipped = Number(stats.skipped ?? 0)
+      const errors = Array.isArray(report.errors) ? report.errors.length : 0
+      const total = passed + failed + skipped + Number(stats.flaky ?? 0)
+      return {
+        total,
+        passed,
+        failed,
+        skipped,
+        errors,
+        status: failed > 0 ? 'failed' : passed > 0 ? 'passed' : skipped > 0 ? 'skipped' : errors > 0 ? 'error' : 'not-run',
+        name: report.suites?.[0]?.specs?.[0]?.title,
+        results: [],
       }
     } catch {
       // Fall back to basic parsing

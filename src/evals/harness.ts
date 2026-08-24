@@ -10,6 +10,11 @@
 import type { UltimatrixConfig } from '../config'
 import type { ModelSelector, WorkerTask } from '../models/selector'
 import type { SpiderRuntimeEvent } from '../spider/runtime'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { WorkflowStore } from '../workflow/store'
+import { createWorkerTaskCoordinator } from '../runtime/worker-pool-executor'
 
 /** Build a production-shaped config with an explicit, deny-by-default scope. */
 export function evalConfig(overrides: Partial<UltimatrixConfig> = {}): UltimatrixConfig {
@@ -88,9 +93,25 @@ export function fakeWorkerPool(opts?: { fail?: boolean; spawnOrder?: string[] })
       agents.set(agent.id, agent)
       return agent
     },
+    async executeManaged(config: { skillId: string; task: string }, options: { signal?: AbortSignal; onStarted?: (worker: { workerId: string; workerName: string }) => void | Promise<void> } = {}) {
+      const agent = this.spawn(config)
+      await options.onStarted?.({ workerId: agent.id, workerName: agent.name })
+      const result = await agent.generate()
+      return { workerId: agent.id, workerName: agent.name, result, durationMs: 1 }
+    },
     get: (id: string) => agents.get(id),
     list: () => Array.from(agents.values()),
     clear: () => agents.clear(),
+  }
+}
+
+export async function fakeTaskRuntime(pool: ReturnType<typeof fakeWorkerPool>) {
+  const dir = await mkdtemp(join(tmpdir(), 'ultimatrix-eval-task-'))
+  const workflow = await WorkflowStore.loadOrCreate(join(dir, 'workflow.json'), { target: 'https://example.com' })
+  return {
+    workflow,
+    coordinator: createWorkerTaskCoordinator(workflow, pool as never),
+    cleanup: () => rm(dir, { recursive: true, force: true }),
   }
 }
 

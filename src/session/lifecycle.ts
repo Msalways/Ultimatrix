@@ -7,7 +7,7 @@
  */
 
 import type { UltimatrixConfig } from '../config'
-import { DEFAULTS, loadConfig } from '../config'
+import { loadConfig } from '../config'
 import { log } from '../utils/logger'
 import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
@@ -33,6 +33,8 @@ import { Agent } from '@mastra/core/agent'
 import { getGlobalObserver } from '../capture/human-observer'
 import { SkillRegistry } from '../solver/skills/registry'
 import { WorkerPool } from '../workers/pool'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
+import { createEngagementRuntime, type EngagementRuntime } from '../runtime/engagement-runtime'
 import type { Blackboard } from '../solver/blackboard'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import { LoopDetector } from '../intelligence/anti-loop'
@@ -115,6 +117,8 @@ export interface SessionResources {
   workers?: any
   skillRegistry?: SkillRegistry
   workerPool?: WorkerPool
+  taskCoordinator?: TaskCoordinator
+  extensionRegistry?: import('../extensions/tool-registry').DynamicToolRegistry
   sessionBlackboard?: Blackboard
   sessionEvidence?: EvidenceGate
   sessionLoopDetector?: LoopDetector
@@ -128,6 +132,7 @@ export interface SessionResources {
   councilPreviousResults?: string
   /** T3.3: Unified CoreServices — built once in setupEngine(), consumed by runner/session. */
   coreServices?: CoreServices
+  lazyServices?: import('../runtime/lazy-services').LazySolverServices
   /** Logical tenant namespace for worker isolation. */
   tenant?: string
   /** Logical sandbox namespace for worker isolation. */
@@ -140,6 +145,7 @@ export class SessionLifecycle {
   private phase: SessionPhase = 'idle'
   private _resources: Partial<SessionResources> = {}
   private cleanupFns: Array<() => Promise<void>> = []
+  private runtime?: EngagementRuntime
   private shuttingDown = false
 
   get resources(): Readonly<Partial<SessionResources>> {
@@ -164,7 +170,20 @@ export class SessionLifecycle {
     if (targetUrl) config.target = targetUrl
 
     const target = config.target || ''
-    const workspace = getGlobalWorkspace()
+    if (target) {
+      this.runtime = await createEngagementRuntime(config, target)
+      return this.runtime.run(() => this.initConfigured(config, target, consoleMode, approvedOrigins))
+    }
+    return this.initConfigured(config, target, consoleMode, approvedOrigins)
+  }
+
+  private async initConfigured(
+    config: UltimatrixConfig,
+    target: string,
+    consoleMode: boolean,
+    approvedOrigins: string[],
+  ): Promise<SessionResources> {
+    const workspace = this.runtime?.workspace ?? getGlobalWorkspace()
     const threadBase = target
       ? `ultimatrix-${target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}`
       : 'ultimatrix'
@@ -180,7 +199,7 @@ export class SessionLifecycle {
       : undefined
 
     const memoryStore = await createMemoryStore(dbPath)
-    const memory = await createMemory(config, memoryStore, dbPath)
+    const memory = await createMemory(config, memoryStore, dbPath, { mainAgent: config.engine !== 'legacy' })
 
     // Thread resumption
     const { threads: existingThreads } = await memory.listThreads({ filter: { resourceId } })
@@ -202,7 +221,7 @@ export class SessionLifecycle {
       })
     }
 
-    if (target) {
+    if (target && !this.runtime) {
       await workspace.switchTarget(target)
     }
 
@@ -213,7 +232,7 @@ export class SessionLifecycle {
     // listener; the decision ledger is tagged so decisions carry the workflowId.
     let workflow: WorkflowStore | undefined
     if (target) {
-      workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target, browserProvider: config.browser.provider })
+      workflow = this.runtime?.workflow ?? await WorkflowStore.loadOrCreate(getWorkflowPath(target), { target, browserProvider: config.browser.provider })
       getGlobalArtifactRegistry().setWorkflowId(workflow.state.workflowId)
       setArtifactCreateListener((record) => {
         workflow?.recordArtifact(record)
@@ -224,7 +243,7 @@ export class SessionLifecycle {
 
     // Forensic log
     const forensicLogPath = resolve(workspace.getTargetDir(target || '.'), 'forensic.ndjson')
-    const forensicLog = new ForensicLog(forensicLogPath)
+    const forensicLog = this.runtime?.forensicLog ?? new ForensicLog(forensicLogPath)
     setForensicLog(forensicLog)
 
     this._resources.config = config
@@ -283,29 +302,65 @@ export class SessionLifecycle {
     this.phase = 'config'
     log.info(`Target: ${target || '(none)'}`)
 
-    // Phase 1: Browser
-    await this.launchBrowser()
+    // Start only the interactive control plane. The solver activates expensive
+    // capabilities through its registry when they are actually needed.
+    await this.startInput()
 
-    // Phase 2: Infrastructure
-    await this.startInfrastructure()
+    // The unified solver is part of the cold control plane. It has metadata and
+    // memory, but no browser, capture, crawler, workers, connectors, or council.
+    if (config.engine !== 'legacy') await this.setupEngine()
 
     emitSessionInit(target || '', 'solver', config.model, [])
     return this._resources as SessionResources
   }
 
+  private async startInput(): Promise<void> {
+    this.assertPhase('config')
+
+    if (this._resources.consoleMode) {
+      this._resources.readline = null
+    } else {
+      const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
+      setReadlineInterface(rl)
+      this._resources.readline = rl
+      this.registerCleanup(async () => { rl.close() })
+
+      const onAskUser = (question: string) => {
+        process.stdout.write('\n' + question + ' ')
+        rl.once('line', (answer: string) => userInputEmitter.emit('askUser-response', answer))
+      }
+      userInputEmitter.on('askUser-question', onAskUser)
+      this.registerCleanup(async () => { userInputEmitter.removeListener('askUser-question', onAskUser) })
+    }
+
+    this.setupSIGINT()
+    this.phase = 'resources'
+  }
+
+  /** @deprecated Legacy-only eager initialization path. */
+  async ensureResearchReady(): Promise<void> {
+    if (this.phase === 'engine') return
+    this.assertPhase('resources')
+    if (!this._resources.target) throw new Error('Research requires a target URL.')
+    await this.launchBrowser()
+    await this.startInfrastructure()
+    await this.runSpider()
+    await this.setupEngine()
+  }
+
   // â”€â”€ Phase 1: Browser (with validation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private async launchBrowser(): Promise<void> {
-    this.assertPhase('config')
+    this.assertPhase('resources')
     const { config, target } = this._resources as { config: UltimatrixConfig; target: string }
 
     const [browser, oastPort] = await Promise.all([
-      (async () => {
+      this.runtime ? this.runtime.startBrowser().then(session => session.browser) : (async () => {
         const b = getOrCreateBrowser(config)
         await b.ensureReady()
         return b
       })(),
-      (setOastConfig(config.oast ?? null), startOastServer()),
+      (setOastConfig(config.oast ?? null), startOastServer(0, this.runtime?.oast)),
     ])
 
     // Validate CDP connection works
@@ -318,7 +373,9 @@ export class SessionLifecycle {
     // The entire downstream system (human observer, spider, dialog watcher) assumes
     // the browser is at the target URL. This ensures that precondition is always true.
     if (target) {
-      const page = getActivePage()
+      const page = this.runtime
+        ? await this.runtime.browser.getActivePage(this.runtime.browserSession!.sessionId) as any
+        : getActivePage()
       if (page) {
         try {
           log.info(`Navigating to ${target}...`)
@@ -333,14 +390,17 @@ export class SessionLifecycle {
       }
     }
 
-    this._resources.browser = browser
+    this._resources.browser = browser as any
     this._resources.oastPort = oastPort
 
-    // Slice 02/05 — record the browser session id + provider on the workflow (typed browser.id).
-    if (browser?.id) {
+    // Slice 02/05 + Phase A - record session id + provider on the workflow.
+    const browserSessionId = browser && typeof (browser as any).id !== 'undefined'
+      ? String((browser as any).id)
+      : `camofox-${stableTargetId(target ?? '')}`
+    if (browser) {
       const workflow = this._resources.workflow
       if (workflow) {
-        workflow.setBrowserSessionId(String(browser.id))
+        workflow.setBrowserSessionId(browserSessionId)
         workflow.setBrowserProvider(config.browser.provider ?? 'stagehand')
         await workflow.save()
       }
@@ -348,14 +408,42 @@ export class SessionLifecycle {
 
     this.registerCleanup(async () => {
       log.dim('Stopping OAST server...')
-      await stopOastServer()
+      await stopOastServer(this.runtime?.oast)
     })
 
     this.registerCleanup(async () => {
       log.dim('Closing browser...')
       stopDialogWatcher()
       try { getGlobalReactionObserver().detach() } catch {}
-      await closeBrowser()
+      if (!this.runtime) await closeBrowser()
+    })
+
+    // Self-evolution (spec 05): fold this engagement into anonymized
+    // cross-session memory — the loop that was designed but never fired.
+    this.registerCleanup(async () => {
+      try {
+        const { finalizeEngagementMemory } = await import('../intelligence/cross-engagement')
+        const store = getGlobalWorkspace().getGraphStore()
+        if (store && target) {
+          await finalizeEngagementMemory(store, target)
+          log.dim('[evolution] Engagement summary recorded to cross-session memory')
+        }
+      } catch (err) {
+        log.dim('[evolution] Engagement memory failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
+      }
+      try {
+        const { synthesizeDraftSkills } = await import('../intelligence/draft-skills')
+        const store = getGlobalWorkspace().getGraphStore()
+        if (store && target) {
+          const draftsDir = resolve(getGlobalWorkspace().getTargetDir(target), 'skills-drafts')
+          const drafts = await synthesizeDraftSkills(store, draftsDir)
+          for (const d of drafts.created) {
+            log.warn(`[evolution] Draft skill synthesized: ${d.skillPath} (unvalidated — review to promote)`)
+          }
+        }
+      } catch (err) {
+        log.dim('[evolution] Draft synthesis failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
+      }
     })
 
     this.phase = 'browser'
@@ -363,7 +451,9 @@ export class SessionLifecycle {
   }
 
   private async validateBrowser(_browser: any): Promise<void> {
-    const page = getActivePage()
+    const page = this.runtime
+      ? await this.runtime.browser.getActivePage(this.runtime.browserSession!.sessionId) as any
+      : getActivePage()
     if (!page) {
       throw new Error('Browser validation failed: no active page after ensureReady()')
     }
@@ -382,8 +472,10 @@ export class SessionLifecycle {
 
     // Human observer â€” deferred 3s for browser to settle
     const observer = getGlobalObserver()
-    const attachObserver = () => {
-      const page = getActivePage()
+    const attachObserver = async () => {
+      const page = this.runtime
+        ? await this.runtime.browser.getActivePage(this.runtime.browserSession!.sessionId) as any
+        : getActivePage()
       if (page && !observer.isCapturing()) {
         observer.attach(page)
         observer.onAction((action) => {
@@ -397,7 +489,7 @@ export class SessionLifecycle {
         log.dim('Human action capture active')
       }
     }
-    setTimeout(attachObserver, 3000)
+    setTimeout(() => { void attachObserver() }, 3000)
 
     if (!config.browser.headless) {
       log.info('Browser is visible â€” interact with it directly')
@@ -411,31 +503,52 @@ export class SessionLifecycle {
     // Stagehand context exists (e.g. headless `solve`).
     let harCapture: HarCaptureSession | null = null
     if (target) {
-      const stagehand = (browser as any)?.requireStagehand?.()
-      if (stagehand?.context?.conn) {
-        const handle = attachHarCaptureViaCdp(stagehand, {
-          captureResponseBody: true,
-          captureRequestBody: true,
-        })
-        if (handle.attached) {
-          harCapture = {
-            kind: 'cdp',
-            handle,
-            stop: async () => {
-              const entries = await handle.stop()
-              if (entries.length === 0) return null
-              const archive = { log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }
-              return JSON.stringify(archive, null, 2)
-            },
+      // Phase A — provider-dispatched capture (no vendor sniffing).
+      const { isCamofoxHandle } = await import('../browser/provider')
+      if (isCamofoxHandle(browser)) {
+        const { attachHarCaptureViaPlaywright } = await import('../session/playwright-network-capture')
+        const handle = attachHarCaptureViaPlaywright((browser as any).context as any, {})
+        harCapture = {
+          kind: 'cdp',
+          handle,
+          stop: async () => {
+            const entries = await handle.stop()
+            if (entries.length === 0) return null
+            const archive = { log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }
+            return JSON.stringify(archive, null, 2)
+          },
+        }
+        log.info('Live Playwright HAR capture attached (camofox)')
+        this._resources.workflow?.setCaptureSource('cdp')
+      } else {
+        const stagehand = (browser as any)?.requireStagehand?.()
+        if (stagehand?.context?.conn) {
+          const handle = attachHarCaptureViaCdp(stagehand, {
+            captureResponseBody: true,
+            captureRequestBody: true,
+          })
+          if (handle.attached) {
+            harCapture = {
+              kind: 'cdp',
+              handle,
+              stop: async () => {
+                const entries = await handle.stop()
+                if (entries.length === 0) return null
+                const archive = { log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }
+                return JSON.stringify(archive, null, 2)
+              },
+            }
+            log.info('Live CDP HAR capture attached')
+            this._resources.workflow?.setCaptureSource('cdp')
           }
-          log.info('Live CDP HAR capture attached')
         }
       }
       if (!harCapture) {
         try {
           const headless = await startHarCapture(target, ['localhost', '127.0.0.1'])
           harCapture = { kind: 'headless', handle: headless, stop: headless.stop }
-          log.info('HAR capture started (headless fallback)')
+          this._resources.workflow?.setCaptureSource('anonymous-fallback')
+          log.info('HAR capture started (headless fallback — anonymous session, labeled captureSource=anonymous-fallback)')
         } catch (err) {
           log.dim('HAR capture unavailable: ' + (err instanceof Error ? err.message : String(err)))
         }
@@ -450,45 +563,17 @@ export class SessionLifecycle {
       })
     }
 
-    // Readline — ONLY in non-console mode. In console mode the Ink full-screen
-    // console owns `process.stdin` in raw mode (see ui/main.tsx). Attaching a
-    // readline here would create a second stdin owner and reintroduce the
-    // "typing goes to the terminal" bug. The console path routes REPL goals via
-    // `uiGoalEmitter` and askUser/approval answers via `uiInputEmitter` instead.
-    if (this._resources.consoleMode) {
-      this._resources.readline = null
-    } else {
-      const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
-      setReadlineInterface(rl)
-      this._resources.readline = rl
-
-      this.registerCleanup(async () => {
-        rl.close()
-      })
-
-      // userInputEmitter for askUser tool
-      const onAskUser = (question: string) => {
-        process.stdout.write('\n' + question + ' ')
-        rl.once('line', (answer: string) => {
-          userInputEmitter.emit('askUser-response', answer)
-        })
-      }
-      userInputEmitter.on('askUser-question', onAskUser)
-
-      this.registerCleanup(async () => {
-        userInputEmitter.removeListener('askUser-question', onAskUser)
-      })
-    }
-
-    // SIGINT handler (registered once)
-    this.setupSIGINT()
-
     this.phase = 'infrastructure'
   }
 
   // â”€â”€ Phase 3: Spider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async runSpider(): Promise<void> {
+    if (this.runtime) return this.runtime.run(() => this.runSpiderOwned())
+    return this.runSpiderOwned()
+  }
+
+  private async runSpiderOwned(): Promise<void> {
     this.assertPhase('infrastructure')
     const { config, target, browser, memory, threadId, resourceId } = this._resources as SessionResources
 
@@ -529,7 +614,7 @@ export class SessionLifecycle {
     getGlobalEmitter().on('spider:event', onSpiderEvent)
     let spiderState: SpiderRuntimeState | undefined
     try {
-      spiderState = await runSpiderRuntime({
+      const spiderResult = await runSpiderRuntime({
         config,
         target,
         browser,
@@ -542,7 +627,14 @@ export class SessionLifecycle {
         allowAny: isAllowAny(),
         approvedOrigins: (this._resources as SessionResources).approvedOrigins,
         onText: (text) => process.stdout.write(text),
+        onFinalize: async (state, outcome) => {
+          workflow?.attachSpider(state)
+          if (this.runtime) await this.runtime.saveCheckpoint(`spider:${outcome.status}`)
+          else await workflow?.save()
+          return `${spiderWorkflowId}:${state.updatedAt}`
+        },
       })
+      spiderState = spiderResult.state
     } finally {
       getGlobalEmitter().off('spider:event', onSpiderEvent)
     }
@@ -550,13 +642,6 @@ export class SessionLifecycle {
     // Slice 02 — attach the crawl snapshot to the workflow and persist. This is
     // what makes resume possible: the spider state (and stop reason) are carried
     // forward, not re-discovered from target-keyed globals.
-    if (workflow) {
-      workflow.attachSpider(spiderState)
-      workflow.syncEvidence(coreEvidenceLedger.all())
-      workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
-      await workflow.save()
-    }
-
     const finalSummary = workspace.getGraphStore()?.getTargetSummary()
     if (finalSummary) {
       log.dim(`[Spider] Crawl complete (${spiderState.stopReason ?? 'unknown'}) - Final summary: ${finalSummary.totalEndpoints} endpoints, ${finalSummary.totalPages} pages, ${finalSummary.totalFindings} findings`)
@@ -600,17 +685,52 @@ export class SessionLifecycle {
       this._resources.harCapture = null
     }
 
+    // C4/C5 — post-crawl discovery: shadow API probes + js-miner over captured
+    // bodies. Non-fatal; everything routes through scope-guarded seams.
+    try {
+      const { runPostCrawlDiscovery } = await import('../discovery/post-crawl')
+      const discovery = await runPostCrawlDiscovery(target)
+      if (discovery.shadowEndpoints + discovery.jsCandidates > 0) {
+        log.success(`Post-crawl discovery: ${discovery.shadowEndpoints} shadow endpoints, ${discovery.jsCandidates} js-mined candidates`)
+      }
+      for (const err of discovery.errors) log.dim(`[post-crawl] ${err}`)
+    } catch (err) {
+      log.dim('Post-crawl discovery failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
+    }
+
     this.phase = 'spider'
   }
 
   // â”€â”€ Phase 4: Engine setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async setupEngine(): Promise<void> {
-    this.assertPhase('spider')
-    const { config, browser, memory, target, harContextForLLM } = this._resources as SessionResources
+    if (this.runtime) return this.runtime.run(() => this.setupEngineOwned())
+    return this.setupEngineOwned()
+  }
+
+  private async setupEngineOwned(): Promise<void> {
+    const config = this._resources.config!
+    if (config.engine === 'legacy') this.assertPhase('spider')
+    else if (this.phase !== 'resources') throw new Error(`Invalid lifecycle phase: expected resources, got ${this.phase}`)
+    const { browser, memory, target, harContextForLLM, threadId, resourceId } = this._resources as SessionResources
 
     const { createEngineServices } = await import('./engine-setup')
-    const engine = await createEngineServices({ config, browser, memory, target, harContextForLLM })
+    const engine = await createEngineServices({
+      config,
+      browser,
+      memory,
+      target,
+      identity: {
+        threadId,
+        resourceId,
+        workflowId: this._resources.workflow?.state.workflowId ?? resourceId,
+        target,
+      },
+      harContextForLLM,
+      workflow: this._resources.workflow,
+      runtime: this.runtime,
+      approvedOrigins: this._resources.approvedOrigins,
+    })
 
     // Transfer engine services into lifecycle resources
     Object.assign(this._resources, {
@@ -619,6 +739,7 @@ export class SessionLifecycle {
       workers: engine.workers,
       skillRegistry: engine.skillRegistry,
       workerPool: engine.workerPool,
+      taskCoordinator: engine.taskCoordinator,
       sessionBlackboard: engine.sessionBlackboard,
       sessionEvidence: engine.sessionEvidence,
       sessionLoopDetector: engine.sessionLoopDetector,
@@ -626,10 +747,17 @@ export class SessionLifecycle {
       coreServices: engine.coreServices,
       modelSelector: engine.modelSelector,
       council: engine.council,
+      extensionRegistry: engine.extensionRegistry,
+      lazyServices: engine.lazyServices,
     })
 
+    if (engine.extensionRegistry) {
+      this.registerCleanup(() => engine.extensionRegistry!.closeAll())
+    }
+    if (engine.lazyServices) this.registerCleanup(() => engine.lazyServices!.close())
+
     const useSolver = config.engine !== 'legacy'
-    log.info(useSolver ? 'Solver engine ready with orchestration tools' : 'Legacy engine ready')
+    log.info(useSolver ? 'Solver engine ready with lazy capability catalog' : 'Legacy engine ready')
 
     if (config.modelTiers) {
       const tierMap = config.modelTiers
@@ -649,8 +777,14 @@ export class SessionLifecycle {
   // â”€â”€ Phase 5: REPL loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async runREPL(onInput: (line: string) => Promise<void | boolean>): Promise<void> {
-    this.assertPhase('engine')
-    this.phase = 'running'
+    if (this.runtime) return this.runtime.run(() => this.runREPLOwned(onInput))
+    return this.runREPLOwned(onInput)
+  }
+
+  private async runREPLOwned(onInput: (line: string) => Promise<void | boolean>): Promise<void> {
+    if (this.phase !== 'resources' && this.phase !== 'engine') {
+      throw new Error(`Invalid lifecycle phase: expected resources or engine, got ${this.phase}`)
+    }
 
     const { config, target, oastPort, readline: rl, consoleMode } = this._resources as SessionResources
     const useSolver = config.engine !== 'legacy'
@@ -664,7 +798,7 @@ export class SessionLifecycle {
 
     log.banner(
       'Ultimatrix v8',
-      'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: :${oastPort}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
+      'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: ${oastPort ? `:${oastPort}` : 'deferred'}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
     )
 
     if (!target) {
@@ -711,6 +845,11 @@ export class SessionLifecycle {
   // â”€â”€ Chain detection (called after each REPL turn) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   detectAndReportChains(): void {
+    if (this.runtime) return this.runtime.run(() => this.detectAndReportChainsOwned())
+    return this.detectAndReportChainsOwned()
+  }
+
+  private detectAndReportChainsOwned(): void {
     const graph = this._resources.workspace?.getGraphStore()
     if (!graph) return
 
@@ -731,6 +870,11 @@ export class SessionLifecycle {
   // â”€â”€ Cleanup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async cleanup(): Promise<void> {
+    if (this.runtime) return this.runtime.run(() => this.cleanupOwned())
+    return this.cleanupOwned()
+  }
+
+  private async cleanupOwned(): Promise<void> {
     if (this.phase === 'done') return
     this.phase = 'done'
 
@@ -745,6 +889,8 @@ export class SessionLifecycle {
         log.dim(`Cleanup error: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+
+    if (this.runtime) await this.runtime.close({ status: 'completed' })
 
     this.printSummary()
   }

@@ -126,4 +126,94 @@ describe('relation-tools (no hardcoded vocab)', () => {
       expect(desc).not.toMatch(/REINGESTS,\s*VALUE_ORIGIN,\s*ORDERED_BEFORE/)
     })
   })
+
+  describe('graph memory loaders', () => {
+    it('loads a parent/child neighborhood around a focus node', async () => {
+      const { getGraphNeighborhood } = await import('../../src/graph/relation-tools')
+      mockStore.getNode.mockImplementation((id: string) => ({ id, type: 'Endpoint', label: id, properties: { url: `https://app.test/${id}`, method: 'GET' } }))
+      mockStore.queryEdges.mockReturnValue([
+        { id: 'e1', fromId: 'page:checkout', toId: 'ep:checkout', type: 'HAS_ACTION', properties: {} },
+        { id: 'e2', fromId: 'ep:checkout', toId: 'ep:confirm', type: 'ORDERED_BEFORE', properties: {} },
+      ])
+
+      const result = await callTool(getGraphNeighborhood, { nodeId: 'ep:checkout', depth: 1 })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.focus.id).toBe('ep:checkout')
+      expect(result.value.nodes.map((n: any) => n.id)).toEqual(expect.arrayContaining(['page:checkout', 'ep:confirm']))
+      expect(result.value.edges.map((e: any) => e.type)).toEqual(expect.arrayContaining(['HAS_ACTION', 'ORDERED_BEFORE']))
+    })
+
+    it('loads workflow context and value-flow evidence around an endpoint URL', async () => {
+      const { getWorkflowAround } = await import('../../src/graph/relation-tools')
+      mockStore.queryNodes.mockImplementation((type: string, filters?: any) => {
+        if (type !== 'Endpoint') return []
+        const nodes = [
+          { id: 'ep:checkout', type: 'Endpoint', label: 'checkout', properties: { url: 'https://app.test/api/checkout', method: 'POST' } },
+        ]
+        return filters?.url ? nodes.filter((n) => n.properties.url === filters.url) : nodes
+      })
+      mockStore.getNode.mockImplementation((id: string) => ({ id, type: 'Endpoint', label: id, properties: { url: `https://app.test/${id}`, method: 'POST' } }))
+      mockStore.queryEdges.mockReturnValue([
+        { id: 'e1', fromId: 'ep:cart', toId: 'ep:checkout', type: 'REINGESTS', properties: { valueSample: 'order-1' } },
+        { id: 'e2', fromId: 'role:user', toId: 'ep:checkout', type: 'SESSION_REACHES', properties: { role: 'user' } },
+      ])
+
+      const result = await callTool(getWorkflowAround, { endpointUrl: 'https://app.test/api/checkout' })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.focus.id).toBe('ep:checkout')
+      expect(result.value.valueFlow).toHaveLength(1)
+      expect(result.value.reachability).toHaveLength(1)
+    })
+
+    it('traces recorded edge property values structurally', async () => {
+      const { traceValue } = await import('../../src/graph/relation-tools')
+      mockStore.queryEdges.mockReturnValue([
+        { id: 'e1', fromId: 'ep:a', toId: 'ep:b', type: 'VALUE_ORIGIN', properties: { field: 'orderId', valueSample: '42' } },
+        { id: 'e2', fromId: 'ep:c', toId: 'ep:d', type: 'ORDERED_BEFORE', properties: {} },
+      ])
+
+      const result = await callTool(traceValue, { fieldName: 'orderId' })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.matchCount).toBe(1)
+      expect(result.value.edges[0].type).toBe('VALUE_ORIGIN')
+    })
+
+    it('explains typed reachability edges', async () => {
+      const { explainReachability } = await import('../../src/graph/relation-tools')
+      mockStore.queryEdges.mockReturnValue([
+        { id: 'e1', fromId: 'role:admin', toId: 'ep:admin', type: 'SESSION_REACHES', properties: { role: 'admin' } },
+        { id: 'e2', fromId: 'role:user', toId: 'ep:user', type: 'SESSION_REACHES', properties: { role: 'user' } },
+      ])
+
+      const result = await callTool(explainReachability, { role: 'admin' })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.edgeCount).toBe(1)
+      expect(result.value.reaches[0].from.id).toBe('role:admin')
+    })
+
+    it('returns untested workaround candidates from workflow/value/reachability edges', async () => {
+      const { getUntestedWorkarounds } = await import('../../src/graph/relation-tools')
+      mockStore.queryNodes.mockImplementation((type: string, filters?: any) => {
+        if (type !== 'Endpoint') return []
+        const nodes = [
+          { id: 'ep:confirm', type: 'Endpoint', label: 'confirm', properties: { url: 'https://app.test/api/confirm', method: 'POST' } },
+        ]
+        return filters?.url ? nodes.filter((n) => n.properties.url === filters.url) : nodes
+      })
+      mockStore.queryEdges.mockReturnValue([
+        { id: 'e1', fromId: 'ep:payment', toId: 'ep:confirm', type: 'ORDERED_BEFORE', properties: {} },
+        { id: 'e2', fromId: 'ep:cart', toId: 'ep:confirm', type: 'REINGESTS', properties: { valueSample: 'order-1' } },
+      ])
+
+      const result = await callTool(getUntestedWorkarounds, { endpointUrl: 'https://app.test/api/confirm' })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.tested).toBe(false)
+      expect(result.value.candidates.map((c: any) => c.kind)).toEqual(expect.arrayContaining(['ORDERED_BEFORE', 'REINGESTS']))
+    })
+  })
 })

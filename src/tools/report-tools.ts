@@ -2,15 +2,21 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import type { ForensicLog } from '../logging/forensic-log'
 import type { FindingNode, EndpointNode } from '../graph/schema'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 let _forensicLog: ForensicLog | null = null
 
 export function setForensicLog(log: ForensicLog): void {
+  const owned = getEngagementServices()
+  if (owned) {
+    owned.forensicLog = log
+    return
+  }
   _forensicLog = log
 }
 
 export function getForensicLog(): ForensicLog | null {
-  return _forensicLog
+  return getEngagementServices()?.forensicLog ?? _forensicLog
 }
 
 export const readReportTool = createTool({
@@ -28,7 +34,8 @@ export const readReportTool = createTool({
   }),
   execute: async ({ section, limit }) => {
 
-    if (!_forensicLog) {
+    const forensicLog = getForensicLog()
+    if (!forensicLog) {
       return {
         ok: false,
         value: { error: 'No forensic log active. Start a session first.' },
@@ -43,8 +50,8 @@ export const readReportTool = createTool({
         return {
           ok: true,
           value: {
-            summary: _forensicLog.getSummary(),
-            index: _forensicLog.getIndex(),
+            summary: forensicLog.getSummary(),
+            index: forensicLog.getIndex(),
           },
         }
       }
@@ -70,7 +77,7 @@ export const readReportTool = createTool({
       }
 
       case 'timeline': {
-        const events = _forensicLog.getEvents({ limit })
+        const events = forensicLog.getEvents({ limit })
         return {
           ok: true,
           value: {
@@ -82,7 +89,7 @@ export const readReportTool = createTool({
               error: e.error,
               argsSummary: e.args ? summarizeArgs(e.args) : undefined,
             })),
-            total: _forensicLog.getIndex().totalEvents,
+            total: forensicLog.getIndex().totalEvents,
             returned: events.length,
           },
         }
@@ -109,16 +116,16 @@ export const readReportTool = createTool({
       }
 
       case 'all': {
-        const idx = _forensicLog.getIndex()
+        const idx = forensicLog.getIndex()
         const allNodes = store?.queryNodes() || []
         const findings = allNodes.filter(n => n.type === 'Finding') as FindingNode[]
         const endpoints = allNodes.filter(n => n.type === 'Endpoint') as EndpointNode[]
-        const timeline = _forensicLog.getEvents({ limit: 200 })
+        const timeline = forensicLog.getEvents({ limit: 200 })
 
         return {
           ok: true,
           value: {
-            summary: _forensicLog.getSummary(),
+            summary: forensicLog.getSummary(),
             findings: findings.map(f => ({
               id: f.id,
               type: f.properties.technique,

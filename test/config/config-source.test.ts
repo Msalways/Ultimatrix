@@ -88,6 +88,47 @@ describe('canonical project configuration', () => {
     expect(cliConfig.credentials?.admin.email).toBe('admin@example.com')
   })
 
+  it('shows reasoning by default unless explicitly disabled', () => {
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'test-model',
+      creds: { groq: { apiKey: 'test-secret' } },
+    })
+
+    expect(config.interaction?.showReasoning).toBe(true)
+  })
+
+  it('writes model token limits only under modelCapabilities', () => {
+    const path = join(root, 'ultimatrix.yaml')
+    process.env.ULTIMATRIX_CONFIG = path
+    process.env.GROQ_API_KEY = 'test-secret'
+
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'llama3-8b-8192',
+      creds: { groq: { apiKey: 'test-secret' } },
+      modelTiers: { fast: { provider: 'groq', model: 'llama3-8b-8192', maxOutputTokens: 1024 } },
+      modelRoles: { brain: { provider: 'groq', model: 'llama3-8b-8192', maxOutputTokens: 2048 } },
+      modelCapabilities: {
+        'groq/llama3-8b-8192': {
+          contextWindow: 8192,
+          maxOutputTokens: 4096,
+          strengths: [],
+          supportsStreaming: true,
+          supportsStructuredOutput: false,
+        },
+      },
+    })
+
+    saveProjectConfig(config)
+    const saved = readFileSync(path, 'utf-8')
+
+    expect(saved).toContain('modelCapabilities')
+    expect(saved).toContain('maxOutputTokens: 4096')
+    expect(saved).not.toContain('maxOutputTokens: 1024')
+    expect(saved).not.toContain('maxOutputTokens: 2048')
+  })
+
   it('lets web settings repair missing credentials while runtime remains strict', async () => {
     const path = join(root, 'ultimatrix.yaml')
     process.env.ULTIMATRIX_CONFIG = path

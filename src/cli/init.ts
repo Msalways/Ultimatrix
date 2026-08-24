@@ -1,5 +1,5 @@
 import { select, input, password, confirm } from '@inquirer/prompts'
-import { PROVIDER_INFO, getConfigPath, getProvidersPath } from '../config'
+import { PROVIDER_INFO } from '../config'
 import { log } from '../utils/logger'
 import type { EngineType } from '../config'
 import { runSetup, testProviderConnection } from '../core/setup-service'
@@ -50,6 +50,8 @@ export async function initWizard() {
   let modelId: string
   let apiKey: string
   let baseUrl: string
+  let contextWindow = 8192
+  let maxOutputTokens = 2048
 
   if (opts.provider && opts.model) {
     // Non-interactive: use CLI args
@@ -173,6 +175,19 @@ export async function initWizard() {
         connected = await testConnection(baseUrl, modelId, apiKey)
       }
     }
+
+    log.nl()
+    log.raw('Model limits')
+    contextWindow = Number(await input({
+      message: 'Context window',
+      default: String(contextWindow),
+      validate: (v) => Number(v) > 0 || 'Context window must be positive',
+    }))
+    maxOutputTokens = Number(await input({
+      message: 'Max output tokens',
+      default: String(maxOutputTokens),
+      validate: (v) => Number(v) > 0 || 'Max output tokens must be positive',
+    }))
   }
 
   if (!selectedProvider) {
@@ -296,7 +311,7 @@ export async function initWizard() {
 
   // ── Step 4: Engine Selection ──────────────────────────────────────
 
-  let engine: EngineType = 'solver'
+  let engine: EngineType = 'multi-model'
 
   if (!opts.nonInteractive) {
     log.nl()
@@ -306,8 +321,7 @@ export async function initWizard() {
     const enginePick = await select({
       message: 'Engine',
       choices: [
-        { name: 'Solver (OODA loop)', value: 'solver', description: ' — recommended' },
-        { name: 'Multi-model (solver + model selection)', value: 'multi-model' },
+        { name: 'Multi-model assistant', value: 'multi-model', description: 'recommended' },
         { name: 'Legacy supervisor (v6)', value: 'legacy' },
       ],
     })
@@ -341,7 +355,28 @@ export async function initWizard() {
     apiKey,
     baseUrl,
     engine,
-    modelTiers: Object.keys(tiers).length > 0 ? tiers : undefined,
+    modelTiers: Object.keys(tiers).length > 0 ? tiers : {
+      fast: { provider: selectedProvider.id, model: modelId },
+      balanced: { provider: selectedProvider.id, model: modelId },
+      powerful: { provider: selectedProvider.id, model: modelId },
+    },
+    modelCapabilities: {
+      [`${selectedProvider.id}/${modelId}`]: {
+        contextWindow,
+        maxOutputTokens,
+        strengths: [],
+        supportsStreaming: true,
+        supportsStructuredOutput: false,
+      },
+    },
+    modelRoleTiers: {
+      brain: 'balanced',
+      spider: 'fast',
+      crawlSummarizer: 'fast',
+      verifier: 'balanced',
+      reporter: 'balanced',
+      council: 'powerful',
+    },
     crossProviderKeys: Object.keys(crossProviderKeys).length > 0 ? crossProviderKeys : undefined,
   })
 

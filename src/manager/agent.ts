@@ -7,9 +7,11 @@ import { supervisorInstructions } from './instructions'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
 import { createSpawnWorkerTool } from './tools/spawn-worker'
 import { createSpawnSwarmTool } from './tools/spawn-swarm'
 import { createExecuteDirectTool } from './tools/execute-direct'
+import { createRunTaskGraphTool } from './tools/run-task-graph'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 
@@ -24,6 +26,7 @@ export interface SupervisorOptions {
   // Dynamic mode
   skillRegistry?: SkillRegistry
   workerPool?: WorkerPool
+  taskCoordinator?: TaskCoordinator
   // Legacy mode
   workers?: Record<string, SubAgent<string>>
   // Shared
@@ -35,12 +38,13 @@ export function createSupervisor(
   config: UltimatrixConfig,
   options: SupervisorOptions,
 ): Agent {
-  const isDynamic = options.skillRegistry && options.workerPool
+  const isDynamic = options.skillRegistry && options.workerPool && options.taskCoordinator
 
   if (isDynamic) {
     const orchestrationTools: Record<string, any> = {
-      spawnWorker: sanitizeOrchTool(createSpawnWorkerTool(config, options.skillRegistry!, options.workerPool!), config.provider),
-      spawnSwarm: sanitizeOrchTool(createSpawnSwarmTool(config, options.skillRegistry!, options.workerPool!), config.provider),
+      spawnWorker: sanitizeOrchTool(createSpawnWorkerTool(config, options.skillRegistry!, options.taskCoordinator!), config.provider),
+      spawnSwarm: sanitizeOrchTool(createSpawnSwarmTool(config, options.skillRegistry!, options.taskCoordinator!), config.provider),
+      runTaskGraph: sanitizeOrchTool(createRunTaskGraphTool(options.taskCoordinator!, options.skillRegistry!), config.provider),
       executeDirect: sanitizeOrchTool(createExecuteDirectTool(config, options.skillRegistry!), config.provider),
     }
 

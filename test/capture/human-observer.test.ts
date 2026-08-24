@@ -261,108 +261,26 @@ describe('HumanObserver', () => {
     })
   })
 
-  describe('Playwright event listeners', () => {
-    it('records click events from page', () => {
+  describe('injected console observer', () => {
+    it('does not attach unsupported synthetic page input events', () => {
       const obs = new HumanObserver()
       const page = makePage()
       obs.attach(page as any)
 
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ textContent: 'Button Text', id: 'btn-1', getAttribute: () => null, tagName: 'BUTTON' })
-
-      const actions = obs.getActions()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].type).toBe('click')
-      expect(actions[0].selector).toBe('#btn-1')
+      expect(page.on).toHaveBeenCalledWith('console', expect.any(Function))
+      expect(page.on).not.toHaveBeenCalledWith('click', expect.any(Function))
+      expect(page.on).not.toHaveBeenCalledWith('input', expect.any(Function))
+      expect(page.on).not.toHaveBeenCalledWith('select', expect.any(Function))
+      expect(page.on).not.toHaveBeenCalledWith('keydown', expect.any(Function))
     })
 
-    it('records input events with value masking', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const inputCb = page.on.mock.calls.find((c: any) => c[0] === 'input')?.[1]
-      inputCb?.({ value: 'secret123', getAttribute: (attr: string) => attr === 'type' ? 'password' : null, tagName: 'INPUT' })
-
-      const actions = obs.getActions()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].type).toBe('fill')
-      expect(actions[0].value).toBe('***')
-    })
-
-    it('records select events', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const selectCb = page.on.mock.calls.find((c: any) => c[0] === 'select')?.[1]
-      selectCb?.({ value: 'option-2', getAttribute: () => null, tagName: 'SELECT' })
-
-      const actions = obs.getActions()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].type).toBe('select')
-      expect(actions[0].value).toBe('option-2')
-    })
-
-    it('records submit on Enter key in input', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const keydownCb = page.on.mock.calls.find((c: any) => c[0] === 'keydown')?.[1]
-      keydownCb?.({ tagName: 'INPUT' }, { key: 'Enter' })
-
-      const actions = obs.getActions()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].type).toBe('submit')
-    })
-
-    it('ignores non-Enter keydown', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const keydownCb = page.on.mock.calls.find((c: any) => c[0] === 'keydown')?.[1]
-      keydownCb?.({ tagName: 'INPUT' }, { key: 'Tab' })
-
-      expect(obs.getActions()).toHaveLength(0)
-    })
-
-    it('records navigation from framenavigated', () => {
-      const obs = new HumanObserver()
-      const mainFrame = { url: vi.fn().mockReturnValue('https://example.com/new') }
-      const page = makePage()
-      page.mainFrame.mockReturnValue(mainFrame)
-      obs.attach(page as any)
-
-      const navCb = page.on.mock.calls.find((c: any) => c[0] === 'framenavigated')?.[1]
-      navCb?.(mainFrame)
-
-      const actions = obs.getActions()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].type).toBe('navigate')
-      expect(actions[0].url).toBe('https://example.com/new')
-    })
-
-    it('ignores non-main-frame navigation', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const navCb = page.on.mock.calls.find((c: any) => c[0] === 'framenavigated')?.[1]
-      navCb?.({ url: vi.fn() })
-
-      expect(obs.getActions()).toHaveLength(0)
-    })
-
-    it('does not record when capturing is false', () => {
+    it('does not record after detach', () => {
       const obs = new HumanObserver()
       const page = makePage()
       obs.attach(page as any)
       obs.detach()
 
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ textContent: 'x' })
+      page._emit('console', { text: () => '__HUMAN__{"type":"click","url":"https://example.com","element":"button"}' })
 
       expect(obs.getActions()).toHaveLength(0)
     })
@@ -577,63 +495,6 @@ describe('HumanObserver', () => {
       const longVal = 'a'.repeat(250)
       const masked = maskValue(longVal, 'input')
       expect(masked).toBe('a'.repeat(200) + '...')
-    })
-  })
-
-  describe('selector building (Playwright path)', () => {
-    it('uses id when available', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ id: 'my-btn', textContent: 'x', getAttribute: () => null, tagName: 'BUTTON' })
-
-      expect(obs.getActions()[0].selector).toBe('#my-btn')
-    })
-
-    it('falls back to data-testid', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ id: '', getAttribute: (attr: string) => attr === 'data-testid' ? 'submit-btn' : null, textContent: 'x', tagName: 'BUTTON' })
-
-      expect(obs.getActions()[0].selector).toBe('[data-testid="submit-btn"]')
-    })
-
-    it('falls back to name attribute', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ id: '', getAttribute: (attr: string) => attr === 'name' ? 'email' : null, textContent: 'x', tagName: 'INPUT' })
-
-      expect(obs.getActions()[0].selector).toBe('[name="email"]')
-    })
-
-    it('falls back to tag+class', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.({ id: '', getAttribute: () => null, textContent: 'x', tagName: 'BUTTON', className: 'btn primary' })
-
-      expect(obs.getActions()[0].selector).toBe('button.btn')
-    })
-
-    it('returns unknown for null element', () => {
-      const obs = new HumanObserver()
-      const page = makePage()
-      obs.attach(page as any)
-
-      const clickCb = page.on.mock.calls.find((c: any) => c[0] === 'click')?.[1]
-      clickCb?.(null)
-
-      expect(obs.getActions()[0].selector).toBe('unknown')
     })
   })
 
@@ -886,5 +747,6 @@ describe('HumanObserver', () => {
       expect(state).not.toBeNull()
       expect(state!.hasLoginForm).toBe(true)
     })
+
   })
 })

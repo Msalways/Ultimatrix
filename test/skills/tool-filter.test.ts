@@ -14,12 +14,14 @@ vi.stubGlobal('fetch', vi.fn())
 
 let resolveToolsForSkills: typeof import('../../src/solver/skills/tool-filter').resolveToolsForSkills
 let getCoreTools: typeof import('../../src/solver/skills/tool-filter').getCoreTools
+let getExecutionTools: typeof import('../../src/solver/skills/tool-filter').getExecutionTools
 
 beforeEach(async () => {
   vi.clearAllMocks()
   const mod = await import('../../src/solver/skills/tool-filter')
   resolveToolsForSkills = mod.resolveToolsForSkills
   getCoreTools = mod.getCoreTools
+  getExecutionTools = mod.getExecutionTools
 })
 
 describe('resolveToolsForSkills', () => {
@@ -28,6 +30,10 @@ describe('resolveToolsForSkills', () => {
     expect(tools).toContain('writeFinding')
     expect(tools).toContain('httpRequest')
     expect(tools).toContain('runRecon')
+  })
+
+  it('fails closed for unknown skill IDs', () => {
+    expect(() => resolveToolsForSkills(['does-not-exist'])).toThrow('Skill not found: does-not-exist')
   })
 
   it('returns CORE_TOOLS count when no skills specified', () => {
@@ -52,22 +58,10 @@ describe('resolveToolsForSkills', () => {
   })
 })
 
-describe('CORE_TOOLS includes new tools', () => {
-  it('includes runPrimitive', () => {
-    expect(getCoreTools()).toContain('runPrimitive')
-  })
-
+describe('CORE_TOOLS includes only invariant tools', () => {
   it('includes getOastUrlTool (registry key, not getOastUrl)', () => {
     expect(getCoreTools()).toContain('getOastUrlTool')
     expect(getCoreTools()).not.toContain('getOastUrl')
-  })
-
-  it('includes recordOutcome', () => {
-    expect(getCoreTools()).toContain('recordOutcome')
-  })
-
-  it('includes runCampaign', () => {
-    expect(getCoreTools()).toContain('runCampaign')
   })
 
   it('includes discovery tools listTools and loadTool', () => {
@@ -76,13 +70,17 @@ describe('CORE_TOOLS includes new tools', () => {
     expect(core).toContain('loadTool')
   })
 
-  it('includes runRecon and recon tools', () => {
+  it('does not expose execution tools without an active skill', () => {
     const core = getCoreTools()
-    expect(core).toContain('runRecon')
-    expect(core).toContain('graphqlIntrospect')
-    expect(core).toContain('jwtDecode')
-    expect(core).toContain('frameworkFingerprint')
-    expect(core).toContain('cloudMetadataProbe')
+    for (const tool of getExecutionTools()) {
+      expect(core).not.toContain(tool)
+    }
+  })
+
+  it('active skills still grant declared execution tools', () => {
+    const tools = resolveToolsForSkills(['recon'])
+    expect(tools).toContain('runRecon')
+    expect(tools).toContain('writeFinding')
   })
 })
 

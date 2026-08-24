@@ -1,334 +1,235 @@
+/**
+ * Anti-bot typed-signal tests (Phase C, spec 03 task 8).
+ *
+ * Detection must derive from TYPED PROTOCOL SIGNALS only — mitigation
+ * headers, blocked-class status corroborated by interstitial shape, and exact
+ * challenge-platform iframe hostnames. A source guard pins the no-regex /
+ * no-content-vocab rule.
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 
 function makePage(overrides: Record<string, any> = {}) {
   return {
     url: vi.fn().mockReturnValue('https://example.com'),
     evaluate: vi.fn().mockResolvedValue({
       title: '',
-      bodyText: '',
-      domMatches: [],
-      challengeIframes: [],
+      bodyTextLength: 0,
+      formCount: 0,
+      iframeHosts: [],
     }),
     ...overrides,
   }
 }
 
-describe('BotDetectionHandler', () => {
+describe('BotDetectionHandler (typed signals)', () => {
   let BotDetectionHandler: typeof import('../../src/browser/anti-bot').BotDetectionHandler
-  let getGlobalBotHandler: typeof import('../../src/browser/anti-bot').getGlobalBotHandler
   let resetGlobalBotHandler: typeof import('../../src/browser/anti-bot').resetGlobalBotHandler
 
   beforeEach(async () => {
     const mod = await import('../../src/browser/anti-bot')
     BotDetectionHandler = mod.BotDetectionHandler
-    getGlobalBotHandler = mod.getGlobalBotHandler
     resetGlobalBotHandler = mod.resetGlobalBotHandler
     resetGlobalBotHandler()
   })
 
   describe('detectChallenge', () => {
     it('returns no challenge for clean pages', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage()
-      const challenge = await handler.detectChallenge(page as any)
+      const handler = new BotDetectionHandler!()
+      const challenge = await handler.detectChallenge(makePage() as any)
       expect(challenge.detected).toBe(false)
+      expect(challenge.signals).toEqual([])
     })
 
-    it('detects Cloudflare "Just a moment" challenge', async () => {
-      const handler = new BotDetectionHandler()
+    it('attributes cloudflare from the cf-mitigated protocol header', async () => {
+      const handler = new BotDetectionHandler!()
+      const page = makePage({
+        evaluate: vi.fn().mockResolvedValue({ title: '', bodyTextLength: 120, formCount: 1, iframeHosts: [] }),
+      })
+      const challenge = await handler.detectChallenge(page as any, {
+        status: 403,
+        headers: { 'cf-mitigated': 'challenge' },
+      })
+      expect(challenge.detected).toBe(true)
+      expect(challenge.vendor).toBe('cloudflare')
+      expect(challenge.challengeType).toBe('browser-verification')
+      expect(challenge.signals.some(s => s.kind === 'header')).toBe(true)
+    })
+
+    it('attributes datadome from the x-datadome header', async () => {
+      const handler = new BotDetectionHandler!()
+      const page = makePage()
+      const challenge = await handler.detectChallenge(page as any, {
+        status: 403,
+        headers: { 'X-DataDome': 'captcha' },   // header name matching is case-insensitive
+      })
+      expect(challenge.detected).toBe(true)
+      expect(challenge.vendor).toBe('datadome')
+      expect(challenge.challengeType).toBe('captcha')
+    })
+
+    it('detects via exact challenge-platform iframe hostname', async () => {
+      const handler = new BotDetectionHandler!()
       const page = makePage({
         evaluate: vi.fn().mockResolvedValue({
-          title: 'Just a moment...',
-          bodyText: 'Checking if the site connection is secure. Enable javascript and cookies to continue.',
-          domMatches: ['#challenge-running'],
-          challengeIframes: [],
+          title: '',
+          bodyTextLength: 50,
+          formCount: 0,
+          iframeHosts: ['challenges.cloudflare.com'],
         }),
       })
-
       const challenge = await handler.detectChallenge(page as any)
       expect(challenge.detected).toBe(true)
       expect(challenge.vendor).toBe('cloudflare')
       expect(challenge.challengeType).toBe('browser-verification')
-      expect(challenge.pageTitle).toBe('Just a moment...')
+      expect(challenge.signals[0].kind).toBe('platform-frame')
     })
 
-    it('detects Cloudflare Turnstile', async () => {
-      const handler = new BotDetectionHandler()
+    it('detects datadome captcha-delivery frame', async () => {
+      const handler = new BotDetectionHandler!()
       const page = makePage({
         evaluate: vi.fn().mockResolvedValue({
           title: '',
-          bodyText: '',
-          domMatches: ['.cf-turnstile'],
-          challengeIframes: [],
+          bodyTextLength: 30,
+          formCount: 0,
+          iframeHosts: ['geo.captcha-delivery.com'],
         }),
       })
-
-      const challenge = await handler.detectChallenge(page as any)
-      expect(challenge.detected).toBe(true)
-      expect(challenge.vendor).toBe('cloudflare')
-    })
-
-    it('detects Akamai Bot Manager', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: 'Access Denied',
-          bodyText: 'Reference #18.abc123. Your request has been blocked by Akamai.',
-          domMatches: [],
-          challengeIframes: [],
-        }),
-      })
-
-      const challenge = await handler.detectChallenge(page as any)
-      expect(challenge.detected).toBe(true)
-      expect(challenge.vendor).toBe('akamai')
-      expect(challenge.challengeType).toBe('bot-manager')
-    })
-
-    it('detects DataDome', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: '',
-          bodyText: 'Access blocked by DataDome security service. Please complete the challenge.',
-          domMatches: ['.datadome'],
-          challengeIframes: [],
-        }),
-      })
-
       const challenge = await handler.detectChallenge(page as any)
       expect(challenge.detected).toBe(true)
       expect(challenge.vendor).toBe('datadome')
     })
 
-    it('detects PerimeterX/HUMAN', async () => {
-      const handler = new BotDetectionHandler()
+    it('does not false-positive on ordinary third-party frames', async () => {
+      const handler = new BotDetectionHandler!()
       const page = makePage({
         evaluate: vi.fn().mockResolvedValue({
-          title: 'Please Verify You Are Human',
-          bodyText: 'Access to this page has been restricted by the site owner.',
-          domMatches: ['#px-captcha'],
-          challengeIframes: [],
+          title: 'Shop',
+          bodyTextLength: 5000,
+          formCount: 2,
+          iframeHosts: ['www.youtube-nocookie.com', 'analytics.example.com'],
         }),
       })
-
-      const challenge = await handler.detectChallenge(page as any)
-      expect(challenge.detected).toBe(true)
-      expect(challenge.vendor).toBe('perimeterx')
-      expect(challenge.challengeType).toBe('human-challenge')
-    })
-
-    it('detects challenge via iframe', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: '',
-          bodyText: '',
-          domMatches: [],
-          challengeIframes: ['https://challenges.cloudflare.com/cdn-cgi/challenge-platform/...'],
-        }),
-      })
-
-      const challenge = await handler.detectChallenge(page as any)
-      expect(challenge.detected).toBe(true)
-      expect(challenge.vendor).toBe('cloudflare')
-      expect(challenge.challengeType).toBe('iframe-challenge')
-    })
-
-    it('handles page evaluation errors gracefully', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockRejectedValue(new Error('page crashed')),
-      })
-
       const challenge = await handler.detectChallenge(page as any)
       expect(challenge.detected).toBe(false)
     })
 
-    it('stores challenges in history', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: 'Just a moment...',
-          bodyText: 'Checking your browser',
-          domMatches: ['#challenge-running'],
-          challengeIframes: [],
-        }),
-      })
+    it('flags blocked status only when an interstitial shape corroborates', async () => {
+      const handler = new BotDetectionHandler!()
 
+      // Thin interstitial + 403 → detected (vendor unknown).
+      const thin = makePage({
+        evaluate: vi.fn().mockResolvedValue({ title: 'Access Denied', bodyTextLength: 90, formCount: 1, iframeHosts: [] }),
+      })
+      const detected = await handler.detectChallenge(thin as any, { status: 403 })
+      expect(detected.detected).toBe(true)
+      expect(detected.vendor).toBe('unknown')
+      expect(detected.challengeType).toBe('access-block')
+
+      // Rich content + 403 (legit forbidden page) → NOT attributed.
+      const rich = makePage({
+        evaluate: vi.fn().mockResolvedValue({ title: 'Forbidden', bodyTextLength: 8000, formCount: 4, iframeHosts: [] }),
+      })
+      const notDetected = await handler.detectChallenge(rich as any, { status: 403 })
+      expect(notDetected.detected).toBe(false)
+      expect(notDetected.signals.length).toBeGreaterThan(0) // recorded as evidence
+    })
+
+    it('status alone without context does not fabricate a detection', async () => {
+      const handler = new BotDetectionHandler!()
+      const page = makePage({
+        evaluate: vi.fn().mockResolvedValue({ title: 'Home', bodyTextLength: 9000, formCount: 3, iframeHosts: [] }),
+      })
+      const challenge = await handler.detectChallenge(page as any)
+      expect(challenge.detected).toBe(false)
+    })
+
+    it('handles page evaluation errors gracefully (transport signals still apply)', async () => {
+      const handler = new BotDetectionHandler!()
+      const page = makePage({ evaluate: vi.fn().mockRejectedValue(new Error('page crashed')) })
+      const dead = await handler.detectChallenge(page as any)
+      expect(dead.detected).toBe(false)
+
+      const withHeader = await handler.detectChallenge(page as any, { headers: { 'cf-mitigated': 'challenge' } })
+      expect(withHeader.detected).toBe(true)
+    })
+
+    it('stores challenges in history with signals', async () => {
+      const handler = new BotDetectionHandler!()
+      const page = makePage({
+        evaluate: vi.fn().mockResolvedValue({ title: '', bodyTextLength: 10, formCount: 0, iframeHosts: ['challenges.cloudflare.com'] }),
+      })
       await handler.detectChallenge(page as any)
-      const challenges = handler.getChallenges()
-      expect(challenges).toHaveLength(1)
-      expect(challenges[0].vendor).toBe('cloudflare')
+      const history = handler.getChallenges()
+      expect(history).toHaveLength(1)
+      expect(history[0].signals[0].kind).toBe('platform-frame')
     })
   })
 
   describe('waitForResolution', () => {
     it('returns true when challenge resolves', async () => {
-      const handler = new BotDetectionHandler()
+      const handler = new BotDetectionHandler!()
       let callCount = 0
       const page = makePage({
         evaluate: vi.fn().mockImplementation(async () => {
           callCount++
-          if (callCount <= 2) {
-            return {
-              title: 'Just a moment...',
-              bodyText: 'Checking your browser',
-              domMatches: ['#challenge-running'],
-              challengeIframes: [],
-            }
-          }
-          return {
-            title: 'Welcome',
-            bodyText: 'Dashboard',
-            domMatches: [],
-            challengeIframes: [],
-          }
+          return callCount <= 2
+            ? { title: '', bodyTextLength: 5, formCount: 0, iframeHosts: ['challenges.cloudflare.com'] }
+            : { title: 'Welcome', bodyTextLength: 900, formCount: 1, iframeHosts: [] }
         }),
       })
-
       const resolved = await handler.waitForResolution(page as any, 5000)
       expect(resolved).toBe(true)
     })
 
     it('returns false when challenge does not resolve within timeout', async () => {
-      const handler = new BotDetectionHandler()
+      const handler = new BotDetectionHandler!()
       const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: 'Just a moment...',
-          bodyText: 'Checking your browser',
-          domMatches: ['#challenge-running'],
-          challengeIframes: [],
-        }),
+        evaluate: vi.fn().mockResolvedValue({ title: '', bodyTextLength: 5, formCount: 0, iframeHosts: ['challenges.cloudflare.com'] }),
       })
-
       const resolved = await handler.waitForResolution(page as any, 1500)
       expect(resolved).toBe(false)
     })
 
     it('prevents concurrent waits', async () => {
-      const handler = new BotDetectionHandler()
+      const handler = new BotDetectionHandler!()
       const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: 'Just a moment...',
-          bodyText: 'Checking your browser',
-          domMatches: ['#challenge-running'],
-          challengeIframes: [],
-        }),
+        evaluate: vi.fn().mockResolvedValue({ title: '', bodyTextLength: 5, formCount: 0, iframeHosts: ['challenges.cloudflare.com'] }),
       })
-
-      // Start first wait (this will block for 2s)
       const first = handler.waitForResolution(page as any, 2000)
-      // Second wait should return false immediately (already waiting)
       const second = handler.waitForResolution(page as any, 2000)
       expect(await second).toBe(false)
-
-      // Clean up
       await first
     })
   })
 
   describe('getPromptMessage', () => {
     it('returns vendor-specific message for Cloudflare', () => {
-      const handler = new BotDetectionHandler()
+      const handler = new BotDetectionHandler!()
       const msg = handler.getPromptMessage({
-        detected: true,
-        vendor: 'cloudflare',
-        challengeType: 'browser-verification',
-        pageTitle: '',
-        url: '',
-        timestamp: Date.now(),
+        detected: true, vendor: 'cloudflare', challengeType: 'browser-verification',
+        pageTitle: '', url: '', timestamp: Date.now(), signals: [],
       })
       expect(msg).toContain('Cloudflare')
-      expect(msg).toContain('Verify you are human')
     })
 
-    it('returns vendor-specific message for Akamai', () => {
-      const handler = new BotDetectionHandler()
+    it('falls back to the generic message for unknown vendors', () => {
+      const handler = new BotDetectionHandler!()
       const msg = handler.getPromptMessage({
-        detected: true,
-        vendor: 'akamai',
-        challengeType: 'bot-manager',
-        pageTitle: '',
-        url: '',
-        timestamp: Date.now(),
+        detected: true, vendor: 'unknown', challengeType: 'access-block',
+        pageTitle: '', url: '', timestamp: Date.now(), signals: [],
       })
-      expect(msg).toContain('Akamai')
-    })
-
-    it('returns vendor-specific message for DataDome', () => {
-      const handler = new BotDetectionHandler()
-      const msg = handler.getPromptMessage({
-        detected: true,
-        vendor: 'datadome',
-        challengeType: 'captcha',
-        pageTitle: '',
-        url: '',
-        timestamp: Date.now(),
-      })
-      expect(msg).toContain('DataDome')
-      expect(msg).toContain('CAPTCHA')
-    })
-
-    it('returns vendor-specific message for PerimeterX', () => {
-      const handler = new BotDetectionHandler()
-      const msg = handler.getPromptMessage({
-        detected: true,
-        vendor: 'perimeterx',
-        challengeType: 'human-challenge',
-        pageTitle: '',
-        url: '',
-        timestamp: Date.now(),
-      })
-      expect(msg).toContain('PerimeterX')
-    })
-
-    it('returns generic message for unknown vendor', () => {
-      const handler = new BotDetectionHandler()
-      const msg = handler.getPromptMessage({
-        detected: true,
-        vendor: 'unknown',
-        challengeType: 'unknown',
-        pageTitle: '',
-        url: '',
-        timestamp: Date.now(),
-      })
-      expect(msg).toContain('bot detection')
+      expect(msg).toContain('bot detection challenge')
     })
   })
 
-  describe('clear', () => {
-    it('clears challenge history', async () => {
-      const handler = new BotDetectionHandler()
-      const page = makePage({
-        evaluate: vi.fn().mockResolvedValue({
-          title: 'Just a moment...',
-          bodyText: 'Checking your browser',
-          domMatches: ['#challenge-running'],
-          challengeIframes: [],
-        }),
-      })
-
-      await handler.detectChallenge(page as any)
-      expect(handler.getChallenges()).toHaveLength(1)
-
-      handler.clear()
-      expect(handler.getChallenges()).toHaveLength(0)
-    })
-  })
-
-  describe('global handler', () => {
-    it('returns same instance from getGlobalBotHandler', () => {
-      const a = getGlobalBotHandler()
-      const b = getGlobalBotHandler()
-      expect(a).toBe(b)
-    })
-
-    it('resetGlobalBotHandler creates fresh instance', () => {
-      const original = getGlobalBotHandler()
-      resetGlobalBotHandler()
-      const fresh = getGlobalBotHandler()
-      expect(fresh).not.toBe(original)
+  describe('no-vocabulary-detection guard (source scan)', () => {
+    it('contains no regex literals or content-text pattern lists', () => {
+      const source = readFileSync(join(process.cwd(), 'src/browser/anti-bot.ts'), 'utf8')
+      expect(source).not.toMatch(/\/(?![/*])[^\n]*\/[gimsuy]*\s*[,)\]]/)     // regex literals in code
+      expect(source).not.toMatch(/titlePatterns|bodyPatterns|domPatterns/)   // frozen vocab tables
+      expect(source).not.toMatch(/innerText\.slice|bodyText\.slice/)         // content capture for matching
     })
   })
 })

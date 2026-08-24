@@ -22,7 +22,7 @@
  *  - Chat framing, not solver-report framing: the `done · N steps · M tools`
  *    footer and `------ system events ------` block appear ONLY when the turn
  *    actually did work (steps>0 OR tools>0 OR findings>0). Pure chat turns are
- *    minimal: `assistant: <answer>` (+ reasoning only when present).
+ *    minimal: `assistant: <answer>` (+ reasoning when present).
  *  - `chat` mode can be toggled off → caller falls back to the legacy
  *    `ChatStream` card (see createSolverRenderer). ChatBox itself is mode-agnostic.
  */
@@ -237,6 +237,10 @@ export class ChatBox implements ActivitySink {
 
     if (m.answer.trim()) {
       blocks.push(renderMarkdown(m.answer, { ...this.opts, isTTY: this.tty }).trimEnd())
+    }
+
+    if (!blocks.length && !didWork) {
+      blocks.push(this.c(ESC.yellow) + '[no assistant answer returned]' + this.c(ESC.reset))
     }
 
     if (blocks.length) this.write(blocks.join('\n') + '\n')

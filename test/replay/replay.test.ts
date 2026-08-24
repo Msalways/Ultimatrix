@@ -4,6 +4,12 @@ import { detectRegressions } from '../../src/replay/regression-detector'
 import { generateReport } from '../../src/report/generator'
 import type { TestResult } from '../../src/replay/test-runner'
 import type { Finding } from '../../src/generation/test-generator'
+import type { ProofCheckResult } from '../../src/intelligence/proof-rules'
+import { TestRunner } from '../../src/replay/test-runner'
+
+const passingProof = (findingId: string): ProofCheckResult => ({
+  ruleId: 'test-proof', findingId, passed: true, missingEvidence: [], conflicts: [], evidenceRefs: [`evidence-${findingId}`],
+})
 
 const baselineResults: TestResult[] = [
   { testFile: 'a.spec.ts', testName: 'test-a', status: 'passed', duration: 100 },
@@ -29,6 +35,7 @@ const mockFindings: Finding[] = [
     firstSeen: new Date(),
     lastSeen: new Date(),
     status: 'open',
+    proofCheck: passingProof('f1'),
   },
   {
     id: 'f2',
@@ -41,6 +48,7 @@ const mockFindings: Finding[] = [
     firstSeen: new Date(),
     lastSeen: new Date(),
     status: 'open',
+    proofCheck: passingProof('f2'),
   },
 ]
 
@@ -118,5 +126,13 @@ describe('Report Generator', () => {
     expect(report).toContain('IDOR vulnerability')
     expect(report).toContain('HIGH')
     expect(report).toContain('GET https://example.com/users/123')
+  })
+})
+
+describe('Playwright replay result parsing', () => {
+  it('distinguishes assertion failures from execution errors', () => {
+    const runner = new TestRunner(process.cwd()) as any
+    expect(runner.parsePlaywrightOutput(JSON.stringify({ stats: { expected: 0, unexpected: 1, skipped: 0, flaky: 0 }, errors: [], suites: [] })).status).toBe('failed')
+    expect(runner.parsePlaywrightOutput('not json').status).toBeUndefined()
   })
 })

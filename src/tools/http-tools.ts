@@ -6,6 +6,7 @@ import {getCompressionService} from '../compression/headroom-service'
 import {isUrlInScope} from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
 
 const globalLoopDetector = new LoopDetector()
 
@@ -149,6 +150,15 @@ export const httpRequest = createTool({
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      getCapturedRequestStore().record({
+        method,
+        url,
+        ...(headers ? { headers } : {}),
+        ...(body !== undefined ? { body } : {}),
+        status: raw.status,
+        responseHeaders: resHeaders,
+        responseBody,
+      })
       recordStructuredEvidence({
         type: 'raw_response',
         data: responseBody,
@@ -290,8 +300,8 @@ export const followRedirects = createTool({
           const compressionResult = await getCompressionService().compressResponse(rawBody)
           const body = compressionResult.compressed
           const resHeaders: Record<string, string> = {}
-          raw.headers.forEach((v, k) => { resHeaders[k] = v })
-          recordStructuredEvidence({
+      raw.headers.forEach((v, k) => { resHeaders[k] = v })
+      recordStructuredEvidence({
             type: 'raw_response',
             data: body,
             label: `GET ${url} (redirect-chain, ${hops} hops) → ${raw.status}`,

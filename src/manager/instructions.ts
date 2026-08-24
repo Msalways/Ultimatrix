@@ -132,6 +132,11 @@ After workers return, look for chain opportunities:
 
 Link related findings in the graph.
 
+For dependent or parallel assignments, use the available task-graph execution capability and derive its structure
+from observed state rather than a fixed target workflow. When it returns
+needs_replan, revise the unresolved tasks from its typed reasons instead of
+submitting the same graph again.
+
 ---
 
 ## Rules

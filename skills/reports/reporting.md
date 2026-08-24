@@ -28,6 +28,66 @@ Reporting transforms technical findings into actionable intelligence. This skill
 - **Remediation Quality**: The most valuable part of a report is telling them HOW to fix it, not just WHAT is wrong
 - **False Positive Filtering**: A report full of false positives destroys credibility. Only report confirmed findings.
 
+## Report Templates
+
+### Executive Summary Skeleton
+
+```markdown
+# Security Assessment — <Target>
+**Date:** YYYY-MM-DD | **Scope:** <in-scope assets>
+
+## Overall Risk: <Critical/High/Medium/Low>
+
+<2-3 sentences: what was tested, what the strongest finding means in
+business terms, whether exploitation was confirmed.>
+
+| Severity | Count |
+|----------|-------|
+| Critical | n     |
+| High     | n     |
+| Medium   | n     |
+| Low      | n     |
+
+## Top Risks
+1. <Finding> — <one-line business impact>
+```
+
+### Finding Object (JSON)
+
+```json
+{
+  "id": "F-001",
+  "title": "SQL Injection in /api/orders sort parameter",
+  "severity": "critical",
+  "cvss": {
+    "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "score": 9.8
+  },
+  "affected": "https://target.example/api/orders?sort=",
+  "description": "<what + why it matters, 3-5 sentences>",
+  "reproduction": [
+    "1. Send GET /api/orders?sort=(SELECT SLEEP(5))",
+    "2. Observe 5-second delay confirming time-based injection"
+  ],
+  "evidence": [
+    {"type": "http", "request": "<raw request>", "response": "<raw response excerpt>"}
+  ],
+  "impact": "<data disclosure / auth bypass / RCE ...>",
+  "remediation": ["Use parameterized queries", "Allowlist sort column names"],
+  "references": ["CWE-89", "OWASP A03:2021"]
+}
+```
+
+### Remediation Roadmap Table
+
+```markdown
+| Priority | Finding | Fix | Effort |
+|----------|---------|-----|--------|
+| P0 (now)      | F-001 SQLi       | Parameterize queries; allowlist sort columns | S |
+| P1 (< 30d)    | F-004 IDOR       | Object-level authz checks per tenant         | M |
+| P2 (< 90d)    | F-007 Weak CSP   | Nonce-based script policy; drop unsafe-inline | M |
+```
+
 ## Evidence to Collect
 - All reproduction steps verified and tested
 - Screenshots and HTTP request/response pairs for each finding

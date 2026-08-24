@@ -14,13 +14,16 @@ import { createReachability } from '../../src/identity/reachability'
 const TARGET = 'https://workflow-test.example.com'
 
 function makeReachability(overrides: Partial<ReachabilityRecord> = {}): ReachabilityRecord {
-  return createReachability(
+  return {
+    ...createReachability(
     'workflow-fixture',
     { id: 'anonymous', kind: 'anonymous', label: 'Anonymous' },
     'page',
     `${TARGET}/`,
     '2026-01-01T00:00:00.000Z',
-  )
+    ),
+    ...overrides,
+  }
 }
 
 function makeSpider(overrides: Partial<SpiderRuntimeState> = {}): SpiderRuntimeState {
@@ -72,6 +75,7 @@ describe('createWorkflow', () => {
     expect(wf.status).toBe('pending')
     expect(wf.workflowId).toMatch(/^workflow-/)
     expect(wf.modelUsage).toEqual([])
+    expect(wf.tasks).toEqual([])
     expect(wf.activeWorkers).toEqual([])
     expect(wf.artifacts).toEqual([])
     expect(wf.evidenceRefs).toEqual([])
@@ -95,6 +99,42 @@ describe('coerceWorkflow', () => {
 
   it('rejects an incompatible version (never silently accepts)', () => {
     expect(coerceWorkflow({ ...createWorkflow(TARGET), version: 99 }, { target: TARGET })).toBeNull()
+  })
+
+  it('migrates a version-1 workflow with an empty durable task collection', () => {
+    const legacyReachability = makeReachability()
+    delete (legacyReachability as Partial<ReachabilityRecord>).identity
+    delete (legacyReachability as Partial<ReachabilityRecord>).observedAt
+    const legacy = {
+      ...createWorkflow(TARGET),
+      version: 1,
+      reachability: [legacyReachability],
+    } as Record<string, unknown>
+    delete legacy.tasks
+    const migrated = coerceWorkflow(legacy, { target: TARGET })
+    expect(migrated?.version).toBe(WORKFLOW_STATE_VERSION)
+    expect(migrated?.tasks).toEqual([])
+    expect(migrated?.reachability[0]).toMatchObject({
+      identity: { id: 'anonymous', kind: 'unknown' },
+      observedAt: '2026-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('migrates version-2 tasks with retry, attempt, graph, and context defaults', () => {
+    const legacy = createWorkflow(TARGET) as any
+    legacy.version = 2
+    legacy.tasks = [{
+      taskId: 'legacy-task', objective: 'resume safely', status: 'running',
+      dependencyTaskIds: [], contextRefs: [], requiredCapabilities: [], acceptanceCriteria: [], acceptanceResults: [],
+      budget: {}, attempts: 1, evidenceRefs: [], createdAt: 1, updatedAt: 1,
+    }]
+    const migrated = coerceWorkflow(legacy, { target: TARGET })!
+    expect(migrated.version).toBe(WORKFLOW_STATE_VERSION)
+    expect(migrated.tasks[0]).toMatchObject({
+      retryPolicy: { maxAttempts: 1, retryOn: [], backoffMs: 0 },
+      attemptHistory: [], graphRefs: [], contextCheckpoints: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, modelCalls: 0, reportedCalls: 0 },
+    })
   })
 
   it('rejects a missing or empty workflowId', () => {
@@ -184,6 +224,19 @@ describe('WorkflowStore', () => {
     expect(raw.version).toBe(WORKFLOW_STATE_VERSION)
     expect(raw.workflowId).toBe('workflow-disk')
     expect(raw.browserSessionId).toBe('browser-9')
+  })
+
+  it('redacts URL credentials, sensitive query values, and fragments at persistence', async () => {
+    const target = 'https://admin:password@workflow-secret.example/path?token=secret123&view=list#private'
+    const path = join(dir, 'redacted', 'workflow.json')
+    const store = await WorkflowStore.loadOrCreate(path, { target })
+    await store.save()
+
+    const raw = await readFile(path, 'utf8')
+    expect(raw).not.toContain('password')
+    expect(raw).not.toContain('secret123')
+    expect(raw).not.toContain('#private')
+    expect(raw).toContain('token=secr')
   })
 })
 

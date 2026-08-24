@@ -5,6 +5,7 @@
  *   mcp add <name> --command "<cmd>" [--args "a b"] [--env K=V ...]
  *   mcp add <name> --url <url> [--header K=V ...]
  *   mcp remove <name>
+ *   mcp trust <name>
  *   mcp list
  *   mcp detect            (auto-detect .mcp.json in cwd)
  *
@@ -75,12 +76,24 @@ export async function mcpCommand(args: string[]): Promise<void> {
         process.exit(1)
       }
 
+      server.trusted = false
       const existing = servers.findIndex((s) => s.name === name)
       if (existing !== -1) servers[existing] = server
       else servers.push(server)
       data.mcp = servers
       writeYaml(data)
-      log.success(`Registered MCP server "${name}" in ultimatrix.yaml (tools NOT loaded until requested).`)
+      log.success(`Registered MCP server "${name}" in ultimatrix.yaml (untrusted until approved).`)
+      break
+    }
+
+    case 'trust': {
+      const name = rest[0]
+      const server = servers.find((s) => s.name === name)
+      if (!server) throw new Error(`MCP server not found: ${name}`)
+      server.trusted = true
+      data.mcp = servers
+      writeYaml(data)
+      log.success(`Trusted MCP server "${name}".`)
       break
     }
 
@@ -100,7 +113,7 @@ export async function mcpCommand(args: string[]): Promise<void> {
       }
       for (const s of servers) {
         const loc = s.command ? `stdio: ${s.command}` : `http: ${s.url}`
-        log.info(`- ${s.name} (${loc})${s.auth ? ` auth=${s.auth.kind}` : ''}`)
+        log.info(`- ${s.name} (${loc}) ${s.trusted ? 'trusted' : 'untrusted'}${s.auth ? ` auth=${s.auth.kind}` : ''}`)
       }
       break
     }
@@ -136,7 +149,7 @@ export async function mcpCommand(args: string[]): Promise<void> {
     }
 
     default:
-      log.info('Usage: ultimatrix mcp <add|remove|list|detect> ...')
+      log.info('Usage: ultimatrix mcp <add|trust|remove|list|detect> ...')
   }
 }
 

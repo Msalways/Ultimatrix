@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolve } from 'node:path'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { getGlobalWorkspace } from '@/workspace'
+import { getTargetWorkspaceDir } from '@/workspace'
 import { persistWebSession } from '@/web/session-registry'
 
 export const dynamic = 'force-dynamic'
@@ -13,8 +13,7 @@ interface PersistedMessage {
 }
 
 function historyPath(target: string): string {
-  const workspace = getGlobalWorkspace()
-  return resolve(workspace.getTargetDir(target), 'web-chat-history.json')
+  return resolve(getTargetWorkspaceDir(target), 'web-chat-history.json')
 }
 
 function sanitizeMessages(messages: unknown): PersistedMessage[] {
@@ -56,8 +55,7 @@ export async function PUT(req: NextRequest) {
 
     const body = await req.json()
     const messages = sanitizeMessages(body.messages)
-    const workspace = getGlobalWorkspace()
-    const targetDir = workspace.getTargetDir(target)
+    const targetDir = getTargetWorkspaceDir(target)
     await mkdir(targetDir, { recursive: true })
     await persistWebSession(target)
     await writeFile(

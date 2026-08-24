@@ -20,9 +20,11 @@ export const FindingSchema = z.object({
   cwe: z.string().optional(),
   impact: z.string().optional(),
   confidence: z.number().min(0).max(1),
-  lifecycleStatus: z.enum(['new', 'triaged', 'confirmed', 'mitigated', 'disproven', 'pending_verification', 'verified']),
-  evidenceLevel: z.enum(['L1', 'L2', 'L3']),
-  findingId: z.string().uuid(),
+  lifecycleStatus: z.enum(['candidate', 'pending_verification', 'verified', 'rejected', 'disproven', 'needs_review']),
+  evidenceLevel: z.enum(['L1', 'L2', 'L3', 'L4']),
+  findingId: z.string(),
+  candidateId: z.string().optional(),
+  experimentIds: z.array(z.string()).optional(),
   verifiedAt: z.string().datetime().optional(),
   verificationNote: z.string().optional(),
 })
@@ -182,7 +184,7 @@ export const HypothesisSchema = z.object({
   requiredSetup: z.array(z.string()).optional(),
   risk: z.enum(['info', 'low', 'medium', 'high', 'critical']),
   confidence: z.number().min(0).max(1),
-  status: z.enum(['open', 'testing', 'confirmed', 'rejected']),
+  status: z.enum(['open', 'planned', 'testing', 'candidate', 'verified', 'rejected']),
   origin: z.enum(['human', 'llm']).optional(),
 })
 
@@ -196,9 +198,12 @@ export const ExperimentSchema = z.object({
   insecureSignal: z.string(),
   requiredActors: z.array(z.string()),
   tools: z.array(z.string()),
-  status: z.enum(['planned', 'running', 'completed', 'failed']),
+  status: z.enum(['planned', 'running', 'interesting', 'rejected', 'blocked']),
   resultSummary: z.string().optional(),
   differential: z.record(z.string(), z.unknown()).optional(),
+  oracle: z.record(z.string(), z.unknown()).optional(),
+  outcome: z.record(z.string(), z.unknown()).optional(),
+  retest: z.record(z.string(), z.unknown()).optional(),
 })
 
 export const CandidateFindingSchema = z.object({
@@ -206,11 +211,11 @@ export const CandidateFindingSchema = z.object({
   signalType: z.string(),
   endpoint: z.string(),
   evidence: z.array(z.string()),
-  experimentIds: z.array(z.string().uuid()),
+  experimentIds: z.array(z.string()),
   confidence: z.number().min(0).max(1),
   nextVerificationSteps: z.array(z.string()),
   blockers: z.array(z.string()),
-  status: z.enum(['new', 'triaged', 'testing', 'confirmed', 'rejected', 'mitigated']),
+  status: z.enum(['candidate', 'needs-more-evidence', 'verified', 'rejected']),
   severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
 })
 
@@ -437,6 +442,8 @@ export interface FindingNode extends GraphNodeData {
     lifecycleStatus: FindingLifecycleStatus
     evidenceLevel: EvidenceLevel
     findingId: string
+    candidateId?: string
+    experimentIds?: string[]
     verifiedAt?: string
     verificationNote?: string
     description?: string
@@ -597,6 +604,9 @@ export interface ExperimentNode extends GraphNodeData {
     status: ExperimentStatus
     resultSummary?: string
     differential?: Record<string, unknown>
+    oracle?: import('../research/types').EvidenceOracle
+    outcome?: import('../research/types').ExperimentOutcome
+    retest?: import('../research/types').ExperimentRetest
   }
 }
 
@@ -768,7 +778,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.INPUT]: ['selector', 'inputType', 'name', 'placeholder', 'required', 'maxLength'],
   [NodeType.ENDPOINT]: ['url', 'method', 'description', 'params', 'headers', 'bodySchema', 'authRequired', 'authType', 'tags', 'source', 'origin'],
   [NodeType.TEST]: ['testType', 'status', 'endpoint', 'technique', 'payload', 'tags', 'expectedResult', 'actualResult'],
-  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'verifiedAt', 'verificationNote', 'description', 'tags', 'proofCheck'],
+  [NodeType.FINDING]: ['severity', 'technique', 'endpoint', 'evidence', 'screenshots', 'remediation', 'cwe', 'impact', 'confidence', 'lifecycleStatus', 'evidenceLevel', 'findingId', 'candidateId', 'experimentIds', 'verifiedAt', 'verificationNote', 'description', 'tags', 'proofCheck'],
   [NodeType.AUTH_FLOW]: ['flowType', 'steps', 'reusable', 'credentialHash', 'name', 'description', 'target', 'startUrl', 'cookies', 'savedAt', 'localStorage', 'actionNodeIds'],
   [NodeType.RBAC_ROLE]: ['roleName', 'accessibleEndpoints', 'inaccessibleEndpoints', 'visibleUIElements'],
   [NodeType.ATTACK]: ['technique', 'payload', 'vulnerable', 'confidence', 'timestamp'],
@@ -778,7 +788,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.WORKFLOW]: ['name', 'entryUrl', 'steps', 'relatedEndpoints', 'requiredAuth', 'inputFields', 'stateChanges', 'observedRoles', 'confidence'],
   [NodeType.ENTITY]: ['name', 'ids', 'endpoints', 'ownerFields', 'roleFields', 'sensitiveFields', 'lifecycleStates', 'confidence'],
   [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status'],
-  [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential'],
+  [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential', 'oracle', 'outcome', 'retest'],
   [NodeType.CANDIDATE_FINDING]: ['title', 'signalType', 'endpoint', 'evidence', 'experimentIds', 'confidence', 'nextVerificationSteps', 'blockers', 'status', 'severity'],
   [NodeType.HEADER_SEMANTIC]: ['header', 'role', 'endpoint', 'confidence'],
   [NodeType.AUTH_SCHEME]: ['scheme', 'decoded', 'reusedAcross', 'maskedCredential'],

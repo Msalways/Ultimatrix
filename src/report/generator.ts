@@ -17,7 +17,7 @@ export interface ReportOptions {
 export function generateReport(findings: Finding[], results: TestResult[], options: ReportOptions): string {
   // Slice 09 — report path never bypasses proof rules. Findings whose proof
   // check failed (missing evidence / conflicts) are excluded outright.
-  const eligible = findings.filter(f => !(f.proofCheck && f.proofCheck.passed === false))
+  const eligible = findings.filter(f => f.proofCheck?.passed === true)
   const safeFindings = eligible.map(redactFinding)
   const safeResults = results.map(r => ({ ...r, testName: redactString(r.testName) }))
   const safeOptions: ReportOptions = {

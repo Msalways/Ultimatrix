@@ -21,7 +21,8 @@ import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analys
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { runAnalysis } from './analyser'
 import { redactHarJson } from '../security/secret-vault'
-import { commitFinding } from '../tools/control-tools'
+import { promoteFindingCandidate } from '../tools/control-tools'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
 
 export interface BridgeResult {
   endpointsWritten: number
@@ -63,6 +64,9 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   const safeHarJson = redactHarJson(harJson)
   const archive = parseHar(safeHarJson)
   const entries = archive.log.entries
+
+  // P3.1 — make captured traffic replayable (replayCapturedRequest).
+  getCapturedRequestStore().ingestHarEntries(entries)
 
   if (entries.length === 0) {
     log.dim('HAR bridge: no entries to process')
@@ -126,16 +130,14 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
     const method = entry?.request?.method ?? 'GET'
     const status = entry?.response?.status
     const secretOrigin = originOf(entryUrl)
-    // Every secret finding is a real capture -> routed through the shared
-    // finding-commit gate with source 'captured' and its HAR entry as typed
-    // evidence, so it is structurally verified against what actually crossed
-    // the wire before it can reach the graph or a report.
-    const gateResult = await commitFinding({
+    // Passive capture proves the value was observed, not that it has reportable
+    // impact. Keep it informational until a replayable experiment proves more.
+    const gateResult = await promoteFindingCandidate({
       type: `Secret Exposure: ${secret.type}`,
       endpoint: entryUrl,
       param: `${secret.location}:${secret.name}`,
       method,
-      severity: secret.type === 'jwt' || secret.type === 'password' ? 'high' : 'medium',
+      severity: 'info',
       confidence: 0.7,
       description: `${secret.description}. Found in ${secret.location} (entry ${secret.entryIndex}): ${secret.name} = ${secret.value}`,
       evidence: [
@@ -194,10 +196,15 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   }))
   const hypotheses = generateHypotheses(patterns, harEndpoints)
   for (const hyp of hypotheses) {
-    const _intent = store.addFact({
+    // C6 — hypotheses are Intents (typed status, attackPath), not Facts.
+    // addIntent upserts on description hash; relation queries over
+    // NodeType.INTENT finally see this pipeline's output.
+    // NOTE: PRODUCED edges deferred — Hypothesis.targetEndpoints are
+    // analyser-space entity ids with no resolvable graph counterpart here;
+    // extend Hypothesis with url-keyed targets before wiring edges.
+    store.addIntent({
       description: `Hypothesis [${hyp.id}]: ${hyp.title} — ${hyp.attackVector}. Targets: ${hyp.targetEndpoints.slice(0, 3).join(', ')}${hyp.targetEndpoints.length > 3 ? ` (+${hyp.targetEndpoints.length - 3} more)` : ''}`,
-      source: 'har-bridge',
-      confidence: hyp.confidence,
+      attackPath: hyp.attackVector,
     })
     intentsWritten++
   }

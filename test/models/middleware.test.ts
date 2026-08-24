@@ -7,6 +7,7 @@ import { getGlobalUsageTracker } from '../../src/usage/tracker'
 import { setForensicLog } from '../../src/tools/report-tools'
 import { ForensicLog } from '../../src/logging/forensic-log'
 import type { UltimatrixConfig } from '../../src/config'
+import { createTaskAttribution, runWithTaskAttribution } from '../../src/runtime/task-attribution'
 
 function createMockModel() {
   let callCount = 0
@@ -203,22 +204,82 @@ describe('wrapModel', () => {
     expect(after.outputTokens).toBeGreaterThanOrEqual(50)
   })
 
-  it('does not capture usage from doStream (only doGenerate)', async () => {
+  it('attributes provider-reported usage even when rate limiting is disabled', async () => {
+    const model = createMockModel()
+    model.doGenerate.mockResolvedValue({
+      type: 'generate',
+      usage: { inputTokens: 40, outputTokens: 10, totalTokens: 55 },
+    })
+    const scope = createTaskAttribution('task-usage')
+    const wrapped = wrapModel(model as any, makeConfig({ requestsPerMinute: 0 }))
+
+    await runWithTaskAttribution(scope, () => (wrapped as any).doGenerate({ prompt: 'test' }))
+
+    expect(scope.usage).toEqual({ inputTokens: 40, outputTokens: 10, totalTokens: 55, modelCalls: 1, reportedCalls: 1 })
+  })
+
+  it('aborts the attributed task when provider usage reaches its token limit', async () => {
+    const model = createMockModel()
+    model.doGenerate.mockResolvedValue({
+      type: 'generate',
+      usage: { inputTokens: 70, outputTokens: 30 },
+    })
+    const abort = vi.fn()
+    const scope = createTaskAttribution('task-budget', 100, abort)
+    const wrapped = wrapModel(model as any, makeConfig({ requestsPerMinute: 0 }))
+
+    await expect(runWithTaskAttribution(scope, () => (wrapped as any).doGenerate({ prompt: 'test' })))
+      .rejects.toThrow('reached token limit 100/100')
+    expect(scope.budgetExceeded).toBe(true)
+    expect(abort).toHaveBeenCalledOnce()
+  })
+
+  it('attributes usage from the terminal doStream finish event', async () => {
     const model = createMockModel()
     model.doStream.mockImplementation(async () => {
-      return { type: 'stream', usage: { inputTokens: 100, outputTokens: 50 } }
+      return { stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'text-delta', id: '1', delta: 'done' })
+          controller.enqueue({ type: 'finish', usage: { inputTokens: 100, outputTokens: 50, totalTokens: 175 }, finishReason: 'stop' })
+          controller.close()
+        },
+      }) }
     })
 
     const tracker = getGlobalUsageTracker()
     const before = tracker.getTotal().totalTokens
-
+    const scope = createTaskAttribution('task-stream')
     const config = makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 })
     const wrapped = wrapModel(model as any, config)
 
-    await (wrapped as any).doStream({ prompt: 'test' })
+    await runWithTaskAttribution(scope, async () => {
+      const result = await (wrapped as any).doStream({ prompt: 'test' })
+      const reader = result.stream.getReader()
+      while (!(await reader.read()).done) {}
+    })
 
     const after = tracker.getTotal()
-    expect(after.totalTokens).toBe(before)
+    expect(after.totalTokens).toBe(before + 150)
+    expect(scope.usage).toEqual({ inputTokens: 100, outputTokens: 50, totalTokens: 175, modelCalls: 1, reportedCalls: 1 })
+  })
+
+  it('errors a stream when its finish usage reaches the task limit', async () => {
+    const model = createMockModel()
+    model.doStream.mockResolvedValue({ stream: new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: 'finish', usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 }, finishReason: 'stop' })
+        controller.close()
+      },
+    }) })
+    const scope = createTaskAttribution('task-stream-budget', 100)
+    const wrapped = wrapModel(model as any, makeConfig({ requestsPerMinute: 0 }))
+
+    await expect(runWithTaskAttribution(scope, async () => {
+      const result = await (wrapped as any).doStream({ prompt: 'test' })
+      const reader = result.stream.getReader()
+      while (!(await reader.read()).done) {}
+    })).rejects.toThrow('reached token limit 100/100')
+    expect(scope.budgetExceeded).toBe(true)
   })
 
   it('handles doGenerate with undefined usage gracefully', async () => {

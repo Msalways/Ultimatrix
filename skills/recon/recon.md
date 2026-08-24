@@ -26,6 +26,31 @@ Gather information without touching the target directly:
 - Public code repositories, job postings (reveal tech stack), archived pages
 - Certificate transparency logs, DNS records
 
+```bash
+# WHOIS — registrar, nameservers, expiry, abuse contact
+whois target.com | grep -Ei 'registrar|name server|expiry|creation'
+
+# DNS baseline records
+dig +short A target.com; dig +short MX target.com; dig +short NS target.com; dig +short TXT target.com
+
+# Reverse DNS on adjacent IPs (find sibling infrastructure)
+for ip in $(seq 10 30); do host 203.0.113.$ip | grep -v "not found" ; done
+
+# DNS zone enumeration with dnsrecon (attempts AXFR first)
+dnsrecon -d target.com -t std,axfr
+
+# Passive subdomain discovery from CT logs and passive sources
+curl -s "https://crt.sh/?q=%25.target.com&output=json" | jq -r '.[].name_value' | sort -u
+subfinder -d target.com -silent > subs_passive.txt
+assetfinder --subs-only target.com >> subs_passive.txt
+
+# Aggregate with amass in passive mode (no packets sent to the target)
+amass enum -passive -d target.com -o amass_passive.txt
+
+# Merge all sources into one deduplicated list
+cat subs_passive.txt amass_passive.txt amass_passive.txt 2>/dev/null | sed 's/^\*\.//' | sort -u > all_subs.txt
+```
+
 ### Phase 2: Endpoint Discovery
 1. Navigate to the target URL and capture the full page snapshot
 2. Extract all links, forms, and API endpoints from the page source
@@ -33,6 +58,25 @@ Gather information without touching the target directly:
 4. Test common paths: /api, /graphql, /admin, /.env, /robots.txt, /sitemap.xml, /swagger, /openapi.json
 5. Check for API documentation endpoints: /docs, /api-docs, /swagger.json, /openapi.yaml
 6. Record every discovered endpoint to the graph with **updateGraph**
+
+```bash
+# Probe which discovered subdomains are alive and capture titles/status
+cat subs_passive.txt | sort -u | httpx -title -tech-detect -status-code -o live_subs.txt
+
+# Content discovery against the live host
+gobuster dir -u https://target.com -w /usr/share/seclists/Discovery/Web-Content/common.txt -t 20 -x php,asp,aspx,jsp,html,bak,json
+
+# Common sensitive-path spot checks (fast, low noise)
+for p in robots.txt sitemap.xml .env .git/HEAD swagger.json openapi.json api-docs; do
+  code=$(curl -sk -o /dev/null -w "%{http_code}" "https://target.com/$p")
+  [ "$code" != "404" ] && echo "[${code}] /$p"
+done
+```
+
+```bash
+# Nuclei baseline sweep — information disclosure templates only at recon stage
+nuclei -l live_subs.txt -t exposures/configs/ -t exposures/tokens/ -t technologies/ -severity info,low,medium -silent
+```
 
 ### Phase 3: Deep Page Analysis (CRITICAL — Do Not Skip)
 This is where most scanners miss real findings. You must look at what the page actually contains:
@@ -57,15 +101,75 @@ This is where most scanners miss real findings. You must look at what the page a
    - `backup/`, `old/`, `temp/` — backup directories
    - `robots.txt`, `sitemap.xml` — disallowed paths often contain admin panels
 
+```bash
+# Pull the page and all its linked JS for offline analysis
+curl -sk https://target.com/ > index.html
+grep -oE 'src="[^"]+\.js[^"]*"' index.html | sed 's/src="//;s/"$//' | sort -u > js_files.txt
+
+# Grep JS bundles for secrets and internal endpoints
+while read js; do
+  url=$(echo "$js" | grep '^http' || echo "https://target.com$js")
+  curl -sk "$url" >> all_js.txt
+done < js_files.txt
+
+grep -oEi '(api[_-]?key|apikey|secret|token|password)["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9_\-]{16,}' all_js.txt
+grep -oE '"/(api|internal|v[0-9])/[a-zA-Z0-9/_\-]+' all_js.txt | sort -u   # hidden API routes
+
+# Source maps — original source code exposure
+grep -oE '[a-zA-Z0-9_\-./]+\.js\.map' all_js.txt | sort -u
+# If found, download and unpack:
+curl -sk https://target.com/app.js.map -o app.map
+npx source-map-explorer app.js.map --json 2>/dev/null | head -50
+
+# SSR data payloads often contain full user objects / internal config
+grep -o 'window.__NEXT_DATA__[^<]*' index.html | head -c 2000
+
+# Check exposed dotfiles / VCS directories
+for p in .env .env.local .env.production .git/config .svn/entries composer.json package.json; do
+  code=$(curl -sk -o /dev/null -w "%{http_code}" "https://target.com/$p")
+  echo "[${code}] /$p"
+done
+
+# robots.txt disallowed paths = admin/staging hints
+curl -sk https://target.com/robots.txt
+```
+
 4. **Technology fingerprinting:**
    - Call **frameworkFingerprint** to identify the web framework and version
    - Check cookie names for framework signatures (PHPSESSID, JSESSIONID, _rails_session, etc.)
    - Look at error pages for stack traces or version information
 
+```bash
+# Header-based fingerprinting
+curl -sIk https://target.com | grep -Ei 'server|x-powered|x-aspnet|x-generator|set-cookie'
+
+# Wappalyzer-style CLI fingerprinting
+webanalyze -host https://target.com -output json
+
+# Force a 404 to inspect the error-page stack signature
+curl -sk https://target.com/nonexistent-page-8f3c1 | grep -Ei 'stack|trace|version|exception|django|flask|laravel'
+```
+
 ### Phase 4: GraphQL Reconnaissance (if applicable)
 1. Check if GraphQL introspection is enabled: query `{ __schema { types { name fields { name } } } }`
 2. Map all queries, mutations, and subscriptions
 3. Identify GraphQL-specific vulnerabilities: batching, depth attacks, field suggestions
+
+```bash
+# Introspection probe on common endpoints
+for ep in graphql graphiql api/graphql v1/graphql gql; do
+  code=$(curl -sk -o /dev/null -w "%{http_code}" "https://target.com/$ep")
+  echo "[${code}] /$ep"
+done
+
+# Full introspection query
+curl -sk https://target.com/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"query IntrospectionQuery { __schema { queryType { name } mutationType { name } types { name kind fields { name type { name kind ofType { name } } } } } }"}' | jq .
+
+# Field suggestion oracle — invalid field returns "Did you mean ..." even when introspection is disabled
+curl -sk https://target.com/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ user { id emailx } }"}'
+```
 
 ### Phase 5: Record and Report
 1. Call **recordEvidence** for every significant discovery
@@ -83,6 +187,20 @@ This is where most scanners miss real findings. You must look at what the page a
 - **JavaScript files with embedded secrets or internal endpoints**
 - **Exposed configuration files (.env, package.json)**
 - **HTML source code comments with sensitive data**
+
+```bash
+# HTML comments / metadata sweep
+grep -oE '<!--[^>]+-->' index.html | grep -Ei 'todo|fixme|pass|key|internal|admin|dev|debug'
+grep -oE '<meta[^>]+(generator|author)[^>]*>' index.html
+
+# Extract all links/forms/API paths from the captured page
+grep -oE 'href="[^"]+"' index.html | sed 's/href="//;s/"$//' | sort -u > links.txt
+grep -oE '<form[^>]+action="[^"]*"' index.html
+grep -oE '"(/api/[a-zA-Z0-9/_\-?=&.]+)"' all_js.txt | sort -u
+
+# Hidden form fields with default values (tokens, user IDs)
+grep -B2 -A2 'type="hidden"' index.html
+```
 
 ## Key Concepts
 - **Attack Surface Mapping**: Every discovered endpoint, parameter, and service is a potential testing vector

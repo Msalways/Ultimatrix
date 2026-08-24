@@ -1,4 +1,5 @@
 import { log } from '../utils/logger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface UsageEntry {
   provider: string
@@ -86,6 +87,8 @@ export class UsageTracker {
 let _globalTracker: UsageTracker | null = null
 
 export function getGlobalUsageTracker(): UsageTracker {
+  const owned = getEngagementServices()?.usage
+  if (owned) return owned
   if (!_globalTracker) {
     _globalTracker = new UsageTracker()
   }

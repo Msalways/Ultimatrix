@@ -1,50 +1,49 @@
 /**
  * WebEngine — Server-side engine for the Next.js Web UI.
  *
- * Full CLI parity: browser, spider, memory, scope guard, OAST, dialog watcher,
- * human observer, HAR capture, model capability check, conversation persistence,
- * graph auto-save.
- *
- * Design decisions (see plan §Design Decisions):
- * - Spider runs on first solve, not init — fast startup
- * - Browser follows config.headless — user-configurable
- * - Scope guard from config — same as CLI
- * - Memory uses `ultimatrix-web-<target>` prefix — no CLI conflicts
- * - Cleanup on destroy() — stops browser, OAST, dialog watcher
+ * The web entrypoint shares the cold solver runtime used by the CLI. Browser,
+ * capture, crawl, workers, connectors, and council remain deferred until the
+ * UI or agent activates the corresponding capability.
  */
 
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { getConfigPath, getProvidersPath, loadConfig, type UltimatrixConfig } from '../config'
-import { getGlobalWorkspace } from '../workspace'
 import { GraphStore } from '../graph/store'
 import { OastStore } from '../oast/store'
 import { solve, type SolverStreamMessage, type SolveResult, type PhaseEvent, type SolverConfig } from '../solver/solver'
 import { ForensicLog } from '../logging/forensic-log'
-import { setForensicLog } from '../tools/report-tools'
 import { createEngineServices, type EngineServices } from '../session/engine-setup'
 import { createMemory, createMemoryStore } from '../workers/registry'
-import { getOrCreateBrowser, getActivePage } from '../browser/manager'
-import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
-import { getGlobalObserver } from '../capture/human-observer'
-import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
-import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
-import { getGlobalReactionObserver } from '../browser/reaction-observer'
-import { emitBrowserHumanAction, getGlobalEmitter } from '../events/emitter'
-import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeState, type SpiderRuntimeEvent } from '../spider/runtime'
+import { startDialogWatcher } from '../browser/dialog-watcher'
+import { setOastConfig } from '../oast/server'
+import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { emitBrowserHumanAction, type TypedEventEmitter } from '../events/emitter'
+import type { SpiderRuntime, SpiderRuntimeState } from '../spider/runtime'
 import { spiderEventToPhase } from '../spider/render'
-import { WorkflowStore, getWorkflowPath } from '../workflow/store'
-import { setArtifactCreateListener, getGlobalArtifactRegistry } from '../security/artifacts'
-import { getGlobalDecisionLedger } from '../security/decision-ledger'
-import { coreEvidenceLedger } from '../core/evidence'
-import { getGlobalUsageTracker } from '../usage/tracker'
+import type { WorkflowStore } from '../workflow/store'
+import { createEngagementRuntime, type EngagementRuntime } from '../runtime/engagement-runtime'
 import { log } from '../utils/logger'
-import { loadSkill } from '../solver/skills/loader'
+import { generateSpecCode } from '../recorder/codegen'
+import { getBrowserState } from '../browser/manager'
+import type { RuntimeIdentity } from '../runtime/identity'
 
 export interface WebEngineOpts {
   target: string
   configOverrides?: Partial<UltimatrixConfig>
+}
+
+export interface WebWorkerEvent {
+  workerId: string
+  workerName: string
+  skillId: string
+  task: string
+  status: string
+  startedAt: number
+  completedAt?: number
+  durationMs?: number
+  toolCalls: number
 }
 
 export class WebEngine {
@@ -67,13 +66,14 @@ export class WebEngine {
   private _configFingerprint = ''
   private _providersPath = ''
   private _spiderState?: SpiderRuntimeState
-  private _spiderRan = false
   /** Live runtime handle retained so mid-crawl approvals take effect. */
   private _spiderRuntime?: SpiderRuntime
   /** Slice 02 — workflow-owned state for this engine (persisted per target). */
   private _workflow?: WorkflowStore
   /** Proposed origins the user approved for this engine (persists across crawls). */
   private _approvedOrigins: string[] = []
+  private runtime?: EngagementRuntime
+  private workerEvents: WebWorkerEvent[] = []
 
   constructor(target: string) {
     this.id = randomUUID()
@@ -88,34 +88,29 @@ export class WebEngine {
     this.config = opts.configOverrides
       ? { ...baseConfig, ...opts.configOverrides, target: opts.target }
       : { ...baseConfig, target: opts.target }
+    this.runtime = await createEngagementRuntime(this.config, opts.target)
 
-    const workspace = getGlobalWorkspace()
-    const { graphStore, oastStore } = await workspace.switchTarget(opts.target)
-    this.graphStore = graphStore
-    this.oastStore = oastStore
+    return this.runtime.run(async () => {
+
+    this.attachWorkerEventTracking()
+
+    const workspace = this.runtime!.workspace
+    this.graphStore = this.runtime!.graph
+    this.oastStore = this.runtime!.oast
 
     // Slice 02 — workflow-owned state: load a persisted snapshot for this target
     // or create a fresh one. The workflowId is the stable crawl/evidence/artifact
     // identity; artifacts created during the session fold in via the typed listener.
-    this._workflow = await WorkflowStore.loadOrCreate(getWorkflowPath(opts.target), { target: opts.target, browserProvider: this.config.browser.provider })
-    getGlobalArtifactRegistry().setWorkflowId(this._workflow.state.workflowId)
-    setArtifactCreateListener((record) => {
-      if (record.workflowId === this._workflow?.state.workflowId) {
-        this._workflow?.recordArtifact(record)
-      }
-    })
-    getGlobalDecisionLedger().setWorkflowId(this._workflow.state.workflowId)
+    this._workflow = this.runtime!.workflow
 
     const targetDir = workspace.getTargetDir(opts.target)
     if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
     const dbPath = resolve(targetDir, 'ultimatrix.db')
     this.memoryStore = await createMemoryStore(dbPath)
-    this.memory = await createMemory(this.config, this.memoryStore, dbPath)
+    this.memory = await createMemory(this.config, this.memoryStore, dbPath, { mainAgent: true })
     await this.ensureMemoryThread()
 
-    const forensicLogPath = resolve(workspace.getTargetDir(opts.target), 'forensic.ndjson')
-    this.forensicLog = new ForensicLog(forensicLogPath)
-    setForensicLog(this.forensicLog)
+    this.forensicLog = this.runtime!.forensicLog
 
     // Scope guard — same as CLI
     const scopeConfig = this.config.scope ?? (opts.target ? deriveScopeFromTarget(opts.target) : null)
@@ -123,60 +118,51 @@ export class WebEngine {
     // External-tool policy: opt-in only (deny by default)
     setExternalToolsConfig(this.config.externalTools ?? null)
 
-    // Browser — follows config.headless
-    const browser = getOrCreateBrowser(this.config)
-    await browser.ensureReady()
-    this._workflow?.setBrowserSessionId(String(browser.id ?? ''))
-    this._workflow?.setBrowserProvider(this.config.browser.provider ?? 'stagehand')
-    startDialogWatcher(browser)
-    this.attachHumanObserver()
-
-    // OAST server
-    setOastConfig(this.config.oast ?? null)
-    const oastPort = await startOastServer()
+    // Expensive browser, OAST, and capture services remain cold.
     this.registerCleanup(async () => {
-      log.dim('[WebEngine] Stopping OAST server...')
-      await stopOastServer()
+      try { this.runtime?.services.reactionObserver.detach() } catch {}
+      try { this.runtime?.services.humanObserver.detach() } catch {}
     })
-    this.registerCleanup(async () => {
-      log.dim('[WebEngine] Stopping dialog watcher and detaching observers...')
-      stopDialogWatcher()
-      try { getGlobalReactionObserver().detach() } catch {}
-      try { getGlobalObserver().detach() } catch {}
-      // Browser is a process-level singleton — do NOT close it here.
-      // Closing the browser kills the Chromium process for ALL engines.
-      // The browser lifecycle is managed externally (TTL cleanup / graceful shutdown).
-    })
-
-    // Navigate to target if set
-    if (opts.target) {
-      const page = getActivePage()
-      if (page) {
-        try {
-          log.info(`[WebEngine] Navigating to ${opts.target}...`)
-          const response = await page.goto(opts.target, { waitUntil: 'domcontentloaded', timeout: 30000 })
-          const status = response?.status() || 'unknown'
-          const title = await page.title().catch(() => '')
-          log.info(`[WebEngine] Loaded ${opts.target} — status: ${status}, title: "${title}"`)
-        } catch (err) {
-          log.warn(`[WebEngine] Initial navigation failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-    }
 
     // Engine services (brain, worker pool, skill registry, blackboard, evidence, council, model selector)
     this.engineServices = await createEngineServices({
       config: this.config,
-      browser,
       memory: this.memory,
       target: opts.target,
+      identity: this.runtimeIdentity,
+      workflow: this._workflow,
+      runtime: this.runtime,
+      approvedOrigins: this._approvedOrigins,
+    })
+    this.registerCleanup(() => this.engineServices.extensionRegistry?.closeAll() ?? Promise.resolve())
+    this.registerCleanup(() => this.engineServices.lazyServices?.close() ?? Promise.resolve())
+    // Self-evolution (spec 05): engagement summary → anonymized cross-session memory.
+    this.registerCleanup(async () => {
+      try {
+        const { finalizeEngagementMemory } = await import('../intelligence/cross-engagement')
+        await finalizeEngagementMemory(undefined, opts.target)
+      } catch {
+        /* evolution is best-effort */
+      }
     })
 
     this._initialized = true
-    log.info(`[WebEngine] Initialized for target: ${opts.target} (OAST: :${oastPort})`)
+    log.info(`[WebEngine] Initialized cold for target: ${opts.target}`)
+    })
   }
 
   async solve(params: {
+    goal: string
+    interactionMode?: 'ask' | 'run'
+    solverConfig?: SolverConfig
+    onMessage?: (msg: SolverStreamMessage) => void
+    onPhase?: (event: PhaseEvent) => void
+  }): Promise<SolveResult> {
+    if (!this.runtime) throw new Error('WebEngine not initialized')
+    return this.runtime.run(() => this.solveOwned(params))
+  }
+
+  private async solveOwned(params: {
     goal: string
     interactionMode?: 'ask' | 'run'
     solverConfig?: SolverConfig
@@ -191,20 +177,10 @@ export class WebEngine {
     this._abortController = abortController
 
     try {
-      // Auto-crawl on first solve — spider runs once per target, not per engine instance
-      if (!this._spiderRan && this.target && this.config.spider?.enabled !== false) {
-        await this.runSpider(params.onMessage, params.onPhase)
-        this._spiderRan = true
-      }
-
-      // Pre-load top-matching skill bodies for this goal
-      let matchedSkills: any[] | undefined
-      const skillRegistry = this.engineServices.skillRegistry
-      if (skillRegistry && params.goal.trim().length > 3) {
-        const candidates = skillRegistry.search(params.goal.trim()).slice(0, 3)
-        const loaded = candidates.map(m => loadSkill(m.id)).filter(Boolean)
-        if (loaded.length > 0) matchedSkills = loaded
-      }
+      this.engineServices.lazyServices?.setTurnObservers({
+        onSpiderEvent: event => params.onPhase?.(spiderEventToPhase(event)),
+        onSpiderRuntime: runtime => { this._spiderRuntime = runtime },
+      })
 
       const result = await solve(this.engineServices.solverBrain!, {
         origin: this.target,
@@ -212,16 +188,17 @@ export class WebEngine {
         interactionMode: params.interactionMode,
         config: params.solverConfig,
         ultimatrixConfig: this.config,
-        matchedSkills,
         blackboard: this.engineServices.sessionBlackboard,
         evidence: this.engineServices.sessionEvidence,
         loopDetector: this.engineServices.sessionLoopDetector,
         reflexion: this.engineServices.sessionReflexion,
         onMessage: params.onMessage,
         onPhase: params.onPhase,
-        memory: { thread: this.threadId, resource: this.resourceId },
+        memory: { thread: this.runtimeIdentity.threadId, resource: this.runtimeIdentity.resourceId },
         signal: abortController.signal,
+        workflow: this._workflow,
       })
+      this._spiderState = this.engineServices.lazyServices?.crawlState
 
       // Graph auto-save after each solve
       await this.graphStore?.save().catch(() => {})
@@ -230,56 +207,6 @@ export class WebEngine {
     } finally {
       this._running = false
       if (this._abortController === abortController) this._abortController = null
-    }
-  }
-
-  /**
-   * Run the spider agent to crawl the target.
-   * Extracted from lifecycle.ts for Web parity.
-   */
-  private async runSpider(
-    onMessage?: (msg: SolverStreamMessage) => void,
-    onPhase?: (event: PhaseEvent) => void,
-  ): Promise<void> {
-    const browser = getOrCreateBrowser(this.config)
-    const workflow = this._workflow
-    const spiderWorkflowId = workflow?.state.workflowId ?? this.id
-    // Slice 10 — bridge the FULL typed spider:event stream into the solver
-    // phase stream via the shared renderer (parity with CLI). Scoped by
-    // workflowId so concurrent engines never cross-couple.
-    const onSpiderEvent = (event: SpiderRuntimeEvent): void => {
-      if (event.workflowId !== spiderWorkflowId) return
-      onPhase?.(spiderEventToPhase(event))
-    }
-    getGlobalEmitter().on('spider:event', onSpiderEvent)
-    try {
-      this._spiderState = await runSpiderRuntime({
-        config: this.config,
-        target: this.target,
-        browser,
-        graphStore: this.graphStore as any,
-        workflowId: workflow?.state.workflowId ?? this.id,
-        initialState: workflow?.state.spider ? { ...workflow.state.spider } : undefined,
-        allowAny: isAllowAny(),
-        approvedOrigins: this._approvedOrigins,
-        onRuntime: (runtime) => {
-          this._spiderRuntime = runtime
-        },
-        onMessage,
-        onPhase,
-        signal: this._abortController?.signal,
-      })
-    } finally {
-      getGlobalEmitter().off('spider:event', onSpiderEvent)
-    }
-
-    // Slice 02 — attach the crawl snapshot to the workflow and persist so a
-    // later engine/session can resume from the same workflowId.
-    if (workflow) {
-      workflow.attachSpider(this._spiderState)
-      workflow.syncEvidence(coreEvidenceLedger.all())
-      workflow.syncModelUsage(getGlobalUsageTracker().getEntries())
-      await workflow.save()
     }
   }
 
@@ -378,6 +305,47 @@ export class WebEngine {
    * but does NOT touch browser, spider state, or page navigation.
    */
   async reloadConfig(): Promise<void> {
+    if (!this.runtime) return
+    return this.runtime.run(() => this.reloadConfigOwned())
+  }
+
+  getEvents(): TypedEventEmitter {
+    if (!this.runtime) throw new Error('WebEngine not initialized')
+    return this.runtime.services.events
+  }
+
+  getWorkerEventSnapshot(): { workers: WebWorkerEvent[]; recent: WebWorkerEvent[]; count: number } {
+    const workers = this.workerEvents.filter(worker => worker.status === 'running')
+    return { workers, recent: this.workerEvents.slice(-20), count: workers.length }
+  }
+
+  getCode(): string[] {
+    const testCases = this.runtime?.services.recorder?.getTestCases() ?? []
+    if (testCases.length === 0) return []
+    const lines = generateSpecCode(testCases, 'web-viewer').split('\n')
+    const chunks: string[] = []
+    for (let index = 0; index < lines.length; index += 50) {
+      chunks.push(lines.slice(index, index + 50).join('\n'))
+    }
+    return chunks
+  }
+
+  getBrowserState(): ReturnType<typeof getBrowserState> {
+    if (!this.runtime) throw new Error('WebEngine not initialized')
+    return this.runtime.run(() => getBrowserState())
+  }
+
+  async startBrowser(): Promise<ReturnType<typeof getBrowserState>> {
+    if (!this.runtime || !this.engineServices.lazyServices) throw new Error('WebEngine not initialized')
+    return this.runtime.run(async () => {
+      const browser = await this.engineServices.lazyServices!.ensureBrowser()
+      startDialogWatcher(browser)
+      await this.attachHumanObserver()
+      return getBrowserState()
+    })
+  }
+
+  private async reloadConfigOwned(): Promise<void> {
     if (!this._initialized) return
     try {
       const freshConfig = await loadConfig()
@@ -386,14 +354,22 @@ export class WebEngine {
 
       this.config = { ...freshConfig, target: this.target }
       this._configFingerprint = newFingerprint
+      const requestedProvider = this.config.browser.provider ?? 'stagehand'
+      if (requestedProvider !== this.runtime?.browser.name) {
+        throw new Error(`Browser provider cannot change during an engagement (${this.runtime?.browser.name} -> ${requestedProvider})`)
+      }
 
       // Rebuild engine services (brain, worker pool, skill registry, blackboard, evidence, council, model selector)
-      const browser = getOrCreateBrowser(this.config)
+      await this.engineServices.lazyServices?.close()
+      await this.engineServices.extensionRegistry?.closeAll()
       this.engineServices = await createEngineServices({
         config: this.config,
-        browser,
         memory: this.memory,
         target: this.target,
+        identity: this.runtimeIdentity,
+        workflow: this._workflow,
+        runtime: this.runtime,
+        approvedOrigins: this._approvedOrigins,
       })
 
       // Update scope guard
@@ -419,9 +395,19 @@ export class WebEngine {
     return this._resourceId
   }
 
-  private attachHumanObserver(): void {
-    const observer = getGlobalObserver()
-    const page = getActivePage()
+  private get runtimeIdentity(): RuntimeIdentity {
+    if (!this._workflow) throw new Error('WebEngine identity requested before workflow initialization')
+    return {
+      threadId: this.threadId,
+      resourceId: this.resourceId,
+      workflowId: this._workflow.state.workflowId,
+      target: this.target,
+    }
+  }
+
+  private async attachHumanObserver(): Promise<void> {
+    const observer = this.runtime!.services.humanObserver
+    const page = await this.runtime?.browser.getActivePage(this.runtime.browserSession!.sessionId) as any
     if (!page) return
 
     observer.onAction((action) => {
@@ -471,6 +457,51 @@ export class WebEngine {
   }
 
   async destroy(): Promise<void> {
+    if (this.runtime) return this.runtime.run(() => this.destroyOwned())
+    return this.destroyOwned()
+  }
+
+  private attachWorkerEventTracking(): void {
+    const bus = this.getEvents()
+    const onSpawned = (event: any) => {
+      this.workerEvents.push({
+        workerId: event.workerId,
+        workerName: event.workerName,
+        skillId: event.skillId,
+        task: event.task,
+        status: 'running',
+        startedAt: event.timestamp,
+        toolCalls: 0,
+      })
+      if (this.workerEvents.length > 50) this.workerEvents.splice(0, this.workerEvents.length - 50)
+    }
+    const onFinished = (event: any, status: string) => {
+      const worker = this.workerEvents.find(item => item.workerId === event.workerId)
+      if (!worker) return
+      worker.status = status
+      worker.completedAt = event.timestamp
+      worker.durationMs = event.durationMs
+    }
+    const onToolCall = (event: any) => {
+      const worker = this.workerEvents.find(item => item.workerId === event.workerId)
+      if (worker) worker.toolCalls++
+    }
+    const onCompleted = (event: any) => onFinished(event, 'completed')
+    const onError = (event: any) => onFinished(event, 'error')
+
+    bus.on('worker:spawned', onSpawned)
+    bus.on('worker:completed', onCompleted)
+    bus.on('worker:error', onError)
+    bus.on('worker:tool-call', onToolCall)
+    this.registerCleanup(async () => {
+      bus.off('worker:spawned', onSpawned)
+      bus.off('worker:completed', onCompleted)
+      bus.off('worker:error', onError)
+      bus.off('worker:tool-call', onToolCall)
+    })
+  }
+
+  private async destroyOwned(): Promise<void> {
     this._initialized = false
     this._running = false
     this._abortController?.abort()
@@ -486,5 +517,6 @@ export class WebEngine {
       }
     }
     this._cleanupFns = []
+    if (this.runtime) await this.runtime.close({ status: 'aborted', reason: 'web engine destroyed' })
   }
 }

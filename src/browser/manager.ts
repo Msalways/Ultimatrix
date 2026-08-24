@@ -9,11 +9,24 @@ import { getGlobalReactionObserver } from './reaction-observer'
 import { getGlobalObserver } from '../capture/human-observer'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { redactString } from '../security/secret-vault'
+import { getEngagementServices } from '../runtime/engagement-context'
 
-let browser: StagehandBrowser | null = null
-let activeBrowserRef: StagehandBrowser | null = null
-let creating = false
-let browserConfigSnapshot: { headless: boolean; viewport: { width: number; height: number }; env: string } | null = null
+export interface BrowserManagerState {
+  browser: StagehandBrowser | null
+  activeBrowser: StagehandBrowser | null
+  creating: boolean
+  configSnapshot: { headless: boolean; viewport: { width: number; height: number }; env: string } | null
+}
+
+export function createBrowserManagerState(): BrowserManagerState {
+  return { browser: null, activeBrowser: null, creating: false, configSnapshot: null }
+}
+
+const legacyBrowserManager = createBrowserManagerState()
+
+function getBrowserManagerState(): BrowserManagerState {
+  return getEngagementServices()?.browserManager ?? legacyBrowserManager
+}
 
 const STAGEHAND_FAST_PROVIDER = 'groq'
 const STAGEHAND_FAST_MODEL = 'llama-3.1-8b-instant'
@@ -56,25 +69,26 @@ function deriveStagehandModel(config: UltimatrixConfig) {
 }
 
 export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
+  const state = getBrowserManagerState()
   if (config.browser.provider && config.browser.provider !== 'stagehand') {
     if (config.browser.provider === 'camofox') {
       throw new Error(`Browser provider 'camofox' is planned but not yet implemented. Keep browser.provider: 'stagehand' (the default).`)
     }
     throw new Error(`Unsupported browser provider: ${config.browser.provider}`)
   }
-  if (browser) return browser
-  if (creating) {
+  if (state.browser) return state.browser
+  if (state.creating) {
     // Wait for the other creation to finish
     const start = Date.now()
-    while (creating && Date.now() - start < 30_000) {
+    while (state.creating && Date.now() - start < 30_000) {
       // busy wait — creation is fast
     }
-    if (browser) return browser!
+    if (state.browser) return state.browser
   }
-  creating = true
+  state.creating = true
   try {
     const stagehandModel = deriveStagehandModel(config)
-    browser = new StagehandBrowser({
+    state.browser = new StagehandBrowser({
       headless: config.browser.headless,
       viewport: config.browser.viewport,
       timeout: config.timeout,
@@ -89,44 +103,95 @@ export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
       excludeTools: ['stagehand_close'],
       model: stagehandModel,
     })
-    browserConfigSnapshot = {
+    state.configSnapshot = {
       headless: config.browser.headless,
       viewport: config.browser.viewport,
       env: config.browser.env,
     }
-    activeBrowserRef = browser
+    state.activeBrowser = state.browser
 
     log.dim(`Stagehand browser initialized with model: ${stagehandModel.modelName}`)
   } finally {
-    creating = false
+    state.creating = false
   }
-  return browser!
+  return state.browser!
 }
 
 export function setActiveBrowser(b: StagehandBrowser): void {
-  if (activeBrowserRef && activeBrowserRef !== b && browser !== b) {
-    activeBrowserRef.close().catch(() => {})
+  const state = getBrowserManagerState()
+  if (state.activeBrowser && state.activeBrowser !== b && state.browser !== b) {
+    state.activeBrowser.close().catch(() => {})
   }
-  activeBrowserRef = b
+  state.activeBrowser = b
 }
 
 export function getActiveBrowser(): StagehandBrowser | null {
-  return activeBrowserRef || browser
+  const state = getBrowserManagerState()
+  return state.activeBrowser || state.browser
+}
+
+// ─── Phase A: provider-aware session state ───────────────────────────
+
+interface ActiveCamofoxSession {
+  handle: unknown
+  page: unknown
+  context: unknown
+  browser: unknown
+}
+let camofoxSession: ActiveCamofoxSession | null = null
+
+/** Register (or clear) the active Camoufox session so shared flows cover it. */
+export function setActiveCamofoxSession(session: ActiveCamofoxSession): void {
+  camofoxSession = session
+}
+export function clearActiveCamofoxSession(): void {
+  camofoxSession = null
+}
+export function getActiveCamofoxSession(): ActiveCamofoxSession | null {
+  return camofoxSession
+}
+
+/**
+ * The active browser context regardless of vendor. Both Stagehand's V3Context
+ * and a Playwright BrowserContext expose cookies()/addCookies()/addInitScript()
+ * — the shape both call sites rely on.
+ */
+export function getActiveBrowserContext(): any | null {
+  if (camofoxSession) return camofoxSession.context ?? null
+  const b = getActiveBrowser()
+  try {
+    return (b as any)?.requireStagehand?.()?.context ?? null
+  } catch {
+    return null
+  }
 }
 
 export async function closeBrowser(): Promise<void> {
-  if (browser) {
+  const state = getBrowserManagerState()
+  if (camofoxSession) {
+    try {
+      stopDialogWatcher()
+      getGlobalReactionObserver().detach()
+      const ctx = camofoxSession.context as any
+      await ctx?.close?.()
+      await (camofoxSession.browser as any)?.close?.()
+    } catch (err) {
+      log.dim(`Camoufox close error: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    camofoxSession = null
+  }
+  if (state.browser) {
     try {
       stopDialogWatcher()
       getGlobalReactionObserver().detach()
       getGlobalObserver().detach()
-      await browser.close()
+      await state.browser.close()
     } catch (err) {
       log.dim(`Browser close error: ${err instanceof Error ? err.message : String(err)}`)
     }
-    browser = null
-    activeBrowserRef = null
-    browserConfigSnapshot = null
+    state.browser = null
+    state.activeBrowser = null
+    state.configSnapshot = null
   }
 }
 
@@ -138,7 +203,8 @@ export function getBrowserState(): {
   currentUrl: string | null
   humanCaptureActive: boolean
 } {
-  const b = activeBrowserRef || browser
+  const state = getBrowserManagerState()
+  const b = state.activeBrowser || state.browser
   const page = getActivePage()
   let pageCount: number | null = null
   let currentUrl: string | null = null
@@ -157,8 +223,8 @@ export function getBrowserState(): {
 
   return {
     active: !!b,
-    headless: browserConfigSnapshot?.headless ?? null,
-    env: browserConfigSnapshot?.env ?? null,
+    headless: state.configSnapshot?.headless ?? null,
+    env: state.configSnapshot?.env ?? null,
     pageCount,
     currentUrl,
     humanCaptureActive: getGlobalObserver().isCapturing(),
@@ -166,15 +232,17 @@ export function getBrowserState(): {
 }
 
 export function getActivePage(): any | null {
-  const b = activeBrowserRef || browser
-  if (!b) return null
+  const state = getBrowserManagerState()
+  const b = state.activeBrowser || state.browser
+  if (!b && !camofoxSession) return null
   try {
-    const stagehand = (b as any).requireStagehand?.()
+    const stagehand = (b as any)?.requireStagehand?.()
     if (stagehand?.context) {
       return stagehand.context.activePage() || stagehand.context.pages?.[0] || null
     }
   } catch {}
-  return null
+  // Camoufox (Playwright) session.
+  return camofoxSession?.page ?? null
 }
 
 export async function captureScreenshot(

@@ -6,8 +6,9 @@
  *  - worker candidates run only when a delegate is configured, else skipped
  *  - confirmed count reflects the primitive results, never assumptions
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runAdvancedPlaybook } from '../../src/orchestration/playbook-runner'
+import { createRunAdvancedPlaybookTool } from '../../src/orchestration/tools'
 import type {
   AdvancedPlaybook,
   DiagnosisProfile,
@@ -68,6 +69,20 @@ function buildPlaybook(profile: DiagnosisProfile, opts?: { selectedCandidateIds?
 }
 
 describe('runAdvancedPlaybook', () => {
+  it('binds worker candidates to durable coordinator tasks', async () => {
+    const run = vi.fn(async () => ({ status: 'completed', resultSummary: 'worker result' }))
+    const runner = vi.fn(async (_input, deps) => {
+      const delegated = await deps.delegateWorker!({ id: 'candidate-1', workerId: 'recon', reason: 'inspect endpoint' } as any, {} as any)
+      return { executed: [], skipped: [], confirmed: 0, unconfirmed: 0, missingContext: [], loadedSkills: [], delegated }
+    })
+    const tool = createRunAdvancedPlaybookTool({ run } as any, runner as any)
+
+    const output = await (tool as any).execute({ commit: true }, {})
+
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ objective: 'inspect endpoint', skillId: 'recon' }))
+    expect(output.result.delegated).toEqual({ ok: true, note: 'worker result' })
+  })
+
   it('executes primitive candidates through the runPrimitive seam', async () => {
     const c = candidate({ id: 'ssrf:ep1', primitiveId: 'ssrfOast', endpointId: 'ep1', param: 'callback' })
     const ran: string[] = []

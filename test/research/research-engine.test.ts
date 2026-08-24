@@ -60,6 +60,7 @@ describe('research engine', () => {
     const differential = compareResearchResponses(
       { status: 403, body: '{"error":"forbidden"}' },
       { status: 200, body: '{"email":"victim@app.test","role":"owner"}' },
+      { jsonFields: ['email', 'role'] },
     )
     const candidate = candidateFromExperiment(experiment, differential)
 
@@ -67,5 +68,14 @@ describe('research engine', () => {
     expect(differential.authorizationMismatch).toBe(true)
     expect(candidate.severity).toBe('high')
     expect(candidate.nextVerificationSteps.length).toBeGreaterThan(0)
+  })
+
+  it('keeps a generic allowed response inconclusive without a declared observable', () => {
+    const differential = compareResearchResponses(
+      { status: 403, body: '{"error":"forbidden"}' },
+      { status: 200, body: '{"message":"ok"}' },
+    )
+    expect(differential.interesting).toBe(false)
+    expect(differential.authorizationMismatch).toBe(false)
   })
 })

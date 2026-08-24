@@ -92,6 +92,19 @@ export interface BrowserConfig {
   selfHeal: boolean
   verbose: number
   sessionScope?: 'workflow'
+  /** Camoufox (anti-detection Firefox) launch options — provider 'camofox'. */
+  camofox?: {
+    /**
+     * Path to the Camoufox Firefox executable. Resolved from this field, then
+     * CAMOUFOX_EXECUTABLE env. Fail-closed when absent — never a silent
+     * chromium fallback (that would reintroduce the fingerprinting problem).
+     */
+    executablePath?: string
+    /** Humanized cursors/delays (camoufox humanize config). */
+    humanize?: boolean
+    locale?: string
+    proxy?: { server: string; username?: string; password?: string }
+  }
 }
 
 export interface MemoryConfig {
@@ -150,6 +163,8 @@ export interface ModelTiers {
 }
 
 export type TaskComplexity = 'low' | 'medium' | 'high' | 'critical'
+export type ModelTierName = 'fast' | 'balanced' | 'powerful'
+export type ModelModuleRole = 'brain' | 'spider' | 'crawlSummarizer' | 'verifier' | 'reporter' | 'council'
 
 export interface ModelRoles {
   brain?: TierConfig
@@ -160,6 +175,8 @@ export interface ModelRoles {
   reporter?: TierConfig
   council?: TierConfig
 }
+
+export type ModelRoleTiers = Partial<Record<ModelModuleRole, ModelTierName>>
 
 export interface AuthorizationConfig {
   confirmed: boolean
@@ -452,6 +469,11 @@ export const DEFAULTS = {
     maxResponseSize: 50000,
     fallbackEnabled: true,
   },
+  interaction: {
+    showReasoning: true,
+    showSystemEvents: true,
+    chat: true,
+  },
 } as const
 
 // ─── Context window config types (Phase 1 gap fix) ───────────────────────
@@ -475,6 +497,9 @@ export interface UltimatrixConfig {
   timeout: number
   creds: ProviderCredentials
   modelTiers?: ModelTiers
+  /** User-facing module routing: stable modules select a tier, not a raw model. */
+  modelRoleTiers?: ModelRoleTiers
+  /** Advanced/backward-compatible explicit module/worker model overrides. */
   modelRoles?: ModelRoles
   browser: BrowserConfig
   memory: MemoryConfig
@@ -510,6 +535,8 @@ export interface UltimatrixConfig {
   skillsDirs?: string[]
   /** Phase 7.2: skill selection options. */
   skills?: { exclude?: string[] }
+  /** Phase D: assistant persona (name used in prompts/greetings; tone controls flavor). */
+  assistant?: { name?: string; tone?: 'concise-wit' | 'plain' }
   /** Interaction display policy (reasoning visibility, system-event log). */
   interaction?: InteractionConfig
   /** Phase 1 gap fix: Context window management. */
@@ -528,6 +555,7 @@ export interface McpServerConfig {
   url?: string
   headers?: Record<string, string>
   type?: 'stdio' | 'http' | 'sse'
+  trusted?: boolean
   auth?: {
     kind: 'oauth' | 'client-credentials'
     clientId?: string
@@ -967,6 +995,20 @@ export function validateConfig(
     }
   }
 
+  const modelRoleTiersRaw = raw.modelRoleTiers && typeof raw.modelRoleTiers === 'object'
+    ? raw.modelRoleTiers as Record<string, unknown>
+    : undefined
+  if (raw.modelRoleTiers && typeof raw.modelRoleTiers !== 'object') {
+    errors.push('modelRoleTiers must be an object')
+  } else if (modelRoleTiersRaw) {
+    for (const role of ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'] as const) {
+      const tier = modelRoleTiersRaw[role]
+      if (tier !== undefined && tier !== 'fast' && tier !== 'balanced' && tier !== 'powerful') {
+        errors.push(`modelRoleTiers.${role} must be "fast", "balanced", or "powerful"`)
+      }
+    }
+  }
+
   const modelRolesRaw = raw.modelRoles && typeof raw.modelRoles === 'object'
     ? raw.modelRoles as Record<string, unknown>
     : undefined
@@ -1111,6 +1153,16 @@ export function validateConfig(
     if (Object.keys(parsedModelRoles).length === 0) parsedModelRoles = undefined
   }
 
+  let parsedModelRoleTiers: ModelRoleTiers | undefined
+  if (modelRoleTiersRaw) {
+    parsedModelRoleTiers = {}
+    for (const role of ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'] as const) {
+      const tier = modelRoleTiersRaw[role]
+      if (tier === 'fast' || tier === 'balanced' || tier === 'powerful') parsedModelRoleTiers[role] = tier
+    }
+    if (Object.keys(parsedModelRoleTiers).length === 0) parsedModelRoleTiers = undefined
+  }
+
   // Validate modelCapabilities
   const modelCapsRaw = raw.modelCapabilities as Record<string, unknown> | undefined
   if (modelCapsRaw) {
@@ -1213,6 +1265,7 @@ export function validateConfig(
     timeout,
     creds,
     modelTiers: parsedTiers,
+    ...(parsedModelRoleTiers ? { modelRoleTiers: parsedModelRoleTiers } : {}),
     ...(parsedModelRoles ? { modelRoles: parsedModelRoles } : {}),
     browser: {
       provider: browserRaw.provider != null ? browserRaw.provider as BrowserConfig['provider'] : DEFAULTS.browser.provider,
@@ -1330,7 +1383,10 @@ export function validateConfig(
     ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
     ...(raw.compression ? { compression: raw.compression as CompressionConfig } : {}),
     ...(raw.truncation ? { truncation: raw.truncation as TruncationConfig } : {}),
-    ...(raw.interaction ? { interaction: raw.interaction as InteractionConfig } : {}),
+    interaction: {
+      ...DEFAULTS.interaction,
+      ...(raw.interaction ? raw.interaction as InteractionConfig : {}),
+    },
     ...(raw.context ? { context: raw.context as ContextConfig } : {}),
     ...(raw.council ? { council: raw.council as import('./council/types').CouncilConfig } : {}),
     ...(raw.credentials ? { credentials: raw.credentials as Record<string, { email: string; password: string }> } : {}),
@@ -1533,13 +1589,32 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   if (config.modelTiers && Object.keys(config.modelTiers).length > 0) {
     const tiers: Record<string, TierConfig> = {}
     for (const [tier, tierCfg] of Object.entries(config.modelTiers)) {
-      if (tierCfg) tiers[tier] = { provider: tierCfg.provider, model: tierCfg.model, ...(tierCfg.maxOutputTokens ? { maxOutputTokens: tierCfg.maxOutputTokens } : {}) }
+      if (tierCfg) tiers[tier] = { provider: tierCfg.provider, model: tierCfg.model }
     }
     output.modelTiers = tiers
   }
 
+  if (config.modelRoleTiers && Object.keys(config.modelRoleTiers).length > 0) {
+    output.modelRoleTiers = config.modelRoleTiers
+  }
+
   if (config.modelRoles && Object.keys(config.modelRoles).length > 0) {
-    output.modelRoles = config.modelRoles
+    const stripRouteTokens = (route?: TierConfig): TierConfig | undefined =>
+      route ? { provider: route.provider, model: route.model } : undefined
+    const roles: ModelRoles = {}
+    for (const role of ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'] as const) {
+      const route = stripRouteTokens(config.modelRoles[role])
+      if (route) roles[role] = route
+    }
+    if (config.modelRoles.worker) {
+      const worker: Partial<Record<TaskComplexity, TierConfig>> = {}
+      for (const complexity of ['low', 'medium', 'high', 'critical'] as const) {
+        const route = stripRouteTokens(config.modelRoles.worker[complexity])
+        if (route) worker[complexity] = route
+      }
+      if (Object.keys(worker).length > 0) roles.worker = worker
+    }
+    if (Object.keys(roles).length > 0) output.modelRoles = roles
   }
 
   // Write non-default browser config

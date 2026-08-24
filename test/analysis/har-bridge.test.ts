@@ -7,6 +7,7 @@ vi.mock('@mastra/core/tools', () => ({
 const recorded: any[] = []
 
 const mockStore = {
+  upsertNode: vi.fn((node: any) => node),
   addEndpoint: vi.fn((data: any) => {
     recorded.push(data)
     return { id: `ep_${recorded.length}`, type: 'Endpoint', properties: data }

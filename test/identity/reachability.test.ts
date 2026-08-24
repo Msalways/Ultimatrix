@@ -55,6 +55,8 @@ describe('reachability records', () => {
       resourceId: 'https://reach.example.com/',
       resourceType: 'page',
       reachedAt: '2026-01-01T00:00:00.000Z',
+      identity: { id: 'anonymous', kind: 'anonymous' },
+      observedAt: '2026-01-01T00:00:00.000Z',
     })
   })
 

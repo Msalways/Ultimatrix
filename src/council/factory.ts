@@ -13,6 +13,7 @@ import { createAgent } from '../mastra'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
+import type { TaskCoordinator } from '../runtime/task-coordinator'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { personaFor, personaMetadataFor, defaultCouncilConfig } from './personas'
 import { ConversationBus } from './bus'
@@ -22,6 +23,7 @@ import type { Skill } from '../solver/skills/loader'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
 import { createSpawnSwarmTool } from '../manager/tools/spawn-swarm'
 import { createExecuteDirectTool } from '../manager/tools/execute-direct'
+import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { TOOL_IDS } from '../mastra/tools'
 import { ModelSelector } from '../models/selector'
 import { createTool } from '@mastra/core/tools'
@@ -29,6 +31,8 @@ import { z } from 'zod'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { log } from '../utils/logger'
+import { createExtensionTools } from '../extensions/tool-tools'
+import type { DynamicToolRegistry } from '../extensions/tool-registry'
 
 /** Local sanitizer mirroring brain-tools.sanitizeTool — avoids a circular import. */
 function sanitizeTool(tool: any, provider?: string): any {
@@ -48,7 +52,9 @@ export interface CouncilResources {
 export interface CouncilDeps {
   skillRegistry: SkillRegistry
   workerPool: WorkerPool
+  taskCoordinator: TaskCoordinator
   browser: StagehandBrowser
+  extensionRegistry: DynamicToolRegistry
 }
 
 const LLM_ROLES: CouncilMemberRole[] = ['strategist', 'operator', 'skeptic', 'analyst']
@@ -196,10 +202,12 @@ function makeMember(config: UltimatrixConfig, role: CouncilMemberRole, deps: Cou
 
   // Role-specific orchestration tools (operator executes; others deliberate).
   const extraTools: Record<string, any> = role === 'operator' ? {
-    spawnWorker: createSpawnWorkerTool(config, deps.skillRegistry, deps.workerPool),
-    spawnSwarm: createSpawnSwarmTool(config, deps.skillRegistry, deps.workerPool),
+    spawnWorker: createSpawnWorkerTool(config, deps.skillRegistry, deps.taskCoordinator),
+    spawnSwarm: createSpawnSwarmTool(config, deps.skillRegistry, deps.taskCoordinator),
+    runTaskGraph: createRunTaskGraphTool(deps.taskCoordinator, deps.skillRegistry),
     executeDirect: createExecuteDirectTool(config, deps.skillRegistry),
   } : {}
+  Object.assign(extraTools, createExtensionTools(deps.extensionRegistry))
 
   // Dynamic model-selection reasoning for planning (strategist) and execution (operator).
   // Other roles deliberate on evidence/strategy, not model choice.

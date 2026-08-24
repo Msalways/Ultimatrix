@@ -5,13 +5,11 @@
  */
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { Agent } from '@mastra/core/agent'
-import { getOrCreateBrowser, closeBrowser } from '../browser/manager'
+import { getOrCreateBrowser } from '../browser/manager'
 import { createSupervisor } from '../manager/agent'
 import { loadConfig, DEFAULTS } from '../config'
 import type { UltimatrixConfig } from '../config'
 import { startOastServer, stopOastServer } from '../oast/server'
-import { getGlobalGraphStore } from '../graph/store'
-import { getGlobalOastStore } from '../oast/store'
 import { createAllWorkers, createMemoryStore, createMemory } from '../workers/registry'
 import { FindingNode } from '../graph/schema'
 import { log } from '../utils/logger'
@@ -23,9 +21,11 @@ import { ScanManager } from '../scan-manager'
 import { ContextWriter } from '../context/writer'
 import { ContextReader } from '../context/reader'
 import { AppModel, Finding, Trace } from '../context/schemas'
+import { createWorkerTaskCoordinator } from '../runtime/worker-pool-executor'
+import { createEngagementRuntime, type EngagementRuntime } from '../runtime/engagement-runtime'
+import { z } from 'zod'
 
 export class AgentManager {
-  private static instance: AgentManager
 
   private skillRegistry: SkillRegistry | null = null
   private workerPool: WorkerPool | null = null
@@ -42,12 +42,16 @@ export class AgentManager {
   private oastPort: number | null = null
   private initialized = false
   private initErrors: string[] = []
+  private runtime: EngagementRuntime | null
+  private ownsRuntime: boolean
 
-  static getInstance(): AgentManager {
-    if (!AgentManager.instance) {
-      AgentManager.instance = new AgentManager()
-    }
-    return AgentManager.instance
+  constructor(runtime?: EngagementRuntime) {
+    this.runtime = runtime ?? null
+    this.ownsRuntime = !runtime
+  }
+
+  static forRuntime(runtime: EngagementRuntime): AgentManager {
+    return new AgentManager(runtime)
   }
 
   isInitialized(): boolean {
@@ -74,6 +78,11 @@ export class AgentManager {
 
   getInitErrors(): string[] {
     return this.initErrors
+  }
+
+  getRuntime(): EngagementRuntime {
+    if (!this.runtime) throw new Error('AgentManager engagement runtime not initialized')
+    return this.runtime
   }
 
   getScanManager(): ScanManager {
@@ -192,6 +201,8 @@ export class AgentManager {
 
   async chat(messages: any[], threadId?: string): Promise<any> {
     if (!this.supervisor) throw new Error('AgentManager not initialized')
+    const supervisor = this.supervisor
+    return this.getRuntime().run(async () => {
     const events = getToolEventEmitter()
     events.push({ type: 'agent-start', message: 'Agent processing...', timestamp: Date.now(), details: { messageCount: messages.length } })
 
@@ -199,9 +210,10 @@ export class AgentManager {
       ? { thread: threadId ?? 'ultimatrix-web-' + Date.now(), resource: 'ultimatrix' }
       : { thread: threadId ?? 'ultimatrix-web-' + Date.now(), resource: 'ultimatrix' }
 
-    const result = await this.supervisor.stream(messages, {
+const result = await supervisor.stream(messages, {
       memory,
       maxSteps: this.config?.agent.maxSteps ?? DEFAULTS.agent.maxSteps,
+      structuredOutput: { schema: z.any() },
       onChunk: (chunk: any) => {
         if (chunk.type === 'tool-call') {
           events.push({
@@ -236,6 +248,7 @@ export class AgentManager {
 
     events.push({ type: 'agent-end', message: 'Agent response complete', timestamp: Date.now() })
     return result
+    })
   }
 
   async init(config?: UltimatrixConfig): Promise<void> {
@@ -243,7 +256,16 @@ export class AgentManager {
     this.initErrors = []
 
     const cfg = config ?? loadConfig()
+    if (!cfg.target) throw new Error('Legacy AgentManager requires an explicit target to create an engagement runtime')
     this.config = cfg
+    if (!this.runtime) {
+      this.runtime = await createEngagementRuntime(cfg, cfg.target)
+      this.ownsRuntime = true
+    } else if (this.runtime.target !== cfg.target) {
+      throw new Error(`Injected runtime target mismatch: expected ${cfg.target}, got ${this.runtime.target}`)
+    }
+    const runtime = this.runtime
+    await runtime.run(async () => {
 
     // Initialize scan manager
     this.scanManager = new ScanManager({ scansDir: cfg.agent.scansDir })
@@ -267,8 +289,6 @@ export class AgentManager {
 
     await createMemoryStore()
     const memory = await createMemory(cfg)
-    await getGlobalGraphStore().load()
-    await getGlobalOastStore().load()
 
     const deployed = process.env.DEPLOYED === 'true'
     const events = getToolEventEmitter()
@@ -292,7 +312,7 @@ export class AgentManager {
 
       events.push({ type: 'info', message: 'Starting OAST server...', timestamp: Date.now() })
       try {
-        const oastPort = await startOastServer()
+        const oastPort = await startOastServer(0, runtime.oast)
         this.oastPort = oastPort
         events.push({ type: 'info', message: `OAST server ready on port ${oastPort}`, timestamp: Date.now() })
         log.info(`OAST server started on port ${oastPort}`)
@@ -311,11 +331,16 @@ export class AgentManager {
 
     events.push({ type: 'info', message: 'Initializing agents...', timestamp: Date.now() })
     try {
-      if (this.skillRegistry && this.workerPool) {
+      const taskCoordinator = this.workerPool
+        ? createWorkerTaskCoordinator(runtime.workflow, this.workerPool)
+        : undefined
+      await taskCoordinator?.recoverInterrupted()
+      if (this.skillRegistry && this.workerPool && taskCoordinator) {
         // Dynamic mode: use skill-driven supervisor
         this.supervisor = createSupervisor(cfg, {
           skillRegistry: this.skillRegistry,
           workerPool: this.workerPool,
+          taskCoordinator,
           browser: this.browser ?? undefined,
           memory,
         })
@@ -338,6 +363,7 @@ export class AgentManager {
     events.push({ type: 'info', message: `Agent ready — ${cfg.model}${cfg.target ? ' targeting ' + cfg.target : ''}`, timestamp: Date.now() })
     log.banner('Ultimatrix v8 (legacy mode)',
       'Model: ' + cfg.model + (cfg.target ? '  |  Target: ' + cfg.target : '') + (this.oastPort ? `  |  OAST: :${this.oastPort}` : ''))
+    })
   }
 
   async updateConfig(partial: Partial<UltimatrixConfig>): Promise<void> {
@@ -348,13 +374,17 @@ export class AgentManager {
 
     const keys = Object.keys(partial) as (keyof UltimatrixConfig)[]
     const onlyTarget = keys.length === 1 && keys[0] === 'target'
-    const cfgKeys = ['provider', 'model', 'creds', 'modelTiers', 'browser', 'memory', 'agent'] as (keyof UltimatrixConfig)[]
+    const cfgKeys = ['provider', 'model', 'creds', 'modelTiers', 'browser', 'memory', 'agent', 'target'] as (keyof UltimatrixConfig)[]
     const needsReinit = cfgKeys.some(k => k in partial)
 
-    if (onlyTarget || !needsReinit) {
+    if (!needsReinit) {
       this.config = { ...this.config, ...partial }
       log.info(`Config updated (${onlyTarget ? 'target only' : 'non-critical fields'}) — no reinit needed`)
       return
+    }
+
+    if (!this.ownsRuntime) {
+      throw new Error('AgentManager with an injected runtime cannot be reconfigured; create a new adapter for the new engagement')
     }
 
     const merged = { ...this.config, ...partial } as UltimatrixConfig
@@ -363,15 +393,14 @@ export class AgentManager {
   }
 
   async getFindingsFromGraph(): Promise<FindingNode[]> {
-    const graph = getGlobalGraphStore()
+    const graph = this.getRuntime().graph
     const nodes = graph.queryNodes()
     return nodes.filter(n => n.type === 'Finding') as FindingNode[]
   }
 
   async getCode(): Promise<string[]> {
     try {
-      const { getGlobalRecorder } = await import('../recorder/index')
-      const recorder = getGlobalRecorder()
+      const recorder = this.getRuntime().services.recorder
       if (!recorder) return []
       const testCases = recorder.getTestCases()
       if (testCases.length === 0) return []
@@ -390,26 +419,32 @@ export class AgentManager {
   async runSpiderCrawl(targetUrl?: string): Promise<void> {
     if (!this.browser) throw new Error('Browser not initialized')
     if (!this.config) throw new Error('AgentManager not initialized')
+    const browser = this.browser
+    const config = this.config
+    return this.getRuntime().run(async () => {
 
-    const target = targetUrl ?? this.config.target
+    const target = targetUrl ?? config.target
     if (!target) throw new Error('No target URL specified')
 
     const { createSpiderAgent } = await import('../spider/agent')
     const { createMemory, createMemoryStore } = await import('../workers/registry')
-    const { getGlobalGraphStore } = await import('../graph/store')
     const { getToolEventEmitter } = await import('./tool-events')
 
     const events = getToolEventEmitter()
     events.push({ type: 'info', message: `Starting spider crawl for ${target}...`, timestamp: Date.now() })
 
     const store = await createMemoryStore()
-    const memory = await createMemory(this.config, store)
-    const spiderAgent = createSpiderAgent(this.config, memory, this.browser)
+    const memory = await createMemory(config, store)
+    const spiderAgent = createSpiderAgent(config, memory, browser)
 
     const threadId = `spider-${Date.now()}`
     const result = await spiderAgent.stream(
-      `Navigate to ${target} using stagehand_navigate. Use stagehand tools to dismiss overlays, discover forms/fill them, detect auth flows (login/logout/refresh), and record everything with updateGraph. Report all findings.`,
-      { memory: { thread: threadId, resource: 'ultimatrix-spider' }, toolChoice: 'required' },
+      `Navigate to ${target} using the browser navigation capability. Use browser tools to dismiss overlays, discover forms/fill them, detect auth flows (login/logout/refresh), and record everything with updateGraph. Report all findings.`,
+      {
+        memory: { thread: threadId, resource: 'ultimatrix-spider' },
+        toolChoice: 'required',
+        structuredOutput: { schema: z.any() },
+      }
     )
 
     for await (const chunk of result.fullStream) {
@@ -443,8 +478,9 @@ export class AgentManager {
       }
     }
 
-    await getGlobalGraphStore().save()
+    await this.getRuntime().graph.save()
     events.push({ type: 'info', message: 'Spider crawl completed', timestamp: Date.now() })
+    })
   }
 
   async saveContext(): Promise<void> {
@@ -462,7 +498,7 @@ export class AgentManager {
       if (findings.length > 0) await this.contextWriter.writeFindings(findings as any)
       if (traces.length > 0) await this.contextWriter.writeTraces(traces as any)
 
-      await getGlobalGraphStore().save()
+      await this.getRuntime().graph.save()
       log.info(`Saved context for scan ${this.currentScanId}`)
     } catch (error) {
       log.error(`Failed to save context:`, error as Record<string, unknown>)
@@ -471,16 +507,18 @@ export class AgentManager {
   }
 
   async stop(): Promise<void> {
-    getToolEventEmitter().push({ type: 'info', message: 'Shutting down agent...', timestamp: Date.now() })
+    const runtime = this.runtime
+    if (runtime) runtime.run(() => getToolEventEmitter().push({ type: 'info', message: 'Shutting down agent...', timestamp: Date.now() }))
+    else getToolEventEmitter().push({ type: 'info', message: 'Shutting down agent...', timestamp: Date.now() })
 
     if (this.currentScanId) {
       await this.saveContext()
     }
 
-    await getGlobalGraphStore().save()
-    await getGlobalOastStore().save()
-    await stopOastServer()
-    await closeBrowser()
+    if (runtime && !this.ownsRuntime) await runtime.saveCheckpoint('legacy-manager:stop')
+    if (runtime) await stopOastServer(runtime.oast)
+    else await stopOastServer()
+    if (runtime && this.ownsRuntime) await runtime.close({ status: 'completed' })
     this.browser = null
     this.supervisor = null
     this.workers = null
@@ -493,5 +531,7 @@ export class AgentManager {
     this.initialized = false
     this.oastPort = null
     this.config = null
+    this.runtime = null
+    this.ownsRuntime = true
   }
 }

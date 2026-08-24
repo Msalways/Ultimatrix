@@ -1,18 +1,18 @@
 import { createTool } from '@mastra/core/tools'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
-import type { WorkerPool } from '../../workers/pool'
 import type { UltimatrixConfig } from '../../config'
 import type { ModelSelector } from '../../models/selector'
 import { getGlobalGraphStore } from '../../graph/store'
-import { getActiveBrowser } from '../../browser/manager'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
 import { getGlobalDecisionLedger } from '../../security/decision-ledger'
+import type { TaskCoordinator } from '../../runtime/task-coordinator'
 
 export function createSpawnWorkerTool(
   config: UltimatrixConfig,
   skillRegistry: SkillRegistry,
-  workerPool: WorkerPool,
+  taskCoordinator: TaskCoordinator,
   modelSelector?: ModelSelector,
 ) {
   return createTool({
@@ -27,6 +27,7 @@ export function createSpawnWorkerTool(
       complexity: z.enum(['low', 'medium', 'high', 'critical']).default('medium').describe('Task complexity used for model routing'),
       requiredCapabilities: z.array(z.string()).optional().describe('Model strengths needed for this worker'),
       tokenBudget: z.number().optional().describe('Token budget for this worker'),
+      timeoutMs: z.number().int().positive().optional().describe('Wall-clock deadline for this worker'),
     }),
     outputSchema: z.object({
       workerId: z.string(),
@@ -48,7 +49,7 @@ export function createSpawnWorkerTool(
         reasoning: z.string().optional(),
       }).optional(),
     }),
-    execute: async ({ skillId, task, endpointId, tier, modelId, complexity, requiredCapabilities, tokenBudget }, _context) => {
+    execute: async ({ skillId, task, endpointId, tier, modelId, complexity, requiredCapabilities, tokenBudget, timeoutMs }, context) => {
 
       // SUPERVISOR-1: Snapshot graph before spawning
       const store = getGlobalGraphStore()
@@ -85,31 +86,47 @@ export function createSpawnWorkerTool(
       }
 
       const startTime = Date.now()
+      let workerId = ''
+      let workerName = `${skillId} Specialist`
       try {
+        if (!skillRegistry.has(skillId)) throw new Error(`Skill not found: ${skillId}`)
         const taskComplexity = complexity ?? 'medium'
         const selection = !modelId && modelSelector
           ? modelSelector.selectForTask({ skillId, taskDescription: informedTask, complexity: taskComplexity, requiredCapabilities }, 'worker')
           : undefined
         const routedTier = (selection?.tier ?? tier) as 'fast' | 'balanced' | 'powerful'
         const routedModelId = modelId ?? selection?.modelId
-        const worker = workerPool.spawn({ skillId, task: informedTask, tier: routedTier, modelId: routedModelId, complexity: taskComplexity, tokenBudget, browser: getActiveBrowser() || undefined })
-        const workerName = (worker as any).name ?? `${skillId} Specialist`
+        const taskId = `task-${randomUUID()}`
 
-        // Emit lifecycle events
-        emitWorkerSpawned(worker.id, workerName, skillId, task, { endpointId, tier: routedTier, modelId: routedModelId, tokenBudget, routingReason: selection?.reasoning })
-        emitWorkerStarted(worker.id, workerName, skillId, task)
-
-        // Slice 07: persist the spawn decision so routing reasons survive the run
         getGlobalDecisionLedger().recordDecision({
           kind: 'worker.spawn',
           reason: `spawn ${skillId} specialist worker`,
           routingReason: selection?.reasoning,
           provider: selection?.provider,
           model: routedModelId,
-          sourceRefs: [worker.id, `tier:${routedTier}`, ...(endpointId ? [endpointId] : [])],
+          sourceRefs: [taskId, `tier:${routedTier}`, ...(endpointId ? [endpointId] : [])],
         })
 
-        const result = await worker.generate(informedTask)
+        const taskState = await taskCoordinator.run({
+          taskId,
+          objective: informedTask,
+          skillId,
+          contextRefs: endpointId ? [endpointId] : [],
+          requiredCapabilities,
+          complexity: taskComplexity,
+          tokenLimit: tokenBudget,
+          timeoutMs,
+          modelId: routedModelId,
+          provider: selection?.provider,
+          tier: routedTier,
+          signal: (context as any)?.abortSignal,
+          onWorkerAssigned: (worker) => {
+            workerId = worker.workerId
+            workerName = worker.workerName
+            emitWorkerSpawned(workerId, workerName, skillId, task, { endpointId, tier: routedTier, modelId: routedModelId, tokenBudget, routingReason: selection?.reasoning })
+            emitWorkerStarted(workerId, workerName, skillId, task)
+          },
+        })
         const durationMs = Date.now() - startTime
 
         // SUPERVISOR-1: Snapshot graph after worker completes
@@ -124,57 +141,56 @@ export function createSpawnWorkerTool(
           findingsAdded: findingsAfter - findingsBefore,
         }
 
-        emitWorkerCompleted(worker.id, workerName, skillId, task, 'completed', { result, durationMs, graphDiff: { nodesAdded: graphDiff.nodesAdded, findingsAdded: graphDiff.findingsAdded } })
+        if (taskState.status !== 'completed') {
+          emitWorkerError(workerId, workerName, skillId, task, taskState.error ?? taskState.status, durationMs)
+          return { workerId, status: taskState.status, error: taskState.error, graphDiff }
+        }
+
+        emitWorkerCompleted(workerId, workerName, skillId, task, 'completed', { result: taskState.resultSummary, durationMs, graphDiff: { nodesAdded: graphDiff.nodesAdded, findingsAdded: graphDiff.findingsAdded } })
 
         // Cap worker result: return only compact fields, NOT the full FullOutput.
         // FullOutput contains steps/toolCalls/toolResults which are unbounded and
         // would bloat the brain's context if included.
         const compactResult = {
-          text: typeof (result as any)?.text === 'string' ? (result as any).text.slice(0, 2000) : '',
+          text: taskState.resultSummary ?? '',
           findingsCount: graphDiff.findingsAdded,
           nodesAdded: graphDiff.nodesAdded,
           durationMs,
         }
 
         return {
-          ok: true,
-          value: {
-            workerId: worker.id,
-            status: 'completed',
-            result: compactResult,
-            graphDiff,
-            routing: {
-              tier: routedTier,
-              modelId: routedModelId,
-              provider: selection?.provider,
-              reasoning: selection?.reasoning ?? (modelId ? 'explicit modelId override' : undefined),
-            },
+          workerId,
+          status: 'completed',
+          result: compactResult,
+          graphDiff,
+          routing: {
+            tier: routedTier,
+            modelId: routedModelId,
+            provider: selection?.provider,
+            reasoning: selection?.reasoning ?? (modelId ? 'explicit modelId override' : undefined),
           },
-        } as any
+        }
       } catch (error) {
         const durationMs = Date.now() - startTime
         const nodesAfter = store.queryNodes().length
         const findingsAfter = store.queryNodes(undefined, { type: 'Finding' } as any).length
         const errorMsg = error instanceof Error ? error.message : String(error)
 
-        emitWorkerError('', `${skillId} Specialist`, skillId, task, errorMsg, durationMs)
+        emitWorkerError(workerId, workerName, skillId, task, errorMsg, durationMs)
 
         return {
-          ok: false,
-          value: {
-            workerId: '',
-            status: 'failed',
-            error: errorMsg,
-            graphDiff: {
-              nodesBefore,
-              nodesAfter,
-              nodesAdded: nodesAfter - nodesBefore,
-              findingsBefore,
-              findingsAfter,
-              findingsAdded: findingsAfter - findingsBefore,
-            },
+          workerId,
+          status: 'failed',
+          error: errorMsg,
+          graphDiff: {
+            nodesBefore,
+            nodesAfter,
+            nodesAdded: nodesAfter - nodesBefore,
+            findingsBefore,
+            findingsAfter,
+            findingsAdded: findingsAfter - findingsBefore,
           },
-        } as any
+        }
       }
     },
   })

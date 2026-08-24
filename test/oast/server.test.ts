@@ -82,7 +82,9 @@ async function handleRoute(url: string, method: string, body?: string): Promise<
   return { status: res._getStatus(), body: JSON.parse(res._getBody() || '{}') }
 }
 
-import { getGlobalOastStore } from '../../src/oast/store'
+import { getGlobalOastStore, OastStore } from '../../src/oast/store'
+import { EvidenceLedger } from '../../src/intelligence/evidence-ledger'
+import { runWithEngagementServices } from '../../src/runtime/engagement-context'
 
 describe('OAST server', () => {
   beforeEach(() => {
@@ -104,6 +106,18 @@ describe('OAST server', () => {
     expect(port).toBeGreaterThan(0)
     expect(mockListen).toHaveBeenCalled()
     await stopOastServer()
+  })
+
+  it('shares listener readiness across concurrent engagement starts', async () => {
+    const { startOastServer } = await import('../../src/oast/server')
+    const [leftPort, rightPort] = await Promise.all([
+      startOastServer(0, new OastStore()),
+      startOastServer(0, new OastStore()),
+    ])
+
+    expect(leftPort).toBe(12345)
+    expect(rightPort).toBe(12345)
+    expect(mockListen).toHaveBeenCalledOnce()
   })
 
   it('getOastUrl returns correct format after start', async () => {
@@ -164,6 +178,67 @@ describe('OAST server', () => {
     expect(body.ok).toBe(true)
     expect(body.recorded).toBeTruthy()
     await stopOastServer()
+  })
+
+  it('binds callbacks to an explicit engagement store', async () => {
+    const { startOastServer, getOastUrl, stopOastServer } = await import('../../src/oast/server')
+    const owned = new OastStore()
+    await startOastServer(0, owned)
+    const path = new URL(getOastUrl(owned)).pathname
+    await handleRoute(`${path}/owned`, 'POST', 'engagement-body')
+    expect(owned.count()).toBe(1)
+    expect(getGlobalOastStore().count()).toBe(0)
+    await stopOastServer(owned)
+  })
+
+  it('multiplexes engagement stores and keeps the listener until the last owner stops', async () => {
+    const { startOastServer, getOastUrl, stopOastServer } = await import('../../src/oast/server')
+    const left = new OastStore()
+    const right = new OastStore()
+    await startOastServer(0, left)
+    await startOastServer(0, right)
+    const leftPath = new URL(getOastUrl(left)).pathname
+    const rightPath = new URL(getOastUrl(right)).pathname
+
+    expect(leftPath).not.toBe(rightPath)
+    await handleRoute(`${leftPath}/left`, 'POST')
+    await handleRoute(`${rightPath}/right`, 'POST')
+    expect(left.getAll().map(item => item.url)).toEqual([`${leftPath}/left`])
+    expect(right.getAll().map(item => item.url)).toEqual([`${rightPath}/right`])
+
+    await stopOastServer(left)
+    expect(mockServer.close).not.toHaveBeenCalled()
+    await handleRoute(`${rightPath}/still-active`, 'POST')
+    expect(right.count()).toBe(2)
+    await stopOastServer(right)
+    expect(mockServer.close).toHaveBeenCalledOnce()
+  })
+
+  it('records callback evidence in the routed engagement ledger', async () => {
+    const { startOastServer, getOastUrl } = await import('../../src/oast/server')
+    const leftStore = new OastStore()
+    const rightStore = new OastStore()
+    const leftEvidence = new EvidenceLedger()
+    const rightEvidence = new EvidenceLedger()
+    const leftServices = { oast: leftStore, evidence: leftEvidence, oastConfig: null } as any
+    const rightServices = { oast: rightStore, evidence: rightEvidence, oastConfig: null } as any
+
+    await runWithEngagementServices(leftServices, () => startOastServer())
+    await runWithEngagementServices(rightServices, () => startOastServer())
+    const rightPath = new URL(getOastUrl(rightStore)).pathname
+    await handleRoute(`${rightPath}/evidence`, 'POST')
+
+    expect(leftEvidence.all()).toHaveLength(0)
+    expect(rightEvidence.all()).toHaveLength(1)
+    expect(rightEvidence.all()[0].label).toContain('OAST callback')
+  })
+
+  it('rejects unknown engagement routes', async () => {
+    const { startOastServer } = await import('../../src/oast/server')
+    await startOastServer(0)
+    const { status, body } = await handleRoute('/_oast/not-registered/callback', 'POST')
+    expect(status).toBe(404)
+    expect(body.error).toContain('unknown OAST engagement')
   })
 
   it('GET /callbacks/:id retrieves specific callback', async () => {

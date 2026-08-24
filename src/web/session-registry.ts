@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
-import { getGlobalWorkspace } from '../workspace'
+import { getTargetWorkspaceDir } from '../workspace'
 
 const SESSION_FILE = 'web-session.json'
 const HIDDEN_FILE = '.web-session-hidden.json'
@@ -27,11 +27,11 @@ export function webSessionId(target: string): string {
 }
 
 function sessionPath(target: string): string {
-  return resolve(getGlobalWorkspace().getTargetDir(target), SESSION_FILE)
+  return resolve(getTargetWorkspaceDir(target), SESSION_FILE)
 }
 
 function hiddenPath(target: string): string {
-  return resolve(getGlobalWorkspace().getTargetDir(target), HIDDEN_FILE)
+  return resolve(getTargetWorkspaceDir(target), HIDDEN_FILE)
 }
 
 function coerceSession(value: unknown): PersistedWebSession | null {
@@ -50,7 +50,7 @@ function coerceSession(value: unknown): PersistedWebSession | null {
 
 export async function persistWebSession(target: string): Promise<PersistedWebSession> {
   const now = Date.now()
-  const dir = getGlobalWorkspace().getTargetDir(target)
+  const dir = getTargetWorkspaceDir(target)
   await mkdir(dir, { recursive: true })
 
   let existing: PersistedWebSession | null = null
@@ -71,7 +71,7 @@ export async function persistWebSession(target: string): Promise<PersistedWebSes
 }
 
 export async function hideWebSession(target: string): Promise<void> {
-  const dir = getGlobalWorkspace().getTargetDir(target)
+  const dir = getTargetWorkspaceDir(target)
   await mkdir(dir, { recursive: true })
   await writeFile(hiddenPath(target), JSON.stringify({ hidden: true, target, updatedAt: new Date().toISOString() }, null, 2), 'utf8')
 }

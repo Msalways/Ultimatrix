@@ -16,6 +16,7 @@
 
 import { getActivePage } from './manager'
 import { getGlobalDialogWatcher } from './dialog-watcher'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface Reaction {
   type: 'modal' | 'toast' | 'snackbar' | 'notification' | 'error' | 'success' | 'dialog' | 'text-change' | 'overlay' | 'new-element' | 'none'
@@ -144,7 +145,7 @@ async function takeSnapshot(page: any): Promise<{ visibleText: string; axElement
   return { visibleText, axElements, dialogCount, url }
 }
 
-class ReactionObserver {
+export class ReactionObserver {
   private baseline: ReactionSnapshot | null = null
   private reactions: Reaction[] = []
   private observing = false
@@ -437,11 +438,18 @@ class ReactionObserver {
 let globalObserver: ReactionObserver | null = null
 
 export function getGlobalReactionObserver(): ReactionObserver {
+  const owned = getEngagementServices()?.reactionObserver
+  if (owned) return owned
   if (!globalObserver) globalObserver = new ReactionObserver()
   return globalObserver
 }
 
 export function resetGlobalReactionObserver(): void {
+  const owned = getEngagementServices()?.reactionObserver
+  if (owned) {
+    owned.clear()
+    return
+  }
   if (globalObserver) {
     globalObserver.clear()
     globalObserver = null

@@ -75,6 +75,9 @@ const mockBrowser = {
 vi.mock('../../src/browser/manager', () => ({
   getActiveBrowser: () => mockBrowser,
   getActivePage: () => mockPage,
+  // Phase A — provider-blind context helper; the mock browser's stagehand
+  // context satisfies the same cookie/localStorage shape.
+  getActiveBrowserContext: () => mockBrowser?.requireStagehand?.()?.context ?? null,
   captureScreenshot: vi.fn().mockResolvedValue('/tmp/screenshot.png'),
 }))
 

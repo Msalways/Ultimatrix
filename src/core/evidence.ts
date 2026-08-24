@@ -19,7 +19,16 @@
  */
 
 import { EvidenceLedger } from '../intelligence/evidence-ledger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
-export const coreEvidenceLedger = new EvidenceLedger()
+const legacyEvidenceLedger = new EvidenceLedger()
+
+export const coreEvidenceLedger: EvidenceLedger = new Proxy(legacyEvidenceLedger, {
+  get(_target, property) {
+    const ledger = getEngagementServices()?.evidence ?? legacyEvidenceLedger
+    const value = Reflect.get(ledger, property, ledger)
+    return typeof value === 'function' ? value.bind(ledger) : value
+  },
+})
 
 export { EvidenceLedger }

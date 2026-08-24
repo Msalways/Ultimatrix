@@ -1,16 +1,22 @@
 import type { UltimatrixConfig } from '../config'
 import { DEFAULTS } from '../config'
 import { ProviderAwareLimiter } from './provider-limiter'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 /**
  * Factory for creating and caching per-provider rate limiters.
  *
- * Each provider gets exactly one ProviderAwareLimiter per process.
+ * Each provider gets exactly one ProviderAwareLimiter per engagement.
  * Config lookup: config.providerRateLimits[provider] → config.rateLimit → DEFAULTS
  */
-const limiterCache = new Map<string, ProviderAwareLimiter>()
+const legacyLimiterCache = new Map<string, ProviderAwareLimiter>()
+
+function getLimiterCache(): Map<string, ProviderAwareLimiter> {
+  return getEngagementServices()?.providerLimiters ?? legacyLimiterCache
+}
 
 export function createProviderLimiter(provider: string, config: UltimatrixConfig): ProviderAwareLimiter {
+  const limiterCache = getLimiterCache()
   const cached = limiterCache.get(provider)
   if (cached) return cached
 
@@ -32,9 +38,9 @@ export function getProviderFromModelId(modelId: string): string {
 }
 
 export function resetAllProviderLimiters(): void {
-  limiterCache.clear()
+  getLimiterCache().clear()
 }
 
 export function getLimiterCacheSize(): number {
-  return limiterCache.size
+  return getLimiterCache().size
 }

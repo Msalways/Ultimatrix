@@ -1,14 +1,19 @@
 import { NextRequest } from 'next/server'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const { AgentManager } = await import('@/lib/agent-manager')
-    const manager = AgentManager.getInstance()
-    if (!manager.isInitialized()) {
+    const target = req.nextUrl.searchParams.get('target')
+    if (!target) {
+      return Response.json({ error: 'target is required' }, { status: 400 })
+    }
+
+    const { targetManager } = await import('@/web/target-manager')
+    const engine = targetManager.getEngine(target)
+    if (!engine?.isInitialized()) {
       return Response.json({ code: [] })
     }
 
-    const code = await manager.getCode()
+    const code = engine.getCode()
     return Response.json({ code })
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 })

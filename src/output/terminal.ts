@@ -76,6 +76,19 @@ export function renderTerminal(model: RenderModel, opts: TerminalPaintOptions = 
     lines.push(`${c(ESC.dim)}[${model.phase}]${c(ESC.reset)}`)
   }
 
+  if (model.events.length) {
+    lines.push(`${c(ESC.dim)}activity:${c(ESC.reset)}`)
+    for (const e of model.events.slice(-8)) {
+      const mark = e.status === 'ok' ? `${c(ESC.green)}✓${c(ESC.reset)}`
+        : e.status === 'warn' ? `${c(ESC.yellow)}!${c(ESC.reset)}`
+          : e.status === 'error' ? `${c(ESC.red)}✗${c(ESC.reset)}`
+            : e.status === 'running' ? `${c(ESC.cyan)}…${c(ESC.reset)}`
+              : `${c(ESC.dim)}·${c(ESC.reset)}`
+      lines.push(`  ${mark} ${e.label}`)
+    }
+    lines.push('')
+  }
+
   if (model.reasoning.trim()) {
     lines.push(`${c(ESC.dim)}⟢ thinking${c(ESC.reset)}`)
     lines.push(c(ESC.dim) + wrap(model.reasoning.trim(), opts.width) + c(ESC.reset))
@@ -108,7 +121,7 @@ export function renderTerminal(model: RenderModel, opts: TerminalPaintOptions = 
 
   if (model.complete && model.done) {
     const d = model.done
-    lines.push(`${c(ESC.dim)}── done · ${d.steps} steps · ${d.toolCalls} tools · ${d.durationMs}ms · ${d.status}${c(ESC.reset)}`)
+    lines.push(`${c(ESC.dim)}${doneFooter(d)}${c(ESC.reset)}`)
   }
 
   const out = lines.join('\n')
@@ -320,6 +333,20 @@ function wrap(text: string, width = 80): string {
   return out.join('\n')
 }
 
+function doneFooter(done: { steps?: number; toolCalls?: number; durationMs?: number; status?: string; findings?: unknown[] }): string {
+  const steps = done.steps ?? 0
+  const tools = done.toolCalls ?? 0
+  const findings = Array.isArray(done.findings) ? done.findings.length : 0
+  return `── done · ${steps} ${steps === 1 ? 'step' : 'steps'} · ${tools} ${tools === 1 ? 'tool' : 'tools'} · ${findings} ${findings === 1 ? 'finding' : 'findings'} · ${formatDuration(done.durationMs ?? 0)} · ${done.status ?? 'ok'}`
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${durationMs}ms`
+  const seconds = Math.round(durationMs / 1000)
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
 /** Incremental painter: tracks prior model to only emit new deltas. */
 export class TerminalStream {
   private prev = { reasoning: 0, answer: 0, tools: 0, findings: 0 }
@@ -349,7 +376,7 @@ export class TerminalStream {
       }
     }
     if (model.complete && this.prev.findings === 0 && model.findings.length === 0 && model.done) {
-      write(`${ESC.dim}── done · ${model.done.steps} steps · ${model.done.status}${ESC.reset}\n`)
+      write(`${ESC.dim}${doneFooter(model.done)}${ESC.reset}\n`)
     }
 
     this.prev = {
@@ -503,7 +530,7 @@ export class MarkdownStream {
       if (model.findings.length > this.prev.findings) this.emitFindings(model, this.prev.findings)
       if (model.reasoning.trim()) write(`⟢ thinking\n${renderMarkdown(model.reasoning, { ...this.opts, isTTY: false })}\n`)
       if (model.answer.trim()) write(`${renderMarkdown(model.answer, { ...this.opts, isTTY: false })}\n`)
-      if (model.done) write(`-- done · ${model.done.steps} steps · ${model.done.toolCalls} tools · ${model.done.status}\n`)
+      if (model.done) write(`${doneFooter(model.done).replace('──', '--')}\n`)
       this.prev.findings = model.findings.length
       return
     }
@@ -521,7 +548,7 @@ export class MarkdownStream {
       if (body) write(body)
       this.liveLines = lines
       if (model.done) {
-        write(`${ESC.dim}── done · ${model.done.steps} steps · ${model.done.toolCalls} tools · ${model.done.status}${ESC.reset}\n`)
+        write(`${ESC.dim}${doneFooter(model.done)}${ESC.reset}\n`)
       }
     } finally {
       if (resume) resume()

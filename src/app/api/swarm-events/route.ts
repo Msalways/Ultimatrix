@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
-import { getGlobalEmitter, type EventMap } from '@/events/emitter'
+import type { EventMap } from '@/events/emitter'
+import { targetManager } from '@/web/target-manager'
 
 type EventKey = keyof EventMap
 
@@ -25,7 +26,7 @@ const FORWARD_EVENTS: EventKey[] = [
   'graph:node-added', 'graph:edge-added', 'graph:finding-added', 'graph:attack-added', 'graph:mutated',
   // Browser
   'browser:navigate', 'browser:reaction', 'browser:dialog', 'browser:auth-detected', 'browser:human-action',
-  'browser:bot-detected', 'browser:bot-resolved',
+  'browser:bot-detected', 'browser:bot-resolved', 'browser:starting', 'browser:ready', 'browser:failed',
   // Finding
   'finding:discovered', 'finding:verified', 'finding:status-changed', 'finding:chain-detected',
   // Session
@@ -51,6 +52,11 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url)
   const typeFilter = url.searchParams.get('types')?.split(',').map(s => s.trim()) ?? []
   const workerFilter = url.searchParams.get('workerId') ?? null
+  const target = url.searchParams.get('target')
+  if (!target) return Response.json({ error: 'target is required' }, { status: 400 })
+  const engine = targetManager.getEngine(target)
+  if (!engine?.isInitialized()) return Response.json({ error: 'target engine is not active' }, { status: 404 })
+  const bus = engine.getEvents()
 
   const stream = new ReadableStream({
     start(controller) {
@@ -81,7 +87,6 @@ export async function GET(req: NextRequest) {
       sendEvents([{ type: 'connected', timestamp: Date.now(), eventCount: 0 }])
 
       // Subscribe to the global event bus — one listener per event type
-      const bus = getGlobalEmitter()
       const cleanupFns: Array<() => void> = []
 
       for (const eventType of FORWARD_EVENTS) {

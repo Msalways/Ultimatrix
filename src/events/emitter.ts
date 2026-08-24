@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { SpiderRuntimeEvent } from '../spider/runtime'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 // ────────────────────────────────────────────────────────────────
 // Event Map — every event type in the system, typed at the seam.
@@ -70,6 +71,9 @@ export interface EventMap {
   'browser:human-action': { actionType: string; url: string; selector?: string; timestamp: number }
   'browser:bot-detected': { provider: string; details: string; timestamp: number }
   'browser:bot-resolved': { provider: string; waitMs: number; timestamp: number }
+  'browser:starting': { provider: string; headless: boolean; env?: string; timestamp: number }
+  'browser:ready': { provider: string; headless: boolean; env?: string; sessionId: string; timestamp: number }
+  'browser:failed': { provider: string; headless: boolean; error: string; timestamp: number }
 
   // ── H. Finding Events ─────────────────────────────────────
   'finding:discovered': { findingId: string; severity: string; technique: string; endpoint?: string; workerId?: string; source: string; timestamp: number }
@@ -141,6 +145,8 @@ class TypedEventEmitter {
 let _globalEmitter: TypedEventEmitter | null = null
 
 export function getGlobalEmitter(): TypedEventEmitter {
+  const owned = getEngagementServices()?.events
+  if (owned) return owned
   if (!_globalEmitter) {
     _globalEmitter = new TypedEventEmitter()
   }

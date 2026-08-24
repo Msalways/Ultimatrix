@@ -13,6 +13,7 @@
 
 import type { PrimitiveMetadata } from '../primitives/framework'
 import { listPrimitiveMetadata } from '../primitives/framework'
+import { getTechniqueRegistry } from '../skills/technique-registry'
 import type {
   AdvancedPlaybook,
   AttackSurfaceSignal,
@@ -153,6 +154,16 @@ function scoreFor(
   if (ctx.hasOast && (meta.tags.includes('oast') || meta.tags.includes('ssrf'))) score += 0.5
   if (ctx.hasSerialized && meta.tags.includes('deserialization')) score += 1
   if (ctx.hasCustomHeader && (meta.tags.includes('smuggling') || meta.tags.includes('header'))) score += 1
+
+  // Self-evolution (spec 05): evolved effectiveness weight multiplies the
+  // structural score — techniques that historically confirm findings rank
+  // ahead; repeatedly-failing ones sink. Weight is a registry runtime
+  // override (static base config never mutated).
+  const evolutionWeight = getTechniqueRegistry().getTechniqueWeight(meta.id)
+  if (evolutionWeight !== 1.0) {
+    score *= evolutionWeight
+    reason.push(`evolved weight ${evolutionWeight.toFixed(2)}`)
+  }
 
   return { score, reason, signalHits }
 }

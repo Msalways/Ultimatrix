@@ -73,7 +73,13 @@ export function attachHarCaptureViaCdp(
       .then((res: any) => {
         if (res?.body == null) return
         const body = String(res.body)
-        if (body.length > maxBody) return
+        // C7 — oversize bodies are stored truncated WITH a structural marker
+        // (mirrors the CompressionResult contract); silent drops made
+        // "body withheld" indistinguishable from "no body".
+        if (body.length > maxBody) {
+          builder.setResponseBody(requestId, body.slice(0, maxBody), res.base64Encoded ? 'base64' : undefined, true)
+          return
+        }
         builder.setResponseBody(requestId, body, res.base64Encoded ? 'base64' : undefined)
         if (!res.base64Encoded) {
           try {
@@ -94,10 +100,14 @@ export function attachHarCaptureViaCdp(
     p.finally(() => pendingBodies.delete(p))
   }
 
+  // C7 — per-request method tracked from requestWillBeSent so responseMeta
+  // no longer hardcodes GET (render tracing keyed on real method).
+  const requestMethods = new Map<string, string>()
   const responseMeta = new Map<string, { url: string; method: string; status: number; contentType?: string }>()
 
   on('Network.requestWillBeSent', (p: any) => {
     observed++
+    if (p?.request?.method) requestMethods.set(p.requestId, p.request.method)
     builder.onRequestWillBeSent(p)
   })
   on('Network.requestWillBeSentExtraInfo', (p: any) => builder.onRequestWillBeSentExtraInfo(p))
@@ -105,7 +115,7 @@ export function attachHarCaptureViaCdp(
     builder.onResponseReceived(p)
     responseMeta.set(p.requestId, {
       url: p?.response?.url ?? '',
-      method: 'GET',
+      method: requestMethods.get(p.requestId) ?? 'GET',
       status: p?.response?.status ?? 0,
       contentType: p?.response?.mimeType,
     })
@@ -116,6 +126,7 @@ export function attachHarCaptureViaCdp(
     const meta = responseMeta.get(p.requestId)
     if (meta) fetchBody(p.requestId, meta)
     responseMeta.delete(p.requestId)
+    requestMethods.delete(p.requestId)
     // POST body (if enabled) — separate CDP call
     if (captureRequestBody) {
       const pb = conn

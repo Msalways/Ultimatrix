@@ -62,8 +62,10 @@ function collectFindings(scope: ReportScope, findingId?: string): { findings: Fi
   const filtered = findingId
     ? all.filter((f) => f.properties.findingId === findingId)
     : all
-  const findings = filtered.map((f) => toReportFinding(f, store.getExploitProof(f.properties.findingId)))
-  return { findings, count: filtered.length }
+  const findings = filtered
+    .map((f) => toReportFinding(f, store.getExploitProof(f.properties.findingId)))
+    .filter(finding => finding.proofCheck?.passed === true)
+  return { findings, count: findings.length }
 }
 
 /**

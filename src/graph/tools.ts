@@ -3,7 +3,6 @@ import { z } from 'zod'
 import { getGlobalGraphStore } from './store'
 import { NodeType } from './schema'
 import { getForensicLog } from '../tools/report-tools'
-import { commitFinding, buildTextEvidence, type FindingSeverity } from '../tools/control-tools'
 
 /**
  * Single source of truth for `updateGraph` dispatch actions. Both the Mastra
@@ -17,7 +16,6 @@ export const GRAPH_ACTIONS = [
   'addInput',
   'addEndpoint',
   'addTest',
-  'addFinding',
   'addAuthFlow',
   'addRBACRole',
   'addAttack',
@@ -251,46 +249,6 @@ export const addEndpoint = createTool({
   },
 })
 
-export const addFinding = createTool({
-  id: 'addFinding',
-  description: 'Record a confirmed security finding with evidence and severity.',
-  inputSchema: z.object({
-    endpoint: z.string().describe('Affected endpoint URL'),
-    technique: z.string().describe('Vulnerability technique (e.g., SQL Injection, XSS)'),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-    confidence: z.number().min(0).max(1).describe('Confidence level 0-1'),
-    description: z.string().describe('Detailed description'),
-    evidence: z.array(z.string()).optional().describe('Evidence items'),
-    remediation: z.string().optional().describe('How to fix'),
-    cwe: z.string().optional().describe('CWE ID'),
-    tags: z.array(z.string()).optional().describe('Tags'),
-  }),
-  execute: async (input) => {
-    try {
-      const gateResult = await commitFinding({
-        type: input.technique,
-        endpoint: input.endpoint,
-        severity: input.severity,
-        confidence: input.confidence,
-        description: input.description,
-        cwe: input.cwe,
-        remediation: input.remediation,
-        tags: input.tags,
-        source: 'llm',
-        tool: 'addFinding',
-        evidence: buildTextEvidence(input.evidence, input.endpoint),
-      })
-      if (!gateResult.ok) return { ok: false, error: gateResult.error }
-      const store = getGlobalGraphStore()
-      await store.save()
-      getForensicLog()?.log({ type: 'graph-mutation', agent: 'worker', tool: 'addFinding', args: { endpoint: input.endpoint, technique: input.technique, severity: input.severity }, result: { nodeId: gateResult.value.graphNodeId } })
-      return { ok: true, value: gateResult.value }
-    } catch (e) {
-      return { ok: false, error: (e as Error).message }
-    }
-  },
-})
-
 export const addAuthFlow = createTool({
   id: 'addAuthFlow',
   description: 'Record an authentication flow (login, logout, token refresh, OAuth).',
@@ -394,7 +352,6 @@ export const updateGraph = createTool({
     inputData: z.record(z.string(), z.unknown()).optional(),
     endpointData: z.record(z.string(), z.unknown()).optional(),
     testData: z.record(z.string(), z.unknown()).optional(),
-    findingData: z.record(z.string(), z.unknown()).optional(),
     authFlowData: z.record(z.string(), z.unknown()).optional(),
     rbacData: z.record(z.string(), z.unknown()).optional(),
     attackData: z.record(z.string(), z.unknown()).optional(),
@@ -406,7 +363,7 @@ export const updateGraph = createTool({
   execute: async (input) => {
     try {
       const store = getGlobalGraphStore()
-      const { action, pageUrl, pageData, pageId, actionData, inputData, endpointData, testData, findingData, authFlowData, rbacData, attackData, renderedEndpointId, renderedData, fromId, toId } = input
+      const { action, pageUrl, pageData, pageId, actionData, inputData, endpointData, testData, authFlowData, rbacData, attackData, renderedEndpointId, renderedData, fromId, toId } = input
 
       let result: unknown
 
@@ -434,37 +391,6 @@ export const updateGraph = createTool({
         case 'addTest':
           if (!pageId || !testData) return { ok: false, error: 'pageId and testData required' }
           result = store.addTest(pageId, testData as any)
-          break
-
-        case 'addFinding':
-          if (!findingData) return { ok: false, error: 'findingData required. Use the addFinding tool instead.' }
-          {
-            const fd = findingData as Record<string, unknown>
-            const sev = typeof fd.severity === 'string' ? fd.severity : undefined
-            const severities: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
-            if (sev != null && !(severities as string[]).includes(sev)) {
-              return { ok: false, error: `addFinding: invalid severity "${sev}"` }
-            }
-            const endpoint = typeof fd.endpoint === 'string' ? fd.endpoint : ''
-            const method = typeof fd.method === 'string' ? fd.method : undefined
-            const gateResult = await commitFinding({
-              type: typeof fd.technique === 'string' ? fd.technique : (typeof fd.type === 'string' ? fd.type : 'unknown'),
-              endpoint,
-              param: typeof fd.param === 'string' ? fd.param : undefined,
-              method,
-              severity: (sev ?? 'medium') as FindingSeverity,
-              confidence: typeof fd.confidence === 'number' ? fd.confidence : 0.7,
-              description: typeof fd.description === 'string' ? fd.description : undefined,
-              cwe: typeof fd.cwe === 'string' ? fd.cwe : undefined,
-              remediation: typeof fd.remediation === 'string' ? fd.remediation : undefined,
-              tags: Array.isArray(fd.tags) ? (fd.tags as string[]) : undefined,
-              source: 'llm',
-              tool: 'updateGraph',
-              evidence: buildTextEvidence(Array.isArray(fd.evidence) ? (fd.evidence as string[]) : undefined, endpoint, method),
-            })
-            if (!gateResult.ok) return { ok: false, error: gateResult.error }
-            result = gateResult.value
-          }
           break
 
         case 'addAuthFlow':

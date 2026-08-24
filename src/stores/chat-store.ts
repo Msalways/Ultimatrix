@@ -93,7 +93,7 @@ export interface SummaryMessage {
   detail: string
   reason?: string
   goal?: string
-  mode?: 'ask' | 'run'
+  mode?: 'ask' | 'run' | 'auto'
   timestamp: number
 }
 
@@ -102,7 +102,7 @@ export interface ErrorMessage {
   type: 'error'
   content: string
   goal?: string
-  mode?: 'ask' | 'run'
+  mode?: 'ask' | 'run' | 'auto'
   timestamp: number
 }
 

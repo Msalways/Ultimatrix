@@ -7,7 +7,8 @@ describe('protocol-surface plugin (P3 example)', () => {
     const reg = new DynamicToolRegistry()
     reg.registerPlugin('protocol-surface', register)
 
-    const tools = await reg.list()
+    expect(await reg.list()).toEqual([])
+    const tools = await reg.discover('plugin:protocol-surface')
     const ids = tools.filter((t) => t.source === 'plugin').map((t) => t.id)
     expect(ids).toContain('plugin__protocol-surface__detectSmuggling')
     expect(ids).toContain('plugin__protocol-surface__probeCachePoisoning')

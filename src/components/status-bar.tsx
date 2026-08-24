@@ -44,23 +44,24 @@ export function StatusBar() {
   const [closingBrowser, setClosingBrowser] = useState(false)
 
   useEffect(() => {
-    dataFetcher.loadStatus().then((data) => {
+    dataFetcher.loadStatus(activeTarget).then((data) => {
       if (data.ok) setWebStatus(data as unknown as WebStatus)
     })
-  }, [])
+  }, [activeTarget])
 
   useEffect(() => {
     return dataFetcher.onSSE('browser:', () => {
-      dataFetcher.loadStatus().then((data) => {
+      dataFetcher.loadStatus(activeTarget).then((data) => {
         if (data.ok) setWebStatus(data as unknown as WebStatus)
       })
-    })
-  }, [])
+    }, activeTarget)
+  }, [activeTarget])
 
   async function closeAutomationBrowser() {
     setClosingBrowser(true)
     try {
-      const res = await fetch('/api/browser', { method: 'DELETE' })
+      if (!activeTarget) return
+      const res = await fetch(`/api/browser?target=${encodeURIComponent(activeTarget)}`, { method: 'DELETE' })
       const data = await res.json()
       if (data.ok) {
         setWebStatus((prev) => ({ ...(prev || {}), browser: data.browser }))
@@ -93,6 +94,9 @@ export function StatusBar() {
           <span className="hidden whitespace-nowrap sm:inline">{webStatus.targetCount ?? 0} targets</span>
           <span className={cn('hidden whitespace-nowrap sm:inline', webStatus.initialized ? 'text-emerald-400/80' : 'text-zinc-600')}>
             {webStatus.initialized ? 'initialized' : 'not initialized'}
+          </span>
+          <span className={cn('hidden whitespace-nowrap sm:inline', webStatus.browser?.active ? 'text-cyan-300/80' : 'text-zinc-600')}>
+            {webStatus.browser?.active ? (webStatus.browser.headless === false ? 'browser visible' : 'browser headless') : 'browser not started'}
           </span>
           {webStatus.browser?.active && (
             <>

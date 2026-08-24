@@ -5,7 +5,7 @@ import { createAgent } from '../mastra/index'
 import { spiderInstructions } from './instructions'
 import {
   queryGraph, getTargetSummary, getEndpointsWithParams,
-  upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addAttack,
+  upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addAttack,
 } from '../graph/tools'
 import { writeFinding } from '../tools/control-tools'
 import { getOastUrlTool } from '../oast/tools'
@@ -16,6 +16,7 @@ import { saveSession } from '../tools/flow-tools'
 import { loadSkillReference, searchSkillTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { httpRequest } from '../tools/http-tools'
+import { shadowApiDiscovery } from '../tools/shadow-discovery'
 import { findEndpointsInResponse } from '../tools/observation-tools'
 import { extractBrowserAuth } from '../tools/extract-browser-auth'
 import type { UltimatrixConfig } from '../config'
@@ -37,7 +38,6 @@ export function createSpiderAgent(
     addEndpoint,
     addAuthFlow,
     addAttack,
-    addFinding,
     writeFinding,
     getOastUrlTool,
     // Reaction detection — know what happens after every browser action
@@ -48,6 +48,7 @@ export function createSpiderAgent(
     // Additional discovery tools
     findEndpointsInResponse,
     httpRequest,
+    shadowApiDiscovery,
     // Human-in-the-loop
     askUser,
     // Session persistence

@@ -48,13 +48,11 @@ function eventsInOrder(actual: string[], expected: string[]): { ok: boolean; mis
 export async function runEvalCase(caseDef: ArchitectureEvalCase): Promise<ArchitectureEvalResult> {
   const startedAt = Date.now()
   const failures: string[] = []
-  let events: string[] = []
-  let state: Record<string, unknown> = {}
 
   try {
     const output = await caseDef.execute()
-    events = output.events
-    state = output.state
+    const events = output.events
+    const state = output.state
 
     const order = eventsInOrder(events, caseDef.expectedEvents)
     if (!order.ok) {

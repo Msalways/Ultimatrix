@@ -67,8 +67,8 @@ export class ContextBudgetManager {
    */
   validateContextFit(params: ContextFitParams): ContextValidation {
     const caps = this.capabilities[params.modelId]
-    const contextWindow = caps?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
-    const maxOutput = caps?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT
+    const contextWindow = this.registry?.getContextWindow(params.modelId) || caps?.contextWindow || DEFAULT_CONTEXT_WINDOW
+    const maxOutput = this.registry?.getMaxOutput(params.modelId) || caps?.maxOutputTokens || DEFAULT_MAX_OUTPUT
     const reservedOutput = params.expectedOutputTokens ?? maxOutput
 
     const systemTokens = estimateTokens(params.systemPrompt)
@@ -158,7 +158,7 @@ export class ContextBudgetManager {
    */
   truncateToFit(params: ContextFitParams, targetBudget?: number): ContextFitParams {
     const caps = this.capabilities[params.modelId]
-    const contextWindow = caps?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+    const contextWindow = this.registry?.getContextWindow(params.modelId) || caps?.contextWindow || DEFAULT_CONTEXT_WINDOW
     const budget = targetBudget ?? Math.floor(contextWindow * 0.85) // 85% of window
 
     const systemTokens = estimateTokens(params.systemPrompt)

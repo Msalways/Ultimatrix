@@ -14,7 +14,7 @@ type Action = { type: 'message'; msg: SolverStreamMessage } | { type: 'reset' }
 function reducer(state: RenderModel, action: Action): RenderModel {
   if (action.type === 'reset') return createRenderModel()
   // fold in place on a copy to keep React state immutable
-  const next = { ...state, tools: [...state.tools], findings: [...state.findings] }
+  const next = { ...state, tools: [...state.tools], events: [...state.events], findings: [...state.findings] }
   return reduceMessage(next, action.msg)
 }
 

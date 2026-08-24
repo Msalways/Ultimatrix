@@ -11,6 +11,8 @@ import { candidateFromExperiment, listCandidates, upsertCandidate } from '../res
 import { assessCandidateForReport } from '../research/verifier'
 import { getResearchSnapshot, persistEntities, persistExperiments, persistHypotheses, persistWorkflows } from '../research/graph-adapter'
 import type { FindingCandidate, ResearchExperiment } from '../research/types'
+import { evaluateExperimentOracle, evaluateIndependentRetest } from '../research/experiment-oracle'
+import { coreEvidenceLedger } from '../core/evidence'
 import { getForensicLog } from './report-tools'
 
 const responseLikeSchema = z.object({
@@ -19,6 +21,15 @@ const responseLikeSchema = z.object({
   body: z.string().optional(),
   url: z.string().optional(),
 })
+
+const evidenceOracleSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('unique-marker'), baselineEvidenceId: z.string(), mutationEvidenceId: z.string(), marker: z.string().min(1) }),
+  z.object({ type: z.literal('cross-identity'), victimEvidenceId: z.string(), attackerEvidenceId: z.string(), victimActorRef: z.string(), attackerActorRef: z.string(), marker: z.string().min(1) }),
+  z.object({ type: z.literal('state-transition'), beforeEvidenceId: z.string(), afterEvidenceId: z.string(), stateKey: z.string(), beforeValue: z.string(), afterValue: z.string() }),
+  z.object({ type: z.literal('oast-callback'), evidenceId: z.string(), correlationToken: z.string().min(1) }),
+  z.object({ type: z.literal('timing-differential'), baselineEvidenceIds: z.array(z.string()).min(1), mutationEvidenceIds: z.array(z.string()).min(1), minSamples: z.number().int().positive(), minDeltaMs: z.number().nonnegative() }),
+  z.object({ type: z.literal('browser-effect'), evidenceId: z.string(), effectKey: z.string(), expectedValue: z.string() }),
+])
 
 export const buildResearchMap = createTool({
   id: 'buildResearchMap',
@@ -86,14 +97,54 @@ export const compareResearchResponses = createTool({
   inputSchema: z.object({
     baseline: responseLikeSchema,
     mutated: responseLikeSchema,
+    assertion: z.object({
+      markers: z.array(z.string()).optional(),
+      jsonFields: z.array(z.string()).optional(),
+    }).optional().describe('Target-specific observable values or JSON paths selected by the researcher.'),
   }),
-  execute: async ({ baseline, mutated }) => {
+  execute: async ({ baseline, mutated, assertion }) => {
     try {
-      const differential = compareResponsesCore(baseline, mutated)
+      const differential = compareResponsesCore(baseline, mutated, assertion)
       return { ok: true, value: differential }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }
+  },
+})
+
+export const evaluateResearchExperiment = createTool({
+  id: 'evaluateResearchExperiment',
+  description: 'Evaluate a model-designed typed experiment oracle against recorded evidence and persist a proven, disproven, or inconclusive outcome.',
+  inputSchema: z.object({
+    experimentId: z.string(),
+    oracle: evidenceOracleSchema,
+    phase: z.enum(['initial', 'retest']).optional().default('initial'),
+  }),
+  execute: async ({ experimentId, oracle, phase }) => {
+    const store = getGlobalGraphStore()
+    const experiment = store.getNode(experimentId) as ExperimentNode | undefined
+    if (!experiment || experiment.type !== NodeType.EXPERIMENT) return { ok: false, error: `Experiment not found: ${experimentId}` }
+    if (phase === 'retest') {
+      const initial = experiment.properties.outcome
+      if (!experiment.properties.oracle || initial?.status !== 'proven') {
+        return { ok: false, error: `Experiment ${experimentId} must be proven before retest` }
+      }
+      const outcome = evaluateIndependentRetest(experimentId, experiment.properties.oracle, initial.proof, oracle, coreEvidenceLedger.all())
+      experiment.properties.retest = { oracle, outcome, evaluatedAt: new Date().toISOString() }
+      experiment.properties.status = outcome.status === 'proven' ? 'interesting' : 'blocked'
+      experiment.properties.resultSummary = `retest:${outcome.status}`
+      experiment.updatedAt = Date.now()
+      await store.save()
+      return { ok: true, value: { experimentId, phase, outcome } }
+    }
+    const outcome = evaluateExperimentOracle(experimentId, oracle, coreEvidenceLedger.all(), 'initial')
+    experiment.properties.oracle = oracle
+    experiment.properties.outcome = outcome
+    experiment.properties.status = outcome.status === 'proven' ? 'interesting' : outcome.status === 'disproven' ? 'rejected' : 'blocked'
+    experiment.properties.resultSummary = outcome.status
+    experiment.updatedAt = Date.now()
+    await store.save()
+    return { ok: true, value: { experimentId, phase, outcome } }
   },
 })
 

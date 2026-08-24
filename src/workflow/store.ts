@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { getGlobalWorkspace } from '../workspace'
 import type { ArtifactRecord } from '../security/artifacts'
@@ -25,13 +25,18 @@ import type { ReachabilityRecord } from '../identity/types'
 import { reachabilityKey } from '../identity/reachability'
 import type { BrowserProviderName } from '../browser/provider'
 import { isBrowserProviderName } from '../browser/provider'
+import { redactObject, redactUrl } from '../security/secret-vault'
 import {
   WORKFLOW_STATE_VERSION,
   type WorkflowState,
   type WorkflowStatus,
   type WorkerState,
+  type TaskState,
   type ModelUsageSummary,
   type WorkflowEvidenceRef,
+  type TaskAttemptState,
+  type TaskContextCheckpoint,
+  type TaskRetryableStatus,
 } from './types'
 
 const WORKFLOW_STATUSES: readonly WorkflowStatus[] = ['pending', 'running', 'paused', 'completed', 'failed', 'aborted']
@@ -59,6 +64,7 @@ export function createWorkflow(
     browserProvider,
     spider: undefined,
     modelUsage: [],
+    tasks: [],
     activeWorkers: [],
     artifacts: [],
     evidenceRefs: [],
@@ -71,6 +77,87 @@ function isWorkflowStatus(value: unknown): value is WorkflowStatus {
   return typeof value === 'string' && WORKFLOW_STATUSES.includes(value as WorkflowStatus)
 }
 
+const RETRYABLE_STATUSES: readonly TaskRetryableStatus[] = ['failed', 'timed_out', 'interrupted']
+const EMPTY_USAGE = { inputTokens: 0, outputTokens: 0, totalTokens: 0, modelCalls: 0, reportedCalls: 0 }
+
+function coerceAttempts(value: unknown): TaskAttemptState[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const attempt = item as Partial<TaskAttemptState>
+    if (typeof attempt.attemptId !== 'string' || typeof attempt.number !== 'number' || typeof attempt.status !== 'string') return []
+    return [{
+      ...attempt,
+      attemptId: attempt.attemptId,
+      number: attempt.number,
+      status: attempt.status as TaskAttemptState['status'],
+      evidenceRefs: Array.isArray(attempt.evidenceRefs) ? attempt.evidenceRefs.filter((ref): ref is string => typeof ref === 'string') : [],
+      graphRefs: Array.isArray(attempt.graphRefs) ? attempt.graphRefs.filter((ref): ref is string => typeof ref === 'string') : [],
+      usage: attempt.usage && typeof attempt.usage === 'object' ? { ...EMPTY_USAGE, ...attempt.usage } : { ...EMPTY_USAGE },
+    }]
+  })
+}
+
+function coerceContextCheckpoints(value: unknown): TaskContextCheckpoint[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is TaskContextCheckpoint => Boolean(
+    item && typeof item === 'object' && typeof item.checkpointId === 'string' && typeof item.createdAt === 'number' &&
+    Array.isArray(item.contextRefs) && Array.isArray(item.dependencies) && Array.isArray(item.priorAttempts),
+  ))
+}
+
+function coerceTask(value: unknown): TaskState | null {
+  if (!value || typeof value !== 'object') return null
+  const task = value as Partial<TaskState>
+  if (typeof task.taskId !== 'string' || typeof task.objective !== 'string' || typeof task.status !== 'string') return null
+  return {
+    ...task,
+    taskId: task.taskId,
+    objective: task.objective,
+    dependencyTaskIds: Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [],
+    contextRefs: Array.isArray(task.contextRefs) ? task.contextRefs : [],
+    requiredCapabilities: Array.isArray(task.requiredCapabilities) ? task.requiredCapabilities : [],
+    acceptanceCriteria: Array.isArray(task.acceptanceCriteria) ? task.acceptanceCriteria : [],
+    acceptanceResults: Array.isArray(task.acceptanceResults) ? task.acceptanceResults : [],
+    budget: task.budget && typeof task.budget === 'object' ? task.budget : {},
+    retryPolicy: {
+      maxAttempts: Number.isInteger(task.retryPolicy?.maxAttempts) && task.retryPolicy!.maxAttempts > 0 ? task.retryPolicy!.maxAttempts : 1,
+      retryOn: Array.isArray(task.retryPolicy?.retryOn)
+        ? task.retryPolicy.retryOn.filter((status): status is TaskRetryableStatus => RETRYABLE_STATUSES.includes(status as TaskRetryableStatus))
+        : [],
+      backoffMs: typeof task.retryPolicy?.backoffMs === 'number' && task.retryPolicy.backoffMs >= 0 ? task.retryPolicy.backoffMs : 0,
+    },
+    status: task.status as TaskState['status'],
+    attempts: typeof task.attempts === 'number' ? task.attempts : 0,
+    attemptHistory: coerceAttempts(task.attemptHistory),
+    evidenceRefs: Array.isArray(task.evidenceRefs) ? task.evidenceRefs : [],
+    graphRefs: Array.isArray(task.graphRefs) ? task.graphRefs : [],
+    usage: task.usage && typeof task.usage === 'object' ? { ...EMPTY_USAGE, ...task.usage } : { ...EMPTY_USAGE },
+    contextCheckpoints: coerceContextCheckpoints(task.contextCheckpoints),
+    createdAt: typeof task.createdAt === 'number' ? task.createdAt : 0,
+    updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : 0,
+  }
+}
+
+function coerceReachability(value: unknown): ReachabilityRecord | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ReachabilityRecord>
+  if (typeof record.workflowId !== 'string' || typeof record.identityId !== 'string' || typeof record.resourceId !== 'string' || typeof record.reachedAt !== 'string') return null
+  if (!['page', 'endpoint', 'form', 'workflow'].includes(record.resourceType ?? '')) return null
+  const identity = record.identity && typeof record.identity === 'object'
+    ? record.identity
+    : { id: record.identityId, kind: 'unknown' as const }
+  return {
+    workflowId: record.workflowId,
+    identityId: record.identityId,
+    resourceId: record.resourceId,
+    resourceType: record.resourceType!,
+    reachedAt: record.reachedAt,
+    identity,
+    observedAt: typeof record.observedAt === 'string' ? record.observedAt : record.reachedAt,
+  }
+}
+
 /**
  * Validate a persisted snapshot. Returns `null` when the payload is unusable:
  * incompatible version, missing workflowId, or a target mismatch. The caller
@@ -80,9 +167,9 @@ function isWorkflowStatus(value: unknown): value is WorkflowStatus {
 export function coerceWorkflow(value: unknown, fallback: { target: string }): WorkflowState | null {
   if (!value || typeof value !== 'object') return null
   const candidate = value as Record<string, unknown>
-  if (candidate.version !== WORKFLOW_STATE_VERSION) return null
+  if (candidate.version !== 1 && candidate.version !== 2 && candidate.version !== WORKFLOW_STATE_VERSION) return null
   if (typeof candidate.workflowId !== 'string' || candidate.workflowId.length === 0) return null
-  if (typeof candidate.target !== 'string' || candidate.target !== fallback.target) return null
+  if (typeof candidate.target !== 'string' || redactUrl(candidate.target) !== redactUrl(fallback.target)) return null
 
   const createdAt = typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString()
   const updatedAt = typeof candidate.updatedAt === 'string' ? candidate.updatedAt : createdAt
@@ -96,13 +183,20 @@ export function coerceWorkflow(value: unknown, fallback: { target: string }): Wo
     status: isWorkflowStatus(candidate.status) ? candidate.status : 'pending',
     browserSessionId: typeof candidate.browserSessionId === 'string' ? candidate.browserSessionId : undefined,
     browserProvider: isBrowserProviderName(candidate.browserProvider) ? candidate.browserProvider : undefined,
-    spider: candidate.spider && typeof candidate.spider === 'object' ? (candidate.spider as SpiderRuntimeState) : undefined,
+    spider: candidate.spider && typeof candidate.spider === 'object'
+      ? { ...(candidate.spider as SpiderRuntimeState), reachability: Array.isArray((candidate.spider as SpiderRuntimeState).reachability) ? (candidate.spider as SpiderRuntimeState).reachability.map(coerceReachability).filter((record): record is ReachabilityRecord => record !== null) : [] }
+      : undefined,
     modelUsage: Array.isArray(candidate.modelUsage) ? (candidate.modelUsage as ModelUsageSummary[]) : [],
+    tasks: Array.isArray(candidate.tasks) ? candidate.tasks.map(coerceTask).filter((task): task is TaskState => task !== null) : [],
     activeWorkers: Array.isArray(candidate.activeWorkers) ? (candidate.activeWorkers as WorkerState[]) : [],
     artifacts: Array.isArray(candidate.artifacts) ? (candidate.artifacts as WorkflowState['artifacts']) : [],
     evidenceRefs: Array.isArray(candidate.evidenceRefs) ? (candidate.evidenceRefs as WorkflowEvidenceRef[]) : [],
     decisionLedgerId: typeof candidate.decisionLedgerId === 'string' ? candidate.decisionLedgerId : undefined,
-    reachability: Array.isArray(candidate.reachability) ? (candidate.reachability as ReachabilityRecord[]) : [],
+    reachability: Array.isArray(candidate.reachability) ? candidate.reachability.map(coerceReachability).filter((record): record is ReachabilityRecord => record !== null) : [],
+    captureSource:
+      candidate.captureSource === 'cdp' || candidate.captureSource === 'anonymous-fallback'
+        ? candidate.captureSource
+        : undefined,
   }
 }
 
@@ -131,7 +225,7 @@ export class WorkflowStore {
       const raw = await readFile(path, 'utf8')
       loaded = coerceWorkflow(JSON.parse(raw), { target: opts.target })
     } catch {
-      loaded = null
+      // Missing or invalid workflow file starts a fresh workflow below.
     }
     if (loaded) {
       // Slice 05 — one workflow maps to one browser provider. Resume with a
@@ -157,7 +251,11 @@ export class WorkflowStore {
   async save(): Promise<void> {
     this.touch()
     await mkdir(dirname(this.path), { recursive: true })
-    await writeFile(this.path, JSON.stringify(this.state, null, 2), 'utf8')
+    const temporaryPath = `${this.path}.${randomUUID()}.tmp`
+    const durable = redactObject(this.state) as WorkflowState
+    durable.browserSessionId = this.state.browserSessionId
+    await writeFile(temporaryPath, JSON.stringify(durable, null, 2), 'utf8')
+    await rename(temporaryPath, this.path)
   }
 
   // ── Typed mutators ────────────────────────────────────────────────
@@ -175,6 +273,12 @@ export class WorkflowStore {
   /** Slice 05 — record the provider fixed for this workflow. */
   setBrowserProvider(provider: BrowserProviderName | undefined): void {
     if (provider) this.state.browserProvider = provider
+    this.touch()
+  }
+
+  /** C9 — record how session traffic is captured (live vs anonymous fallback). */
+  setCaptureSource(source: 'cdp' | 'anonymous-fallback'): void {
+    this.state.captureSource = source
     this.touch()
   }
 
@@ -208,6 +312,14 @@ export class WorkflowStore {
     const index = this.state.activeWorkers.findIndex((w) => w.workerId === worker.workerId)
     if (index >= 0) this.state.activeWorkers[index] = worker
     else this.state.activeWorkers.push(worker)
+    this.touch()
+  }
+
+  /** Upsert a durable task independently of any worker instance assigned to it. */
+  recordTask(task: TaskState): void {
+    const index = this.state.tasks.findIndex((item) => item.taskId === task.taskId)
+    if (index >= 0) this.state.tasks[index] = task
+    else this.state.tasks.push(task)
     this.touch()
   }
 

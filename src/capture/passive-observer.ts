@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import { getGlobalGraphStore } from '../graph/store'
 import { log } from '../utils/logger'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 interface ObservedRequest {
   url: string
@@ -22,16 +23,18 @@ export class PassiveObserver {
   private pages = new Map<Page, boolean>()
   private requests = new Map<string, ObservedRequest>()
   private responses = new Map<string, ObservedResponse>()
+  private cleanup = new Map<Page, Array<() => void>>()
 
   attach(page: Page): void {
     if (this.pages.has(page)) return
     this.pages.set(page, true)
 
-    page.on('request', (request) => {
+    const cleaners: Array<() => void> = []
+    const onRequest = (request: any) => {
       const url = request.url()
       const key = `${request.method()}:${url}:${Date.now()}`
       const headers: Record<string, string> = {}
-      const reqHeaders = request.headers()
+      const reqHeaders = request.headers() as Record<string, string>
       for (const [k, v] of Object.entries(reqHeaders)) {
         headers[k] = v
       }
@@ -42,13 +45,13 @@ export class PassiveObserver {
         postData: request.postData() || undefined,
         timestamp: Date.now(),
       })
-    })
+    }
 
-    page.on('response', async (response) => {
+    const onResponse = async (response: any) => {
       const url = response.url()
       const key = `${response.status()}:${url}:${Date.now()}`
       const headers: Record<string, string> = {}
-      const resHeaders = response.headers()
+      const resHeaders = response.headers() as Record<string, string>
       for (const [k, v] of Object.entries(resHeaders)) {
         headers[k] = v
       }
@@ -58,13 +61,37 @@ export class PassiveObserver {
         headers,
         timestamp: Date.now(),
       })
-    })
+    }
+
+    if (this.tryAttach(page, 'request', onRequest)) cleaners.push(() => this.tryDetach(page, 'request', onRequest))
+    if (this.tryAttach(page, 'response', onResponse)) cleaners.push(() => this.tryDetach(page, 'response', onResponse))
+    this.cleanup.set(page, cleaners)
 
     log.dim(`Passive observer attached to page`)
   }
 
   detach(page: Page): void {
+    for (const fn of this.cleanup.get(page) ?? []) fn()
+    this.cleanup.delete(page)
     this.pages.delete(page)
+  }
+
+  private tryAttach(page: Page, event: string, handler: (...args: any[]) => void): boolean {
+    if (typeof (page as any).on !== 'function') return false
+    try {
+      ;(page as any).on(event, handler)
+      return true
+    } catch (error) {
+      log.dim(`[passive-observer] ${event} events unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+
+  private tryDetach(page: Page, event: string, handler: (...args: any[]) => void): void {
+    try {
+      const off = (page as any).off ?? (page as any).removeListener
+      if (typeof off === 'function') off.call(page, event, handler)
+    } catch {}
   }
 
   persistToGraph(targetUrl: string): void {
@@ -137,6 +164,8 @@ export class PassiveObserver {
 let _globalObserver: PassiveObserver | null = null
 
 export function getGlobalObserver(): PassiveObserver {
+  const owned = getEngagementServices()?.passiveObserver
+  if (owned) return owned
   if (!_globalObserver) {
     _globalObserver = new PassiveObserver()
   }

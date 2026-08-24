@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { redactString, redactUrl } from './secret-vault'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export type ProvenanceSource =
   | 'user'
@@ -71,7 +72,12 @@ export interface RecordProvenanceOptions {
   provider?: string
 }
 
-class DecisionLedger {
+export interface DecisionLedgerSnapshot {
+  decisions: DecisionRecord[]
+  provenance: ProvenanceRecord[]
+}
+
+export class DecisionLedger {
   private decisions = new Map<string, DecisionRecord>()
   private provenance = new Map<string, ProvenanceRecord>()
   private currentWorkflowId = 'session'
@@ -144,6 +150,18 @@ class DecisionLedger {
     return Array.from(this.provenance.values()).filter(r => r.workflowId === id)
   }
 
+  snapshot(): DecisionLedgerSnapshot {
+    return {
+      decisions: Array.from(this.decisions.values()).map(record => ({ ...record, sourceRefs: [...record.sourceRefs] })),
+      provenance: Array.from(this.provenance.values()).map(record => ({ ...record })),
+    }
+  }
+
+  restore(snapshot: DecisionLedgerSnapshot): void {
+    this.decisions = new Map(snapshot.decisions.map(record => [record.id, { ...record, sourceRefs: [...record.sourceRefs] }]))
+    this.provenance = new Map(snapshot.provenance.map(record => [record.id, { ...record }]))
+  }
+
   clear(): void {
     this.decisions.clear()
     this.provenance.clear()
@@ -153,6 +171,12 @@ class DecisionLedger {
 let _ledger: DecisionLedger | null = null
 
 export function getGlobalDecisionLedger(): DecisionLedger {
+  const owned = requireEngagementLedger()
+  if (owned) return owned
   if (!_ledger) _ledger = new DecisionLedger()
   return _ledger
+}
+
+function requireEngagementLedger(): DecisionLedger | undefined {
+  return getEngagementServices()?.decisions
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { redactArtifactMetadata } from './secret-vault'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export type ArtifactKind =
   | 'screenshot'
@@ -45,9 +46,19 @@ const REDACTION_NOTES: Partial<Record<ArtifactKind, string>> = {
   session: 'exposure paths redacted; operational store retained for restore',
 }
 
-class ArtifactRegistry {
+export class ArtifactRegistry {
   private records = new Map<string, ArtifactRecord>()
   private currentWorkflowId = 'session'
+  private createListener: ((record: ArtifactRecord) => void) | null = null
+
+  constructor(workflowId?: string, listener?: (record: ArtifactRecord) => void) {
+    this.currentWorkflowId = workflowId ?? 'session'
+    this.createListener = listener ?? null
+  }
+
+  setCreateListener(listener: ((record: ArtifactRecord) => void) | null): void {
+    this.createListener = listener
+  }
 
   setWorkflowId(id: string | null): void {
     this.currentWorkflowId = id ?? 'session'
@@ -81,7 +92,7 @@ class ArtifactRegistry {
       })
     }
     this.records.set(record.id, record)
-    _createListener?.(record)
+    this.createListener?.(record)
     return record
   }
 
@@ -124,11 +135,11 @@ class ArtifactRegistry {
 let _registry: ArtifactRegistry | null = null
 
 export function getGlobalArtifactRegistry(): ArtifactRegistry {
+  const owned = getEngagementServices()?.artifacts
+  if (owned) return owned
   if (!_registry) _registry = new ArtifactRegistry()
   return _registry
 }
-
-let _createListener: ((record: ArtifactRecord) => void) | null = null
 
 /**
  * Subscribe to artifact creation (slice 02). Used by the workflow persistence
@@ -136,5 +147,7 @@ let _createListener: ((record: ArtifactRecord) => void) | null = null
  * set by the session/web/solve wiring. Typed seam — no string inspection.
  */
 export function setArtifactCreateListener(fn: ((record: ArtifactRecord) => void) | null): void {
-  _createListener = fn
+  const owned = getEngagementServices()?.artifacts
+  if (owned) owned.setCreateListener(fn)
+  else getGlobalArtifactRegistry().setCreateListener(fn)
 }

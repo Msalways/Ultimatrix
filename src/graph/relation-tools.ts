@@ -2,6 +2,99 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from './store'
 import { NodeType, EdgeType } from './schema'
+import type { GraphEdgeData, GraphNodeData } from './schema'
+
+type GraphLike = ReturnType<typeof getGlobalGraphStore>
+
+function summarizeNode(store: GraphLike, id: string) {
+  const n = store.getNode(id) as GraphNodeData | undefined
+  if (!n) return { id, missing: true }
+  const p = n.properties ?? {}
+  return {
+    id,
+    type: n.type,
+    label: n.label,
+    url: p.url ?? p.endpoint ?? undefined,
+    method: p.method ?? undefined,
+    name: p.name ?? p.title ?? p.roleName ?? undefined,
+    origin: p.origin ?? undefined,
+  }
+}
+
+function edgeMatches(
+  edge: GraphEdgeData,
+  nodeId: string,
+  direction: 'in' | 'out' | 'both',
+  edgeTypes?: EdgeType[],
+): boolean {
+  if (edgeTypes?.length && !edgeTypes.includes(edge.type)) return false
+  if (direction === 'in') return edge.toId === nodeId
+  if (direction === 'out') return edge.fromId === nodeId
+  return edge.fromId === nodeId || edge.toId === nodeId
+}
+
+function buildNeighborhood(
+  store: GraphLike,
+  nodeId: string,
+  opts: {
+    depth: number
+    direction: 'in' | 'out' | 'both'
+    edgeTypes?: EdgeType[]
+    maxEdges: number
+  },
+) {
+  const visited = new Set<string>([nodeId])
+  const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }]
+  const edges: GraphEdgeData[] = []
+  const seenEdges = new Set<string>()
+  const allEdges = store.queryEdges() as GraphEdgeData[]
+
+  while (queue.length && edges.length < opts.maxEdges) {
+    const current = queue.shift()!
+    if (current.depth >= opts.depth) continue
+    for (const edge of allEdges) {
+      if (!edgeMatches(edge, current.id, opts.direction, opts.edgeTypes)) continue
+      if (!seenEdges.has(edge.id)) {
+        edges.push(edge)
+        seenEdges.add(edge.id)
+        if (edges.length >= opts.maxEdges) break
+      }
+      const nextIds = opts.direction === 'in'
+        ? [edge.fromId]
+        : opts.direction === 'out'
+          ? [edge.toId]
+          : [edge.fromId, edge.toId]
+      for (const nextId of nextIds) {
+        if (!visited.has(nextId)) {
+          visited.add(nextId)
+          queue.push({ id: nextId, depth: current.depth + 1 })
+        }
+      }
+    }
+  }
+
+  return {
+    focus: summarizeNode(store, nodeId),
+    nodes: Array.from(visited).map((id) => summarizeNode(store, id)),
+    edges: edges.map((edge) => ({
+      id: edge.id,
+      type: edge.type,
+      from: summarizeNode(store, edge.fromId),
+      to: summarizeNode(store, edge.toId),
+      properties: edge.properties,
+    })),
+    truncated: edges.length >= opts.maxEdges,
+  }
+}
+
+function findEndpointNode(store: GraphLike, nodeId?: string, endpointUrl?: string): GraphNodeData | undefined {
+  if (nodeId) return store.getNode(nodeId) as GraphNodeData | undefined
+  if (!endpointUrl) return undefined
+  const exact = store.queryNodes(NodeType.ENDPOINT, { url: endpointUrl }) as GraphNodeData[]
+  if (exact[0]) return exact[0]
+  return (store.queryNodes(NodeType.ENDPOINT) as GraphNodeData[])
+    .find((node) => String(node.properties?.url ?? '').includes(endpointUrl))
+}
 
 /**
  * Live schema-discovery. The LLM queries this to learn the valid node/edge
@@ -203,6 +296,195 @@ export const queryRelations = createTool({
           truncated: !!limit && limit > 0 && edges.length > limit,
         },
       }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+})
+
+export const getGraphNeighborhood = createTool({
+  id: 'getGraphNeighborhood',
+  description:
+    'Load the parent/child graph neighborhood around one node. Returns connected nodes and edges by depth, ' +
+    'direction, and optional edge types so the assistant can reason from graph memory instead of guessing.',
+  inputSchema: z.object({
+    nodeId: z.string(),
+    depth: z.number().int().min(1).max(4).optional().default(2),
+    direction: z.enum(['in', 'out', 'both']).optional().default('both'),
+    edgeTypes: z.array(z.nativeEnum(EdgeType)).optional(),
+    maxEdges: z.number().int().positive().max(500).optional().default(100),
+  }),
+  execute: async ({ nodeId, depth, direction, edgeTypes, maxEdges }) => {
+    try {
+      const store = getGlobalGraphStore()
+      if (!store.getNode(nodeId)) return { ok: false, error: `Node not found: ${nodeId}` }
+      return { ok: true, value: buildNeighborhood(store, nodeId, { depth, direction, edgeTypes, maxEdges }) }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+})
+
+export const getWorkflowAround = createTool({
+  id: 'getWorkflowAround',
+  description:
+    'Load workflow context around an endpoint or node: ordered edges, value-flow edges, reachability, and a small neighborhood. ' +
+    'Use this before discussing app workarounds or bypass paths.',
+  inputSchema: z.object({
+    nodeId: z.string().optional(),
+    endpointUrl: z.string().optional(),
+    depth: z.number().int().min(1).max(3).optional().default(2),
+  }).refine((v) => !!v.nodeId || !!v.endpointUrl, { message: 'nodeId or endpointUrl is required' }),
+  execute: async ({ nodeId, endpointUrl, depth }) => {
+    try {
+      const store = getGlobalGraphStore()
+      const focus = findEndpointNode(store, nodeId, endpointUrl)
+      if (!focus) return { ok: false, error: 'Focus node not found' }
+      const workflowEdgeTypes: EdgeType[] = [
+        EdgeType.ORDERED_BEFORE,
+        EdgeType.VALUE_ORIGIN,
+        EdgeType.REINGESTS,
+        EdgeType.SESSION_REACHES,
+        EdgeType.REACHES,
+        EdgeType.HAS_ACTION,
+        EdgeType.HAS_INPUT,
+        EdgeType.HAS_TEST,
+        EdgeType.FOUND_ON,
+        EdgeType.RENDERED_ON,
+      ]
+      const allEdges = store.queryEdges() as GraphEdgeData[]
+      const touching = allEdges.filter((edge) => edgeMatches(edge, focus.id, 'both', workflowEdgeTypes))
+      return {
+        ok: true,
+        value: {
+          focus: summarizeNode(store, focus.id),
+          ordered: touching.filter((e) => e.type === EdgeType.ORDERED_BEFORE).map((e) => ({ from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
+          valueFlow: touching.filter((e) => e.type === EdgeType.VALUE_ORIGIN || e.type === EdgeType.REINGESTS).map((e) => ({ type: e.type, from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
+          reachability: touching.filter((e) => e.type === EdgeType.SESSION_REACHES || e.type === EdgeType.REACHES).map((e) => ({ type: e.type, from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
+          neighborhood: buildNeighborhood(store, focus.id, { depth, direction: 'both', edgeTypes: workflowEdgeTypes, maxEdges: 120 }),
+        },
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+})
+
+export const traceValue = createTool({
+  id: 'traceValue',
+  description:
+    'Trace a recorded value or field name through graph edge properties. Returns matching edges and connected nodes; it is evidence, not a verdict.',
+  inputSchema: z.object({
+    value: z.string().optional(),
+    fieldName: z.string().optional(),
+    limit: z.number().int().min(0).max(500).optional().default(100),
+  }).refine((v) => !!v.value || !!v.fieldName, { message: 'value or fieldName is required' }),
+  execute: async ({ value, fieldName, limit }) => {
+    try {
+      const store = getGlobalGraphStore()
+      const needles = [value, fieldName].filter((v): v is string => !!v)
+      const edges = (store.queryEdges() as GraphEdgeData[]).filter((edge) => {
+        const haystack = JSON.stringify(edge.properties ?? {})
+        return needles.some((needle) => haystack.includes(needle))
+      })
+      const sliced = limit === 0 ? edges : edges.slice(0, limit)
+      return {
+        ok: true,
+        value: {
+          matchCount: edges.length,
+          edges: sliced.map((edge) => ({
+            id: edge.id,
+            type: edge.type,
+            from: summarizeNode(store, edge.fromId),
+            to: summarizeNode(store, edge.toId),
+            properties: edge.properties,
+          })),
+          truncated: limit !== 0 && edges.length > limit,
+        },
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+})
+
+export const explainReachability = createTool({
+  id: 'explainReachability',
+  description:
+    'Explain recorded role/session reachability from typed reachability edges. Use this to discuss which identity can reach which endpoint/page.',
+  inputSchema: z.object({
+    role: z.string().optional(),
+    session: z.string().optional(),
+    endpointId: z.string().optional(),
+    endpointUrl: z.string().optional(),
+  }),
+  execute: async ({ role, session, endpointId, endpointUrl }) => {
+    try {
+      const store = getGlobalGraphStore()
+      const focus = endpointId || endpointUrl
+        ? findEndpointNode(store, endpointId, endpointUrl)
+        : undefined
+      const edges = (store.queryEdges() as GraphEdgeData[])
+        .filter((edge) => edge.type === EdgeType.SESSION_REACHES || edge.type === EdgeType.REACHES)
+        .filter((edge) => !focus || edge.toId === focus.id || edge.fromId === focus.id)
+        .filter((edge) => !role || String(edge.properties?.role ?? edge.properties?.roleName ?? '').includes(role) || summarizeNode(store, edge.fromId).name === role)
+        .filter((edge) => !session || String(edge.properties?.session ?? edge.properties?.sessionId ?? '').includes(session))
+      return {
+        ok: true,
+        value: {
+          focus: focus ? summarizeNode(store, focus.id) : undefined,
+          edgeCount: edges.length,
+          reaches: edges.map((edge) => ({
+            type: edge.type,
+            from: summarizeNode(store, edge.fromId),
+            to: summarizeNode(store, edge.toId),
+            properties: edge.properties,
+          })),
+        },
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+})
+
+export const getUntestedWorkarounds = createTool({
+  id: 'getUntestedWorkarounds',
+  description:
+    'Return structural workaround candidates around an endpoint that appear untested. Candidates come from workflow, value-flow, and reachability edges.',
+  inputSchema: z.object({
+    endpointId: z.string().optional(),
+    endpointUrl: z.string().optional(),
+  }).refine((v) => !!v.endpointId || !!v.endpointUrl, { message: 'endpointId or endpointUrl is required' }),
+  execute: async ({ endpointId, endpointUrl }) => {
+    try {
+      const store = getGlobalGraphStore()
+      const focus = findEndpointNode(store, endpointId, endpointUrl)
+      if (!focus) return { ok: false, error: 'Endpoint not found' }
+      const edges = store.queryEdges() as GraphEdgeData[]
+      const touching = edges.filter((edge) => edge.fromId === focus.id || edge.toId === focus.id)
+      const tested = touching.some((edge) => edge.type === EdgeType.HAS_TEST)
+      const candidateEdgeTypes = new Set<EdgeType>([
+        EdgeType.ORDERED_BEFORE,
+        EdgeType.REINGESTS,
+        EdgeType.VALUE_ORIGIN,
+        EdgeType.SESSION_REACHES,
+        EdgeType.REACHES,
+      ])
+      const candidates = touching
+        .filter((edge) => candidateEdgeTypes.has(edge.type))
+        .map((edge) => ({
+          kind: edge.type,
+          focus: summarizeNode(store, focus.id),
+          related: summarizeNode(store, edge.fromId === focus.id ? edge.toId : edge.fromId),
+          tested,
+          rationale:
+            edge.type === EdgeType.ORDERED_BEFORE ? 'workflow ordering may allow direct step access'
+            : edge.type === EdgeType.REINGESTS || edge.type === EdgeType.VALUE_ORIGIN ? 'value crosses endpoint boundary and may be reusable or mutable'
+            : 'recorded reachability may differ by role/session',
+          evidence: edge.properties,
+        }))
+      return { ok: true, value: { focus: summarizeNode(store, focus.id), tested, candidates } }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }

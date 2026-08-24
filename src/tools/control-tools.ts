@@ -24,20 +24,25 @@ import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
 import { redactUrl } from '../security/secret-vault'
 import { checkProof, combineFindingEvidence, type ProofCheckResult } from '../intelligence/proof-rules'
+import { upsertCandidate } from '../research/candidate-store'
+import { stableId } from '../research/utils'
+import { getEngagementServices, type BufferedFindingEvidence, type FindingRuntimeState } from '../runtime/engagement-context'
 
-const evidenceBuffer = new Map<string, Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }>>()
+const legacyFindingState: FindingRuntimeState = { evidenceBuffer: new Map(), evidenceGate: null }
 
-let _evidenceGate: EvidenceGate | null = null
+function getFindingState(): FindingRuntimeState {
+  return getEngagementServices()?.findingState ?? legacyFindingState
+}
 
 /** Global structured ledger of what actually happened (auto-captured by tools). */
 const structuredLedger = coreEvidenceLedger
 
 export function setEvidenceGateForFindings(gate: EvidenceGate): void {
-  _evidenceGate = gate
+  getFindingState().evidenceGate = gate
 }
 
 export function getGlobalEvidenceGate(): EvidenceGate | null {
-  return _evidenceGate
+  return getFindingState().evidenceGate
 }
 
 /**
@@ -79,20 +84,29 @@ export const recordEvidence = createTool({
     status: z.number().optional().describe('HTTP status observed for this evidence item'),
     requestHeaders: z.record(z.string(), z.string()).optional(),
     responseHeaders: z.record(z.string(), z.string()).optional(),
+    responseTimeMs: z.number().nonnegative().optional(),
+    correlationToken: z.string().optional(),
+    state: z.record(z.string(), z.string()).optional(),
+    browserEffects: z.record(z.string(), z.string()).optional(),
   }),
-  execute: async ({ type, data, label, session, findingKey, method, url, status, requestHeaders, responseHeaders }) => {
+  execute: async ({ type, data, label, session, findingKey, method, url, status, requestHeaders, responseHeaders, responseTimeMs, correlationToken, state, browserEffects }) => {
     const key = findingKey || 'default'
     const observed: ObservedFacts | undefined =
-      method || url || status != null || requestHeaders || responseHeaders
+      method || url || status != null || requestHeaders || responseHeaders || responseTimeMs != null || correlationToken || state || browserEffects
         ? {
             ...(method ? { method } : {}),
             ...(url ? { url } : {}),
             ...(status != null ? { status } : {}),
             ...(requestHeaders ? { requestHeaders } : {}),
             ...(responseHeaders ? { responseHeaders } : {}),
+            ...(responseTimeMs != null ? { responseTimeMs } : {}),
+            ...(correlationToken ? { correlationToken } : {}),
+            ...(state ? { state } : {}),
+            ...(browserEffects ? { browserEffects } : {}),
           }
         : undefined
     const item = { type, data, label, timestamp: Date.now(), ...(session ? { session } : {}), ...(observed ? { observed } : {}) }
+    const evidenceBuffer = getFindingState().evidenceBuffer
     const existing = evidenceBuffer.get(key) || []
     existing.push(item)
     evidenceBuffer.set(key, existing)
@@ -111,13 +125,14 @@ export const recordEvidence = createTool({
   },
 })
 
-export const flushEvidence = (findingKey?: string): Array<{ type: string; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }> => {
+export const flushEvidence = (findingKey?: string): BufferedFindingEvidence[] => {
+  const evidenceBuffer = getFindingState().evidenceBuffer
   if (findingKey) {
     const items = evidenceBuffer.get(findingKey) || []
     evidenceBuffer.delete(findingKey)
     return items
   }
-  const all: Array<{ type: string; data: string; label: string; timestamp: number; session?: string }> = []
+  const all: BufferedFindingEvidence[] = []
   for (const [, items] of evidenceBuffer) {
     all.push(...items)
   }
@@ -142,8 +157,7 @@ function _sanitizeForFilename(input: string): string {
   return input.replace(/[<>:"/\\|?*]/g, '-').replace(/--+/g, '-').replace(/^-|-$/g, '')
 }
 // ─── Slice 13 / F1 - shared finding-commit gate ────────────────
-// Every surface that persists a Finding (writeFinding tool, addFinding tool,
-// updateGraph addFinding, HAR bridge, user-discovery) routes through this ONE
+// Every surface that persists a Finding routes through this ONE
 // gate so a claim can never reach the graph or a report without structural
 // verification against recorded evidence AND a deterministic proof floor for
 // its severity. A bandaid would patch each caller; this moves the invariant to
@@ -160,7 +174,9 @@ export interface CommitEvidenceInput {
   observed?: ObservedFacts
 }
 
-export interface CommitFindingInput {
+export interface PromoteFindingInput {
+  candidateId?: string
+  experimentIds?: string[]
   type: string
   endpoint: string
   param?: string
@@ -194,7 +210,7 @@ export interface CommitFindingInput {
   tool?: string
 }
 
-export interface CommittedFinding {
+export interface PromotedFinding {
   id: string
   type: string
   endpoint: string
@@ -210,17 +226,19 @@ export interface CommittedFinding {
   lifecycleStatus: FindingNode['properties']['lifecycleStatus']
   evidenceLevel: EvidenceLevel
   findingId: string
+  candidateId: string
+  experimentIds: string[]
   proofCheck: ProofCheckResult
   deduplicated: boolean
   merged?: boolean
   exploitProofNodeId?: string
 }
 
-export type CommitFindingResult =
-  | { ok: true; value: CommittedFinding }
+export type PromoteFindingResult =
+  | { ok: true; value: PromotedFinding }
   | { ok: false; error: string; missing?: string[]; proofCheck?: ProofCheckResult }
 
-export async function commitFinding(input: CommitFindingInput): Promise<CommitFindingResult> {
+export async function promoteFindingCandidate(input: PromoteFindingInput): Promise<PromoteFindingResult> {
   const args = input
   const store = getGlobalGraphStore()
   const evidenceItems: Array<{ type: EvidenceItemType; data: string; label: string; timestamp: number; session?: string; observed?: ObservedFacts }> =
@@ -246,6 +264,48 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
 
   const evidenceLevel = determineEvidenceLevel(evidenceItems)
   const findingId = buildFindingId(args.type, args.endpoint, args.param)
+  const candidateId = args.candidateId ?? stableId('candidate', [findingId])
+  const persistCandidate = (status: 'candidate' | 'needs-more-evidence' | 'verified', blockers: string[] = []) =>
+    upsertCandidate(store, {
+      id: candidateId,
+      title: args.description || `${args.type} on ${args.endpoint}`,
+      signalType: args.type,
+      endpoint: args.endpoint,
+      evidence: evidenceTexts,
+      experimentIds: args.experimentIds ?? [],
+      confidence: args.confidence,
+      nextVerificationSteps: status === 'verified' ? [] : ['Capture typed evidence that satisfies the proof rule.'],
+      blockers,
+      status,
+      severity: args.severity,
+    })
+  persistCandidate('candidate')
+  if (args.severity !== 'info' && !args.experimentIds?.length) {
+    const blockers = ['experiment-required']
+    persistCandidate('needs-more-evidence', blockers)
+    await store.save()
+    return {
+      ok: false,
+      error: 'Finding promotion requires at least one proven experiment. Run and evaluate a replayable experiment, then submit its ID.',
+      missing: blockers,
+    }
+  }
+  if (args.experimentIds?.length) {
+    const invalid = args.experimentIds.filter(id => {
+      const experiment = store.getNode(id) as import('../graph/schema').ExperimentNode | undefined
+      const outcome = experiment?.type === NodeType.EXPERIMENT ? experiment.properties.outcome : undefined
+      const retest = experiment?.type === NodeType.EXPERIMENT ? experiment.properties.retest?.outcome : undefined
+      return outcome?.status !== 'proven' || outcome.proof.experimentId !== id || outcome.proof.evidenceRefs.length === 0 ||
+        retest?.status !== 'proven' || retest.proof.experimentId !== id || retest.proof.phase !== 'retest' ||
+        retest.proof.evidenceRefs.length === 0 || retest.proof.evidenceRefs.some(ref => outcome.proof.evidenceRefs.includes(ref))
+    })
+    if (invalid.length) {
+      const blockers = invalid.map(id => `experiment-not-proven:${id}`)
+      persistCandidate('needs-more-evidence', blockers)
+      await store.save()
+      return { ok: false, error: `Finding promotion requires proven experiments: ${invalid.join(', ')}`, missing: blockers }
+    }
+  }
 
   // Maker/Checker: structural verification of the claim against recorded evidence.
   // Root-cause fix: verify typed observed facts, do NOT substring-scan prose, and
@@ -272,6 +332,8 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
             supporting: [],
           }
     if (!verification.verified) {
+      persistCandidate('needs-more-evidence', verification.missing)
+      await store.save()
       log.warn(`EvidenceGate: claim "${args.type} on ${args.endpoint}" not supported by recorded evidence - missing: ${verification.missing.join(', ')}`)
       return {
         ok: false,
@@ -299,6 +361,8 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     items: proofItems,
   })
   if (!proofCheck.passed) {
+    persistCandidate('needs-more-evidence', [...proofCheck.missingEvidence, ...proofCheck.conflicts])
+    await store.save()
     log.warn(`ProofRules: "${args.type} on ${args.endpoint}" fails closed - missing: ${proofCheck.missingEvidence.join('; ')} conflicts: ${proofCheck.conflicts.join('; ')}`)
     getGlobalDecisionLedger().recordDecision({
       kind: 'finding.proof',
@@ -319,7 +383,6 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     routingReason: `rule=${proofCheck.ruleId} sources=${proofCheck.evidenceRefs.length}`,
     sourceRefs: proofCheck.evidenceRefs,
   })
-
   const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
 
   const lifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
@@ -341,12 +404,16 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
       lifecycleStatus,
       evidenceLevel,
       proofCheck,
+      candidateId,
+      experimentIds: args.experimentIds ?? [],
       ...(args.cwe ? { cwe: args.cwe } : {}),
       ...(args.description ? { description: args.description } : {}),
       ...(args.remediation ? { remediation: args.remediation } : {}),
       ...(args.tags ? { tags: args.tags } : {}),
     }
     duplicate.updatedAt = Date.now()
+    persistCandidate('verified')
+    await store.save()
     return {
       ok: true,
       value: {
@@ -365,6 +432,8 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
         lifecycleStatus,
         evidenceLevel,
         findingId: duplicate.properties.findingId,
+        candidateId,
+        experimentIds: args.experimentIds ?? [],
         proofCheck,
         deduplicated: true,
         merged: true,
@@ -383,6 +452,8 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     lifecycleStatus,
     evidenceLevel,
     findingId,
+    candidateId,
+    experimentIds: args.experimentIds ?? [],
     proofCheck,
     ...(args.cwe ? { cwe: args.cwe } : {}),
     ...(args.description ? { description: args.description } : {}),
@@ -395,7 +466,13 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
   }
 
   const findingNode = store.addFinding(findingProps)
+  persistCandidate('verified')
   emitFindingDiscovered(findingNode.id, effectiveSeverity, args.type || 'unknown', args.endpoint, undefined, args.tool ?? 'writeFinding')
+  // Self-evolution (spec 05): a committed finding is a confirmed technique
+  // outcome — feeds runtime weight overrides for future selection.
+  import('../intelligence/evolution').then(({ recordTechniqueConfirmed }) => {
+    if (args.type) recordTechniqueConfirmed(args.type)
+  }).catch(() => { /* evolution never breaks the finding path */ })
 
   const finding = {
     id: findingNode.id,
@@ -413,6 +490,8 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     lifecycleStatus,
     evidenceLevel,
     findingId,
+    candidateId,
+    experimentIds: args.experimentIds ?? [],
     proofCheck,
     deduplicated: false,
   }
@@ -451,6 +530,7 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     initialStatus: 'linked',
     provenance: [
       { source: 'tool', ref: args.tool ?? 'writeFinding', detail: args.type },
+      { source: 'graph', ref: candidateId, detail: 'CandidateFinding' },
       { source: 'graph', ref: findingNode.id },
       ...(exploitProofNodeId ? [{ source: 'graph', ref: exploitProofNodeId, detail: 'EXPLOIT_PROOF (PROVES)' }] : []),
       { source: 'evidence', detail: `evidenceItems=${evidenceItems.length}` },
@@ -463,15 +543,15 @@ export async function commitFinding(input: CommitFindingInput): Promise<CommitFi
     kind: 'finding.create',
     reason: `create finding ${args.type} on ${redactUrl(args.endpoint)}`,
     routingReason: `confidence=${args.confidence} level=${evidenceLevel}`,
-    sourceRefs: [findingNode.id, ...structuredEvidenceItems.map(e => e.id), ...(exploitProofNodeId ? [exploitProofNodeId] : [])],
+    sourceRefs: [candidateId, findingNode.id, ...structuredEvidenceItems.map(e => e.id), ...(exploitProofNodeId ? [exploitProofNodeId] : [])],
   })
 
+  await store.save()
   return { ok: true, value: { ...finding, exploitProofNodeId } }
 }
 
 /**
- * Adapter for legacy text-evidence surfaces (addFinding tool, updateGraph
- * addFinding, user-discovery). Prose strings become typed observed facts
+ * Adapter for legacy text-evidence surfaces. Prose strings become typed observed facts
  * attached to the claimed endpoint so they participate in structural
  * verification + the endpoint-scoped proof floor. They remain `text` kind -
  * they can never satisfy a non-text floor (high/critical) on their own.
@@ -502,6 +582,8 @@ export const writeFinding = createTool({
     description: z.string().optional().describe('Human-readable description'),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
     confidence: z.number().min(0).max(1),
+    candidateId: z.string().optional().describe('Existing CandidateFinding ID to promote. Omit to create one from this submission.'),
+    experimentIds: z.array(z.string()).optional().describe('Proven replayable experiment IDs. Required for every non-informational finding.'),
     cwe: z.string().optional().describe('CWE ID'),
     remediation: z.string().optional(),
     findingKey: z.string().optional().describe('Key matching the evidence buffer to pull previously recorded items from.'),
@@ -533,7 +615,7 @@ export const writeFinding = createTool({
       evidenceItems.push({ type: 'screenshot', data: screenshotPath, label: `Screenshot: ${args.type}`, timestamp: Date.now() })
     }
 
-    return commitFinding({
+    return promoteFindingCandidate({
       ...args,
       source: 'llm',
       tool: 'writeFinding',

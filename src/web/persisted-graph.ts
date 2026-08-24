@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
 import { GraphStore } from '../graph/store'
-import { getGlobalWorkspace } from '../workspace'
+import { getTargetWorkspaceDir } from '../workspace'
 
 const CACHE_TTL_MS = 5_000
 
@@ -13,7 +13,7 @@ export async function loadPersistedGraph(target: string): Promise<GraphStore> {
     return cached.store
   }
 
-  const graphPath = resolve(getGlobalWorkspace().getTargetDir(target), 'graph.json')
+  const graphPath = resolve(getTargetWorkspaceDir(target), 'graph.json')
   const store = new GraphStore(graphPath)
   await store.load()
   graphCache.set(target, { store, loadedAt: Date.now() })

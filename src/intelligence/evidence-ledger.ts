@@ -18,6 +18,7 @@
 
 import { emitEvidenceRecorded } from '../events/emitter'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
+import { attributeEvidence } from '../runtime/task-attribution'
 
 export type EvidenceItemType =
   | 'text'
@@ -41,6 +42,9 @@ export interface ObservedFacts {
   contentType?: string
   hops?: number
   omittedHeader?: string
+  correlationToken?: string
+  state?: Record<string, string>
+  browserEffects?: Record<string, string>
 }
 
 /** Body signature assertion for independent gate verification. */
@@ -215,6 +219,7 @@ export class EvidenceLedger {
       provenanceIds: [...(item.provenanceIds ?? []), provenanceId],
     }
     this.items.push(recorded)
+    attributeEvidence({ id: recorded.id, kind: recorded.type, label: recorded.label, recordedAt: recorded.timestamp })
     emitEvidenceRecorded(recorded.id, recorded.type)
     return recorded
   }

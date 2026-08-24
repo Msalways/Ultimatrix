@@ -1,6 +1,8 @@
-import { z } from 'zod'
+﻿import { z } from 'zod'
 import { NodeType } from '../graph/schema'
 import { httpRequest, multipartUpload, followRedirects, omitHeader } from '../tools/http-tools'
+import { listCapturedRequests, replayCapturedRequest } from '../tools/replay-tools'
+import { manageSkills } from '../tools/skill-manage-tools'
 import { recordTestCase } from '../tools/record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from '../tools/observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from '../tools/session-tools'
@@ -9,7 +11,8 @@ import { readAppModelSection, writeAppModelSection } from '../tools/app-model-to
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from '../tools/recon-tools'
 import { askUser } from '../tools/interaction-tools'
 import { getOastUrlTool, checkOastCallbacks, clearOastCallbacks } from '../oast/tools'
-import {queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings, graphActionEnum} from '../graph/tools'
+import {queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addRBACRole, addAttack, chainFindings, graphActionEnum} from '../graph/tools'
+import { getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds } from '../graph/relation-tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
 import { getFullContext } from '../manager/tools/get-full-context'
 import { addDiscovery } from '../tools/user-discovery'
@@ -19,14 +22,16 @@ import {readReportTool} from '../tools/report-tools'
 import { loadSkillReference, searchSkillTool, loadSkillBodyTool } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from '../tools/flow-tools'
-import { buildResearchMap, planResearchExperiments, compareResearchResponses, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
+import { buildResearchMap, planResearchExperiments, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
-import { diagnoseTargetTool, runAdvancedPlaybookTool } from '../orchestration/tools'
-import { listToolsTool, loadToolTool } from '../extensions/tool-tools'
-import { getGlobalToolRegistry } from '../extensions/tool-registry'
+import { diagnoseTargetTool } from '../orchestration/tools'
+import { createExtensionTools } from '../extensions/tool-tools'
+import { DynamicToolRegistry } from '../extensions/tool-registry'
 import { Logger } from '../utils/logger'
+
+type ExtensionTools = ReturnType<typeof createExtensionTools>
 
 export type ToolRegistry = {
   // HTTP Tools
@@ -34,6 +39,9 @@ export type ToolRegistry = {
   multipartUpload: typeof multipartUpload
   followRedirects: typeof followRedirects
   omitHeader: typeof omitHeader
+  listCapturedRequests: typeof listCapturedRequests
+  replayCapturedRequest: typeof replayCapturedRequest
+  manageSkills: typeof manageSkills
   
   // Test Recording Tools
   recordTestCase: typeof recordTestCase
@@ -64,11 +72,18 @@ export type ToolRegistry = {
   getAuthFlows: typeof getAuthFlows
   getTargetSummary: typeof getTargetSummary
   getEndpointsWithParams: typeof getEndpointsWithParams
+  getGraphSchema: typeof getGraphSchema
+  getCaptureOverview: typeof getCaptureOverview
+  queryRelations: typeof queryRelations
+  getGraphNeighborhood: typeof getGraphNeighborhood
+  getWorkflowAround: typeof getWorkflowAround
+  traceValue: typeof traceValue
+  explainReachability: typeof explainReachability
+  getUntestedWorkarounds: typeof getUntestedWorkarounds
   upsertPage: typeof upsertPage
   addAction: typeof addAction
   addInput: typeof addInput
   addEndpoint: typeof addEndpoint
-  addFinding: typeof addFinding
   addAuthFlow: typeof addAuthFlow
   addRBACRole: typeof addRBACRole
   addAttack: typeof addAttack
@@ -134,6 +149,7 @@ export type ToolRegistry = {
   buildResearchMap: typeof buildResearchMap
   planResearchExperiments: typeof planResearchExperiments
   compareResearchResponses: typeof compareResearchResponses
+  evaluateResearchExperiment: typeof evaluateResearchExperiment
   recordFindingCandidate: typeof recordFindingCandidate
   assessCandidateReportability: typeof assessCandidateReportability
   getResearchStatus: typeof getResearchStatus
@@ -147,16 +163,16 @@ export type ToolRegistry = {
 
   // Orchestration Layer (Phase 9 / T4)
   diagnoseTarget: typeof diagnoseTargetTool
-  runAdvancedPlaybook: typeof runAdvancedPlaybookTool
 
   // Extension Discovery (Phase 3)
-  listTools: typeof listToolsTool
-  loadTool: typeof loadToolTool
+  listTools: ExtensionTools['listTools']
+  loadTool: ExtensionTools['loadTool']
 }
 
 // Centralized tool registry with consistent IDs
-export function createToolRegistry(logger?: Logger): ToolRegistry {
+export function createToolRegistry(logger?: Logger, extensionRegistry = new DynamicToolRegistry()): ToolRegistry {
   const log = logger || new Logger('ToolRegistry')
+  const extensionTools = createExtensionTools(extensionRegistry)
   
   log.info('Creating centralized tool registry')
   
@@ -166,7 +182,10 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     multipartUpload,
     followRedirects,
     omitHeader,
-    
+    listCapturedRequests,
+    replayCapturedRequest,
+    manageSkills,
+
     // Test Recording Tools
     recordTestCase,
     
@@ -196,11 +215,18 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     getAuthFlows,
     getTargetSummary,
     getEndpointsWithParams,
+    getGraphSchema,
+    getCaptureOverview,
+    queryRelations,
+    getGraphNeighborhood,
+    getWorkflowAround,
+    traceValue,
+    explainReachability,
+    getUntestedWorkarounds,
     upsertPage,
     addAction,
     addInput,
     addEndpoint,
-    addFinding,
     addAuthFlow,
     addRBACRole,
     addAttack,
@@ -266,6 +292,7 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
     buildResearchMap,
     planResearchExperiments,
     compareResearchResponses,
+    evaluateResearchExperiment,
     recordFindingCandidate,
     assessCandidateReportability,
     getResearchStatus,
@@ -279,16 +306,15 @@ export function createToolRegistry(logger?: Logger): ToolRegistry {
 
     // Orchestration Layer (Phase 9 / T4)
     diagnoseTarget: diagnoseTargetTool,
-    runAdvancedPlaybook: runAdvancedPlaybookTool,
 
     // Extension Discovery (Phase 3)
-    listTools: listToolsTool,
-    loadTool: loadToolTool,
+    listTools: extensionTools.listTools,
+    loadTool: extensionTools.loadTool,
   }
 
   // Delegate built-ins into the DynamicToolRegistry so MCP/plugin tools resolve
   // through the same registry surface (Phase 1.2).
-  getGlobalToolRegistry().registerBuiltins(registry)
+  extensionRegistry.registerBuiltins(registry)
 
   return registry
 }
@@ -299,6 +325,9 @@ export const TOOL_IDS = [
   'multipartUpload',
   'followRedirects',
   'omitHeader',
+  'listCapturedRequests',
+  'replayCapturedRequest',
+  'manageSkills',
   'recordTestCase',
   'parseResponse',
   'evaluateRendered',
@@ -319,11 +348,18 @@ export const TOOL_IDS = [
   'getAuthFlows',
   'getTargetSummary',
   'getEndpointsWithParams',
+  'getGraphSchema',
+  'getCaptureOverview',
+  'queryRelations',
+  'getGraphNeighborhood',
+  'getWorkflowAround',
+  'traceValue',
+  'explainReachability',
+  'getUntestedWorkarounds',
   'upsertPage',
   'addAction',
   'addInput',
   'addEndpoint',
-  'addFinding',
   'addAuthFlow',
   'addRBACRole',
   'addAttack',
@@ -362,6 +398,7 @@ export const TOOL_IDS = [
   'buildResearchMap',
   'planResearchExperiments',
   'compareResearchResponses',
+  'evaluateResearchExperiment',
   'recordFindingCandidate',
   'assessCandidateReportability',
   'getResearchStatus',
@@ -369,7 +406,11 @@ export const TOOL_IDS = [
   'runCampaign',
   'recordOutcome',
   'diagnoseTarget',
-  'runAdvancedPlaybook',
+  'spawnWorker',
+  'spawnSwarm',
+  'runTaskGraph',
+  'executeDirect',
+  'selectModel',
   'listTools',
   'loadTool',
   'nuclei',
@@ -477,6 +518,65 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
         headers: z.record(z.string(), z.string()),
         removed: z.boolean(),
       }),
+    }),
+  },
+  listCapturedRequests: {
+    id: 'listCapturedRequests',
+    description: 'List captured session requests with filters',
+    category: 'http',
+    inputSchema: z.object({
+      method: z.string().optional(),
+      host: z.string().optional(),
+      urlContains: z.string().optional(),
+      limit: z.number().int().positive().max(200).default(50),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      value: z.object({
+        totalCaptured: z.number(),
+        matches: z.array(z.object({
+          id: z.string(),
+          method: z.string(),
+          url: z.string(),
+          status: z.number().optional(),
+          source: z.enum(['tool', 'har']),
+        })),
+      }),
+    }),
+  },
+  replayCapturedRequest: {
+    id: 'replayCapturedRequest',
+    description: 'Replay a captured request by id with structural mutations',
+    category: 'http',
+    inputSchema: z.object({
+      entryId: z.string(),
+      setHeaders: z.record(z.string(), z.string()).optional(),
+      removeHeaderNames: z.array(z.string()).optional(),
+      body: z.string().optional(),
+      appendBody: z.string().optional(),
+      url: z.string().url().optional(),
+      method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).optional(),
+      timeoutMs: z.number().int().positive().default(10000),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      error: z.string().optional(),
+    }),
+  },
+  manageSkills: {
+    id: 'manageSkills',
+    description: 'List, add, remove, or hot-reload imported skills at runtime',
+    category: 'control' as const,
+    inputSchema: z.object({
+      action: z.enum(['list', 'add', 'remove', 'reload']),
+      markdown: z.string().optional(),
+      path: z.string().optional(),
+      id: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      message: z.string().optional(),
+      errors: z.array(z.string()).optional(),
     }),
   },
   recordTestCase: {
@@ -916,7 +1016,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   },
   upsertPage: {
     id: 'upsertPage',
-    description: 'Record or update a page in the knowledge graph. Call this after navigating to a URL with stagehand_navigate.',
+    description: 'Record or update a page in the knowledge graph. Call this after the browser navigates to a URL.',
     category: 'graph',
     inputSchema: z.object({
       url: z.string().describe('The page URL'),
@@ -969,23 +1069,6 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
       authType: z.string().optional().describe('Auth type: Bearer, Cookie, Basic, API-Key'),
       tags: z.array(z.string()).optional().describe('Semantic tags'),
       description: z.string().optional().describe('Endpoint description'),
-    }),
-    outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
-  },
-  addFinding: {
-    id: 'addFinding',
-    description: 'Record a confirmed security finding with evidence and severity.',
-    category: 'graph',
-    inputSchema: z.object({
-      endpoint: z.string().describe('Affected endpoint URL'),
-      technique: z.string().describe('Vulnerability technique (e.g., SQL Injection, XSS)'),
-      severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
-      confidence: z.number().min(0).max(1).describe('Confidence level 0-1'),
-      description: z.string().describe('Detailed description'),
-      evidence: z.array(z.string()).optional().describe('Evidence items'),
-      remediation: z.string().optional().describe('How to fix'),
-      cwe: z.string().optional().describe('CWE ID'),
-      tags: z.array(z.string()).optional().describe('Tags'),
     }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
   },
@@ -1415,14 +1498,14 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   },
   getDialogEvidence: {
     id: 'getDialogEvidence',
-    description: 'Check for native dialog evidence (alert/confirm/prompt) — useful for XSS proof.',
+    description: 'Check for native dialog evidence (alert/confirm/prompt) â€” useful for XSS proof.',
     category: 'observation' as const,
     inputSchema: z.object({ sinceSeconds: z.number().optional() }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
   },
   getRecentChanges: {
     id: 'getRecentChanges',
-    description: 'Get recent DOM changes — what changed on the page in the last N seconds.',
+    description: 'Get recent DOM changes â€” what changed on the page in the last N seconds.',
     category: 'observation' as const,
     inputSchema: z.object({ sinceSeconds: z.number().optional() }),
     outputSchema: z.object({ ok: z.boolean(), value: z.any() }),
@@ -1475,7 +1558,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   },
   diagnoseTarget: {
     id: 'diagnoseTarget',
-    description: 'Diagnose the captured target state from the knowledge graph and rank technique primitives. Planning only — never executes tests or writes findings.',
+    description: 'Diagnose the captured target state from the knowledge graph and rank technique primitives. Planning only â€” never executes tests or writes findings.',
     category: 'observation' as const,
     inputSchema: z.object({
       target: z.string().optional(),
@@ -1484,25 +1567,6 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
       maxCandidates: z.number().int().positive().optional(),
     }),
     outputSchema: z.object({ ok: z.boolean(), profile: z.any() }),
-  },
-  runAdvancedPlaybook: {
-    id: 'runAdvancedPlaybook',
-    description: 'Execute the diagnosed technique plan: runs ranked primitive candidates evidence-gated, skips worker-delegated candidates when no delegate is configured, returns per-candidate results + remaining missing context.',
-    category: 'observation' as const,
-    inputSchema: z.object({
-      candidateIds: z.array(z.string()).optional(),
-      maxCandidates: z.number().int().positive().optional(),
-      commit: z.boolean().optional(),
-    }),
-    outputSchema: z.object({
-      ok: z.boolean(),
-      executed: z.array(z.any()),
-      skipped: z.array(z.any()),
-      confirmed: z.number(),
-      unconfirmed: z.number(),
-      missingContext: z.array(z.any()),
-      loadedSkills: z.array(z.string()),
-    }),
   },
 }
 
@@ -1550,7 +1614,7 @@ export {
   extractSessionCookie, extractCsrfToken, useSession,
   recordEvidence, writeFinding,
   queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows,
-  upsertPage, addAction, addInput, addEndpoint, addFinding, addAuthFlow, addRBACRole, addAttack, chainFindings,
+  upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addRBACRole, addAttack, chainFindings,
   readAppModelSection, writeAppModelSection,
   runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe,
   askUser,
@@ -1562,5 +1626,4 @@ export {
   runCampaignTool,
   recordOutcomeTool,
   diagnoseTargetTool,
-  runAdvancedPlaybookTool,
 }

@@ -7,11 +7,11 @@ export const dynamic = 'force-dynamic'
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { provider, model, apiKey, baseUrl, engine, modelTiers, crossProviderKeys } = body
+    const { provider, model, apiKey, baseUrl, engine, modelTiers, modelCapabilities, modelRoleTiers, crossProviderKeys } = body
 
-    if (!provider || !model || !apiKey) {
+    if (!provider || !model) {
       return NextResponse.json(
-        { ok: false, errors: ['provider, model, and apiKey are required'] },
+        { ok: false, errors: ['provider and model are required'] },
         { status: 400 },
       )
     }
@@ -21,8 +21,18 @@ export async function POST(req: NextRequest) {
       model,
       apiKey,
       baseUrl,
+      endpoint: body.endpoint,
+      deployment: body.deployment,
+      apiVersion: body.apiVersion,
+      authMethod: body.authMethod,
+      accessKeyId: body.accessKeyId,
+      secretAccessKey: body.secretAccessKey,
+      sessionToken: body.sessionToken,
+      region: body.region,
       engine,
       modelTiers,
+      modelCapabilities,
+      modelRoleTiers,
       crossProviderKeys,
     })
 

