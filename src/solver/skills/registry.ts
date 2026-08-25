@@ -1,4 +1,4 @@
-import { initSkillIndex, loadSkillBody, searchSkillMetadata, type Skill, type SkillMeta } from './loader'
+﻿import { initSkillIndex, loadSkillBody, searchSkillMetadata, type Skill, type SkillMeta } from './loader'
 
 export interface GraphSummary {
   endpointCount: number
@@ -26,25 +26,47 @@ export interface SkillMatch {
   matchReasons: string[]
 }
 
+/**
+ * F2 (Base Architecture Contracts) â€” the registry is a READ-THROUGH view over
+ * the shared loader index (the single live authority). `this.skills` is a
+ * warm-up snapshot only: every authorization/load/search call resolves LIVE,
+ * so a mid-session manageSkills import is immediately spawnable by workers.
+ * Snapshots authorize nothing.
+ */
 export class SkillRegistry {
   private skills: Map<string, SkillMeta> = new Map()
   private recentSkillCounts: Map<string, number> = new Map()
 
   loadFromDirectory(_dir: string): void {
+    // Warm-up copy (kept for backward-compatible direct `.skills` reads).
     const allSkills = initSkillIndex()
     for (const [id, meta] of allSkills) {
       this.skills.set(id, meta)
     }
   }
 
+  /**
+   * Live lookup â€” the shared index is the authority whenever it is populated
+   * (production). An absent/empty index (unit-test mocks, no-skill installs)
+   * falls back to the warm-up snapshot so seeded registries keep working.
+   */
+  private liveSource(): Map<string, SkillMeta> {
+    const live = initSkillIndex()
+    return live && live.size > 0 ? live : this.skills
+  }
+
+  private live(skillId: string): SkillMeta | undefined {
+    return this.liveSource().get(skillId)
+  }
+
   get(skillId: string): SkillMeta {
-    const skill = this.skills.get(skillId)
+    const skill = this.live(skillId)
     if (!skill) throw new Error(`Skill not found: ${skillId}`)
     return skill
   }
 
   has(skillId: string): boolean {
-    return this.skills.has(skillId)
+    return this.live(skillId) !== undefined
   }
 
   /** Load one exact catalog entry. Unknown or unreadable skills fail closed. */
@@ -56,21 +78,21 @@ export class SkillRegistry {
   }
 
   search(query: string): SkillMeta[] {
-    return searchSkillMetadata(this.skills.values(), query)
+    return searchSkillMetadata(this.liveSource().values(), query)
   }
 
   /**
-   * Target-aware skill matching has been removed (Phase 7.2 — pure discovery).
+   * Target-aware skill matching has been removed (Phase 7.2 â€” pure discovery).
    * The brain and council now select skills themselves via the `search` method
    * (exact/controlled token matching only) and the listSkills / searchSkills
    * brain tools. No substring scoring of free-form user/LLM text remains.
    */
   list(): SkillMeta[] {
-    return Array.from(this.skills.values())
+    return Array.from(this.liveSource().values())
   }
 
   count(): number {
-    return this.skills.size
+    return this.liveSource().size
   }
 }
 

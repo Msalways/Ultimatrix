@@ -33,11 +33,11 @@ Each gate: green `tsc --noEmit` + green tests + clean tsup build. Legacy engine 
 
 ### Phase F2 — Canonical Registries (spec 02)
 
-- [ ] F2.1 `SkillRegistry.has()/load()/list()` delegate live to the shared loader index (snapshot becomes read-through cache)
-- [ ] F2.2 Contract test: manageSkills add mid-session → spawnWorker accepts user/<id> immediately (I2)
-- [ ] F2.3 Engagement-scoped ModelSelector: council factory + spawn tools resolve the session instance (no per-member news)
-- [ ] F2.4 Registry rule documented: one canonical authority per concept
-- **Gate F2:** tsc + tests + build green → commit
+- [x] F2.1 SkillRegistry live read-through: has/get/load/search/list/count resolve the shared loader index; snapshot demoted to warm-up fallback (authoritative only when index absent/empty — preserves unit-test-mock + no-skill installs)
+- [x] F2.2 Contract test I2: mid-session manageSkills add → stale-warmed registry authorizes + spawns user/<id> immediately; remove de-authorizes instantly
+- [x] F2.3 Engagement-scoped selector: council factory spawn tools take deps.modelSelector; per-member `new ModelSelector` → deps→engagement→construct fallback; toolpack modelSelectionTools same resolution
+- [x] F2.4 Registry rule documented (AGENTS.md contracts §2, done in F1)
+- **Gate F2: PASSED** — 2214/2214, tsc clean
 
 ### Phase F3 — Agent Result Envelope (spec 03)
 

@@ -21,6 +21,7 @@ import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { ModelSelector } from '../models/selector'
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
+import { getEngagementServices } from '../runtime/engagement-context'
 import { log } from '../utils/logger'
 
 // ─── Tool imports (same as brain-tools.ts) ─────────────────────────────
@@ -256,7 +257,10 @@ function modelSelectionTools(
 ): Record<string, any> {
   if (!modelSelector && config.engine !== 'multi-model') return {}
 
-  const selector = modelSelector ?? new ModelSelector(
+  // F2 — one canonical authority: resolve the engagement-scoped selector
+  // before constructing a fresh instance (fresh instances fork cooldown/
+  // quota/success state).
+  const selector = modelSelector ?? getEngagementServices()?.modelSelector ?? new ModelSelector(
     config.modelCapabilities ?? {},
     config.budgetPolicy ?? {
       enforcement: 'soft', scope: 'session', resetOn: 'never',

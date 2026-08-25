@@ -25,6 +25,7 @@ import { createSpawnSwarmTool } from '../manager/tools/spawn-swarm'
 import { createExecuteDirectTool } from '../manager/tools/execute-direct'
 import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { TOOL_IDS } from '../mastra/tools'
+import { getEngagementServices } from '../runtime/engagement-context'
 import { ModelSelector } from '../models/selector'
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
@@ -55,6 +56,8 @@ export interface CouncilDeps {
   taskCoordinator: TaskCoordinator
   browser: StagehandBrowser
   extensionRegistry: DynamicToolRegistry
+  /** F2 — engagement-scoped selector (shared cooldown/quota/success state). */
+  modelSelector?: ModelSelector
 }
 
 const LLM_ROLES: CouncilMemberRole[] = ['strategist', 'operator', 'skeptic', 'analyst']
@@ -202,9 +205,9 @@ function makeMember(config: UltimatrixConfig, role: CouncilMemberRole, deps: Cou
 
   // Role-specific orchestration tools (operator executes; others deliberate).
   const extraTools: Record<string, any> = role === 'operator' ? {
-    spawnWorker: createSpawnWorkerTool(config, deps.skillRegistry, deps.taskCoordinator),
-    spawnSwarm: createSpawnSwarmTool(config, deps.skillRegistry, deps.taskCoordinator),
-    runTaskGraph: createRunTaskGraphTool(deps.taskCoordinator, deps.skillRegistry),
+    spawnWorker: createSpawnWorkerTool(config, deps.skillRegistry, deps.taskCoordinator, deps.modelSelector),
+    spawnSwarm: createSpawnSwarmTool(config, deps.skillRegistry, deps.taskCoordinator, deps.modelSelector),
+    runTaskGraph: createRunTaskGraphTool(deps.taskCoordinator, deps.skillRegistry, deps.modelSelector),
     executeDirect: createExecuteDirectTool(config, deps.skillRegistry),
   } : {}
   Object.assign(extraTools, createExtensionTools(deps.extensionRegistry))
@@ -212,11 +215,14 @@ function makeMember(config: UltimatrixConfig, role: CouncilMemberRole, deps: Cou
   // Dynamic model-selection reasoning for planning (strategist) and execution (operator).
   // Other roles deliberate on evidence/strategy, not model choice.
   if (role === 'strategist' || role === 'operator') {
-    const selector = new ModelSelector(
-      config.modelCapabilities ?? {},
-      config.budgetPolicy ?? { enforcement: 'soft', scope: 'session', resetOn: 'never', allocation: { brain: 0.3, workers: 0.6, spider: 0.1 }, maxModelCallsPerTask: 15, trackTokens: false },
-      config,
-    )
+    // F2 — engagement-scoped selector first; construct only as last resort.
+    const selector = deps.modelSelector
+      ?? getEngagementServices()?.modelSelector
+      ?? new ModelSelector(
+        config.modelCapabilities ?? {},
+        config.budgetPolicy ?? { enforcement: 'soft', scope: 'session', resetOn: 'never', allocation: { brain: 0.3, workers: 0.6, spider: 0.1 }, maxModelCallsPerTask: 15, trackTokens: false },
+        config,
+      )
     extraTools.selectModel = sanitizeTool(createTool({
       id: 'selectModel',
       description: 'Select the optimal model for a proposed task based on capabilities, budget, and rate limits. Use before planning (strategist) or executing (operator) to justify the model choice.',
