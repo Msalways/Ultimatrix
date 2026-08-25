@@ -13,10 +13,10 @@
 
 | # | Spec | Status | Notes |
 |---|------|--------|-------|
-| 01 | Service Ownership (F1) | ✅ DONE-UNCOMMITTED | Scoped gate verified by contract test; selector shared via container; ALS audit clean |
-| 02 | Canonical Registries (F2) | ⬜ PENDING | SkillRegistry live delegation; engagement ModelSelector |
-| 03 | Agent Result Envelope (F3) | ✅ DONE-UNCOMMITTED | Envelope + I3 bridging + resultRef persistence + shared informed-task builder with session intelligence |
-| 04 | Resource Claim Registry (F4) | ⬜ PENDING | Graph-backed claims; metadata-based technique resolution |
+| 01 | Service Ownership (F1) | ✅ COMMITTED `0b982f7` | Scoped gate verified by contract test; selector shared via container; ALS audit clean |
+| 02 | Canonical Registries (F2) | ✅ COMMITTED `1877696` | SkillRegistry live read-through; I2 mid-session import spawnable; engagement selector |
+| 03 | Agent Result Envelope (F3) | ✅ COMMITTED `34745f9` | Envelope + I3 bridging + resultRef persistence + shared informed-task builder with session intelligence |
+| 04 | Resource Claim Registry (F4) | ✅ DONE-UNCOMMITTED | claim-registry.ts; exploitation-loop + playbook claim-before-fire; metadata-first technique resolution; I4 tests |
 
 ## Phase Gates
 
@@ -51,10 +51,11 @@ Each gate: green `tsc --noEmit` + green tests + clean tsup build. Legacy engine 
 
 ### Phase F4 — Resource Claim Registry (spec 04)
 
-- [ ] F4.1 Typed claim store (workflow-backed): claim(endpointKey, owner, purpose, ttl) with check-and-set semantics
-- [ ] F4.2 ExploitationTracker agenda items claim before fire; playbook candidates claim; campaign slices claim (I4 contract test: concurrent claim blocks double-fire)
-- [ ] F4.3 `TECHNIQUE_TO_PRIMITIVE` frozen map replaced by registry-metadata resolution (tags/appliesTo), map retained as last-resort fallback only
-- **Gate F4:** tsc + tests + build green → commit
+- [x] F4.1 `src/runtime/claim-registry.ts`: check-and-set claims {resourceKey, owner, purpose, ttl}, sweep-on-read expiry, owner release/refresh, `endpointResourceKey` canonical key, `withEndpointClaim` wrapper
+- [x] F4.2 Claim-before-fire wired: exploitation loop (per agenda item), playbook primitive candidates. Campaign slices + spawn inherit coordination via shared endpoints (documented: in-flight semantics — cross-turn dedup remains graph-driven via proofs/coverage)
+- [x] F4.3 Technique→primitive resolution is registry-metadata-first (token vs tags/technique fields); frozen map demoted to last-resort fallback for legacy tokens
+- [x] I4 contract test: concurrent claim blocks second path with holder attribution; release unblocks; same-owner refresh; TTL steal
+- **Gate F4: PASSED** — 2226/2226, tsc clean, build clean
 
 ## Program Completion Checklist
 

@@ -14,6 +14,7 @@
 import { diagnoseTargetState, type DiagnosisInput } from './diagnosis'
 import { buildAdvancedPlaybook, type PlaybookOptions } from './technique-planner'
 import { runPrimitiveById } from '../primitives'
+import { withEndpointClaim } from '../runtime/claim-registry'
 import { getOastUrl } from '../oast/server'
 import type {
   AdvancedPlaybook,
@@ -92,7 +93,16 @@ export async function runAdvancedPlaybook(
   for (const candidate of playbook.candidates) {
     if (candidate.execution === 'primitive' && candidate.primitiveId) {
       const run = deps.runPrimitive ?? runPrimitiveById
-      const res = await run(candidate.primitiveId, contextFor(candidate, profile), { commit })
+      const primitiveId = candidate.primitiveId
+      // F4 — claim before fire when the candidate targets a known endpoint.
+      const claimCtx = contextFor(candidate, profile)
+      const claimEndpoint = claimCtx?.endpoint as { url?: string; method?: string } | undefined
+      const claimUrl = claimEndpoint?.url ?? profile.target ?? ''
+      const attempt = await withEndpointClaim(
+        { method: claimEndpoint?.method, url: claimUrl, owner: `playbook:${candidate.id}`, purpose: primitiveId },
+        () => run(primitiveId, claimCtx, { commit }),
+      )
+      const res = attempt.executed ? attempt.value : { ok: false, skipped: true, reason: `endpoint claimed by ${attempt.holder}` }
       executed.push({
         candidateId: candidate.id,
         primitiveId: candidate.primitiveId,
