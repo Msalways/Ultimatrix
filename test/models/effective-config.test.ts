@@ -59,4 +59,4 @@ describe('effective config resolver', () => {
     expect(effective.warnings).toContain('modelCapabilities missing for openai/gpt-4o-mini')
     expect(effective.warnings).toContain('mcp.third-party: untrusted')
   })
-}
+})

@@ -1,13 +1,13 @@
 ## Ultimatrix v8 — Intelligence-Augmented Security Researcher
 
 ### Status
-- **2054 tests (199 files), clean tsup build, zero test failures**
-- **318+ source files**, zero test failures
-- **Slice 12 (Architecture Evals) DONE**: `src/evals/` — `types.ts` (ArchitectureEvalCase/Result/Suite), `runner.ts` (runEvalCase/runEvalSuite: ordered-event subsequence + deep-equal state-subset), `harness.ts` (evalConfig + LLM-boundary fakes), `fixtures.ts` (8 vertical cases). `test/evals/architecture.test.ts` (9 tests). `npm run test:evals` → `vitest run test/evals`. Cases drive REAL runtime modules: crawl-completion (SpiderRuntime → WorkflowStore persist/reload → boundary classify), scope-policy (allowed/proposed/denied, proposed never auto-executed, approval reclassifies, ambient allow-any never leaks), worker-routing (createSpawnWorkerTool typed routing + compact result + worker.spawn decision), proof-rule-finding (writeFinding gate + checkProof floor fail-closed), browser-lifecycle (provider fixed per workflow, resume mismatch reject, camofox planned → throws), config-fallback (resolveModelRef tiers/roles + resolveBrowserProvider), recovery (stale crawl stopReason + failed worker ok:false w/ persisted decision), external-tools-gating (deny-by-default).
+- **2210 tests (219 files), clean tsup build, zero test failures**
+- **JARVIS-LETHALITY-PROGRAM COMPLETE** (`docs/PLANS/JARVIS-LETHALITY-PROGRAM/`, commit `7232a1b`): brain OODA mandate + `[PATH:]` contract; Camoufox anti-detection Firefox provider (fail-closed executable resolution); self-evolution loop (technique weights from confirmed findings/failures, draft-skill synthesis from exploit proofs); honest discovery (frontier dequeue, `agent_stopped`, endpoint hygiene, js-miner/shadow revival); captured-request replay seam (`listCapturedRequests`/`replayCapturedRequest`); skill import validation gate + `manageSkills` + CLI/web routes; assistant persona (`assistant.name`, default jarvis) + `/brief` + `/learned`
+- **Slice 12 (Architecture Evals) DONE**: `src/evals/` — `types.ts` (ArchitectureEvalCase/Result/Suite), `runner.ts` (runEvalCase/runEvalSuite: ordered-event subsequence + deep-equal state-subset), `harness.ts` (evalConfig + LLM-boundary fakes), `fixtures.ts` (8 vertical cases). `test/evals/architecture.test.ts` (9 tests). `npm run test:evals` → `vitest run test/evals`. Cases drive REAL runtime modules: crawl-completion (SpiderRuntime → WorkflowStore persist/reload → boundary classify), scope-policy (allowed/proposed/denied, proposed never auto-executed, approval reclassifies, ambient allow-any never leaks), worker-routing (createSpawnWorkerTool typed routing + compact result + worker.spawn decision), proof-rule-finding (writeFinding gate + checkProof floor fail-closed), browser-lifecycle (provider fixed per workflow, resume mismatch reject), config-fallback (resolveModelRef tiers/roles + resolveBrowserProvider), recovery (stale crawl stopReason + failed worker ok:false w/ persisted decision), external-tools-gating (deny-by-default).
 - **Slice 11 (Memory Split) DONE**: `src/memory/policy.ts` shape-based target-sensitive gate + `evaluateMemoryWrite` routing (project accepts all, global reroutes workflow-scoped, blocks sensitive fail-closed); `src/memory/global-store.ts` gated global prefs; cross-engagement routed through gate. 29 boundary tests.
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
-- **56 skills** (10 domains), knowledge-based, not payload lists
+- **56 skills** (10 domains), payload-complete (P0 restoration), primitive-wired with drift guards
 - **Skill-driven tool filtering**: Skills declare toolRefs in YAML frontmatter, tools filtered per-agent
 - **Human-in-the-Loop**: Browser visibility, action capture, session storage, flow reproduction
 - **FIX-PLAN v8.2 COMPLETED**: All root-cause fixes implemented and verified
@@ -179,11 +179,14 @@ HAR-based business-logic analysis: value-provenance graph, auth decode, custom h
 | **Browser Launcher** | `src/capture/browser-launcher.ts` | Playwright browser launcher with managed page lifecycle |
 | **Network Capture** | `src/capture/network-capture.ts` | Playwright network interceptor: requests/responses → HAR entries |
 | **Passive Observer** | `src/capture/passive-observer.ts` | Passive DOM observer: watches XHR/fetch patterns, writes to graph |
-| **Anti-Bot** | `src/browser/anti-bot.ts` | Bot detection: Cloudflare/Akamai/DataDome/PerimeterX, 30s wait |
-| **Browser Manager** | `src/browser/manager.ts` | Singleton StagehandBrowser, `getActivePage()`, screenshot capture |
-| **State Bridge** | `src/browser/state-bridge.ts` | Imports/exports cookies+storage into Stagehand context |
-| **Dialog Watcher** | `src/browser/dialog-watcher.ts` | CDP-level dialog detection (alert/confirm/prompt), auto-dismiss |
-| **Dialog Inject** | `src/browser/dialog-inject.ts` | Wraps Stagehand tools to auto-inject dialog evidence |
+| **Anti-Bot** | `src/browser/anti-bot.ts` | Typed-signal challenge detection (status/header/platform-frame registries; no content regexes), 30s wait |
+| **Browser Manager** | `src/browser/manager.ts` | Singleton browser, `getActivePage()`, `getActiveBrowserContext()` (provider-blind), screenshot capture |
+| **Provider Abstraction** | `src/browser/provider.ts` | `BrowserProvider` + `BrowserHandle` union; `resolveBrowserProvider()`; per-workflow provider lock, resume-mismatch reject |
+| **Stagehand Provider** | `src/browser/stagehand-provider.ts` | Default provider: Stagehand v3 (Chromium, CDP-native) |
+| **Camoufox Provider** | `src/browser/camoufox-provider.ts` + `camoufox-tools.ts` | Anti-detection Firefox via Playwright; fail-closed executable resolution (`browser.camofox.executablePath` / `CAMOUFOX_EXECUTABLE`); same-7-tool surface over Playwright primitives |
+| **State Bridge** | `src/browser/state-bridge.ts` | Imports/exports cookies+storage into browser context |
+| **Dialog Watcher** | `src/browser/dialog-watcher.ts` | Dialog detection (alert/confirm/prompt) via context addInitScript interceptor, auto-dismiss |
+| **Dialog Inject** | `src/browser/dialog-inject.ts` | Wraps browser tools (both providers) to auto-inject dialog evidence |
 | **Reaction Observer** | `src/browser/reaction-observer.ts` | Post-action DOM diffing: modals, toasts, errors, success messages |
 
 ### Tools (`src/tools/`)
@@ -202,6 +205,8 @@ HAR-based business-logic analysis: value-provenance graph, auth decode, custom h
 | **Token Profiler** | `src/tools/token-profiler.ts` | Per-tool token usage tracking |
 | **Tool Registry** | `src/tools/registry.ts` | `registerAllTools()` — central registry of all Mastra tools |
 | **Tool Availability** | `src/tools/tool-availability.ts` | `isToolAvailable()` — checks if a tool binary exists on PATH |
+| **Replay Tools** | `src/tools/replay-tools.ts` | `listCapturedRequests` + `replayCapturedRequest(entryId, mutations)` — captured-traffic replay with structural mutations (P3.1) |
+| **Skill Manage Tools** | `src/tools/skill-manage-tools.ts` | `manageSkills` — runtime skill list/add/remove/hot-reload through the validation gate |
 
 ### Other Modules
 
@@ -211,7 +216,12 @@ HAR-based business-logic analysis: value-provenance graph, auth decode, custom h
 | **System Logger** | `src/logging/system-logger.ts` | System metrics: compression, dialog, memory stats |
 | **Compression** | `src/compression/headroom-service.ts` | `CompressionService` using headroom-ai: structured `CompressionResult` |
 | **Scope Guard** | `src/safety/scope-guard.ts` | URL scope enforcement: deny-by-default, `isUrlInScope()` |
-| **Core Contract** | `src/prompts/core-contract.ts` | Anti-hallucination, workflow rules, PATH declarations (English, ~300 words) |
+| **Core Contract** | `src/prompts/core-contract.ts` | Anti-hallucination, workflow rules, PATH declarations; exports shared `EVIDENCE_DISCIPLINE` + `ASSUMPTION_VERIFICATION` (composed into brain instructions) |
+| **Evolution** | `src/intelligence/evolution.ts` + `draft-skills.ts` | Self-evolution: technique outcomes → registry weight overrides; draft-skill synthesis from exploit proofs (`skills-drafts/`, unvalidated) |
+| **Captured Requests** | `src/capture/captured-request-store.ts` | Session store of full captured requests (ids `cap-N`) feeding the replay seam; ingested by httpRequest + HAR bridge |
+| **Post-Crawl Discovery** | `src/discovery/post-crawl.ts` | Shadow-API auto-run + js-miner revival over captured bodies at crawl completion |
+| **Briefing** | `src/runtime/briefing.ts` | Deterministic engagement briefing (state/coverage/evolution/drafts) for REPL start, `/brief`, `/learned` |
+| **Skill Validation** | `src/solver/skills/validate.ts` | Import gate: frontmatter/name/toolRefs⊆TOOL_IDS/primitives⊆registry/non-empty fences/BOM/size — fail-closed |
 | **Rate Limiter** | `src/models/rate-limiter.ts` | Sliding window + cooldown rate limiting |
 | **Quota Tracker** | `src/models/quota-tracker.ts` | Provider quota exhaustion tracking with cooldown |
 | **Model Selector** | `src/models/selector.ts` | `selectForTask()` scores models by complexity/capabilities/rate-limit/exhaustion |
@@ -290,8 +300,8 @@ reflexion:
 
 ### Known Issues
 
-- Legacy v6 modules (`src/context/`, `src/lib/agent-manager.ts`) have type errors — pre-existing tech debt, not blocking v8
-- Cloudflare challenges block Stagehand crawl — deferred
+- Fixed open debt (2026-08-24): effective-config test syntax, restored Recent Discoveries per-turn diff in solver goal, neighborhood tool schema-default fallbacks, browser route GET=state/POST=start. Remaining:
+- Camoufox provider requires a provisioned binary (`browser.camofox.executablePath` or `CAMOUFOX_EXECUTABLE`) — fail-closed without it; A10 live validation against a hostile target is a manual step
 - ESLint configured (`eslint.config.js`) but `npm run lint` times out — needs rule tuning for large codebase
 
 ### Skills (project)

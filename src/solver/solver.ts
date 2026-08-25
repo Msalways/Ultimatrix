@@ -217,6 +217,61 @@ interface CompletionResult {
   reason: SolveResult["reason"];
 }
 
+// ─── Recent Discoveries (per-turn graph diff) ───────────────
+
+interface DiscoverySnapshot {
+  endpoints: Set<string>;
+  findings: Set<string>;
+}
+const recentDiscoveryMemory = new Map<string, DiscoverySnapshot>();
+
+/**
+ * Diff the current graph against this origin's last-turn snapshot. Returns a
+ * Recent Discoveries block for the enriched goal (empty on the baseline turn
+ * or when nothing changed). Structural diff only — no keyword logic.
+ */
+function buildRecentDiscoveries(origin: string): string {
+  try {
+    const store = getGlobalGraphStore();
+    const endpoints = (store.queryNodes?.(NodeType.ENDPOINT) ?? []) as Array<{
+      id: string;
+      properties: { url?: string; method?: string };
+    }>;
+    const findings = (store.queryNodes?.(NodeType.FINDING) ?? []) as Array<{
+      id: string;
+      properties: { technique?: string; endpoint?: string; severity?: string; findingId?: string };
+    }>;
+
+    const endpointKeys = endpoints.map((e) => `${String(e.properties.method ?? "GET").toUpperCase()}:${String(e.properties.url ?? e.id)}`);
+    const findingIds = findings.map((f) => String(f.properties.findingId ?? f.id));
+    const prev = recentDiscoveryMemory.get(origin);
+    recentDiscoveryMemory.set(origin, { endpoints: new Set(endpointKeys), findings: new Set(findingIds) });
+
+    if (!prev) return "";
+
+    const newEndpoints = endpoints.filter((_e, i) => !prev.endpoints.has(endpointKeys[i]));
+    const newFindings = findings.filter((f, i) => !prev.findings.has(findingIds[i]));
+    if (newEndpoints.length === 0 && newFindings.length === 0) return "";
+
+    const lines: string[] = ["## Recent Discoveries"];
+    if (newEndpoints.length > 0) lines.push(`New endpoints: ${newEndpoints.length}`);
+    if (newFindings.length > 0) {
+      lines.push(`New findings: ${newFindings.length}`);
+      for (const f of newFindings.slice(0, 5)) {
+        const technique = String(f.properties.technique ?? "unknown");
+        const endpoint = String(f.properties.endpoint ?? "");
+        const severity = String(f.properties.severity ?? "").toUpperCase();
+        lines.push(`- ${technique}${endpoint ? ` on ${endpoint}` : ""}${severity ? ` (${severity})` : ""}`);
+      }
+      if (newFindings.length > 5) lines.push(`(+${newFindings.length - 5} more)`);
+    }
+    return lines.join("\n");
+  } catch (e) {
+    
+    return "";
+  }
+}
+
 /**
  * Load the cross-engagement priors prompt block. Read-only against the
  * anonymized global memory (content was policy-gated at write time); empty
@@ -367,14 +422,21 @@ export async function solve(
   });
   let enrichedGoal = `${params.goal}${runtimeEnvelope}`;
 
+  // Recent Discoveries — per-turn graph diff vs the previous turn's snapshot
+  // (restored feature: the brain should see what changed since it last looked,
+  // not re-derive it). Keyed by origin; first turn establishes a baseline.
+
+
   // Reflexion lessons + cross-engagement priors flow INTO the turn context
   // (previously pull-only). Both blocks are English prose designed for this.
   // Computed once; re-applied verbatim if a capability turn rebuilds the goal.
+  const discoveriesBlock = buildRecentDiscoveries(params.origin);
   const reflexionBlock = reflexion.toPromptBlock();
   const priorsBlock = params.priorsPromptBlock ?? (await loadPriorsBlock());
   const contextSuffix =
     (reflexionBlock ? `\n\n${reflexionBlock}` : "") +
-    (priorsBlock ? `\n\n${priorsBlock}` : "");
+    (priorsBlock ? `\n\n${priorsBlock}` : "") +
+    (discoveriesBlock ? `\n\n${discoveriesBlock}` : "");
   enrichedGoal += contextSuffix;
 
   // Inject stale detection context

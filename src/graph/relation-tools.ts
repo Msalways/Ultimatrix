@@ -53,7 +53,6 @@ function buildNeighborhood(
     const current = queue.shift()!
     if (current.depth >= opts.depth) continue
     for (const edge of allEdges) {
-      if (!edgeMatches(edge, current.id, opts.direction, opts.edgeTypes)) continue
       if (!seenEdges.has(edge.id)) {
         edges.push(edge)
         seenEdges.add(edge.id)
@@ -71,7 +70,7 @@ function buildNeighborhood(
         }
       }
     }
-  }
+}
 
   return {
     focus: summarizeNode(store, nodeId),
@@ -318,7 +317,7 @@ export const getGraphNeighborhood = createTool({
     try {
       const store = getGlobalGraphStore()
       if (!store.getNode(nodeId)) return { ok: false, error: `Node not found: ${nodeId}` }
-      return { ok: true, value: buildNeighborhood(store, nodeId, { depth, direction, edgeTypes, maxEdges }) }
+      return { ok: true, value: buildNeighborhood(store, nodeId, { depth: depth ?? 2, direction: direction ?? 'both', edgeTypes, maxEdges: maxEdges ?? 100 }) }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }
@@ -361,7 +360,7 @@ export const getWorkflowAround = createTool({
           ordered: touching.filter((e) => e.type === EdgeType.ORDERED_BEFORE).map((e) => ({ from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
           valueFlow: touching.filter((e) => e.type === EdgeType.VALUE_ORIGIN || e.type === EdgeType.REINGESTS).map((e) => ({ type: e.type, from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
           reachability: touching.filter((e) => e.type === EdgeType.SESSION_REACHES || e.type === EdgeType.REACHES).map((e) => ({ type: e.type, from: summarizeNode(store, e.fromId), to: summarizeNode(store, e.toId), properties: e.properties })),
-          neighborhood: buildNeighborhood(store, focus.id, { depth, direction: 'both', edgeTypes: workflowEdgeTypes, maxEdges: 120 }),
+          neighborhood: buildNeighborhood(store, focus.id, { depth: depth ?? 2, direction: 'both', edgeTypes: workflowEdgeTypes, maxEdges: 120 }),
         },
       }
     } catch (e) {

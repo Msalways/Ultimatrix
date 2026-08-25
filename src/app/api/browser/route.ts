@@ -11,6 +11,19 @@ export async function GET(request: Request) {
     if (!target) return NextResponse.json({ ok: false, error: 'target is required' }, { status: 400 })
     const engine = targetManager.getEngine(target)
     if (!engine?.isInitialized()) return NextResponse.json({ ok: false, error: 'target engine is not active' }, { status: 404 })
+    // State query only — starting the automation browser is an explicit POST.
+    return NextResponse.json({ ok: true, target, browser: engine.getBrowserState() })
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const target = targetFrom(request)
+    if (!target) return NextResponse.json({ ok: false, error: 'target is required' }, { status: 400 })
+    const engine = targetManager.getEngine(target)
+    if (!engine?.isInitialized()) return NextResponse.json({ ok: false, error: 'target engine is not active' }, { status: 404 })
     return NextResponse.json({ ok: true, target, browser: await engine.startBrowser() })
   } catch (err) {
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
