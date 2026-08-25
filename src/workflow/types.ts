@@ -154,6 +154,8 @@ export interface TaskState {
   provider?: string
   tier?: string
   resultSummary?: string
+  /** F3 — ToolResultStore node id holding the full worker output. */
+  resultRef?: string
   evidenceRefs: string[]
   graphRefs: string[]
   usage: TaskUsage

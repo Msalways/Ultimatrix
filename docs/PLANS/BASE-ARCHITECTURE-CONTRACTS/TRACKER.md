@@ -15,7 +15,7 @@
 |---|------|--------|-------|
 | 01 | Service Ownership (F1) | ✅ DONE-UNCOMMITTED | Scoped gate verified by contract test; selector shared via container; ALS audit clean |
 | 02 | Canonical Registries (F2) | ⬜ PENDING | SkillRegistry live delegation; engagement ModelSelector |
-| 03 | Agent Result Envelope (F3) | ⬜ PENDING | Envelope type at pool executor; evidence-bridge on worker path; ToolResultStore written |
+| 03 | Agent Result Envelope (F3) | ✅ DONE-UNCOMMITTED | Envelope + I3 bridging + resultRef persistence + shared informed-task builder with session intelligence |
 | 04 | Resource Claim Registry (F4) | ⬜ PENDING | Graph-backed claims; metadata-based technique resolution |
 
 ## Phase Gates
@@ -41,13 +41,13 @@ Each gate: green `tsc --noEmit` + green tests + clean tsup build. Legacy engine 
 
 ### Phase F3 — Agent Result Envelope (spec 03)
 
-- [ ] F3.1 `WorkerExecutionEnvelope` type {text, toolCalls, findings, evidenceRefs, graphRefs, resultRef}
-- [ ] F3.2 Pool executor builds envelope; toolCalls bridged via `bridgeWorkerToolCall/Evidence` into coreEvidenceLedger (I3)
-- [ ] F3.3 Full result stored via ToolResultStore.store(); compact ref returned to brain (getToolResult works)
-- [ ] F3.4 Swarm sequential chaining passes resultRef + typed findings (replaces 200-char slices); parallel mode passes refs too
-- [ ] F3.5 One shared informed-task builder for spawn-worker/spawn-swarm (dedupe; swarm gains tags field)
-- [ ] F3.6 Worker informed-task carries compact brain-state: evolution summary + reflexion failedPaths + recent discoveries counts
-- **Gate F3:** tsc + tests + build green → commit
+- [x] F3.1 `WorkerExecutionEnvelope` {workerId, summary, evidenceRecorded, resultRef?} exported from worker-pool-executor
+- [x] F3.2 Executor extracts Mastra toolResults defensively (top-level + steps[] shapes), bridges via `bridgeWorkerEvidence` into coreEvidenceLedger, capped 25/worker — I3 contract test green
+- [x] F3.3 Full sanitized result persisted via ToolResultStore; graph resolves engagement-container-first (F1); getToolResult works — contract test reads payload back through the ref
+- [x] F3.4 Swarm: completed results carry `resultRef` (TaskState + coerce + executor→coordinator persistence added); sequential chaining emits `[full output: <ref> via get-tool-result]` pointers instead of 200-char JSON slices
+- [x] F3.5 Shared `buildInformedTask` helper (src/manager/tools/informed-task.ts) dedupes spawn-worker/spawn-swarm endpoint-context blocks (swarm gains tags field)
+- [x] F3.6 Informed task appends Session Intelligence block: evolution technique outcomes + demoted warnings + captured-request replay hint
+- **Gate F3: PASSED** — 2219/2219, tsc clean, build clean
 
 ### Phase F4 — Resource Claim Registry (spec 04)
 

@@ -8,6 +8,7 @@ import { getGlobalGraphStore } from '../../graph/store'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
 import { getGlobalDecisionLedger } from '../../security/decision-ledger'
 import { getEngagementServices } from '../../runtime/engagement-context'
+import { buildInformedTask } from './informed-task'
 import type { TaskCoordinator } from '../../runtime/task-coordinator'
 
 export function createSpawnWorkerTool(
@@ -57,34 +58,8 @@ export function createSpawnWorkerTool(
       const nodesBefore = store.queryNodes().length
       const findingsBefore = store.queryNodes(undefined, { type: 'Finding' } as any).length
 
-      let informedTask = task
-      if (endpointId) {
-        try {
-          const endpoint = store.queryNodes(undefined, { id: endpointId } as any)[0]
-            || Array.from((store as any).nodes.values()).find((n: any) => n.id === endpointId)
-          if (endpoint) {
-            const p = endpoint.properties as any
-            const headerLines = (p.headers || []).map((h: any) => `  ${h.name}: ${h.value}`)
-            const cookieStr = (p.cookies || []).map((c: any) => `  ${c.name}=${c.value}`).join('; ')
-
-            let endpointBlock = `${task}\n\n## Target Endpoint\n- URL: ${p.url}\n- Method: ${p.method}\n- Params: ${JSON.stringify(p.params || [])}${p.authRequired ? '\n- Auth Required: Yes (' + (p.authType || 'unknown') + ')' : ''}${p.tags ? '\n- Tags: ' + p.tags.join(', ') : ''}`
-
-            if (headerLines.length > 0) {
-              endpointBlock += `\n\n## Captured Headers (use these in your HTTP request headers)\n${headerLines.join('\n')}`
-            }
-            if (cookieStr) {
-              endpointBlock += `\n\n## Captured Cookies (use these in your HTTP request cookie header)\n  ${cookieStr}`
-            }
-            if (p.authType) {
-              endpointBlock += `\n\n## Auth Type: ${p.authType} — retrieve the captured auth headers for ${p.url} to get full auth context`
-            }
-
-            informedTask = endpointBlock
-          }
-        } catch {
-          // Fall back to raw task
-        }
-      }
+      // F3 — shared informed-task builder (endpoint context + session intelligence)
+      const informedTask = buildInformedTask({ task, endpointId, store })
 
       const startTime = Date.now()
       let workerId = ''

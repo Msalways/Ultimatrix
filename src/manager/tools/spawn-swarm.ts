@@ -19,6 +19,7 @@ import {
 } from '../../events/emitter'
 import { getGlobalDecisionLedger } from '../../security/decision-ledger'
 import { getEngagementServices } from '../../runtime/engagement-context'
+import { buildInformedTask as sharedBuildInformedTask } from './informed-task'
 import type { TaskCoordinator } from '../../runtime/task-coordinator'
 
 export function createSpawnSwarmTool(
@@ -107,7 +108,7 @@ export function createSpawnSwarmTool(
         if (priorResults.length > 0) {
           const priorFindings = priorResults
             .filter(r => r.status === 'completed' && r.result)
-            .map(r => `Worker ${r.skillId}: ${JSON.stringify(r.result).slice(0, 200)}`)
+            .map(r => `Worker ${r.skillId}: ${r.resultRef ? `[full output: ${r.resultRef} via get-tool-result]` : JSON.stringify(r.result).slice(0, 200)}`)
             .join('\n')
           if (priorFindings) {
             informedTask = `${informedTask}\n\n## Prior Worker Findings (use this to chain attacks)\n${priorFindings}`
@@ -192,6 +193,7 @@ export function createSpawnSwarmTool(
             skillId: taskDef.skillId,
             status: 'completed',
             result: compactResult,
+            resultRef: taskState.resultRef,
             routing: {
               tier: routedTier,
               modelId: routedModelId,
@@ -221,6 +223,8 @@ export function createSpawnSwarmTool(
         status: string
         result?: unknown
         error?: string
+        /** F3 — ToolResultStore ref for full output (read back via get-tool-result). */
+        resultRef?: string
         routing?: {
           tier: string
           modelId?: string

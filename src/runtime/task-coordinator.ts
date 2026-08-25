@@ -36,6 +36,8 @@ export interface TaskRequest {
 export interface TaskExecutionResult {
   workerId?: string
   summary: string
+  /** F3 — ToolResultStore ref for the full worker output (getToolResult). */
+  resultRef?: string
   evidence?: WorkflowEvidenceRef[]
   graphRefs?: string[]
 }
@@ -288,6 +290,7 @@ export class TaskCoordinator {
       task.workerId = result.workerId ?? task.workerId
       attempt.workerId = result.workerId ?? attempt.workerId
       task.resultSummary = result.summary.slice(0, 2000)
+      if (result.resultRef) task.resultRef = result.resultRef
       attempt.resultSummary = task.resultSummary
       const attributedEvidence = [...attribution.evidence.values()]
       const evidence = [...attributedEvidence, ...(result.evidence ?? [])]
