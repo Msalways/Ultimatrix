@@ -7,6 +7,7 @@ import type { ModelSelector } from '../../models/selector'
 import { getGlobalGraphStore } from '../../graph/store'
 import { emitWorkerSpawned, emitWorkerStarted, emitWorkerCompleted, emitWorkerError } from '../../events/emitter'
 import { getGlobalDecisionLedger } from '../../security/decision-ledger'
+import { getEngagementServices } from '../../runtime/engagement-context'
 import type { TaskCoordinator } from '../../runtime/task-coordinator'
 
 export function createSpawnWorkerTool(
@@ -91,8 +92,9 @@ export function createSpawnWorkerTool(
       try {
         if (!skillRegistry.has(skillId)) throw new Error(`Skill not found: ${skillId}`)
         const taskComplexity = complexity ?? 'medium'
-        const selection = !modelId && modelSelector
-          ? modelSelector.selectForTask({ skillId, taskDescription: informedTask, complexity: taskComplexity, requiredCapabilities }, 'worker')
+        const effectiveSelector = modelSelector ?? getEngagementServices()?.modelSelector
+      const selection = !modelId && effectiveSelector
+          ? effectiveSelector.selectForTask({ skillId, taskDescription: informedTask, complexity: taskComplexity, requiredCapabilities }, 'worker')
           : undefined
         const routedTier = (selection?.tier ?? tier) as 'fast' | 'balanced' | 'powerful'
         const routedModelId = modelId ?? selection?.modelId

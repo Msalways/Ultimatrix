@@ -6,6 +6,7 @@
  */
 
 import type { UltimatrixConfig } from '../config'
+import { getEngagementServices } from '../runtime/engagement-context'
 import { DEFAULTS } from '../config'
 import { Blackboard } from '../solver/blackboard'
 import { EvidenceGate } from '../intelligence/evidence-gate'
@@ -135,6 +136,10 @@ export async function createEngineServices(ctx: EngineSetupContext): Promise<Eng
       config,
     )
     result.modelSelector = modelSelector
+    // F1 — share the session selector with the engagement service container so
+    // every spawn path resolves the SAME cooldown/quota/success state.
+    const scoped = getEngagementServices()
+    if (scoped) scoped.modelSelector = modelSelector
 
     const extensionRegistry = new DynamicToolRegistry()
     applyConfigExtensions(config, extensionRegistry)

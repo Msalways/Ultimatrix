@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { ModelSelector } from '../../models/selector'
 import type { SkillRegistry } from '../../solver/skills/registry'
 import type { TaskCoordinator } from '../../runtime/task-coordinator'
+import { getEngagementServices } from '../../runtime/engagement-context'
 import { TaskGraphRunner, validateTaskGraph, type TaskGraphProposal } from '../../runtime/task-graph'
 
 const acceptanceSchema = z.discriminatedUnion('type', [
@@ -99,8 +100,9 @@ export function createRunTaskGraphTool(
       if (!initialValidation.valid) return runner.run(initialProposal, (context as any)?.abortSignal)
 
       const routedTasks = tasks.map((task) => {
-        if (task.modelId || !modelSelector) return task
-        const selection = modelSelector.selectForTask({
+        const effectiveSelector = modelSelector ?? getEngagementServices()?.modelSelector
+  if (task.modelId || !effectiveSelector) return task
+        const selection = effectiveSelector.selectForTask({
           skillId: task.skillId,
           taskDescription: task.objective,
           complexity: task.complexity,

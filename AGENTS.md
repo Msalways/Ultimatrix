@@ -14,6 +14,12 @@
 - **Council root-cause rewrite COMPLETED**: All regex removed, structured typed fields at all seams
 - `@mastra/core` ^1.42.0, `playwright` ^1.52.0, `zod` ^4.0.0, `next` ^15.5.19
 
+### Architecture Contracts (Base)
+
+1. **Service ownership** — every runtime capability resolves from the per-engagement `EngagementServices` container (`src/runtime/engagement-context.ts`, AsyncLocalStorage). Module-level globals are legacy fallbacks only; new capabilities MUST register in the container, never in module state.
+2. **Canonical registries** — one live authority per concept (skills → shared loader index; models → engagement ModelSelector). Snapshots authorize nothing.
+3. **Typed agent boundaries** — agent results cross seams as typed envelopes, not strings (see docs/PLANS/BASE-ARCHITECTURE-CONTRACTS/).
+4. **Resource claims** — escalation paths claim endpoints before firing (F4).
 ### Architecture — Dual Engine + Council
 
 ```

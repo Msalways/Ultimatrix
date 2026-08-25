@@ -18,6 +18,7 @@ import {
   emitWorkerError,
 } from '../../events/emitter'
 import { getGlobalDecisionLedger } from '../../security/decision-ledger'
+import { getEngagementServices } from '../../runtime/engagement-context'
 import type { TaskCoordinator } from '../../runtime/task-coordinator'
 
 export function createSpawnSwarmTool(
@@ -125,8 +126,9 @@ export function createSpawnSwarmTool(
         try {
           if (!skillRegistry.has(taskDef.skillId)) throw new Error(`Skill not found: ${taskDef.skillId}`)
           const taskComplexity = taskDef.complexity ?? 'medium'
-          const selection = !taskDef.modelId && modelSelector
-            ? modelSelector.selectForTask({
+          const effectiveSelector = modelSelector ?? getEngagementServices()?.modelSelector
+      const selection = !taskDef.modelId && effectiveSelector
+            ? effectiveSelector.selectForTask({
               skillId: taskDef.skillId,
               taskDescription: informedTask,
               complexity: taskComplexity,

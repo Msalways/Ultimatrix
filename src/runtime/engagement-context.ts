@@ -38,6 +38,8 @@ export interface FindingRuntimeState {
 }
 
 export interface EngagementServices {
+  /** F1 — session model selector (shared cooldown/quota/success state). Optional for legacy-shaped constructions. */
+  modelSelector?: import('../models/selector').ModelSelector
   workspace: WorkspaceManager
   graph: GraphStore
   oast: OastStore
