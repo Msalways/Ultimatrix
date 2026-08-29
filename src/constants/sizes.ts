@@ -181,21 +181,20 @@ export function formatBytes(bytes: number, options: {
   decimals?: number;
   space?: boolean;
 } = {}): string {
-  const { binary = true, decimals = 2, space = true } = options;
+  const { binary = true, decimals = 2, space: includeSpace = true } = options;
   
   if (bytes === 0) return '0 B';
   
-  const k = options.binary === false ? 1000 : 1024;
-  const dm = options.decimals ?? 2;
-  const sizes = options.binary === false 
-    ? ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-    : ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  const k = binary ? 1024 : 1000;
+  const sizes = binary
+    ? ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+    : ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   const value = bytes / Math.pow(k, i);
   
-  const space = options.space ? ' ' : '';
-  return `${value.toFixed(dm)}${space}${sizes[i]}`;
+  const space = includeSpace ? ' ' : '';
+  return `${value.toFixed(decimals)}${space}${sizes[i]}`;
 }
 
 /**

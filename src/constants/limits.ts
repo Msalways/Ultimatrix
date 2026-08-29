@@ -104,7 +104,7 @@ export const QUEUE_LIMITS = {
   
   /** Dead letter queue max */
   DEAD_LETTER_MAX: 1_000,
-} as const.
+} as const
 
 // ========== Cache Limits ==========
 export const CACHE_LIMITS = {
@@ -131,7 +131,7 @@ export const CACHE_LIMITS = {
   
   /** Maximum value size (bytes) */
   MAX_VALUE_SIZE: 10 * 1_024 * 1_024, // 10 MB
-} as const.
+} as const
 
 // ========== Search Limits ==========
 export const SEARCH_LIMITS = {
@@ -155,7 +155,7 @@ export const SEARCH_LIMITS = {
   
   /** Number of fragments */
   FRAGMENTS: 3,
-} as const.
+} as const
 
 // ========== Finding & Vulnerability Limits ==========
 export const FINDING_LIMITS = {
@@ -173,6 +173,9 @@ export const FINDING_LIMITS = {
   
   /** Maximum attack chain length */
   MAX_CHAIN_LENGTH: 10,
+
+  /** Max chain length */
+  MAX_CHAIN: 10,
   
   /** Maximum title length */
   MAX_TITLE: 256,
@@ -182,7 +185,7 @@ export const FINDING_LIMITS = {
   
   /** Maximum evidence items per finding */
   MAX_EVIDENCE: 20,
-} as const.
+} as const
 
 // ========== Graph Limits ==========
 export const GRAPH_LIMITS = {
@@ -206,58 +209,7 @@ export const GRAPH_LIMITS = {
   
   /** Maximum edges per query */
   MAX_QUERY_EDGES: 10_000,
-} as const.
-
-// ========== Finding Limits ==========
-export const FINDING_LIMITS = {
-  /** Max findings per engagement */
-  MAX_FINDINGS: 1_000,
-  
-  /** Max findings per endpoint */
-  MAX_PER_ENDPOINT: 50,
-  
-  /** Max evidence per finding */
-  MAX_EVIDENCE: 20,
-  
-  /** Max proof steps */
-  MAX_PROOF_STEPS: 20,
-  
-  /** Max chain length */
-  MAX_CHAIN: 10,
-  
-  /** Max title length */
-  MAX_TITLE: 256,
-  
-  /** Max description */
-  MAX_DESCRIPTION: 10_000,
-  
-  /** Max evidence per finding */
-  MAX_EVIDENCE: 20,
-} as const.
-
-// ========== Graph Limits ==========
-export const GRAPH_LIMITS = {
-  /** Maximum nodes */
-  MAX_NODES: 100_000,
-  
-  /** Maximum edges */
-  MAX_EDGES: 500_000,
-  
-  /** Maximum traversal depth */
-  MAX_DEPTH: 10,
-  
-  /** Maximum neighborhood size */
-  MAX_NEIGHBORHOOD: 1_000,
-  
-  /** Maximum path length */
-  MAX_PATH: 20,
-  
-  /** Maximum nodes per query */
-  MAX_QUERY_NODES: 1_000,
-  
-  /** Maximum edges per query */
-  MAX_QUERY_EDGES: 10_000,
-} as const.
+} as const
 
 // ========== Resource Limits ==========
 export const RESOURCE_LIMITS = {
@@ -278,7 +230,7 @@ export const RESOURCE_LIMITS = {
   
   /** Event loop lag threshold (ms) */
   EVENT_LOOP_LAG: 100,
-} as const.
+} as const
 
 // ========== Feature Flags ==========
 export const FEATURE_FLAGS = {
@@ -302,7 +254,7 @@ export const FEATURE_FLAGS = {
   
   /** Verbose logging */
   VERBOSE: false,
-} as const.
+} as const
 
 // ========== Export All ==========
 export const LIMITS = {
@@ -310,11 +262,6 @@ export const LIMITS = {
   RATE_LIMITS,
   CONCURRENCY,
   QUEUE_LIMITS,
-  CACHE_LIMITS,
-  SEARCH_LIMITS,
-  FINDING_LIMITS,
-  GRAPH_LIMITS,
-  QUEUE_LIMITS: QUEUE_LIMITS as any,
   CACHE_LIMITS,
   SEARCH_LIMITS,
   FINDING_LIMITS,

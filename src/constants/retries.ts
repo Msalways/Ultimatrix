@@ -41,34 +41,13 @@ export const RETRY_CONFIG = {
   
   /** Retry on connection reset */
   RETRY_ON_CONNECTION_RESET: true,
-  
-  /** Retry on 429 (rate limit) */
-  RETRY_ON_429: true,
-  
+
   /** Retry on connection refused */
   RETRY_ON_CONNECTION_REFUSED: true,
   
   /** Retry on DNS failure */
   RETRY_ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  RETRY_ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  RETRY_ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  RETRY_ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  RETRY_ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  RETRY_ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  RETRY_ON_DNS_FAILURE: true,
-} as const.
+} as const
 
 // ========== Backoff Strategies ==========
 export const BACKOFF_STRATEGIES = {
@@ -86,7 +65,7 @@ export const BACKOFF_STRATEGIES = {
   
   /** Jittered exponential */
   JITTERED: 'jittered' as const,
-} as const.
+} as const
 
 // ========== Backoff Steps ==========
 export const BACKOFF_STEPS = {
@@ -104,7 +83,7 @@ export const BACKOFF_STEPS = {
   
   /** Very conservative */
   VERY_CONSERVATIVE: [30_000, 60_000, 120_000] as const,
-} as const.
+} as const
 
 // ========== Jitter ==========
 export const JITTER_CONFIG = {
@@ -122,7 +101,7 @@ export const JITTER_CONFIG = {
   
   /** Maximum jitter factor */
   MAX_FACTOR: 0.5,
-} as const.
+} as const
 
 // ========== Retry Conditions ==========
 export const RETRY_CONDITIONS = {
@@ -149,28 +128,7 @@ export const RETRY_CONDITIONS = {
   
   /** Retry on connection refused */
   ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  ON_DNS_FAILURE: true,
-  
-  /** Retry on connection refused */
-  ON_CONNECTION_REFUSED: true,
-  
-  /** Retry on DNS failure */
-  ON_DNS_FAILURE: true,
-} as const.
+} as const
 
 // ========== Non-Retry Conditions ==========
 export const NO_RETRY_CONDITIONS = {
@@ -200,7 +158,7 @@ export const NO_RETRY_CONDITIONS = {
   
   /** Don't retry 422 Unprocessable Entity */
   ON_422: false,
-} as const.
+} as const
 
 // ========== Retry Strategies ==========
 export const RETRY_STRATEGIES = {
@@ -221,43 +179,7 @@ export const RETRY_STRATEGIES = {
   
   /** Decorrelated jitter */
   DECORRELATED: 'decorrelated' as const,
-} as const.
-
-// ========== Backoff Steps ==========
-export const BACKOFF_STEPS = {
-  /** Default stepped backoff (ms) */
-  DEFAULT: [5_000, 15_000, 30_000] as const,
-  
-  /** Aggressive - fast retries */
-  AGGRESSIVE: [1_000, 5_000, 10_000] as const,
-  
-  /** Conservative - longer waits */
-  CONSERVATIVE: [10_000, 30_000, 60_000] as const,
-  
-  /** Very aggressive (for testing) */
-  TESTING: [100, 500, 1_000] as const,
-  
-  /** Very conservative */
-  VERY_CONSERVATIVE: [30_000, 60_000, 120_000] as const,
-} as const.
-
-// ========== Jitter Configuration ==========
-export const JITTER_CONFIG = {
-  /** Enable jitter */
-  ENABLED: true,
-  
-  /** Jitter factor (0-1) */
-  FACTOR: 0.2,
-  
-  /** Jitter type */
-  TYPE: 'full' as const, // 'full' | 'decorrelated' | 'equal'
-  
-  /** Minimum jitter (ms) */
-  MIN_MS: 100,
-  
-  /** Maximum jitter factor */
-  MAX_FACTOR: 0.5,
-} as const.
+} as const
 
 // ========== Retry Categories ==========
 export const RETRY_CATEGORIES = {
@@ -287,7 +209,7 @@ export const RETRY_CATEGORIES = {
     'ECONNRESET',
     'ECONNABORTED',
   ] as const,
-} as const.
+} as const
 
 // ========== Circuit Breaker ==========
 export const CIRCUIT_BREAKER = {
@@ -305,7 +227,7 @@ export const CIRCUIT_BREAKER = {
   
   /** Minimum requests before evaluating */
   MIN_REQUESTS: 10,
-} as const.
+} as const
 
 // ========== Rate Limiting ==========
 export const RATE_LIMIT_DEFAULTS = {
@@ -326,7 +248,7 @@ export const RATE_LIMIT_DEFAULTS = {
   
   /** Max 429 retries */
   MAX_429_RETRIES: 3,
-} as const.
+} as const
 
 // ========== HTTP Status Codes ==========
 export const HTTP_STATUS = {
@@ -401,37 +323,7 @@ export const HTTP_STATUS = {
   LOOP_DETECTED: 508,
   NOT_EXTENDED: 510,
   NETWORK_AUTHENTICATION_REQUIRED: 511,
-} as const.
-
-// ========== Retry Categories ==========
-export const RETRY_CATEGORIES = {
-  /** Network errors that should trigger retry */
-  NETWORK_ERRORS: [
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'ENOTFOUND',
-    'ECONNREFUSED',
-    'EHOSTUNREACH',
-    'EPIPE',
-    'ECONNRESET',
-    'ECONNABORTED',
-  ] as const,
-  
-  /** HTTP status codes that should trigger retry */
-  HTTP_STATUS_CODES: [408, 429, 500, 502, 503, 504] as const,
-  
-  /** Errors that should NOT be retried */
-  DO_NOT_RETRY: [
-    'ECONNREFUSED',
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'ENOTFOUND',
-    'EHOSTUNREACH',
-    'EPIPE',
-    'ECONNRESET',
-    'ECONNABORTED',
-  ] as const,
-} as const.
+} as const
 
 // ========== Export All ==========
 export const RETRY_CONSTANTS = {
@@ -441,12 +333,9 @@ export const RETRY_CONSTANTS = {
   JITTER: JITTER_CONFIG,
   CONDITIONS: RETRY_CONDITIONS,
   NO_RETRY: NO_RETRY_CONDITIONS,
-  STRATEGIES: RETRY_STRATEGIES,
   STEPS: BACKOFF_STEPS,
-  JITTER: JITTER_CONFIG,
   CATEGORIES: RETRY_CATEGORIES,
   CIRCUIT_BREAKER: CIRCUIT_BREAKER,
   RATE_LIMIT: RATE_LIMIT_DEFAULTS,
   HTTP_STATUS: HTTP_STATUS,
-  CATEGORIES: RETRY_CATEGORIES,
-} as const.
+} as const

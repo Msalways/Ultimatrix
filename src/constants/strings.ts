@@ -14,7 +14,7 @@ export const ENVIRONMENTS = {
   PROD: 'PROD' as const,
   TEST: 'TEST' as const,
   CI: 'CI' as const,
-} as const.
+} as const
 
 // ========== Browser Providers ==========
 export const BROWSER_PROVIDERS = {
@@ -22,7 +22,7 @@ export const BROWSER_PROVIDERS = {
   CAMOUFOX: 'camofox' as const,
   PLAYWRIGHT: 'playwright' as const,
   PUPPETEER: 'puppeteer' as const,
-} as const.
+} as const
 
 // ========== Engine Types ==========
 export const ENGINE_TYPES = {
@@ -30,14 +30,14 @@ export const ENGINE_TYPES = {
   LEGACY: 'legacy' as const,
   SOLVER: 'solver' as const,
   COUNCIL: 'council' as const,
-} as const.
+} as const
 
 // ========== Engine Tiers ==========
 export const ENGINE_TIERS = {
   FAST: 'fast' as const,
   BALANCED: 'balanced' as const,
   POWERFUL: 'powerful' as const,
-} as const.
+} as const
 
 // ========== Log Levels ==========
 export const LOG_LEVELS = {
@@ -49,28 +49,20 @@ export const LOG_LEVELS = {
   DIM: 'dim' as const,
   VERBOSE: 'verbose' as const,
   SILENT: 'silent' as const,
-} as const.
+} as const
 
 // ========== Scope Modes ==========
 export const SCOPE_MODES = {
   CLAIM_BASED: 'claim-based' as const,
   ALLOW_ALL: 'allow-all' as const,
   DENY_ALL: 'deny-all' as const,
-} as const.
-
-// ========== Engine Types ==========
-export const ENGINE_TYPES = {
-  MULTI_MODEL: 'multi-model' as const,
-  LEGACY: 'legacy' as const,
-  SOLVER: 'solver' as const,
-  COUNCIL: 'council' as const,
-} as const.
+} as const
 
 // ========== Interaction Modes ==========
 export const INTERACTION_MODES = {
   ASK: 'ask' as const,
   RUN: 'run' as const,
-} as const.
+} as const
 
 // ========== Log Types ==========
 export const LOG_TYPES = {
@@ -80,14 +72,14 @@ export const LOG_TYPES = {
   DEBUG: 'debug' as const,
   SUCCESS: 'success' as const,
   DIM: 'dim' as const,
-} as const.
+} as const
 
 // ========== Scope Types ==========
 export const SCOPE_TYPES = {
   CLAIM_BASED: 'claim-based' as const,
   ALLOW_ALL: 'allow-all' as const,
   DENY_ALL: 'deny-all' as const,
-} as const.
+} as const
 
 // ========== Session Statuses ==========
 export const SESSION_STATUSES = {
@@ -97,7 +89,7 @@ export const SESSION_STATUSES = {
   FAILED: 'failed' as const,
   ABORTED: 'aborted' as const,
   PAUSED: 'paused' as const,
-} as const.
+} as const
 
 // ========== Task Statuses ==========
 export const TASK_STATUSES = {
@@ -108,7 +100,7 @@ export const TASK_STATUSES = {
   CANCELLED: 'cancelled' as const,
   RETRYING: 'retrying' as const,
   QUEUED: 'queued' as const,
-} as const.
+} as const
 
 // ========== Finding Statuses ==========
 export const FINDING_STATUSES = {
@@ -117,7 +109,7 @@ export const FINDING_STATUSES = {
   REJECTED: 'rejected' as const,
   FALSE_POSITIVE: 'false-positive' as const,
   DUPLICATE: 'duplicate' as const,
-} as const.
+} as const
 
 // ========== Vulnerability Types ==========
 export const VULNERABILITY_TYPES = {
@@ -141,7 +133,6 @@ export const VULNERABILITY_TYPES = {
   IDENTIFICATION_FAILURES: 'identification-failures' as const,
   SOFTWARE_INTEGRITY: 'software-integrity' as const,
   LOGGING_FAILURES: 'logging-failures' as const,
-  SSRF: 'ssrf' as const,
   CSP_BYPASS: 'csp-bypass' as const,
   CORS_MISCONFIG: 'cors-misconfig' as const,
   OPEN_REDIRECT: 'open-redirect' as const,
@@ -150,7 +141,7 @@ export const VULNERABILITY_TYPES = {
   PROTOTYPE_POLLUTION: 'prototype-pollution' as const,
   RACE_CONDITION: 'race-condition' as const,
   BUSINESS_LOGIC: 'business-logic' as const,
-} as const.
+} as const
 
 // ========== Severity Levels ==========
 export const SEVERITY_LEVELS = {
@@ -160,7 +151,7 @@ export const SEVERITY_LEVELS = {
   LOW: 'low' as const,
   INFO: 'info' as const,
   NONE: 'none' as const,
-} as const.
+} as const
 
 // ========== Evidence Types ==========
 export const EVIDENCE_TYPES = {
@@ -171,9 +162,8 @@ export const EVIDENCE_TYPES = {
   NETWORK_LOG: 'network_log' as const,
   DOM_SNAPSHOT: 'dom_snapshot' as const,
   HAR_ENTRY: 'har_entry' as const,
-  SCREENSHOT: 'screenshot' as const,
   VIDEO: 'video' as const,
-} as const.
+} as const
 
 // ========== Action Types ==========
 export const ACTION_TYPES = {
@@ -193,7 +183,7 @@ export const ACTION_TYPES = {
   SCREENSHOT: 'screenshot' as const,
   EXTRACT: 'extract' as const,
   ASSERT: 'assert' as const,
-} as const.
+} as const
 
 // ========== Finding Actions ==========
 export const FINDING_ACTIONS = {
@@ -205,7 +195,7 @@ export const FINDING_ACTIONS = {
   DUPLICATE: 'duplicate' as const,
   ARCHIVE: 'archive' as const,
   EXPORT: 'export' as const,
-} as const.
+} as const
 
 // ========== Export All ==========
 export const STRINGS = {
@@ -215,10 +205,7 @@ export const STRINGS = {
   ENGINE_TIERS,
   LOG_LEVELS,
   SCOPE_MODES,
-  ENGINE_TYPES,
   INTERACTION_MODES,
-  LOG_LEVELS,
-  SCOPE_MODES,
   SESSION_STATUSES,
   TASK_STATUSES,
   FINDING_STATUSES,

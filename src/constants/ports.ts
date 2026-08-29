@@ -26,7 +26,7 @@ export const DEFAULT_PORTS = {
   
   /** Next.js alternative */
   NEXT_ALT: 3001,
-} as const.
+} as const
 
 // ========== Database Ports ==========
 export const DATABASE_PORTS = {
@@ -59,7 +59,7 @@ export const DATABASE_PORTS = {
   
   /** Grafana */
   GRAFANA: 3000,
-} as const.
+} as const
 
 // ========== Message Queue Ports ==========
 export const MESSAGE_QUEUE_PORTS = {
@@ -86,7 +86,7 @@ export const MESSAGE_QUEUE_PORTS = {
   
   /** RabbitMQ STOMP */
   RABBITMQ_STOMP: 61613,
-} as const.
+} as const
 
 // ========== WebSocket / Real-time ==========
 export const WS_PORTS = {
@@ -101,7 +101,7 @@ export const WS_PORTS = {
   
   /** SignalR default */
   SIGNALR: 5000,
-} as const.
+} as const
 
 // ========== Development Tools ==========
 export const DEV_TOOLS_PORTS = {
@@ -131,7 +131,7 @@ export const DEV_TOOLS_PORTS = {
   
   /** ESLint server */
   ESLINT: 9878,
-} as const.
+} as const
 
 // ========== Database Admin ==========
 export const DB_ADMIN_PORTS = {
@@ -149,7 +149,7 @@ export const DB_ADMIN_PORTS = {
   
   /** Mongo Express */
   MONGO_EXPRESS: 8083,
-} as const.
+} as const
 
 // ========== Monitoring ==========
 export const MONITORING_PORTS = {
@@ -179,7 +179,7 @@ export const MONITORING_PORTS = {
   
   /** Node Exporter */
   NODE_EXPORTER: 9100,
-} as const.
+} as const
 
 // ========== Proxy / Load Balancer ==========
 export const PROXY_PORTS = {
@@ -197,7 +197,7 @@ export const PROXY_PORTS = {
   
   /** Envoy admin */
   ENVOY_ADMIN: 9901,
-} as const.
+} as const
 
 // ========== Email ==========
 export const EMAIL_PORTS = {
@@ -221,7 +221,7 @@ export const EMAIL_PORTS = {
   
   /** POP3 SSL */
   POP3S: 995,
-} as const.
+} as const
 
 // ========== DNS ==========
 export const DNS_PORTS = {
@@ -233,7 +233,7 @@ export const DNS_PORTS = {
   
   /** DNS over HTTPS */
   DOH: 443,
-} as const.
+} as const
 
 // ========== Kubernetes ==========
 export const K8S_PORTS = {
@@ -257,7 +257,7 @@ export const K8S_PORTS = {
   
   /** etcd peer */
   ETCD_PEER: 2380,
-} as const.
+} as const
 
 // ========== Container Runtime ==========
 export const CONTAINER_PORTS = {
@@ -272,7 +272,7 @@ export const CONTAINER_PORTS = {
   
   /** Kubelet */
   KUBELET: 10250,
-} as const.
+} as const
 
 // ========== Service Mesh ==========
 export const MESH_PORTS = {
@@ -287,7 +287,7 @@ export const MESH_PORTS = {
   
   /** Consul */
   CONSUL: 8500,
-} as const.
+} as const
 
 // ========== Export All ==========
 export const PORTS = {
@@ -304,7 +304,7 @@ export const PORTS = {
   K8S: K8S_PORTS,
   CONTAINER: CONTAINER_PORTS,
   MESH: MESH_PORTS,
-} as const.
+} as const
 
 /**
  * Get port by service name

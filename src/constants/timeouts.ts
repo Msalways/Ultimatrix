@@ -12,6 +12,12 @@ export const BROWSER_TIMEOUTS = {
   
   /** DOM content loaded settle timeout (ms) */
   DOM_SETTLE: 5_000,
+
+  /** DOM content loaded timeout (ms) */
+  DOM_CONTENT_LOADED: 30_000,
+
+  /** Network idle timeout (ms) */
+  NETWORK_IDLE: 5_000,
   
   /** Default browser launch timeout (ms) */
   LAUNCH: 30_000,
@@ -30,6 +36,15 @@ export const BROWSER_TIMEOUTS = {
   
   /** Screenshot capture timeout (ms) */
   SCREENSHOT: 10_000,
+
+  /** Dialog wait timeout (ms) */
+  DIALOG_WAIT: 5_000,
+
+  /** Download timeout (ms) */
+  DOWNLOAD: 60_000,
+
+  /** Upload timeout (ms) */
+  UPLOAD: 60_000,
 } as const;
 
 // ========== Network Timeouts ==========
@@ -142,47 +157,11 @@ export const POLLING_INTERVALS = {
   /** Swarm events heartbeat (ms) */
   SWARM_HEARTBEAT: 30_000,
   
-  /** Swarm events backoff max (ms) */
-  SWARM_BACKOFF_MAX: 30_000,
-  
   /** Swarm backoff initial (ms) */
   SWARM_BACKOFF_INITIAL: 3_000,
   
   /** Swarm backoff max (ms) */
   SWARM_BACKOFF_MAX: 30_000,
-} as const;
-
-// ========== Browser Specific ==========
-export const BROWSER_TIMEOUTS = {
-  /** Default navigation timeout (ms) */
-  NAVIGATION: 30_000,
-  
-  /** Page load timeout (ms) */
-  PAGE_LOAD: 30_000,
-  
-  /** DOM content loaded timeout (ms) */
-  DOM_CONTENT_LOADED: 30_000,
-  
-  /** Network idle timeout (ms) */
-  NETWORK_IDLE: 5_000,
-  
-  /** Script execution timeout (ms) */
-  SCRIPT: 30_000,
-  
-  /** Element wait timeout (ms) */
-  ELEMENT_WAIT: 5_000,
-  
-  /** Screenshot timeout (ms) */
-  SCREENSHOT: 10_000,
-  
-  /** Dialog wait timeout (ms) */
-  DIALOG_WAIT: 5_000,
-  
-  /** Download timeout (ms) */
-  DOWNLOAD: 60_000,
-  
-  /** Upload timeout (ms) */
-  UPLOAD: 60_000,
 } as const;
 
 // ========== Crawler Timeouts ==========
