@@ -1,6 +1,6 @@
 {
   "name": "ultimatrix",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "AI security researcher. Composer + 29 primitives, dynamically spawns specialist agents. Real exploit chains across 10 attack classes.",
   "type": "module",
   "main": "dist/index.cjs",
