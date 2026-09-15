@@ -26,14 +26,15 @@ import { DEFAULTS, type UltimatrixConfig } from "../config";
 import { getGlobalUsageTracker } from "../usage/tracker";
 import { ContextBudgetManager } from "../models/context-manager";
 import { ContextWindowRegistry } from "../models/context-window-registry";
+import { planAdaptiveContext, compressBrainInstructions, filterToolsToBudget, type AdaptivePlan } from "../models/adaptive-context";
 import { resolveModelRef } from "../models/routing";
+import { getGlobalQuotaTracker } from "../models/quota-tracker";
 import { appendDelta, visibleAssistantText } from "../output/render-model";
 import { buildRuntimeEnvelope, type RuntimeAlert } from "../runtime/context-envelope";
 import { getCapturedRequestStore } from "../capture/captured-request-store";
 import { CrossEngagementMemory } from "../intelligence/cross-engagement";
 import type { WorkflowStore } from "../workflow/store";
 import type { DynamicToolRegistry } from "../extensions/tool-registry";
-import { decideTurnRoute } from "./turn-router";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -266,8 +267,7 @@ function buildRecentDiscoveries(origin: string): string {
       if (newFindings.length > 5) lines.push(`(+${newFindings.length - 5} more)`);
     }
     return lines.join("\n");
-  } catch (e) {
-    
+  } catch {
     return "";
   }
 }
@@ -320,6 +320,21 @@ function checkCompletion(
 
   // Agent responded but no findings — normal turn
   return { completed: false, reason: "frontier_exhausted" };
+}
+
+async function getNextStepTools(agent: Agent, capabilityRegistry?: DynamicToolRegistry): Promise<Record<string, any>> {
+  const turnToolset = (agent as any).getTurnToolset;
+  if (typeof turnToolset === "function") return await turnToolset();
+  const configuredTools = (agent as any).tools;
+  if (typeof configuredTools === "function") return await configuredTools();
+  if (configuredTools && typeof configuredTools === "object") return configuredTools;
+  return capabilityRegistry?.getActiveToolset() ?? {};
+}
+
+async function stringifyToolSchemas(tools: Record<string, any>): Promise<string> {
+  return JSON.stringify(Object.fromEntries(
+    Object.entries(tools).map(([id, tool]) => [id, tool?.inputSchema ?? null]),
+  ));
 }
 
 
@@ -403,7 +418,7 @@ export async function solve(
   // Bounded recent blackboard facts — sanitized, length-capped, never bodies.
   const factStrings = board.getFactStrings();
   const recentFacts = factStrings.slice(-8).map((f) => f.length > 240 ? f.slice(0, 237) + "..." : f);
-  let capturedRequestTotal = 0;
+  let capturedRequestTotal: number;
   try {
     capturedRequestTotal = getCapturedRequestStore().size;
   } catch {
@@ -419,119 +434,182 @@ export async function solve(
     alerts,
     blackboardFacts: { total: factStrings.length, recent: recentFacts },
     capturedRequests: { total: capturedRequestTotal },
+    budget: { steps: 0, maxSteps: cfg.maxToolCalls, elapsedMs: 0, maxDurationMs: cfg.maxDurationMs },
   });
+  // Keep the goal lean: raw goal + runtime index. Reflexion, priors, and
+  // discoveries are available via the getSessionContext tool — the brain calls
+  // it on-demand instead of receiving everything pre-concatenated.
   let enrichedGoal = `${params.goal}${runtimeEnvelope}`;
 
-  // Recent Discoveries — per-turn graph diff vs the previous turn's snapshot
-  // (restored feature: the brain should see what changed since it last looked,
-  // not re-derive it). Keyed by origin; first turn establishes a baseline.
-
-
-  // Reflexion lessons + cross-engagement priors flow INTO the turn context
-  // (previously pull-only). Both blocks are English prose designed for this.
-  // Computed once; re-applied verbatim if a capability turn rebuilds the goal.
-  const discoveriesBlock = buildRecentDiscoveries(params.origin);
-  const reflexionBlock = reflexion.toPromptBlock();
-  const priorsBlock = params.priorsPromptBlock ?? (await loadPriorsBlock());
-  const contextSuffix =
-    (reflexionBlock ? `\n\n${reflexionBlock}` : "") +
-    (priorsBlock ? `\n\n${priorsBlock}` : "") +
-    (discoveriesBlock ? `\n\n${discoveriesBlock}` : "");
-  enrichedGoal += contextSuffix;
-
-  // Inject stale detection context
+  // Inject stale detection context — HARD GATE: mandatory strategy change
   if (alerts.some(alert => alert.type === "stale-execution")) {
     emit({
       phase: "stale",
       step: 0,
       text: "Stale detection triggered — switching strategy",
     });
+    // Inject mandatory instruction into the goal so the brain MUST change approach
+    const mandatory = loopDetector.getMandatoryInstruction(cfg.staleThreshold);
+    if (mandatory) {
+      enrichedGoal = `${mandatory}\n\n---\n\nOriginal goal: ${enrichedGoal}`;
+    }
   }
 
+  // ─── Budget-pressure injection: tell the brain its step + time budget so it
+  // can self-regulate. Without this, the brain has no idea it's burning toward
+  // a 300s wall clock and spins indefinitely. The brain sees:
+  //   [BUDGET: 0/50 steps · 0/300 sec — you MUST synthesize findings into a
+  //    final answer before the budget is exhausted]
+  // This is a STRUCTURED field (not prose parsing) that the brain can reason about.
+  const budgetInstruction = [
+    `[BUDGET: 0/${cfg.maxToolCalls} steps · 0/${Math.round(cfg.maxDurationMs / 1000)} sec`,
+    `You have a hard step and time limit. As you progress, your runtime context shows remaining budget.`,
+    `When remaining steps < ${Math.max(5, Math.floor(cfg.maxToolCalls * 0.15))} or remaining time < 60s, STOP exploring and SYNTHESIZE your findings into a final answer.`,
+    `If you reach the budget without a clean answer, the system will attempt to compose one from your reasoning and findings — but a proactive answer is always better.]`,
+  ].join(' ');
+  enrichedGoal = `${budgetInstruction}\n\n---\n\n${enrichedGoal}`;
+
   const caps = params.modelCapabilities ?? params.ultimatrixConfig?.modelCapabilities;
-  const budgetPolicy = params.budgetPolicy;
+  const budgetPolicy = params.budgetPolicy ?? params.ultimatrixConfig?.budgetPolicy;
   const registry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as any);
   const ctxManager = new ContextBudgetManager(caps ?? {}, registry);
-    // Mastra Agent exposes instructions/tools via async accessors (getters were
-    // removed). Resolve once for the context-budget estimate.
-    let agentInstructions: string;
-    try {
-      agentInstructions = (await agent.getInstructions()) as string;
-    } catch {
-      agentInstructions = "";
-    }
-    let toolSchemasStr: string;
-    try {
-      const toolMap = await agent.listTools();
-      toolSchemasStr = JSON.stringify(Object.fromEntries(Object.entries(toolMap).map(([id, tool]) => [id, (tool as any).inputSchema ?? null])));
-    } catch {
-      toolSchemasStr = "[]";
-    }
+  let agentInstructions = "";
+  try {
+    agentInstructions = (await agent.getInstructions()) as string;
+  } catch {}
 
-    let conversationHistory = "";
-    if (params.memory) {
-      try {
-        const memory = await agent.getMemory();
-        const recalled = await memory?.recall({
-          threadId: params.memory.thread,
-          resourceId: params.memory.resource,
-          perPage: params.ultimatrixConfig?.memory.lastMessages ?? 20,
-        } as any);
-        conversationHistory = JSON.stringify(recalled?.messages ?? []);
-      } catch {}
-    }
+  let conversationHistory = "";
+  if (params.memory) {
+    try {
+      const memory = await agent.getMemory();
+      const recalled = await memory?.recall({
+        threadId: params.memory.thread,
+        resourceId: params.memory.resource,
+        perPage: params.ultimatrixConfig?.memory.lastMessages ?? 20,
+      } as any);
+      conversationHistory = JSON.stringify(recalled?.messages ?? []);
+    } catch {}
+  }
+
+  const validateNextContext = async (stage: "initial" | "activation") => {
+    const activeTools = await getNextStepTools(agent, capabilityRegistry);
+    const toolSchemasStr = await stringifyToolSchemas(activeTools);
+    const expectedOutputTokens = registry.getMaxOutput(contextModelId) || 2048;
     const ctxCheck = ctxManager.validateContextFit({
       modelId: contextModelId,
       systemPrompt: agentInstructions,
       toolSchemas: toolSchemasStr,
       conversationHistory,
       enrichedGoal,
-      expectedOutputTokens: registry.getMaxOutput(contextModelId) || 2048,
+      expectedOutputTokens,
     });
-
-    // Log context validation
-    log.dim(
-      `[context] ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(contextModelId)} tokens (${ctxCheck.severity})`,
+    const capacity = ctxManager.getContextWindow(contextModelId) || contextWindow;
+    const hasCapabilityData = Boolean(
+      registry.getContextWindow(contextModelId) ||
+      (contextModelId && caps?.[contextModelId]) ||
+      (resolvedContextModel?.model && caps?.[resolvedContextModel.model]),
     );
+    log.dim(`[context] ${stage} ${ctxCheck.totalInputTokens}/${capacity} tokens (${ctxCheck.severity})`);
     emitMessage({
       kind: "event",
       event: "context.checked",
-      label: `context ${ctxCheck.severity}: ${ctxCheck.totalInputTokens}/${ctxManager.getContextWindow(contextModelId) || contextWindow} tokens`,
-      status: ctxCheck.severity === "critical" ? "error" : ctxCheck.severity === "warning" ? "warn" : "ok",
+      label: `context ${stage} ${ctxCheck.severity}: ${ctxCheck.totalInputTokens}/${capacity} tokens`,
+      status: ctxCheck.severity === "critical" ? "error" : ctxCheck.severity === "warning" || !hasCapabilityData ? "warn" : "ok",
       data: {
         modelId: contextModelId,
         totalInputTokens: ctxCheck.totalInputTokens,
         availableForOutput: ctxCheck.availableForOutput,
         severity: ctxCheck.severity,
         fits: ctxCheck.fits,
+        stage,
+        activeTools: Object.keys(activeTools),
+        modelCapabilityKnown: hasCapabilityData,
       },
     });
-
+    if (!hasCapabilityData) {
+      emitMessage({
+        kind: "event",
+        event: "model.capability_missing",
+        label: `no context-window metadata for ${contextModelId || "selected model"}`,
+        status: "warn",
+        data: { modelId: contextModelId },
+      });
+    }
     if (!ctxCheck.fits || ctxCheck.severity === "critical") {
       const enforcement = budgetPolicy?.enforcement ?? "soft";
-
       if (enforcement === "hard") {
         throw new Error(
           `Context overflow: ${ctxCheck.totalInputTokens} tokens exceeds model capacity. ` +
             `Suggestions: ${ctxCheck.suggestions.join("; ")}`,
         );
       }
-
       if (enforcement === "soft") {
-        const truncated = ctxManager.truncateToFit({
+        // ─── Adaptive Context: compress instructions + reduce tools ──
+        // 1. Plan what compression level this model needs
+        const adaptivePlan = planAdaptiveContext({
+          contextWindow: capacity,
+          systemPromptTokens: ctxCheck.breakdown.system,
+          toolSchemasTokens: ctxCheck.breakdown.tools,
+          goalTokens: ctxCheck.breakdown.goal,
+          historyTokens: ctxCheck.breakdown.history,
+          reservedOutputTokens: expectedOutputTokens,
+        });
+
+        // 2. Compress brain instructions if needed
+        if (adaptivePlan.detailLevel !== "full") {
+          const originalTokens = ctxManager.estimateTokens(agentInstructions);
+          agentInstructions = compressBrainInstructions(agentInstructions, adaptivePlan);
+          const compressedTokens = ctxManager.estimateTokens(agentInstructions);
+          log.dim(`[context] Adaptive: compressed brain ${originalTokens}→${compressedTokens} tokens (${adaptivePlan.detailLevel})`);
+          emitMessage({
+            kind: "event",
+            event: "context.adaptive",
+            label: `brain compressed ${originalTokens}→${compressedTokens} tokens (${adaptivePlan.detailLevel})`,
+            status: "ok",
+            data: { plan: adaptivePlan.detailLevel, originalTokens, compressedTokens },
+          });
+        }
+
+        // 3. Reduce tool surface if needed
+        const allToolEntries = Object.entries(activeTools);
+        if (allToolEntries.length > adaptivePlan.toolBudget) {
+          const filtered = filterToolsToBudget(allToolEntries, adaptivePlan.toolBudget);
+          // Replace agent tools with filtered set
+          try {
+            const agentAny = agent as any;
+            if (typeof agentAny.setTurnTools === "function") {
+              agentAny.setTurnTools(filtered);
+            }
+          } catch {}
+          log.dim(`[context] Adaptive: filtered tools ${allToolEntries.length}→${adaptivePlan.toolBudget}`);
+        }
+
+        // 4. Re-validate with compressed payload and truncate goal if still overflows
+        const reCheck = ctxManager.validateContextFit({
           modelId: contextModelId,
           systemPrompt: agentInstructions,
-          toolSchemas: toolSchemasStr,
+          toolSchemas: await stringifyToolSchemas(activeTools),
           conversationHistory,
           enrichedGoal,
-          expectedOutputTokens: registry.getMaxOutput(contextModelId) || 2048,
+          expectedOutputTokens,
         });
-        enrichedGoal = truncated.enrichedGoal;
-        log.dim(
-          `[context] Auto-truncated enriched goal to ${ctxManager.estimateTokens(enrichedGoal)} tokens`,
-        );
+        if (!reCheck.fits) {
+          const truncated = ctxManager.truncateToFit({
+            modelId: contextModelId,
+            systemPrompt: agentInstructions,
+            toolSchemas: await stringifyToolSchemas(activeTools),
+            conversationHistory,
+            enrichedGoal,
+            expectedOutputTokens,
+          });
+          enrichedGoal = truncated.enrichedGoal;
+          log.dim(`[context] Goal truncated to ${ctxManager.estimateTokens(enrichedGoal)} tokens (last resort)`);
+        }
       }
     }
+  };
+
+  await validateNextContext("initial");
 
   emit({ phase: "observe", step: 0, text: "" });
 
@@ -576,24 +654,25 @@ export async function solve(
     // Graph store not available
   }
 
+  capabilityRegistry?.setActivationPolicy((descriptor) => {
+    const maxCalls = budgetPolicy?.maxModelCallsPerTask;
+    if (!maxCalls || maxCalls <= 0) return true;
+    const heavy =
+      descriptor.namespace === "workers" ||
+      descriptor.namespace === "crawl" ||
+      descriptor.id === "runCampaign";
+    if (!heavy) return true;
+    const provider = resolvedContextModel?.provider ?? params.ultimatrixConfig?.provider;
+    if (!provider) return true;
+    const used = getGlobalQuotaTracker().getStatus()[provider]?.used ?? 0;
+    return used < maxCalls;
+  });
+  capabilityRegistry?.setActivationObserver(async (descriptor) => {
+    ranCapabilityTurn ||= descriptor.readOnly === false || ["browser", "crawl", "workers"].includes(descriptor.namespace);
+    await validateNextContext("activation");
+  });
+
   try {
-    const route = await decideTurnRoute(agent, {
-      goal: params.goal,
-      runtimeEnvelope,
-      interactionMode: params.interactionMode,
-      memory: params.memory,
-      signal: streamSignal,
-    });
-    if (route.reasoning?.trim()) reasoningText = route.reasoning;
-    if (route.kind === "direct") {
-      answerText = route.response;
-      if (route.response.trim()) emitMessage({ kind: "answer", text: route.response, index: streamIndex++ });
-    }
-
-    if (route.kind === "capability") {
-    ranCapabilityTurn = true;
-    enrichedGoal = `${params.goal}${runtimeEnvelope}${contextSuffix}`;
-
     const stream = await agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
@@ -860,7 +939,6 @@ export async function solve(
     if (canonicalReasoning) {
       reasoningText = canonicalReasoning;
     }
-    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Provide actionable error messages for common failures
@@ -882,6 +960,8 @@ export async function solve(
       error: lastError,
     });
   }
+  capabilityRegistry?.setActivationObserver(undefined);
+  capabilityRegistry?.setActivationPolicy();
 
   let newFindings = 0;
   try {
@@ -1010,8 +1090,52 @@ export async function solve(
   }
 
   // Assemble the structured final answer (single source of truth for UI).
-  const answerContent = visibleAssistantText(answerText).trim();
+  // ─── Synthesis invariant: reasoning implies answer. An LLM cannot produce
+  // reasoning without also producing answer text in the same forward pass.
+  // If the visible answer is empty or filtered (tool-intent JSON), we ALWAYS
+  // compose from the reasoning tail. This makes "(no answer)" structurally
+  // impossible whenever the brain produced any reasoning at all.
+  let answerContent = visibleAssistantText(answerText).trim();
   const answerReasoning = reasoningText.trim();
+  const hasVisibleAnswer = answerContent.length > 0;
+
+  if (!hasVisibleAnswer && (answerReasoning || newFindings > 0)) {
+    const parts: string[] = [];
+    // Findings summary (highest-signal)
+    if (newFindings > 0) {
+      try {
+        const store = getGlobalGraphStore();
+        const findingNodes = (store.queryNodes?.(NodeType.FINDING) || []) as Array<{
+          properties?: { severity?: string; technique?: string; endpoint?: string };
+        }>;
+        const recent = findingNodes.slice(-5);
+        if (recent.length > 0) {
+          parts.push(`**${recent.length} finding(s) discovered:**`);
+          for (const f of recent) {
+            const sev = f.properties?.severity ?? 'unknown';
+            const tech = f.properties?.technique ?? '';
+            const ep = f.properties?.endpoint ? ` @ ${f.properties.endpoint}` : '';
+            parts.push(`- [${sev}] ${tech}${ep}`);
+          }
+        }
+      } catch { /* graph unavailable */ }
+    }
+    // Plan summary (what the brain was trying to do)
+    try {
+      const plan = board.planSummary?.();
+      if (plan && plan !== '(no plan)') parts.push(`**Plan:** ${plan}`);
+    } catch { /* plan unavailable */ }
+    // Reasoning tail (last 10 lines of the brain's analysis — the conclusion)
+    if (answerReasoning) {
+      const lines = answerReasoning.split('\n').filter(l => l.trim());
+      const tail = lines.slice(-10).join('\n').trim();
+      if (tail) parts.push(`**Analysis:**\n${tail}`);
+    }
+    if (parts.length > 0) {
+      answerContent = parts.join('\n\n');
+      emitMessage({ kind: "event", event: "answer.synthesized", label: `synthesized answer from ${parts.length} sources (reasoning + findings)`, status: "ok" });
+    }
+  }
   let findingRefs: SolverAnswer["findings"] = [];
   try {
     const store = getGlobalGraphStore();

@@ -37,8 +37,32 @@ import type { ModelSelector } from '../../src/models/selector'
 function fakeServices(overrides: Partial<EngagementServices> = {}): EngagementServices {
   return {
     findingState: { evidenceBuffer: new Map(), evidenceGate: null },
+    workspace: { getTargetDir: vi.fn(() => '/tmp/test') } as any,
+    graph: { queryNodes: vi.fn(() => []), getNode: vi.fn(() => undefined), addFinding: vi.fn() } as any,
+    oast: { register: vi.fn(), checkCallbacks: vi.fn() } as any,
+    decisions: { recordDecision: vi.fn().mockReturnValue({ id: 'd1' }) } as any,
+    artifacts: { create: vi.fn() } as any,
+    evidence: { record: vi.fn(), verify: vi.fn() } as any,
+    usage: { record: vi.fn(), getUsage: vi.fn() } as any,
+    forensicLog: { log: vi.fn() } as any,
+    humanObserver: { record: vi.fn() } as any,
+    reactionObserver: { onReaction: vi.fn() } as any,
+    dialogWatcher: { start: vi.fn(), stop: vi.fn() } as any,
+    recorder: null,
+    browserManager: { getActivePage: vi.fn(() => null) } as any,
+    passiveObserver: { observe: vi.fn() } as any,
+    botHandler: { detectChallenge: vi.fn().mockResolvedValue(null) } as any,
+    oastConfig: null,
+    events: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as any,
+    httpSessions: { get: vi.fn() } as any,
+    quota: { recordRequest: vi.fn() } as any,
+    toolEvents: { emit: vi.fn() } as any,
+    providerLimiters: new Map(),
+    scopeConfig: null,
+    externalTools: null,
+    allowAny: false,
     ...overrides,
-  } as unknown as EngagementServices
+  }
 }
 
 describe('I1 — evidence-gate scoping', () => {
@@ -69,7 +93,13 @@ describe('I1 — evidence-gate scoping', () => {
 
 describe('F1.3 — spawn tools resolve the engagement-scoped selector', () => {
   it('routedModelId comes from the engagement container selector when ctor arg is absent', async () => {
-    const selection = { tier: 'powerful', modelId: 'groq/engagement-selector-model', provider: 'groq', reasoning: 'engagement' }
+const selection = { 
+    tier: 'powerful', 
+    modelId: 'groq/engagement-selector-model', 
+    provider: 'groq', 
+    reasoning: 'engagement',
+    budget: { maxAllowedModelCalls: 15 }
+  }
     const selector: ModelSelector = {
       selectForTask: vi.fn().mockReturnValue(selection),
     } as unknown as ModelSelector

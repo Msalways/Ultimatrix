@@ -73,6 +73,7 @@ export interface TaskAcceptanceResult {
 export interface TaskBudget {
   tokenLimit?: number
   timeoutMs?: number
+  modelCallLimit?: number
 }
 
 export type TaskRetryableStatus = 'failed' | 'timed_out' | 'interrupted'

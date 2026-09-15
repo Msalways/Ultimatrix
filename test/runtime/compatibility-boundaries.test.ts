@@ -30,12 +30,19 @@ describe('compatibility boundaries', () => {
   })
 
   it('keeps provider limits and pending finding evidence engagement-owned', async () => {
-    const [limiters, findings] = await Promise.all([
+    const [limiters, quota, findings] = await Promise.all([
       readFile(join(process.cwd(), 'src/models/limiter-factory.ts'), 'utf8'),
+      readFile(join(process.cwd(), 'src/models/quota-tracker.ts'), 'utf8'),
       readFile(join(process.cwd(), 'src/tools/control-tools.ts'), 'utf8'),
     ])
-    expect(limiters).toContain('getEngagementServices()?.providerLimiters')
-    expect(findings).toContain('getEngagementServices()?.findingState')
+    expect(limiters).toContain('getEngagementServices()')
+    expect(limiters).toContain('outside engagement context')
+    expect(limiters).not.toContain('legacyLimiterCache')
+    expect(quota).toContain('outside engagement context')
+    expect(quota).not.toContain('_globalQuotaTracker')
+    expect(findings).toContain('getEngagementServices()')
+    expect(findings).toContain('outside engagement context')
+    expect(findings).not.toContain('legacyFindingState')
     expect(findings).not.toContain('const evidenceBuffer = new Map')
     expect(findings).not.toContain('let _evidenceGate')
   })

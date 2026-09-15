@@ -108,6 +108,11 @@ const SIGNAL_FAMILIES: SignalFamily[] = [
   },
 ]
 
+/** Tags for a given signal name, or empty array if signal is unknown. */
+export function getSignalFamilyTags(signal: string): string[] {
+  return SIGNAL_FAMILIES.find(f => f.signal === signal)?.tags ?? []
+}
+
 // ─── Context requirements → candidate tags ───────────────────────────
 
 const CONTEXT_TAGS: Array<{ context: string; tags: string[] }> = [

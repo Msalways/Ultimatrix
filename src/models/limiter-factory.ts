@@ -9,10 +9,10 @@ import { getEngagementServices } from '../runtime/engagement-context'
  * Each provider gets exactly one ProviderAwareLimiter per engagement.
  * Config lookup: config.providerRateLimits[provider] → config.rateLimit → DEFAULTS
  */
-const legacyLimiterCache = new Map<string, ProviderAwareLimiter>()
-
 function getLimiterCache(): Map<string, ProviderAwareLimiter> {
-  return getEngagementServices()?.providerLimiters ?? legacyLimiterCache
+  const services = getEngagementServices()
+  if (!services) throw new Error('createProviderLimiter() called outside engagement context')
+  return services.providerLimiters
 }
 
 export function createProviderLimiter(provider: string, config: UltimatrixConfig): ProviderAwareLimiter {
@@ -38,9 +38,13 @@ export function getProviderFromModelId(modelId: string): string {
 }
 
 export function resetAllProviderLimiters(): void {
-  getLimiterCache().clear()
+  const services = getEngagementServices()
+  if (!services) return // No-op outside engagement context (e.g. before init)
+  services.providerLimiters.clear()
 }
 
 export function getLimiterCacheSize(): number {
-  return getLimiterCache().size
+  const services = getEngagementServices()
+  if (!services) throw new Error('getLimiterCacheSize() called outside engagement context')
+  return services.providerLimiters.size
 }

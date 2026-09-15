@@ -36,6 +36,10 @@ const KEYWORDS: Record<string, string[]> = {
   ldapXpathInjection: ['ldap', 'xpath', 'injection', 'directory'],
   smuggling: ['smuggling', 'request smuggling', 'cl/te', 'http smuggling'],
   businessLogicAbuse: ['business logic', 'quota', 'rate limit', 'workflow', 'action limit'],
+  'credential-reuse': ['credential reuse', 'credential spray', 'lateral movement', 'password spray'],
+  adKerberos: ['kerberoasting', 'as-rep roasting', 'pass-the-hash', 'pass-the-ticket', 'laps', 'gpp', 'delegation', 'dcsync', 'active directory', 'kerberos'],
+  exploitChain: ['exploit chain', 'multi-step attack', 'chained exploit', 'attack chain', 'chain verification'],
+  cloudExploit: ['cloud exploit', 'aws exploitation', 'azure exploitation', 'gcp exploitation', 'iam privesc', 'lambda extraction', 'kubernetes access'],
 }
 
 function loadAllSkillText(): string {

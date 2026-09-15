@@ -71,10 +71,7 @@ function deriveStagehandModel(config: UltimatrixConfig) {
 export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
   const state = getBrowserManagerState()
   if (config.browser.provider && config.browser.provider !== 'stagehand') {
-    if (config.browser.provider === 'camofox') {
-      throw new Error(`Browser provider 'camofox' is planned but not yet implemented. Keep browser.provider: 'stagehand' (the default).`)
-    }
-    throw new Error(`Unsupported browser provider: ${config.browser.provider}`)
+    throw new Error(`Unsupported browser provider: ${config.browser.provider}. Use resolveBrowserProvider() for non-stagehand providers.`)
   }
   if (state.browser) return state.browser
   if (state.creating) {

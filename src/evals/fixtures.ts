@@ -23,7 +23,14 @@ import { isCategoryAuthorized } from '../safety/scope-guard'
 import type { ArchitectureEvalSuite } from './types'
 import { evalConfig, eventCapturer, fakeModelSelector, fakeTaskRuntime, fakeWorkerPool } from './harness'
 
-const callTool = (tool: any, args: any) => (tool as any).execute(args, {})
+const callTool = async (tool: any, args: any) => {
+  try {
+    return await (tool as any).execute(args, {})
+  } catch (e) {
+    console.log('[eval] callTool error:', e)
+    throw e
+  }
+}
 
 export const architectureEvals: ArchitectureEvalSuite = {
   name: 'Architecture (vertical workflow coherence)',

@@ -90,6 +90,11 @@ export class LibSQLGraphStore {
   }
 
   async initializeDatabase(): Promise<void> {
+    // Enable WAL mode for better concurrent read performance
+    await this.db.execute('PRAGMA journal_mode=WAL')
+    // Busy timeout: wait up to 5s for locks before failing (default: immediately fails)
+    await this.db.execute('PRAGMA busy_timeout=5000')
+
     // Create tables if they don't exist
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS nodes (
@@ -911,12 +916,12 @@ export class LibSQLGraphStore {
 
   async save(): Promise<void> {
     // LibSQL automatically persists data, so no explicit save needed
-    console.log(`[libsql] Graph data saved to ${this.dbPath}`)
+    log.info(`[libsql] Graph data saved to ${this.dbPath}`)
   }
 
   async load(): Promise<void> {
     // Data is already loaded in memory from the database
-    console.log(`[libsql] Graph data loaded from ${this.dbPath}`)
+    log.info(`[libsql] Graph data loaded from ${this.dbPath}`)
   }
 
   async close(): Promise<void> {

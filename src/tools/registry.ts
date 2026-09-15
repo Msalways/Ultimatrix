@@ -27,6 +27,7 @@ import { shadowApiDiscovery } from './shadow-discovery'
 import { scannerTools } from './scanner-tools'
 import { listCapturedRequests, replayCapturedRequest } from './replay-tools'
 import { manageSkills } from './skill-manage-tools'
+import { webSearch } from './web-search'
 
 export {
   httpRequest, multipartUpload, followRedirects, omitHeader,
@@ -56,10 +57,11 @@ export {
   rawHttpClient,
   shadowApiDiscovery,
   scannerTools,
-  listCapturedRequests,
-  replayCapturedRequest,
-  manageSkills,
-}
+    listCapturedRequests,
+    replayCapturedRequest,
+    manageSkills,
+    webSearch,
+  }
 
 export function registerAllTools() {
   return {

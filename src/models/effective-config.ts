@@ -59,9 +59,21 @@ function capabilityFor(config: UltimatrixConfig, provider: string, model: string
   return config.modelCapabilities?.[id] ?? config.modelCapabilities?.[model]
 }
 
+function apiKeyPresent(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object') return false
+  if (!('apiKey' in entry)) return true
+  const key = (entry as { apiKey?: unknown }).apiKey
+  return typeof key === 'string' && key.length > 0
+}
+
 function hasCred(config: UltimatrixConfig, provider: string): boolean {
   const base = resolveProviderAlias(provider)
-  return Boolean(config.creds?.[provider] || config.creds?.[base])
+  return (
+    apiKeyPresent(config.creds?.[provider]) ||
+    apiKeyPresent(config.creds?.[base]) ||
+    apiKeyPresent(config.providerKeys?.[provider]) ||
+    apiKeyPresent(config.providerKeys?.[base])
+  )
 }
 
 function route(config: UltimatrixConfig, provider: string, model: string, reason: string): EffectiveModelRoute {

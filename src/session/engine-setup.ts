@@ -28,6 +28,7 @@ import { applyConfigExtensions } from '../extensions'
 import { LazySolverServices } from '../runtime/lazy-services'
 import type { EngagementRuntime } from '../runtime/engagement-runtime'
 import type { RuntimeIdentity } from '../runtime/identity'
+import { resolve as pathResolve } from 'node:path'
 
 /**
  * Result of engine setup — all engine-specific resources.
@@ -144,7 +145,9 @@ export async function createEngineServices(ctx: EngineSetupContext): Promise<Eng
     const extensionRegistry = new DynamicToolRegistry()
     applyConfigExtensions(config, extensionRegistry)
     const skillRegistry = new SkillRegistry()
-    skillRegistry.loadFromDirectory('skills')
+    // Resolve skills directory relative to package root (not CWD)
+    const skillsDir = pathResolve(import.meta.dirname ?? process.cwd(), '..', '..', 'skills')
+    skillRegistry.loadFromDirectory(skillsDir)
     const lazyServices = new LazySolverServices({
       config,
       target,

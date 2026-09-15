@@ -175,6 +175,76 @@ describe('canonical project configuration', () => {
     expect(saved.creds.openrouter).toBeUndefined()
   })
 
+  it('drops deleted model maps on web save instead of resurrecting them', async () => {
+    const path = join(root, 'ultimatrix.yaml')
+    process.env.ULTIMATRIX_CONFIG = path
+    const config = validateConfig({
+      provider: 'groq',
+      model: 'test-model',
+      creds: {
+        groq: { apiKey: 'groq-secret-key' },
+        openai: { apiKey: 'openai-secret-key' },
+      },
+      modelTiers: {
+        fast: { provider: 'groq', model: 'fast-model' },
+        balanced: { provider: 'openai', model: 'balanced-model' },
+      },
+      modelCapabilities: {
+        'groq/fast-model': {
+          contextWindow: 8192,
+          maxOutputTokens: 2048,
+          strengths: [],
+          supportsStreaming: true,
+          supportsStructuredOutput: false,
+        },
+        'openai/balanced-model': {
+          contextWindow: 8192,
+          maxOutputTokens: 2048,
+          strengths: [],
+          supportsStreaming: true,
+          supportsStructuredOutput: false,
+        },
+      },
+      modelRoles: { brain: { provider: 'openai', model: 'balanced-model' } },
+    })
+    saveProjectConfig(config)
+    saveProvidersConfig(config.creds)
+
+    const masked = maskCredentials(await getWebConfig()) as unknown as Record<string, any>
+    delete masked.modelTiers.balanced
+    delete masked.modelCapabilities['openai/balanced-model']
+    delete masked.modelRoles.brain
+    expect((await saveWebConfig(masked)).ok).toBe(true)
+
+    const saved = loadConfig()
+    expect(saved.modelTiers?.balanced).toBeUndefined()
+    expect(saved.modelTiers?.fast).toMatchObject({ provider: 'groq', model: 'fast-model' })
+    expect(saved.modelCapabilities?.['openai/balanced-model']).toBeUndefined()
+    expect(saved.modelRoles?.brain).toBeUndefined()
+  })
+
+  it('rejects empty-string api keys for tier and role targets', () => {
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'test-model',
+      creds: {
+        groq: { apiKey: 'groq-secret-key' },
+        nvidia: { apiKey: '' },
+      },
+      modelTiers: { fast: { provider: 'nvidia', model: 'some-model' } },
+    })).toThrow('creds.nvidia is required for modelTiers.fast')
+
+    expect(() => validateConfig({
+      provider: 'groq',
+      model: 'test-model',
+      creds: {
+        groq: { apiKey: 'groq-secret-key' },
+        nvidia: { apiKey: '' },
+      },
+      modelRoles: { brain: { provider: 'nvidia', model: 'some-model' } },
+    })).toThrow('creds.nvidia is required for modelRoles.brain')
+  })
+
   it('replaces an existing provider key through web settings', async () => {
     const path = join(root, 'ultimatrix.yaml')
     process.env.ULTIMATRIX_CONFIG = path

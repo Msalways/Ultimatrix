@@ -65,6 +65,7 @@ export class DynamicToolRegistry {
   private lazyBuiltins = new Map<string, LazyBuiltinEntry>()
   private activeToolset: Record<string, MastraTool> = {}
   private activationPolicy: (descriptor: ToolDescriptor) => boolean = () => true
+  private activationObserver?: (descriptor: ToolDescriptor, tools: Record<string, MastraTool>) => void | Promise<void>
   private mcp = new Map<string, McpEntry>()
   private plugins = new Map<string, PluginEntry>()
 
@@ -95,6 +96,10 @@ export class DynamicToolRegistry {
     this.activationPolicy = policy ?? (() => true)
   }
 
+  setActivationObserver(observer?: (descriptor: ToolDescriptor, tools: Record<string, MastraTool>) => void | Promise<void>): void {
+    this.activationObserver = observer
+  }
+
   async activate(id: string): Promise<MastraTool> {
     const descriptor = await this.describe(id)
     if (!descriptor) throw new Error(`Capability not found: ${id}`)
@@ -103,6 +108,7 @@ export class DynamicToolRegistry {
       const tool = await this.resolve(id) as MastraTool | undefined
       if (!tool) throw new Error('not found or not reachable')
       this.activeToolset[id] = tool
+      await this.activationObserver?.(descriptor, this.activeToolset)
       return tool
     } catch (error) {
       if (error instanceof CapabilityActivationError) throw error
@@ -118,6 +124,7 @@ export class DynamicToolRegistry {
   resetTurn(): void {
     for (const id of Object.keys(this.activeToolset)) delete this.activeToolset[id]
     this.activationPolicy = () => true
+    this.activationObserver = undefined
   }
 
   // Compatibility aliases for existing integrations.

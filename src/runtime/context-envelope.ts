@@ -31,6 +31,8 @@ export interface RuntimeEnvelopeInput {
   blackboardFacts?: { total: number; recent: string[] }
   /** Captured-traffic awareness: how many replayable requests exist this session. */
   capturedRequests?: { total: number }
+  /** Step budget: current step count, max steps, elapsed time, max duration. */
+  budget?: { steps: number; maxSteps: number; elapsedMs: number; maxDurationMs: number }
 }
 
 export function runtimeEnvelopeTokenBudget(contextWindow: number): number {
@@ -88,6 +90,14 @@ export function buildRuntimeEnvelope(input: RuntimeEnvelopeInput): string {
       : null,
     artifacts,
     alerts: (input.alerts ?? []).map(alert => ({ ...alert, guidance: ALERT_GUIDANCE[alert.type] })),
+    budget: input.budget ? {
+      steps: input.budget.steps,
+      maxSteps: input.budget.maxSteps,
+      remainingSteps: input.budget.maxSteps - input.budget.steps,
+      elapsedSec: Math.round(input.budget.elapsedMs / 1000),
+      remainingSec: Math.round((input.budget.maxDurationMs - input.budget.elapsedMs) / 1000),
+      percentUsed: Math.round((input.budget.steps / input.budget.maxSteps) * 100),
+    } : null,
   }
 
   const budget = runtimeEnvelopeTokenBudget(input.contextWindow)

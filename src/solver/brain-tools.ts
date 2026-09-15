@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { resolveModel } from '../models/factory'
 import { resolveModelRef } from '../models/routing'
 import { ContextWindowRegistry } from '../models/context-window-registry'
+import { planAdaptiveContext, compressBrainInstructions, filterToolsToBudget } from '../models/adaptive-context'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { getBrainInstructions } from './brain-instructions'
 import { buildToolPack } from '../core/toolpack'
@@ -20,6 +21,8 @@ import type { DynamicToolRegistry } from '../extensions/tool-registry'
 import type { LazySolverServices } from '../runtime/lazy-services'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 import { getGlobalObserver } from '../capture/human-observer'
+import { readFileSync } from 'node:fs'
+import { resolve as pathResolve } from 'node:path'
 
 export interface SolverBrainOptions {
   skillRegistry: SkillRegistry
@@ -57,6 +60,44 @@ const WORKER_CAPABILITIES = new Set(['spawnWorker', 'spawnSwarm', 'runTaskGraph'
 const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
 const CAPTURE_DEPENDENT = new Set(['observeHumanActions'])
 const OAST_DEPENDENT = new Set(['getOastUrlTool', 'checkOastCallbacks'])
+
+/**
+ * Auto-detect target type from URL and load the appropriate methodology skill.
+ * This injects structured security-testing methodology into the brain prompt
+ * at creation time, so the LLM has it as a system instruction (not a tool result).
+ */
+function loadMethodologySkill(targetUrl: string): string {
+  if (!targetUrl) return ''
+
+  const skillsDir = pathResolve(import.meta.dirname ?? __dirname, '..', '..', 'skills', 'methodology')
+
+  // Detect target type from URL
+  const url = targetUrl.toLowerCase()
+  let skillFile = 'web-methodology.md' // default
+
+  if (url.includes('/api/') || url.includes('/graphql') || url.includes('/rest/')) {
+    skillFile = 'api-methodology.md'
+  } else if (
+    url.includes('amazonaws.com') ||
+    url.includes('azure.') ||
+    url.includes('googleapis.com') ||
+    url.includes('cloudflare.') ||
+    url.includes('.k8s.') ||
+    url.includes('kubernetes')
+  ) {
+    skillFile = 'cloud-methodology.md'
+  }
+
+  try {
+    const content = readFileSync(pathResolve(skillsDir, skillFile), 'utf-8')
+    // Strip YAML frontmatter, keep only the methodology body
+    const bodyStart = content.indexOf('---', 3)
+    const body = bodyStart > 0 ? content.slice(bodyStart + 3).trim() : content
+    return `\n\n## Security Testing Methodology\n\n${body}`
+  } catch {
+    return '' // Methodology is optional — don't fail brain creation
+  }
+}
 
 export function createSolverBrain(config: UltimatrixConfig, options: SolverBrainOptions) {
   const provider = config.provider
@@ -216,27 +257,58 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     }
   }
 
-  let turnToolsOverride: Record<string, any> | undefined
   const discoveryTools = Object.fromEntries(Object.entries(extensionTools).map(([id, tool]) => [id, sanitizeTool(tool, provider)]))
-  const currentTools = () => turnToolsOverride ?? ({
-    ...discoveryTools,
-    ...options.extensionRegistry.getActiveToolset(),
-  })
+  // Build the adaptive plan BEFORE creating the tool function so it's scope-locked
   const modelRef = resolveModelRef(config, { role: 'brain' })
   const contextWindow = new ContextWindowRegistry(config).getContextWindow(modelRef.modelId)
     || new ContextWindowRegistry(config).getContextWindow(modelRef.model)
     || 128_000
 
+  // ─── Adaptive Brain: compress instructions to fit model ──
+  const fullBrainInstructions = getBrainInstructions(config) + loadMethodologySkill(config.target ?? '')
+  const estimateTokens = (t: string) => Math.ceil(t.split(/\s+/).filter(Boolean).length * 1.3)
+  const fullInstructionTokens = estimateTokens(fullBrainInstructions)
+
+  // Estimate tool schema tokens: each tool ≈ 60 tokens (name + description + schema shape)
+  const allToolCount = Object.keys(discoveryTools).length + Object.keys(options.extensionRegistry.getActiveToolset()).length
+  const estimatedToolSchemaTokens = allToolCount * 60
+
+  const adaptivePlan = planAdaptiveContext({
+    contextWindow: contextWindow || 8192,
+    systemPromptTokens: fullInstructionTokens,
+    toolSchemasTokens: estimatedToolSchemaTokens,
+    goalTokens: 200,
+    historyTokens: 0,
+    reservedOutputTokens: modelRef.maxOutputTokens || 2048,
+  })
+
+  const brainInstructions = compressBrainInstructions(fullBrainInstructions, adaptivePlan)
+
+  const currentTools = () => ({
+    ...discoveryTools,
+    ...options.extensionRegistry.getActiveToolset(),
+  })
+
+  // Adaptive tool filtering: respect the tool budget computed by planAdaptiveContext.
+  // Without this, prepareStep returns ALL tools every step, undoing the budget
+  // and flooding small-context models with 2000+ tokens of schemas.
+  const filteredCurrentTools = () => {
+    const all = currentTools()
+    const entries = Object.entries(all)
+    if (entries.length <= adaptivePlan.toolBudget) return all
+    return filterToolsToBudget(entries, adaptivePlan.toolBudget)
+  }
+
   const agent = new Agent({
     name: 'ultimatrix-solver-brain',
     model: resolveModel(config, { role: 'brain' }),
     target: config.target,
-    tools: currentTools,
-    instructions: getBrainInstructions(config),
-    inputProcessors: [new TokenLimiterProcessor({ limit: Math.floor(contextWindow * 0.7), trimMode: 'best-fit' })],
+    tools: filteredCurrentTools,
+    instructions: brainInstructions,
+    inputProcessors: [new TokenLimiterProcessor({ limit: Math.floor(contextWindow * 0.7), trimMode: 'contiguous' })],
     defaultOptions: {
-      activeTools: Object.keys(discoveryTools),
-      prepareStep: () => ({ tools: currentTools(), activeTools: Object.keys(currentTools()) }),
+      activeTools: Object.keys(filteredCurrentTools()),
+      prepareStep: () => ({ tools: filteredCurrentTools(), activeTools: Object.keys(filteredCurrentTools()) }),
       ...(modelRef.maxOutputTokens ? { modelSettings: { maxTokens: modelRef.maxOutputTokens } } : {}),
     },
     ...(options.memory ? { memory: options.memory } : {}),
@@ -246,8 +318,6 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   agent.name = 'Ultimatrix Solver Brain'
   ;(agent as any).capabilityRegistry = options.extensionRegistry
   ;(agent as any).lazyServices = options.lazyServices
-  ;(agent as any).setTurnToolsOverride = (tools?: Record<string, any>) => {
-    turnToolsOverride = tools
-  }
+  ;(agent as any).getTurnToolset = filteredCurrentTools
   return agent
 }

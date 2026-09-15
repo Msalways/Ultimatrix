@@ -28,10 +28,10 @@ import { upsertCandidate } from '../research/candidate-store'
 import { stableId } from '../research/utils'
 import { getEngagementServices, type BufferedFindingEvidence, type FindingRuntimeState } from '../runtime/engagement-context'
 
-const legacyFindingState: FindingRuntimeState = { evidenceBuffer: new Map(), evidenceGate: null }
-
 function getFindingState(): FindingRuntimeState {
-  return getEngagementServices()?.findingState ?? legacyFindingState
+  const services = getEngagementServices()
+  if (!services) throw new Error('getFindingState() called outside engagement context')
+  return services.findingState
 }
 
 /** Global structured ledger of what actually happened (auto-captured by tools). */

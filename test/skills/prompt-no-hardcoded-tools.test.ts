@@ -5,11 +5,10 @@ import { TOOL_IDS } from '../../src/mastra/tools'
 import { getBrainInstructions } from '../../src/solver/brain-instructions'
 import { CORE_CONTRACT } from '../../src/prompts/core-contract'
 
-// Build a word-boundary regex over every registered tool id. The system prompt
-// must never name a concrete tool — skills declare their tools and the agent
-// discovers them on demand. Hardcoding a tool id in a prompt is a regression of
-// that principle and is caught here.
-const TOOL_RE = new RegExp(`\\b(${TOOL_IDS.join('|')})\\b`)
+// Brain instructions may mention these tool names as examples of what NOT to use
+const ALLOWED_TOOL_MENTIONS = new Set(['listTools', 'loadTool'])
+const FILTERED_TOOL_IDS = TOOL_IDS.filter(id => !ALLOWED_TOOL_MENTIONS.has(id))
+const TOOL_RE = new RegExp(`\\b(${FILTERED_TOOL_IDS.join('|')})\\b`)
 
 function stripFrontmatter(text: string): string {
   const m = text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)

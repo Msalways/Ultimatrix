@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { runInEngagementContext } from '../utils/engagement-context'
 
 const h = vi.hoisted(() => ({
   runActiveChainingMock: vi.fn(),
@@ -47,6 +48,14 @@ vi.mock('../../src/graph/store', () => ({
 }))
 
 import { solve } from '../../src/solver/solver'
+import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
+function itEngagement(name: string, fn: () => Promise<void>) {
+  it(name, async () => {
+    await runInEngagementContext(async () => {
+      await fn()
+    })
+  })
+}
 
 function createMockAgent(textChunks: string[]) {
   let callIndex = 0
@@ -96,6 +105,41 @@ function createReasoningMockAgent(reasoningChunks: string[], textChunks: string[
   }
 }
 
+function createMockAgentWithToolCall(textChunks: string[]) {
+  let callIndex = 0
+  const activationObserver = vi.fn()
+  const mockCapabilityRegistry = {
+    getActiveToolset: vi.fn().mockReturnValue({}),
+    describe: vi.fn().mockResolvedValue({ readOnly: false, namespace: 'recon' }),
+    setActivationPolicy: vi.fn(),
+    setActivationObserver: vi.fn((fn) => {
+      if (fn) fn({ readOnly: false, namespace: 'recon' })
+    }),
+    resetTurn: vi.fn(),
+  }
+  return {
+    instructions: undefined as any,
+    tools: undefined as any,
+    capabilityRegistry: mockCapabilityRegistry,
+    stream: vi.fn().mockImplementation(async (_prompt: string) => {
+      const text = textChunks[Math.min(callIndex++, textChunks.length - 1)] || ''
+      return {
+        fullStream: (async function* () {
+          if (callIndex === 1) {
+            yield { type: 'tool-call', payload: { toolName: 'recon', args: { target: 'https://example.com' }, toolCallId: 'tc-1' } }
+            yield { type: 'tool-result', payload: { toolCallId: 'tc-1', result: { success: true } } }
+          }
+          if (text) {
+            yield { type: 'text-delta', payload: { text } }
+          }
+        })(),
+        toolCalls: [{ toolName: 'recon', args: { target: 'https://example.com' } }],
+        text: Promise.resolve(text),
+      }
+    }),
+  }
+}
+
 describe('solve', () => {
   beforeEach(() => {
     h.runActiveChainingMock.mockClear()
@@ -103,7 +147,7 @@ describe('solve', () => {
     h.graphStoreMock.hasFinding = false
   })
 
-  it('creates plan and executes tasks sequentially', async () => {
+  itEngagement('creates plan and executes tasks sequentially', async () => {
     const agent = createMockAgent([
       'I will test /api/users for SQL injection and /login for auth bypass. Starting with /api/users.',
     ])
@@ -115,7 +159,7 @@ describe('solve', () => {
     expect(result.toolCalls).toBeGreaterThanOrEqual(0)
   })
 
-  it('returns goal_achieved when finding confirmed', async () => {
+  itEngagement('returns goal_achieved when finding confirmed', async () => {
     const agent = createMockAgent([
       'Found SQL injection error on /api. Evidence confirmed.',
     ])
@@ -126,7 +170,7 @@ describe('solve', () => {
     expect(result.steps).toBeGreaterThanOrEqual(0)
   })
 
-  it('returns response_complete when the model answers without running tools', async () => {
+  itEngagement('returns response_complete when the model answers without running tools', async () => {
     const agent = createMockAgent([
       'No progress possible. All paths blocked.',
     ])
@@ -138,9 +182,7 @@ describe('solve', () => {
     expect(result.completed).toBe(false)
     expect(result.reason).toBe('response_complete')
     expect(result.newFindings).toBe(0)
-  })
-
-  it('returns budget_reached when max tool calls exceeded', async () => {
+  })  itEngagement('returns budget_reached when max tool calls exceeded', async () => {
     const agent = createMockAgent(
       Array(10).fill('Testing endpoint for SQLi...')
     )
@@ -150,18 +192,14 @@ describe('solve', () => {
       config: { maxToolCalls: 3 },
     })
     expect(result.completed).toBe(false)
-  })
-
-  it('seeds initial fact with origin and goal', async () => {
+  })  itEngagement('seeds initial fact with origin and goal', async () => {
     const agent = createMockAgent(['Exploring the target.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'Find SQL injection',
     })
     expect(result.facts).toBeGreaterThanOrEqual(1)
-  })
-
-  it('includes hints as initial facts', async () => {
+  })  itEngagement('includes hints as initial facts', async () => {
     const agent = createMockAgent(['Exploring with hints.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
@@ -169,18 +207,14 @@ describe('solve', () => {
       hints: ['User enumeration possible'],
     })
     expect(result.facts).toBeGreaterThanOrEqual(2)
-  })
-
-  it('reports tool calls', async () => {
+  })  itEngagement('reports tool calls', async () => {
     const agent = createMockAgent(['Testing endpoints.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'Find vulnerabilities',
     })
     expect(result.toolCalls).toBeGreaterThanOrEqual(0)
-  })
-
-  it('emits phase events', async () => {
+  })  itEngagement('emits phase events', async () => {
     const agent = createMockAgent(['Starting exploration.'])
     const events: any[] = []
     await solve(agent as any, {
@@ -191,9 +225,7 @@ describe('solve', () => {
     expect(events.length).toBeGreaterThan(0)
     expect(events.some(e => e.phase === 'observe')).toBe(true)
     expect(events.some(e => e.phase === 'complete')).toBe(true)
-  })
-
-  it('conclude rejects ungrounded claims', async () => {
+  })  itEngagement('conclude rejects ungrounded claims', async () => {
     const agent = createMockAgent([
       'This is a completely fabricated claim with no evidence whatsoever',
     ])
@@ -203,18 +235,14 @@ describe('solve', () => {
       config: { maxToolCalls: 10, staleThreshold: 3 },
     })
     expect(result.completed).toBe(false)
-  })
-
-  it('plan summary included in result', async () => {
+  })  itEngagement('plan summary included in result', async () => {
     const agent = createMockAgent(['Plan: test /api for sqli.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'Find SQL injection',
     })
     expect(result.planSummary).toBeDefined()
-  })
-
-  it('returns result with all required fields', async () => {
+  })  itEngagement('returns result with all required fields', async () => {
     const agent = createMockAgent(['Done.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
@@ -231,9 +259,7 @@ describe('solve', () => {
     expect(typeof result.steps).toBe('number')
     expect(typeof result.toolCalls).toBe('number')
     expect(typeof result.durationMs).toBe('number')
-  })
-
-  it('handles agent stream errors gracefully', async () => {
+  })  itEngagement('handles agent stream errors gracefully', async () => {
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
@@ -245,9 +271,7 @@ describe('solve', () => {
     })
     expect(result.completed).toBe(false)
     expect(result.reason).toBe('stale')
-  })
-
-  it('content does not leak through onPhase events (solver stream only)', async () => {
+  })  itEngagement('content does not leak through onPhase events (solver stream only)', async () => {
     const agent = createReasoningMockAgent(
       ['I found SQL injection in /api/users. Evidence: error-based response.'],
       ['| Endpoint | Type |']
@@ -269,9 +293,7 @@ describe('solve', () => {
       goal: 'Find SQL injection',
     })
     expect(result.text).toContain('| Endpoint | Type |')
-  })
-
-  it('does not persist reasoning prose into result.text (prevents next-turn echo, A12)', async () => {
+  })  itEngagement('does not persist reasoning prose into result.text (prevents next-turn echo, A12)', async () => {
     const agent = createReasoningMockAgent(
       ['I found SQL injection. Evidence confirmed via error-based response.'],
       ['| Endpoint | Type |']
@@ -285,9 +307,7 @@ describe('solve', () => {
     expect(result.text).toBeDefined()
     expect(result.text).not.toContain('SQL injection')
     expect(result.text).toContain('| Endpoint | Type |')
-  })
-
-  it('returns responseText as result.text when non-reasoning model', async () => {
+  })  itEngagement('returns responseText as result.text when non-reasoning model', async () => {
     const agent = createMockAgent(['Found SQL injection via error-based response.'])
     const result = await solve(agent as any, {
       origin: 'https://example.com',
@@ -295,9 +315,7 @@ describe('solve', () => {
     })
     expect(result.text).toBeDefined()
     expect(result.text).toContain('SQL injection')
-  })
-
-  it('answer and reasoning flow through solver stream, not phase channel', async () => {
+  })  itEngagement('answer and reasoning flow through solver stream, not phase channel', async () => {
     const agent = createReasoningMockAgent(
       ['Analysis: 8 endpoints found, SQL injection confirmed.'],
       ['| # | Endpoint | Type | Severity |']
@@ -316,16 +334,14 @@ describe('solve', () => {
     expect(hasReasoningInPhase).toBe(false)
     // Answer should be in result.text (canonical stream.text resolution)
     expect(result.text).toContain('| # | Endpoint | Type | Severity |')
-  })
-
-  it('invokes exploitation loop after a finding lands (multi-model engine)', async () => {
+  })  itEngagement('invokes exploitation loop after a finding lands (multi-model engine)', async () => {
     h.exploitLoopMock.mockResolvedValue({
       notes: ['escalated idor via held session'],
       executed: 1,
       proofsBuilt: 1,
     })
     h.graphStoreMock.hasFinding = true
-    const agent = createMockAgent(['Done.'])
+    const agent = createMockAgentWithToolCall(['Ran recon tool.'])
     const events: any[] = []
     await solve(agent as any, {
       origin: 'https://example.com',
@@ -336,9 +352,7 @@ describe('solve', () => {
     console.log('WARN CALLS:', h.logWarn.mock.calls.map(c => c[0]))
     expect(h.exploitLoopMock).toHaveBeenCalledTimes(1)
     expect(events.some(e => e.text?.includes('[exploitation-loop]'))).toBe(true)
-  })
-
-  it('does not invoke exploitation loop when maxActiveChainSteps is 0', async () => {
+  })  itEngagement('does not invoke exploitation loop when maxActiveChainSteps is 0', async () => {
     h.exploitLoopMock.mockResolvedValue({ notes: [], executed: 0, proofsBuilt: 0 })
     const agent = createMockAgent(['Done.'])
     await solve(agent as any, {
@@ -347,9 +361,7 @@ describe('solve', () => {
       ultimatrixConfig: { engine: 'multi-model', solver: { maxActiveChainSteps: 0 } } as any,
     })
     expect(h.exploitLoopMock).not.toHaveBeenCalled()
-  })
-
-  it('emits structured onMessage: answer vs reasoning separated, done carries answer', async () => {
+  })  itEngagement('emits structured onMessage: answer vs reasoning separated, done carries answer', async () => {
     const agent = createReasoningMockAgent(
       ['Reasoning: planning attack surface.'],
       ['Confirmed SQL injection on /api/users.']
@@ -371,9 +383,7 @@ describe('solve', () => {
     expect(done.answer.reasoning).toContain('planning attack surface')
     // The deliverable must never contain the reasoning scratch.
     expect(result.text).not.toContain('planning attack surface')
-  })
-
-  it('falls back to stream.text when text-delta delivers no answer (reasoning-only model)', async () => {
+  })  itEngagement('falls back to stream.text when text-delta delivers no answer (reasoning-only model)', async () => {
     // Agent emits ONLY reasoning-delta; the answer lives only in stream.text().
     const agent = {
       instructions: undefined as any,
@@ -396,8 +406,7 @@ describe('solve', () => {
     const done = messages.find(m => m.kind === 'done')
     expect(done.answer.content).toContain('The final answer is here.')
   })
-
-  it('uses structured output response as the final assistant answer', async () => {
+  itEngagement('uses structured output response as the final assistant answer', async () => {
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
@@ -421,8 +430,7 @@ describe('solve', () => {
     expect(result.text).toBe('Hello. How can I help with this target?')
     expect(done.answer.content).toBe('Hello. How can I help with this target?')
   })
-
-  it('does not force structured output for normal assistant turns', async () => {
+  itEngagement('does not force structured output for normal assistant turns', async () => {
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
@@ -452,54 +460,78 @@ describe('solve', () => {
     expect(agent.stream.mock.calls[0][1]?.structuredOutput).toBeUndefined()
     expect(result.text).toBe('Hello from plain text.')
   })
-
-  it('answers directly when the typed router chooses respond', async () => {
-    let currentTools: Record<string, any> | undefined
+  itEngagement('answers directly without a forced decision pass', async () => {
+    const initialTools = { listTools: { id: 'listTools' }, loadTool: { id: 'loadTool' } }
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
-      setTurnToolsOverride: vi.fn((tools?: Record<string, any>) => {
-        currentTools = tools
-      }),
+      getTurnToolset: vi.fn(() => initialTools),
       stream: vi.fn().mockImplementation(async () => ({
         fullStream: (async function* () {
-          await currentTools?.decideTurn.execute({ action: 'respond', response: 'Hi. What would you like to inspect?' })
+          yield { type: 'text-delta', payload: { text: 'Hi. What would you like to inspect?' } }
         })(),
         toolCalls: [],
-        text: Promise.resolve(''),
+        text: Promise.resolve('Hi. What would you like to inspect?'),
       })),
     }
     const result = await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'hi',
     })
-    expect(agent.setTurnToolsOverride.mock.calls[0][0]).toHaveProperty('decideTurn')
-    expect(agent.setTurnToolsOverride).toHaveBeenLastCalledWith(undefined)
     expect(agent.stream).toHaveBeenCalledTimes(1)
+    expect(agent.getTurnToolset).toHaveBeenCalled()
     expect(result.toolCalls).toBe(0)
     expect(result.text).toContain('Hi')
   })
-
-  it('runs a capability turn from the original goal without serializing the decision back to the model', async () => {
-    let currentTools: Record<string, any> | undefined
+  itEngagement('validates context against active next-step tools and rechecks after activation', async () => {
+    const registry = new DynamicToolRegistry()
+    registry.registerLazyBuiltin({
+      id: 'httpRequest',
+      description: 'HTTP request',
+      namespace: 'builtin',
+      source: 'builtin',
+      requirements: [],
+      readOnly: false,
+    }, async () => ({ id: 'httpRequest', inputSchema: { type: 'object', properties: { url: { type: 'string' } } } }))
+    const discoveryTools = { listTools: { id: 'listTools' }, loadTool: { id: 'loadTool' } }
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
-      setTurnToolsOverride: vi.fn((tools?: Record<string, any>) => {
-        currentTools = tools
-      }),
+      capabilityRegistry: registry,
+      getTurnToolset: vi.fn(() => ({ ...discoveryTools, ...registry.getActiveToolset() })),
+      stream: vi.fn().mockImplementation(async () => ({
+        fullStream: (async function* () {
+          await registry.activate('httpRequest')
+          yield { type: 'text-delta', payload: { text: 'Activated HTTP tooling.' } }
+        })(),
+        toolCalls: [],
+        text: Promise.resolve('Activated HTTP tooling.'),
+      })),
+    }
+    const messages: any[] = []
+
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'inspect the target',
+      onMessage: (m) => messages.push(m),
+    })
+
+    const checks = messages.filter(m => m.kind === 'event' && m.event === 'context.checked')
+    expect(checks.map(m => m.data.stage)).toEqual(['initial', 'activation'])
+    expect(checks[0].data.activeTools).toEqual(['listTools', 'loadTool'])
+    expect(checks[1].data.activeTools).toContain('httpRequest')
+  })
+  itEngagement('runs target-operation turns from the original goal without serializing a routing decision', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
       stream: vi.fn().mockImplementation(async () => {
-        const isRouterPass = Boolean(currentTools?.decideTurn)
         return {
           fullStream: (async function* () {
-            if (isRouterPass) {
-              await currentTools?.decideTurn.execute({ action: 'use_capability', objective: 'map the target surface' })
-            } else {
-              yield { type: 'text-delta', payload: { text: 'I will map the target surface.' } }
-            }
+            yield { type: 'text-delta', payload: { text: 'I will map the target surface.' } }
           })(),
           toolCalls: [],
-          text: Promise.resolve(isRouterPass ? '' : 'I will map the target surface.'),
+          text: Promise.resolve('I will map the target surface.'),
         }
       }),
     }
@@ -508,14 +540,13 @@ describe('solve', () => {
       goal: 'map the target attack surface',
       interactionMode: 'run',
     })
-    expect(agent.stream).toHaveBeenCalledTimes(2)
-    const secondPrompt = agent.stream.mock.calls[1][0]
-    expect(secondPrompt).toContain('map the target attack surface')
-    expect(secondPrompt).not.toContain('Turn decision')
-    expect(secondPrompt).not.toContain('use_capability')
+    expect(agent.stream).toHaveBeenCalledTimes(1)
+    const prompt = agent.stream.mock.calls[0][0]
+    expect(prompt).toContain('map the target attack surface')
+    expect(prompt).not.toContain('Turn decision')
+    expect(prompt).not.toContain('use_capability')
   })
-
-  it('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
+  itEngagement('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
     // Real provider behavior (e.g. nvidia): the model streams reasoning/scratch
     // AND an echoed answer through `text-delta`, but the SDK normalizes the true
     // deliverable into the `stream.text` promise. The committed `answer.content`
@@ -549,9 +580,7 @@ describe('solve', () => {
     expect(done.answer.content).toBe(answer)
     expect(done.answer.content).not.toContain('Talking mode')
     expect(done.answer.content).not.toContain(scratch)
-  })
-
-  it('commits stream.reasoningText as the reasoning when present', async () => {
+  })  itEngagement('commits stream.reasoningText as the reasoning when present', async () => {
     // The buddy's decision context: `stream.reasoningText` is the canonical
     // reasoning channel (normalized across providers). It must be the committed
     // `answer.reasoning`, not the raw reasoning-delta accumulation.
@@ -581,9 +610,7 @@ describe('solve', () => {
     expect(done.answer.content).toBe(answer)
     // The answer must never carry the reasoning scratch.
     expect(done.answer.content).not.toContain('login endpoint')
-  })
-
-  it('falls back to reasoning-delta chunks when stream.reasoningText is undefined', async () => {
+  })  itEngagement('falls back to reasoning-delta chunks when stream.reasoningText is undefined', async () => {
     // Some providers expose reasoning only as reasoning-delta (no normalized
     // reasoningText). The committed reasoning must fall back to the captured
     // chunks so the buddy's thinking is never lost.
@@ -612,9 +639,7 @@ describe('solve', () => {
     const done = messages.find(m => m.kind === 'done')
     expect(done.answer.reasoning).toBe(reasoning)
     expect(done.answer.content).toBe(answer)
-  })
-
-  it('does not collapse genuinely new (non-echo) text-delta chunks', async () => {
+  })  itEngagement('does not collapse genuinely new (non-echo) text-delta chunks', async () => {
     // Distinct deltas (normal token streaming) must all be preserved.
     const agent = {
       instructions: undefined as any,
@@ -638,8 +663,7 @@ describe('solve', () => {
     const done = messages.find(m => m.kind === 'done')
     expect(done.answer.content).toBe('Hello world, this is distinct.')
   })
-
-  it('forwards cancellation to the model stream', async () => {
+  itEngagement('forwards cancellation to the model stream', async () => {
     const controller = new AbortController()
     const agent = createMockAgent(['ok'])
 
@@ -655,8 +679,7 @@ describe('solve', () => {
     controller.abort()
     expect(streamSignal.aborted).toBe(true)
   })
-
-  it('emits failed tool results instead of leaving streamed tools running', async () => {
+  itEngagement('emits failed tool results instead of leaving streamed tools running', async () => {
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,
@@ -684,8 +707,7 @@ describe('solve', () => {
       result: 'connection reset',
     })
   })
-
-  it('preserves typed tool failures in the stream', async () => {
+  itEngagement('preserves typed tool failures in the stream', async () => {
     const agent = {
       instructions: undefined as any,
       tools: undefined as any,

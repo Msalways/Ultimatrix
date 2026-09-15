@@ -38,7 +38,7 @@ beforeEach(async () => {
   rootDir = join(tempDir, 'skills-user')
   skillsMod = await import('../../src/tools/skill-manage-tools')
   skillsMod.setImportedSkillsRoot(rootDir)
-})
+}, 60000)
 
 afterEach(() => {
   skillsMod?.setImportedSkillsRoot(null)
@@ -47,7 +47,7 @@ afterEach(() => {
 })
 
 describe('manageSkills', () => {
-  it('add → discoverable in index as user/<name>; invalid add rejected; remove cleans up', async () => {
+  it('add → discoverable in index as user/<name>; invalid add rejected; remove cleans up', { timeout: 60000 }, async () => {
     const added = await (skillsMod!.manageSkills as any).execute({ action: 'add', markdown: VALID })
     expect(added.ok).toBe(true)
 

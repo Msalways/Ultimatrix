@@ -1,8 +1,9 @@
 import { select, input, password, confirm } from '@inquirer/prompts'
-import { PROVIDER_INFO } from '../config'
+import { PROVIDER_INFO, lookupModelDefaults } from '../config'
 import { log } from '../utils/logger'
 import type { EngineType } from '../config'
 import { runSetup, testProviderConnection } from '../core/setup-service'
+import { THEME, BOX } from '../ui/theme'
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -37,14 +38,44 @@ function parseArgs(): InitOptions {
   return opts
 }
 
+function boxSummary(title: string, lines: string[]): void {
+  const maxLen = Math.max(title.length + 4, ...lines.map(l => l.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length))
+  const w = maxLen + 4
+  const b = BOX.single
+  const d = THEME.dim
+  const r = THEME.reset
+  const results: string[] = []
+  results.push(`  ${d}${b.tl}${b.h} ${THEME.bold}${title}${r} ${d}${b.h.repeat(Math.max(0, w - title.length - 3))}${b.tr}${r}`)
+  for (const line of lines) {
+    const visLen = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length
+    const pad = Math.max(0, maxLen - visLen)
+    results.push(`  ${d}${b.v}${r}  ${line}${' '.repeat(pad)}  ${d}${b.v}${r}`)
+  }
+  results.push(`  ${d}${b.bl}${b.h.repeat(w - 1)}${b.br}${r}`)
+  for (const l of results) log.raw(l)
+}
+
 // ─── Main wizard ───────────────────────────────────────────────────
 
 export async function initWizard() {
   const opts = parseArgs()
 
-  log.banner('Ultimatrix Init')
+  // ─── Banner ──────────────────────────────────────────────────────
+  log.nl()
+  log.raw('  ULTIMATRIX')
+  log.raw('  security research platform')
+  log.nl()
 
-  // ── Step 1: Provider + Model ──────────────────────────────────────
+  // ─── Phase 1: Auto-detect + Configure ────────────────────────────
+  // Detect available API keys from environment
+  const detectedKeys: string[] = []
+  for (const [providerId, info] of Object.entries(PROVIDER_INFO)) {
+    if (process.env[info.envVar]) detectedKeys.push(providerId)
+  }
+  if (detectedKeys.length > 0) {
+    log.raw(`  ${THEME.dim}detected: ${detectedKeys.join(', ')}${THEME.reset}`)
+    log.nl()
+  }
 
   let selectedProvider: (typeof PROVIDER_INFO)[string] | undefined
   let modelId: string
@@ -66,6 +97,10 @@ export async function initWizard() {
     apiKey = opts.key || process.env[providerInfo.envVar] || ''
     baseUrl = providerInfo.defaultBaseUrl
 
+    // Smart defaults for known models
+    const defaults = lookupModelDefaults(modelId)
+    if (defaults) { contextWindow = defaults.contextWindow; maxOutputTokens = defaults.maxOutputTokens }
+
     if (!apiKey) {
       log.error(`No API key found. Set ${providerInfo.envVar} or use --key`)
       return
@@ -74,281 +109,182 @@ export async function initWizard() {
     log.error('Non-interactive mode requires --provider and --model flags')
     return
   } else {
-    // Interactive wizard
-    log.raw('Step 1: Provider & Model')
-    log.nl()
-
-    // Build provider choices — show env-detected hint but never pre-select
-    const providerChoices = Object.values(PROVIDER_INFO).map(p => ({
-      name: p.id,
-      value: p.id,
-      description: process.env[p.envVar] ? ' (env key detected)' : '',
-    }))
-
-    const pickedId = await select({
-      message: 'Provider',
-      choices: providerChoices,
-    })
-
-    selectedProvider = Object.values(PROVIDER_INFO).find(p => p.id === pickedId)
-    if (!selectedProvider) {
-      log.error(`Unknown provider: ${pickedId}`)
-      return
-    }
-
-    // Model name
-    modelId = await input({
-      message: 'Model name',
-      validate: (v) => v.trim().length > 0 || 'Model name is required',
-    })
-    modelId = modelId.trim()
-
-    // API key — load from env or prompt
-    const envKeyAvailable = !!process.env[selectedProvider.envVar]
-    if (envKeyAvailable) {
-      apiKey = process.env[selectedProvider.envVar]!
-      log.raw(`  API key loaded from ${selectedProvider.envVar}`)
+    // Interactive: auto-detect if single key, otherwise prompt
+    if (detectedKeys.length === 1) {
+      const autoProvider = detectedKeys[0]
+      selectedProvider = Object.values(PROVIDER_INFO).find(p => p.id === autoProvider)
+      apiKey = process.env[selectedProvider!.envVar]!
+      baseUrl = selectedProvider!.defaultBaseUrl
+      log.raw(`  ${THEME.dim}auto-selecting ${autoProvider} (only key detected)${THEME.reset}`)
+      modelId = await input({
+        message: 'Model name',
+        validate: (v) => v.trim().length > 0 || 'Model name is required',
+      })
+      modelId = modelId.trim()
+      const defaults = lookupModelDefaults(modelId)
+      if (defaults) { contextWindow = defaults.contextWindow; maxOutputTokens = defaults.maxOutputTokens }
+      log.raw(`  ${THEME.dim}context: ${contextWindow.toLocaleString()} · output: ${maxOutputTokens.toLocaleString()}${THEME.reset}`)
     } else {
-      apiKey = await password({
-        message: 'API key',
-        mask: '*',
-        validate: (v) => v.trim().length > 0 || 'API key is required',
+      // Multiple or no keys — prompt for provider
+      const providerChoices = Object.values(PROVIDER_INFO).map(p => ({
+        name: p.id,
+        value: p.id,
+        description: process.env[p.envVar] ? ' (env key detected)' : '',
+      }))
+      const pickedId = await select({ message: 'Provider', choices: providerChoices })
+      selectedProvider = Object.values(PROVIDER_INFO).find(p => p.id === pickedId)
+      if (!selectedProvider) { log.error(`Unknown provider: ${pickedId}`); return }
+
+      modelId = await input({
+        message: 'Model name',
+        validate: (v) => v.trim().length > 0 || 'Model name is required',
       })
-      apiKey = apiKey.trim()
+      modelId = modelId.trim()
+
+      // Smart defaults
+      const defaults = lookupModelDefaults(modelId)
+      if (defaults) { contextWindow = defaults.contextWindow; maxOutputTokens = defaults.maxOutputTokens }
+
+      // API key
+      const envKeyAvailable = !!process.env[selectedProvider.envVar]
+      if (envKeyAvailable) {
+        apiKey = process.env[selectedProvider.envVar]!
+        log.raw(`  ${THEME.dim}key loaded from ${selectedProvider.envVar}${THEME.reset}`)
+      } else {
+        apiKey = await password({
+          message: 'API key',
+          mask: '*',
+          validate: (v) => v.trim().length > 0 || 'API key is required',
+        })
+        apiKey = apiKey.trim()
+      }
+
+      // Base URL
+      const defaultUrl = selectedProvider.defaultBaseUrl
+      if (defaultUrl) {
+        const urlInput = await input({ message: 'Base URL', default: defaultUrl })
+        baseUrl = urlInput.trim() || defaultUrl
+      } else {
+        baseUrl = await input({
+          message: 'Base URL',
+          validate: (v) => v.trim().length > 0 || 'Base URL is required for this provider',
+        })
+        baseUrl = baseUrl.trim()
+      }
     }
 
-    // Base URL
-    const defaultUrl = selectedProvider.defaultBaseUrl
-    if (defaultUrl) {
-      const urlInput = await input({
-        message: 'Base URL (API endpoint)',
-        default: defaultUrl,
-      })
-      baseUrl = urlInput.trim() || defaultUrl
-    } else {
-      baseUrl = await input({
-        message: 'Base URL (API endpoint)',
-        validate: (v) => v.trim().length > 0 || 'Base URL is required for this provider',
-      })
-      baseUrl = baseUrl.trim()
-    }
-
-    // Test connection with retry loop
-    const doTest = await confirm({
-      message: 'Test connection?',
-      default: true,
-    })
+    // Test connection
+    const doTest = await confirm({ message: 'Test connection?', default: true })
     if (doTest) {
       let connected = await testConnection(baseUrl, modelId, apiKey)
       while (!connected) {
-        const retry = await confirm({
-          message: 'Connection failed. Continue anyway?',
-          default: false,
-        })
+        const retry = await confirm({ message: 'Connection failed. Continue anyway?', default: false })
         if (retry) break
-
-        // Re-ask model name
-        modelId = await input({
-          message: 'Model name',
-          default: modelId,
-          validate: (v) => v.trim().length > 0 || 'Model name is required',
-        })
+        modelId = await input({ message: 'Model name', default: modelId, validate: (v) => v.trim().length > 0 || 'Required' })
         modelId = modelId.trim()
-
-        // Re-ask API key only if not from env
-        if (!envKeyAvailable) {
-          apiKey = await password({
-            message: 'API key',
-            mask: '*',
-            validate: (v) => v.trim().length > 0 || 'API key is required',
-          })
-          apiKey = apiKey.trim()
-        }
-
-        // Re-ask base URL
-        const urlRetry = await input({
-          message: 'Base URL (API endpoint)',
-          default: baseUrl,
-        })
+        const urlRetry = await input({ message: 'Base URL', default: baseUrl })
         baseUrl = urlRetry.trim() || baseUrl
-
         connected = await testConnection(baseUrl, modelId, apiKey)
       }
     }
 
-    log.nl()
-    log.raw('Model limits')
-    contextWindow = Number(await input({
-      message: 'Context window',
-      default: String(contextWindow),
-      validate: (v) => Number(v) > 0 || 'Context window must be positive',
-    }))
-    maxOutputTokens = Number(await input({
-      message: 'Max output tokens',
-      default: String(maxOutputTokens),
-      validate: (v) => Number(v) > 0 || 'Max output tokens must be positive',
-    }))
+    // Context/output overrides only if defaults weren't found
+    if (!lookupModelDefaults(modelId)) {
+      log.nl()
+      log.raw(`  ${THEME.dim}no defaults found for ${modelId} — entering manually${THEME.reset}`)
+      contextWindow = Number(await input({ message: 'Context window', default: String(contextWindow), validate: (v) => Number(v) > 0 || 'Must be positive' }))
+      maxOutputTokens = Number(await input({ message: 'Max output tokens', default: String(maxOutputTokens), validate: (v) => Number(v) > 0 || 'Must be positive' }))
+    }
   }
 
-  if (!selectedProvider) {
-    log.error('No provider selected.')
-    return
-  }
+  if (!selectedProvider) { log.error('No provider selected.'); return }
 
-  // ── Step 2: Multi-model? ──────────────────────────────────────────
-
-  let useMultiModel = false
+  // ─── Phase 2: Multi-Model + Engine ───────────────────────────────
+  // eslint-disable-next-line no-useless-assignment
+  let _useMultiModel = false
   const tiers: Record<string, { provider: string; model: string }> = {}
   const crossProviderKeys: Record<string, { apiKey: string; baseUrl?: string }> = {}
 
   if (!opts.nonInteractive) {
     log.nl()
-    log.raw('Step 2: Multi-Model Setup')
-    log.nl()
+    _useMultiModel = await confirm({ message: 'Set up multiple models?', default: false })
 
-    useMultiModel = await confirm({
-      message: 'Set up multiple models for different tasks?',
-      default: false,
-    })
-
-    if (useMultiModel) {
-      // ── Step 3: Tier Setup ────────────────────────────────────────
-      log.nl()
-      log.raw('Step 3: Model Tiers')
-      log.dim('  Configure models for different complexity levels.')
-      log.nl()
-
+    if (_useMultiModel) {
       const tierDefs = [
         { key: 'fast', label: 'Fast', hint: 'quick tasks' },
         { key: 'balanced', label: 'Balanced', hint: 'general tasks' },
         { key: 'powerful', label: 'Powerful', hint: 'complex reasoning' },
       ]
-
-      // Track which providers we already have creds for
-      const knownKeys = new Set<string>()
-      knownKeys.add(selectedProvider.id)
+      const knownKeys = new Set<string>([selectedProvider.id])
 
       for (const tier of tierDefs) {
-        // Step 3a: Select provider for this tier
         const providerChoices = Object.values(PROVIDER_INFO).map(p => {
           let desc = ''
           if (process.env[p.envVar]) desc = ' (key available)'
           else if (knownKeys.has(p.id)) desc = ' (configured)'
           return { name: p.id, value: p.id, description: desc }
         })
-        providerChoices.push({ name: 'Skip this tier', value: '', description: '' })
+        providerChoices.push({ name: 'Skip', value: '', description: '' })
 
-        const tierProviderId = await select({
-          message: `${tier.label} provider (${tier.hint})`,
-          choices: providerChoices,
-        })
-
-        if (!tierProviderId) {
-          log.dim(`  ${tier.label}: skipped`)
-          continue
-        }
+        const tierProviderId = await select({ message: `${tier.label} provider (${tier.hint})`, choices: providerChoices })
+        if (!tierProviderId) { log.raw(`  ${THEME.dim}${tier.label}: skipped${THEME.reset}`); continue }
 
         const tierProviderInfo = Object.values(PROVIDER_INFO).find(p => p.id === tierProviderId)
+        const tierModel = await input({ message: `${tier.label} model name`, validate: (v) => v.trim().length > 0 || 'Required' })
 
-        // Step 3b: Input model name
-        const tierModel = await input({
-          message: `${tier.label} model name`,
-          validate: (v) => v.trim().length > 0 || 'Model name is required',
-        })
-
-        // Step 3c: Get API key for this provider if needed
         let tierKey = process.env[tierProviderInfo?.envVar ?? ''] || ''
-
         if (!tierKey) {
-          // Reuse primary provider's key if same provider
-          if (tierProviderId === selectedProvider.id) {
-            tierKey = apiKey
-          } else {
-            // Cross-provider — need to get a key
-            log.warn(`No API key found for ${tierProviderId}`)
-            tierKey = await password({
-              message: `API key for ${tierProviderId}`,
-              mask: '*',
-              validate: (v) => v.trim().length > 0 || 'API key is required',
-            })
+          if (tierProviderId === selectedProvider.id) tierKey = apiKey
+          else {
+            tierKey = await password({ message: `API key for ${tierProviderId}`, mask: '*', validate: (v) => v.trim().length > 0 || 'Required' })
             tierKey = tierKey.trim()
           }
         }
         knownKeys.add(tierProviderId)
 
-        // Step 3d: Get base URL for this provider
         let tierBaseUrl: string
         const defaultTierUrl = tierProviderInfo?.defaultBaseUrl
         if (defaultTierUrl) {
-          const urlInput = await input({
-            message: `${tier.label} base URL (API endpoint)`,
-            default: defaultTierUrl,
-          })
+          const urlInput = await input({ message: `${tier.label} base URL`, default: defaultTierUrl })
           tierBaseUrl = urlInput.trim() || defaultTierUrl
         } else {
-          tierBaseUrl = await input({
-            message: `${tier.label} base URL (API endpoint)`,
-            validate: (v) => v.trim().length > 0 || 'Base URL is required',
-          })
+          tierBaseUrl = await input({ message: `${tier.label} base URL`, validate: (v) => v.trim().length > 0 || 'Required' })
           tierBaseUrl = tierBaseUrl.trim()
         }
 
-        // Track cross-provider keys (including base URL) for saving later
         if (tierProviderId !== selectedProvider.id || tierBaseUrl !== defaultTierUrl) {
           crossProviderKeys[tierProviderId] = { apiKey: tierKey, baseUrl: tierBaseUrl }
         }
-
         tiers[tier.key] = { provider: tierProviderId, model: tierModel.trim() }
-        log.raw(`  ${tier.label} → ${tierProviderId}/${tierModel.trim()}`)
       }
 
-      if (Object.keys(tiers).length === 0) {
-        log.dim('No tiers configured — using single model.')
-        useMultiModel = false
-      }
+      // eslint-disable-next-line no-useless-assignment
+      if (Object.keys(tiers).length === 0) { _useMultiModel = false }
     }
   }
 
-  // ── Step 4: Engine Selection ──────────────────────────────────────
-
   let engine: EngineType = 'multi-model'
-
   if (!opts.nonInteractive) {
-    log.nl()
-    log.raw('Step 4: Engine')
-    log.nl()
-
     const enginePick = await select({
       message: 'Engine',
       choices: [
-        { name: 'Multi-model assistant', value: 'multi-model', description: 'recommended' },
+        { name: 'Multi-model (recommended)', value: 'multi-model' },
         { name: 'Legacy supervisor (v6)', value: 'legacy' },
       ],
     })
-
     engine = enginePick as EngineType
-
-    if (engine === 'multi-model' && !useMultiModel) {
-      log.dim('Note: multi-model engine works best with model tiers. Proceeding anyway.')
-    }
   }
 
-  // ── Step 5: Save + Summary ────────────────────────────────────────
-
-  // Save ultimatrix.yaml
+  // ─── Phase 3: Save + Summary ─────────────────────────────────────
   if (!opts.nonInteractive) {
-    const doSave = await confirm({
-      message: 'Save project config to ./ultimatrix.yaml?',
-      default: true,
-    })
+    const doSave = await confirm({ message: 'Save config?', default: true })
     if (!doSave) {
-      log.dim('Skipped project config save.')
-      printSummary(selectedProvider.id, modelId, engine, tiers)
+      log.dim('Skipped save.')
+      printSummary(selectedProvider.id, modelId, engine, tiers, contextWindow, maxOutputTokens)
       return
     }
   }
 
-  // Use the shared setup service to write both files
   const result = await runSetup({
     provider: selectedProvider.id,
     model: modelId,
@@ -386,23 +322,27 @@ export async function initWizard() {
     return
   }
 
-  log.success(`Saved provider credentials to ${result.providersPath}`)
   log.success(`Saved to ${result.configPath}`)
-
-  printSummary(selectedProvider.id, modelId, engine, tiers)
+  printSummary(selectedProvider.id, modelId, engine, tiers, contextWindow, maxOutputTokens)
 }
 
-function printSummary(provider: string, model: string, engine: EngineType, tiers: Record<string, { provider: string; model: string }>): void {
+function printSummary(provider: string, model: string, engine: EngineType, tiers: Record<string, { provider: string; model: string }>, ctxWin: number, outTok: number): void {
   log.nl()
-  log.banner(
-    'Configuration Summary',
-    `Provider: ${provider}  |  Model: ${model}  |  Engine: ${engine}`,
-  )
+  const lines = [
+    `${THEME.bold}provider${THEME.reset}    ${provider}`,
+    `${THEME.bold}model${THEME.reset}       ${provider}/${model}`,
+    `${THEME.bold}engine${THEME.reset}       ${engine}`,
+    `${THEME.bold}context${THEME.reset}      ${ctxWin.toLocaleString()} tokens`,
+    `${THEME.bold}output${THEME.reset}       ${outTok.toLocaleString()} tokens`,
+  ]
   if (Object.keys(tiers).length > 0) {
-    for (const [tier, tierCfg] of Object.entries(tiers)) {
-      log.raw(`  ${tier} → ${tierCfg.provider}/${tierCfg.model}`)
+    lines.push('')
+    lines.push(`${THEME.bold}tiers${THEME.reset}`)
+    for (const [tier, cfg] of Object.entries(tiers)) {
+      lines.push(`  ${tier}: ${cfg.provider}/${cfg.model}`)
     }
-    log.nl()
   }
-  log.success('Setup complete. Run `ultimatrix interact -t <url>` to begin.')
+  boxSummary('Configuration', lines)
+  log.nl()
+  log.success('Ready. Run `ultimatrix interact -t <url>` to begin.')
 }

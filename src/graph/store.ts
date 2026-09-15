@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import {emitGraphFindingAdded, emitGraphAttackAdded, emitGraphEdgeAdded} from '../events/emitter'
 import { getConfig } from '../config'
+import { log } from '../utils/logger'
 import {
   GraphNodeData,
   GraphEdgeData,
@@ -66,13 +67,17 @@ export class GraphStore {
 
   scheduleSave(): void {
     if (this.useLibSQL && this.libSQLStore) {
-      this.libSQLStore.save().catch(() => {})
+      this.libSQLStore.save().catch((err) => {
+        log.dim(`[graph] LibSQL save failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
       return
     }
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null
-      this.save().catch(() => {})
+      this.save().catch((err) => {
+        log.dim(`[graph] Save failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
     }, GraphStore.SAVE_DEBOUNCE_MS)
   }
 
@@ -1137,7 +1142,7 @@ export class GraphStore {
       }
       if (data.edges) this.edges = data.edges
     } catch (_err) {
-      console.warn(`[graph] Primary graph corrupt at ${targetPath}, trying backup...`)
+      log.warn(`[graph] Primary graph corrupt at ${targetPath}, trying backup...`)
       const backupPath = `${targetPath}.bak`
       if (existsSync(backupPath)) {
         try {
@@ -1152,10 +1157,10 @@ export class GraphStore {
           if (data.edges) this.edges = data.edges
           console.info(`[graph] Restored from backup: ${backupPath}`)
         } catch {
-          console.warn(`[graph] Backup also corrupt, starting fresh`)
+          log.warn(`[graph] Backup also corrupt, starting fresh`)
         }
       } else {
-        console.warn(`[graph] No backup available, starting fresh`)
+        log.warn(`[graph] No backup available, starting fresh`)
       }
     }
   }

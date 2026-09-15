@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { log } from '../utils/logger'
 import type { WorkflowStore } from '../workflow/store'
 import type {
   TaskAcceptanceCriterion,
@@ -22,6 +23,7 @@ export interface TaskRequest {
   complexity?: 'low' | 'medium' | 'high' | 'critical'
   acceptanceCriteria?: TaskAcceptanceCriterion[]
   tokenLimit?: number
+  modelCallLimit?: number
   timeoutMs?: number
   maxAttempts?: number
   retryOn?: TaskRetryableStatus[]
@@ -149,7 +151,7 @@ export class TaskCoordinator {
       complexity: request.complexity,
       acceptanceCriteria: request.acceptanceCriteria ?? [],
       acceptanceResults: [],
-      budget: { tokenLimit: request.tokenLimit, timeoutMs: request.timeoutMs },
+      budget: { tokenLimit: request.tokenLimit, modelCallLimit: request.modelCallLimit, timeoutMs: request.timeoutMs },
       retryPolicy: {
         maxAttempts: request.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
         retryOn: request.retryOn ?? DEFAULT_RETRY_POLICY.retryOn,
@@ -229,12 +231,16 @@ export class TaskCoordinator {
     attempt.startedAt = this.now()
     task.startedAt ??= attempt.startedAt
     task.updatedAt = attempt.startedAt
-    await this.checkpoint(task)
+await this.checkpoint(task)
 
     const remainingTokenLimit = task.budget.tokenLimit === undefined
       ? undefined
       : Math.max(0, task.budget.tokenLimit - task.usage.totalTokens)
-    const attribution = createTaskAttribution(task.taskId, remainingTokenLimit, (error) => controller.abort(error))
+    const remainingModelCallLimit = task.budget.modelCallLimit === undefined
+      ? undefined
+      : Math.max(0, task.budget.modelCallLimit - task.usage.modelCalls)
+const attribution = createTaskAttribution(task.taskId, remainingTokenLimit, (error) => controller.abort(error), remainingModelCallLimit)
+
     const captureUsage = () => {
       attempt.usage = { ...attribution.usage }
       task.usage = task.attemptHistory.reduce((total, item) => ({
@@ -247,6 +253,37 @@ export class TaskCoordinator {
     }
 
     try {
+      // Upfront budget checks: token budget is hard limit checked upfront using heuristic from previous attempt
+      // Only check token budget upfront (model call limit is checked during execution via admitModelCall)
+      if (task.attemptHistory.length > 1 && task.budget.tokenLimit !== undefined) {
+        const lastAttempt = task.attemptHistory[task.attemptHistory.length - 2]
+        // Use last attempt's totalTokens for blocking decision (conservative estimate)
+        const estimatedTokensForDecision = lastAttempt.usage.totalTokens || 0
+        // Upfront budget check — logged via forensic log, not console
+        if (task.usage.totalTokens + estimatedTokensForDecision > task.budget.tokenLimit) {
+          attribution.budgetExceeded = true
+          // For the blocked attempt's recorded usage, use remaining budget as the estimate
+          const remainingBudget = task.budget.tokenLimit - task.usage.totalTokens
+          // Heuristic: assume next attempt uses same outputTokens as last attempt, inputTokens = remaining - outputTokens
+          const estimatedOutputTokens = lastAttempt.usage.outputTokens || 0
+          const estimatedInputTokens = Math.max(0, remainingBudget - estimatedOutputTokens)
+          const estimatedTokens = estimatedInputTokens + estimatedOutputTokens
+          // Update attribution.usage so captureUsage() captures it correctly
+          attribution.usage.inputTokens = estimatedInputTokens
+          attribution.usage.outputTokens = estimatedOutputTokens
+          attribution.usage.totalTokens = estimatedTokens
+          attribution.usage.modelCalls = 1
+          attribution.usage.reportedCalls = 1
+          // Mark the current attempt (already in history) as budget_exceeded
+          const currentAttempt = task.attemptHistory[task.attemptHistory.length - 1]
+          currentAttempt.status = 'budget_exceeded'
+          currentAttempt.error = `Task ${task.taskId} would exceed its ${task.budget.tokenLimit} token budget (estimated ${task.usage.totalTokens + estimatedTokensForDecision} > ${task.budget.tokenLimit})`
+          currentAttempt.completedAt = this.now()
+          currentAttempt.usage = { inputTokens: estimatedInputTokens, outputTokens: estimatedOutputTokens, totalTokens: estimatedTokens, modelCalls: 1, reportedCalls: 1 }
+          throw new Error(`Task ${task.taskId} would exceed its ${task.budget.tokenLimit} token budget (estimated ${task.usage.totalTokens + estimatedTokensForDecision} > ${task.budget.tokenLimit})`)
+        }
+      }
+
       if (remainingTokenLimit === 0) {
         attribution.budgetExceeded = true
         throw new Error(`Task ${task.taskId} exhausted its ${task.budget.tokenLimit} token budget`)

@@ -7,6 +7,9 @@ import { wrapStagehandTools } from '../browser/dialog-inject'
 import { UltimatrixConfig } from '../config'
 import { resolveModel } from '../models/factory'
 import { resolveModelRef, type ModelRole, type TaskComplexity } from '../models/routing'
+import { ContextWindowRegistry } from '../models/context-window-registry'
+import { planAdaptiveContext, compressBrainInstructions } from '../models/adaptive-context'
+import { TokenLimiterProcessor } from '@mastra/core/processors'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { Logger } from '../utils/logger'
 import { resolveToolsForSkills } from '../solver/skills/tool-filter'
@@ -118,7 +121,7 @@ export function createAgent(
     ? options.skills.map(s => s.instructions).join('\n\n')
     : ''
 
-  const fullInstructions = [
+  let fullInstructions = [
     getAgentInstructions(config, skillInstructions),
     options?.taskInstructions ? `\n## Current Task\n${options.taskInstructions}` : '',
   ].filter(Boolean).join('\n')
@@ -129,6 +132,27 @@ export function createAgent(
     role: options?.role,
     complexity: options?.complexity,
   })
+
+  // ─── Adaptive context: compress instructions for small-context models ──
+  const cwdRegistry = new ContextWindowRegistry(config)
+  const ctxWindow = cwdRegistry.getContextWindow(modelRoute.modelId)
+    || cwdRegistry.getContextWindow(modelRoute.model)
+    || 128_000
+  const estimateTokens = (t: string) => Math.ceil(t.split(/\s+/).filter(Boolean).length * 1.3)
+  const instrTokens = estimateTokens(fullInstructions)
+  const toolCount = Object.keys(allTools).length
+  // Rough estimate: each tool schema ≈ 120 tokens average
+  const estimatedToolTokens = toolCount * 120
+
+  const adaptivePlan = planAdaptiveContext({
+    contextWindow: ctxWindow,
+    systemPromptTokens: instrTokens,
+    toolSchemasTokens: estimatedToolTokens,
+    goalTokens: 200,
+    historyTokens: 0,
+    reservedOutputTokens: modelRoute.maxOutputTokens || 2048,
+  })
+  fullInstructions = compressBrainInstructions(fullInstructions, adaptivePlan)
 
   const agentConfig: any = {
     name: 'ultimatrix-agent',
@@ -146,8 +170,15 @@ export function createAgent(
     agentConfig.memory = options.memory
   }
 
-  if (options?.inputProcessors) {
-    agentConfig.inputProcessors = options.inputProcessors
+  // Apply adaptive input processors — TokenLimiterProcessor trims payload to context window
+  const existingProcessors = options?.inputProcessors ?? []
+  if (adaptivePlan.detailLevel !== 'full') {
+    agentConfig.inputProcessors = [
+      ...existingProcessors,
+      new TokenLimiterProcessor({ limit: Math.floor(ctxWindow * 0.7), trimMode: 'best-fit' }),
+    ]
+  } else if (existingProcessors.length > 0) {
+    agentConfig.inputProcessors = existingProcessors
   }
 
   if (options?.outputProcessors) {

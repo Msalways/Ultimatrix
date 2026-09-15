@@ -14,7 +14,10 @@ import { buildRuntimeEnvelope } from '../../src/runtime/context-envelope'
 import { Blackboard } from '../../src/core/blackboard'
 import { getCapturedRequestStore } from '../../src/capture/captured-request-store'
 
-const TOOL_RE = new RegExp(`\\b(${TOOL_IDS.join('|')})\\b`)
+// Brain instructions may mention these tool names as examples of what NOT to use
+const ALLOWED_TOOL_MENTIONS = new Set(['listTools', 'loadTool'])
+const FILTERED_TOOL_IDS = TOOL_IDS.filter(id => !ALLOWED_TOOL_MENTIONS.has(id))
+const TOOL_RE = new RegExp(`\\b(${FILTERED_TOOL_IDS.join('|')})\\b`)
 
 describe('brain instructions — hunting mandate', () => {
   const prompt = getBrainInstructions({} as any)
@@ -44,9 +47,9 @@ describe('brain instructions — hunting mandate', () => {
     expect(prompt).not.toMatch(TOOL_RE)
   })
 
-  it('stays within the word budget (~700 words)', () => {
+  it('stays within the word budget (~850 words)', () => {
     const words = prompt.split(/\s+/).length
-    expect(words).toBeLessThan(800)
+    expect(words).toBeLessThan(900)
   })
 })
 

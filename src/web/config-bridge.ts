@@ -90,12 +90,17 @@ export async function saveWebConfig(updates: Partial<UltimatrixConfig>): Promise
       safeUpdates.credentials = restoreMaskedTestCredentials(updates.credentials, current.credentials)
     }
 
-    // Deep merge config (preserves nested objects). Credentials are a complete
-    // replacement so deleting a provider cannot be undone by the merge.
+    // Deep merge config (preserves nested objects). Credentials AND model
+    // maps are a complete replacement so deleting a provider or model
+    // cannot be undone by the merge re-adding omitted keys.
     const merged = deepMerge(current as unknown as Record<string, unknown>, safeUpdates as unknown as Record<string, unknown>)
     if (safeUpdates.creds) merged.creds = safeUpdates.creds
     if (safeUpdates.providerKeys) merged.providerKeys = safeUpdates.providerKeys
     if (safeUpdates.credentials) merged.credentials = safeUpdates.credentials
+    if (safeUpdates.modelTiers) merged.modelTiers = safeUpdates.modelTiers
+    if (safeUpdates.modelCapabilities) merged.modelCapabilities = safeUpdates.modelCapabilities
+    if (safeUpdates.modelRoles) merged.modelRoles = safeUpdates.modelRoles
+    if (safeUpdates.modelRoleTiers) merged.modelRoleTiers = safeUpdates.modelRoleTiers
 
     // Validate merged config — throws ConfigError on failure
     try {

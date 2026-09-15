@@ -6,6 +6,7 @@ export interface TaskAttributionScope {
   graphRefs: Set<string>
   evidence: Map<string, WorkflowEvidenceRef>
   tokenLimit?: number
+  modelCallLimit?: number
   usage: { inputTokens: number; outputTokens: number; totalTokens: number; modelCalls: number; reportedCalls: number }
   budgetExceeded: boolean
   abort?: (error: Error) => void
@@ -13,9 +14,9 @@ export interface TaskAttributionScope {
 
 const storage = new AsyncLocalStorage<TaskAttributionScope>()
 
-export function createTaskAttribution(taskId: string, tokenLimit?: number, abort?: (error: Error) => void): TaskAttributionScope {
+export function createTaskAttribution(taskId: string, tokenLimit?: number, abort?: (error: Error) => void, modelCallLimit?: number): TaskAttributionScope {
   return {
-    taskId, graphRefs: new Set(), evidence: new Map(), tokenLimit, abort, budgetExceeded: false,
+    taskId, graphRefs: new Set(), evidence: new Map(), tokenLimit, modelCallLimit, abort, budgetExceeded: false,
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, modelCalls: 0, reportedCalls: 0 },
   }
 }
@@ -42,6 +43,18 @@ export function beginModelCall(scope = storage.getStore()): TaskAttributionScope
   return scope
 }
 
+export function admitModelCall(scope = storage.getStore()): Error | undefined {
+  if (!scope) return undefined
+  if (scope.modelCallLimit !== undefined && scope.usage.modelCalls >= scope.modelCallLimit) {
+    scope.budgetExceeded = true
+    const error = new Error(`Task ${scope.taskId} reached model-call limit ${scope.usage.modelCalls}/${scope.modelCallLimit}`)
+    scope.abort?.(error)
+    return error
+  }
+  scope.usage.modelCalls++
+  return undefined
+}
+
 export function reportModelUsage(
   usage: { inputTokens: number; outputTokens: number; totalTokens?: number },
   scope = storage.getStore(),
@@ -61,6 +74,7 @@ export function reportModelUsage(
 }
 
 export function attributeModelCall(usage?: { inputTokens: number; outputTokens: number; totalTokens?: number }): Error | undefined {
-  const scope = beginModelCall()
-  return usage ? reportModelUsage(usage, scope) : undefined
+  const error = admitModelCall()
+  if (error) return error
+  return usage ? reportModelUsage(usage) : undefined
 }

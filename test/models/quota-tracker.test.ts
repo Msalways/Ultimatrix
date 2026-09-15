@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { QuotaTracker, getGlobalQuotaTracker, resetGlobalQuotaTracker } from '../../src/models/quota-tracker'
+import { runInEngagementContext } from '../utils/engagement-context'
 
 describe('QuotaTracker', () => {
   let tracker: QuotaTracker
@@ -64,9 +65,11 @@ describe('QuotaTracker', () => {
   })
 
   it('global tracker is a singleton', () => {
-    const a = getGlobalQuotaTracker()
-    const b = getGlobalQuotaTracker()
-    expect(a).toBe(b)
-    resetGlobalQuotaTracker()
+    runInEngagementContext(() => {
+      const a = getGlobalQuotaTracker()
+      const b = getGlobalQuotaTracker()
+      expect(a).toBe(b)
+      resetGlobalQuotaTracker()
+    })
   })
 })

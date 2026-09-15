@@ -1,8 +1,8 @@
 import { initSkillIndex } from './loader'
 
 const CORE_TOOLS = [
-  'listTools',
-  'loadTool',
+  'listSkills',
+  'loadSkillBody',
   'askUser',
   'manageSkills',
   'loadSkillReference',

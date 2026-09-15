@@ -73,6 +73,7 @@ export function createSpawnWorkerTool(
           : undefined
         const routedTier = (selection?.tier ?? tier) as 'fast' | 'balanced' | 'powerful'
         const routedModelId = modelId ?? selection?.modelId
+        const modelCallLimit = selection?.budget.maxAllowedModelCalls || config.budgetPolicy?.maxModelCallsPerTask
         const taskId = `task-${randomUUID()}`
 
         getGlobalDecisionLedger().recordDecision({
@@ -92,6 +93,7 @@ export function createSpawnWorkerTool(
           requiredCapabilities,
           complexity: taskComplexity,
           tokenLimit: tokenBudget,
+          modelCallLimit,
           timeoutMs,
           modelId: routedModelId,
           provider: selection?.provider,

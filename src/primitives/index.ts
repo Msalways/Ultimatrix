@@ -14,6 +14,7 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
+import { getEngagementServices } from '../runtime/engagement-context'
 import {
   getPrimitive,
   listPrimitives,
@@ -54,6 +55,10 @@ import { secondOrderSqli } from './secondOrderSqli'
 import { ldapXpathInjection } from './ldapXpathInjection'
 import { smuggling } from './smuggling'
 import { businessLogicAbuse } from './businessLogicAbuse'
+import { credentialReuse } from './credential-reuse'
+import { adKerberos } from './adKerberos'
+import { exploitChain } from './exploitChain'
+import { cloudExploit } from './cloudExploit'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings, recordEvidence, writeFinding } from '../tools/control-tools'
 import { httpRequest } from '../tools/http-tools'
@@ -94,6 +99,10 @@ for (const p of [
   ldapXpathInjection,
   smuggling,
   businessLogicAbuse,
+  credentialReuse,
+  adKerberos,
+  exploitChain,
+  cloudExploit,
 ]) {
   registerPrimitive(p)
 }
@@ -232,7 +241,10 @@ export async function runPrimitiveById(
   }
 
   const gate = options?.gate ?? new EvidenceGate()
-  setEvidenceGateForFindings(gate)
+  // Register for cross-tool verification only when an engagement owns the
+  // finding state. Isolated runs (unit tests, commit:false probes) verify
+  // against the explicitly-passed gate via runPrimitive — no global needed.
+  if (getEngagementServices()) setEvidenceGateForFindings(gate)
 
   const result = await runPrimitive(primitive, ctx, httpExecutor, gate)
 

@@ -85,14 +85,14 @@ function createMockAgent(textChunks: string[]) {
   }
 }
 
-describe('Recent Discoveries diff in enriched goal', () => {
+describe('Recent Discoveries — moved to getSessionContext tool', () => {
   beforeEach(() => {
     h.graphStoreMock.endpoints = []
     h.graphStoreMock.findings = []
   })
 
-  it('shows new endpoints discovered since last turn', async () => {
-    // First call — no previous snapshot, should not show discoveries
+  it('does NOT embed Recent Discoveries in enriched goal (now via getSessionContext tool)', async () => {
+    // First call — establish snapshot
     const agent1 = createMockAgent(['Initial scan'])
     await solve(agent1 as any, {
       origin: 'https://example.com',
@@ -106,7 +106,7 @@ describe('Recent Discoveries diff in enriched goal', () => {
       properties: { url: 'https://example.com/api/new', method: 'GET' },
     })
 
-    // Second call — should show the new endpoint
+    // Second call — discoveries are NOT in the enriched goal anymore
     const agent2 = createMockAgent(['Found something new'])
     await solve(agent2 as any, {
       origin: 'https://example.com',
@@ -114,56 +114,20 @@ describe('Recent Discoveries diff in enriched goal', () => {
     })
 
     const secondPrompt = agent2.stream.mock.calls[0][0] as string
-    expect(secondPrompt).toContain('## Recent Discoveries')
-    expect(secondPrompt).toContain('New endpoints: 1')
-  })
-
-  it('shows new findings discovered since last turn', async () => {
-    const agent1 = createMockAgent(['Initial scan'])
-    await solve(agent1 as any, {
-      origin: 'https://example.com',
-      goal: 'Find vulnerabilities',
-    })
-
-    h.graphStoreMock.endpoints.push({
-      id: 'ep1',
-      type: 'Endpoint',
-      properties: { url: 'https://example.com/api/users', method: 'GET' },
-    })
-    h.graphStoreMock.findings.push({
-      id: 'f1',
-      type: 'Finding',
-      properties: { technique: 'SQL Injection', endpoint: '/api/search', severity: 'high' },
-    })
-
-    const agent2 = createMockAgent(['Found SQLi'])
-    await solve(agent2 as any, {
-      origin: 'https://example.com',
-      goal: 'Continue',
-    })
-
-    const secondPrompt = agent2.stream.mock.calls[0][0] as string
-    expect(secondPrompt).toContain('## Recent Discoveries')
-    expect(secondPrompt).toContain('New findings: 1')
-    expect(secondPrompt).toContain('SQL Injection')
-  })
-
-  it('does NOT show Recent Discoveries when nothing changed', async () => {
-    // First call — establish snapshot
-    const agent1 = createMockAgent(['Initial scan'])
-    await solve(agent1 as any, {
-      origin: 'https://example.com',
-      goal: 'Find vulnerabilities',
-    })
-
-    // No changes between turns
-    const agent2 = createMockAgent(['Nothing new'])
-    await solve(agent2 as any, {
-      origin: 'https://example.com',
-      goal: 'Continue',
-    })
-
-    const secondPrompt = agent2.stream.mock.calls[0][0] as string
+    // Discoveries were moved to getSessionContext tool — should not be in the goal
     expect(secondPrompt).not.toContain('## Recent Discoveries')
+    // But the runtime envelope should still be present
+    expect(secondPrompt).toContain('<runtime-index>')
+  })
+
+  it('still includes runtime envelope in enriched goal', async () => {
+    const agent = createMockAgent(['Test'])
+    await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Find vulnerabilities',
+    })
+
+    const prompt = agent.stream.mock.calls[0][0] as string
+    expect(prompt).toContain('<runtime-index>')
   })
 })

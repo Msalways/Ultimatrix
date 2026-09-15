@@ -8,6 +8,8 @@
  *   free-form text; only a conservative heuristic over config values.
  */
 
+import { log } from '../utils/logger'
+
 const SECRET_HINTS = [
   /api[_-]?key/i,
   /secret/i,
@@ -32,7 +34,7 @@ function interpolate(value: string, env: Record<string, string | undefined>): st
 }
 
 function warnOnce(key: string): void {
-  console.warn(`[ultimatrix] config value for "${key}" looks like a plaintext secret — prefer \${ENV_VAR} referencing an environment variable.`)
+  log.warn(`[ultimatrix] config value for "${key}" looks like a plaintext secret — prefer \${ENV_VAR} referencing an environment variable.`)
 }
 
 /**

@@ -1,4 +1,12 @@
-import type { Stagehand } from '@browserbasehq/stagehand'
+/** Structural type — only the Stagehand surface we actually use (no export from @mastra/stagehand). */
+interface StagehandLike {
+  context?: {
+    activePage?(): any
+    pages(): any[]
+    cookies(): Promise<any[]>
+    addCookies(cookies: any[]): Promise<void>
+  }
+}
 
 export interface BrowserState {
   cookies: Array<{ name: string; value: string; domain: string; path: string; httpOnly?: boolean; secure?: boolean; sameSite?: string; expires?: number }>
@@ -6,14 +14,14 @@ export interface BrowserState {
   sessionStorage: Record<string, string>
 }
 
-function getActivePage(stagehand: Stagehand): ReturnType<NonNullable<Stagehand['context']>['activePage']> | null {
+function getActivePage(stagehand: StagehandLike): any | null {
   const ctx = stagehand.context
   if (!ctx) return null
-  return ctx.activePage() || ctx.pages()[0] || null
+  return ctx.activePage?.() || ctx.pages()[0] || null
 }
 
 export async function importStateIntoStagehand(
-  stagehand: Stagehand,
+  stagehand: StagehandLike,
   state: BrowserState
 ): Promise<void> {
   const ctx = stagehand.context
@@ -43,7 +51,7 @@ export async function importStateIntoStagehand(
 }
 
 export async function exportStateFromStagehand(
-  stagehand: Stagehand
+  stagehand: StagehandLike
 ): Promise<BrowserState> {
   const ctx = stagehand.context
   const page = getActivePage(stagehand)
@@ -84,7 +92,7 @@ export async function exportStateFromStagehand(
 }
 
 export async function importStateFromPlaywright(
-  stagehand: Stagehand,
+  stagehand: StagehandLike,
   storageStatePath: string
 ): Promise<void> {
   const { readFile } = await import('node:fs/promises')

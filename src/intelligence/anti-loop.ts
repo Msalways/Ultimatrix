@@ -68,6 +68,25 @@ export class LoopDetector {
     return this.roundsSinceLastFindings >= threshold
   }
 
+  /**
+   * Returns a mandatory strategy-change instruction when stale.
+   * The solver injects this as a system message — the brain MUST follow it.
+   * Returns null when not stale (no intervention needed).
+   */
+  getMandatoryInstruction(threshold: number): string | null {
+    if (!this.isStale(threshold)) return null
+    const paths = this.getAttackPathHistory()
+    const recent = paths.slice(-3).join(', ') || 'none declared'
+    return [
+      `[MANDATORY STRATEGY CHANGE] You have made no progress for ${this.roundsSinceLastFindings} rounds.`,
+      `Recent attack paths: ${recent}`,
+      'STOP the current approach immediately.',
+      'Name at least 3 FUNDAMENTALLY DIFFERENT alternative approaches (different attack types, not different payload values).',
+      'Pursue the simplest alternative first.',
+      'Declare your new path with a [PATH: <type>] tag.',
+    ].join('\n')
+  }
+
   trackFailedTarget(url: string, error: string): string | null {
     const hostname = extractHostname(url)
     if (!hostname) return null

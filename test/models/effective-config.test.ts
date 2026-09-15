@@ -49,6 +49,30 @@ describe('effective config resolver', () => {
     expect(effective.modules.brain.advancedOverride).toBe(true)
   })
 
+  it('treats providerKeys as configured credentials', () => {
+    const effective = resolveEffectiveConfig(config({
+      creds: {},
+      providerKeys: { openai: { apiKey: 'sk-test' } },
+      modelTiers: {
+        fast: { provider: 'openai', model: 'gpt-4o-mini' },
+        balanced: { provider: 'openai', model: 'gpt-4o-mini' },
+        powerful: { provider: 'openai', model: 'gpt-4o' },
+      },
+    }))
+
+    expect(effective.defaultModel.credentialConfigured).toBe(true)
+    expect(effective.errors).not.toContain('credentials missing for default provider: openai')
+  })
+
+  it('treats empty-string api keys as missing credentials', () => {
+    const effective = resolveEffectiveConfig(config({
+      creds: { openai: { apiKey: '' }, groq: { apiKey: 'gsk-test' } },
+    }))
+
+    expect(effective.defaultModel.credentialConfigured).toBe(false)
+    expect(effective.errors).toContain('credentials missing for default provider: openai')
+  })
+
   it('warns on unknown capabilities and untrusted mcp', () => {
     const effective = resolveEffectiveConfig(config({
       modelCapabilities: {},

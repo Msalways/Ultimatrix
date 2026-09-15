@@ -56,6 +56,7 @@ import { useSession, extractSessionCookie } from '../tools/session-tools'
 import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
+import { webSearch } from '../tools/web-search'
 import {
   buildResearchMap, planResearchExperiments, compareResearchResponses,
   evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
@@ -66,6 +67,7 @@ import { createExecuteDirectTool } from '../manager/tools/execute-direct'
 import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
+import { getSessionContext } from '../tools/context-tools'
 
 // ─── Types ─────────────────────────────────────────────────────────────
 
@@ -120,6 +122,7 @@ function coreTools(p: string): Record<string, any> {
     writeFinding: s(writeFinding, p),
     recordEvidence: s(recordEvidence, p),
     verifyChains: s(verifyChainsTool, p),
+    getSessionContext: s(getSessionContext, p),
   }
 }
 
@@ -163,6 +166,7 @@ function miscTools(p: string): Record<string, any> {
     getDialogEvidence: s(getDialogEvidence, p),
     getRecentChanges: s(getRecentChanges, p),
     recordOutcome: s(recordOutcomeTool, p),
+    webSearch: s(webSearch, p),
   }
 }
 

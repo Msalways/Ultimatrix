@@ -31,6 +31,7 @@ import type {
   SliceExecContext,
   WriteFindingTool,
 } from './types'
+import { getPheromoneScheduler, emitSlicePheromones } from '../runtime/pheromone-scheduler'
 
 interface BudgetGuard {
   policy: BudgetPolicy
@@ -68,24 +69,42 @@ export async function runCampaign(
   let budgetExceeded = false
   let slicesRun = 0
 
-  // Bounded-concurrency slice runner.
-  let cursor = 0
+  // Pheromone-based scheduler for stigmergic coordination (F5)
+  const scheduler = getPheromoneScheduler(maxConcurrency)
+  scheduler.enqueueSlices(plan.slices)
+
+  // Bounded-concurrency slice runner with pheromone prioritization.
   const worker = async (): Promise<void> => {
-    while (cursor < plan.slices.length) {
-      const slice = plan.slices[cursor++]
+    while (true) {
       if (budget.exceeded) {
         budgetExceeded = true
-        continue
+        return
       }
+
+      const slice = await scheduler.dequeueSlice()
+      if (!slice) {
+        // No more slices to process
+        return
+      }
+
       const outcome = await runSlice(slice, options, graphStore, config, provider, limiter, budget, evidenceGate)
+      
+      // Emit pheromones for this slice's outcome
+      await emitSlicePheromones(slice, outcome)
+
       slicesRun++
       coverage.slicesExecuted++
       if (outcome.confirmed > 0) coverage.slicesConfirmed++
       for (const f of outcome.findings) findings.push(f)
+      
       if (options.onSliceComplete) {
         await options.onSliceComplete(outcome)
       }
+      
       if (budget.exceeded) budgetExceeded = true
+      
+      // Mark slice as complete in scheduler
+      scheduler.completeSlice(slice.id, outcome.confirmed > 0)
     }
   }
 

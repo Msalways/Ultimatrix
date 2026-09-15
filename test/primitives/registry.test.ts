@@ -32,6 +32,10 @@ const EXPECTED_IDS = new Set([
   'ldapXpathInjection',
   'smuggling',
   'businessLogicAbuse',
+  'credential-reuse',
+  'adKerberos',
+  'exploitChain',
+  'cloudExploit',
 ])
 
 describe('primitive registry drift guard', () => {

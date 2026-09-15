@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import os from 'node:os'
 import { wrapModel } from '../../src/models/middleware'
 import { resetAllProviderLimiters } from '../../src/models/limiter-factory'
-import { resetGlobalQuotaTracker } from '../../src/models/quota-tracker'
+import { getGlobalQuotaTracker, resetGlobalQuotaTracker } from '../../src/models/quota-tracker'
 import { getGlobalUsageTracker } from '../../src/usage/tracker'
 import { setForensicLog } from '../../src/tools/report-tools'
 import { ForensicLog } from '../../src/logging/forensic-log'
@@ -152,6 +152,49 @@ describe('wrapModel', () => {
 
     await expect((wrapped as any).doStream({ prompt: 'test' })).rejects.toThrow('429')
     expect(attempts).toBe(1)
+  })
+
+  it('treats cumulative provider quota as terminal and fails later calls fast', async () => {
+    const model = createMockModel()
+    let attempts = 0
+    model.doStream.mockImplementation(async () => {
+      attempts++
+      throw new Error('NVIDIA cumulative quota exhausted (16/16)')
+    })
+
+    const config = makeConfig({ requestsPerMinute: 120, maxConcurrent: 5, retryOnLimit: true, maxRetries: 3 })
+    const wrapped = wrapModel(model as any, config)
+
+    await expect((wrapped as any).doStream({ prompt: 'test', model: 'nvidia/nemotron' }))
+      .rejects.toThrow('exhausted its cumulative request quota')
+    expect(attempts).toBe(1)
+    expect(getGlobalQuotaTracker().getStatus().nvidia.inCooldown).toBe(true)
+
+    await expect((wrapped as any).doStream({ prompt: 'again', model: 'nvidia/nemotron' }))
+      .rejects.toThrow('Provider nvidia is exhausted')
+    expect(attempts).toBe(1)
+  })
+
+  it('admits stream calls by request count even when provider usage is absent', async () => {
+    const model = createMockModel()
+    const config = {
+      ...makeConfig({ requestsPerMinute: 0 }),
+      budgetPolicy: {
+        enforcement: 'hard',
+        scope: 'session',
+        resetOn: 'never',
+        allocation: { brain: 1, workers: 0, spider: 0 },
+        maxModelCallsPerTask: 1,
+        trackTokens: false,
+      },
+    } as UltimatrixConfig
+    const wrapped = wrapModel(model as any, config)
+
+    await expect((wrapped as any).doStream({ prompt: 'one', model: 'nvidia/nemotron' }))
+      .resolves.toMatchObject({ type: 'stream' })
+    await expect((wrapped as any).doStream({ prompt: 'two', model: 'nvidia/nemotron' }))
+      .rejects.toThrow('request budget exhausted')
+    expect(model.doStream).toHaveBeenCalledTimes(1)
   })
 
   it('concurrency control limits parallel calls', async () => {

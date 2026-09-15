@@ -16,6 +16,7 @@ import { z } from 'zod'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync } from 'fs'
 import { join, resolve } from 'path'
 import { getGlobalWorkspace } from '../workspace'
+import { getConfig } from '../config'
 import { validateSkillMarkdown, validateSkillFile } from '../solver/skills/validate'
 import { configureSkillSources, getAllSkills } from '../solver/skills/loader'
 
@@ -40,7 +41,6 @@ function registerAndReload(): void {
   let configured: string[] = []
   let exclude: string[] = []
   try {
-    const { getConfig } = require('../config') as { getConfig: () => { skillsDirs?: string[]; skills?: { exclude?: string[] } } }
     const cfg = getConfig()
     configured = cfg.skillsDirs ?? []
     exclude = cfg.skills?.exclude ?? []

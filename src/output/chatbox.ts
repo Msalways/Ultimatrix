@@ -1,30 +1,15 @@
 /**
- * ChatBox — the session-wide terminal owner for `ultimatrix interact`.
+ * ChatBox — session-wide terminal owner for `ultimatrix interact`.
  *
- * Root-cause fix for the broken interact UX: previously five subsystems
- * (startup, spider, REPL prompt, solver card, council/help) each dumped to
- * stdout independently, so there was no continuous chat transcript and the
- * solver card was dressed as an autonomous security-run report.
+ * Streaming strategy: append-only during streaming. Tool rows and answer
+ * are written once and never erased mid-stream. Reasoning is accumulated
+ * silently (never shown during streaming). On finalization, the entire
+ * live region (tools + answer) is erased and re-rendered in content-forward
+ * order: answer first, then tools, then collapsed reasoning hint.
  *
- * ChatBox is ONE renderer for the whole session. Every subsystem routes
- * through it:
- *   - `printUserMessage`   → `you: <text>` (printed on submit)
- *   - `beginAssistant`/`streamAssistant`/`endAssistant` → `assistant:` turn
- *   - `beginActivity`/`updateActivity`/`endActivity` → spider/progress live line
- *   - `printSystem`        → dim startup/status lines
- *   - `printHelp`/`printReport`/`printCouncil` → typed helpers
- *   - implements `LogSink` → any `log.*` during the session is captured
- *
- * Design rules (no bandaids, no hardcoded vocab):
- *  - Reuses `render-model.ts` (RenderModel / reduceMessage / appendDelta) and
- *    `terminal.ts` (renderMarkdown / countVisualRows / ESC).
- *  - TTY-aware: ANSI only on real terminals; escape-free when piped.
- *  - Chat framing, not solver-report framing: the `done · N steps · M tools`
- *    footer and `------ system events ------` block appear ONLY when the turn
- *    actually did work (steps>0 OR tools>0 OR findings>0). Pure chat turns are
- *    minimal: `assistant: <answer>` (+ reasoning when present).
- *  - `chat` mode can be toggled off → caller falls back to the legacy
- *    `ChatStream` card (see createSolverRenderer). ChatBox itself is mode-agnostic.
+ * Design language: near-black canvas, off-white text, phosphor green accent,
+ * cyan for tool execution, red for findings. Content-forward — the answer
+ * is the hero, not the chrome.
  */
 
 import {
@@ -35,31 +20,20 @@ import {
 import {
   createRenderModel,
   reduceMessage,
+  visibleAssistantText,
   type RenderModel,
 } from './render-model'
 import type {SolverStreamMessage} from '../solver/solver'
 import { setLogSink, type LogSink } from '../utils/logger'
 import type { ActivitySink } from '../ui/types'
-
-const ESC = {
-  dim: '\x1b[2m',
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m',
-  violet: '\x1b[35m',
-  gray: '\x1b[90m',
-}
+import { ESC } from '../ui/theme'
 
 export interface ChatBoxOptions extends TerminalPaintOptions {
-  /** Show model reasoning (live violet + collapsed hint). Default true. */
   showReasoning?: boolean
-  /** Show the dim system-events block below a working turn. Default true. */
   showSystemEvents?: boolean
-  /** Width hint. */
   width?: number
+  pause?: () => void
+  resume?: () => void
 }
 
 export interface SessionBannerMeta {
@@ -71,36 +45,41 @@ export interface SessionBannerMeta {
 
 type ActivityStatus = 'ok' | 'warn' | 'err'
 
-/**
- * Persistent terminal chat renderer. One instance per interactive session.
- */
 export class ChatBox implements ActivitySink {
   private opts: ChatBoxOptions
   private write: (s: string) => void
+  private pause?: () => void
+  private resume?: () => void
   private tty: boolean
-
   private showReasoning: boolean
   private showSystemEvents: boolean
 
-  // Active assistant turn state.
+  // Assistant turn state
   private assistantActive = false
   private model: RenderModel = createRenderModel()
-  private liveAssistantRows = 0
   private paintedReasoningLen = 0
   private paintedAnswerLen = 0
+  private liveAnswerRows = 0
   private reasoningExpanded = false
+  private finalized = false
 
-  // Active activity (spider/progress) state — a single live line.
+  // Tool rows — permanent, tracked by id + actual line count
+  private toolRows = new Map<number, string>()
+  private toolLinesWritten = 0
+
+  // Activity (spider/progress) state — single-line spinner
   private activityActive = false
   private activityRows = 0
 
-  // LogSink buffer (captured log.* lines during the session).
+  // LogSink
   private sinkBuffer: string[] = []
   private sinkInstalled = false
 
   constructor(opts: ChatBoxOptions = {}) {
     this.opts = opts
     this.write = opts.write ?? ((s: string) => process.stdout.write(s))
+    this.pause = opts.pause
+    this.resume = opts.resume
     this.tty = opts.isTTY ?? (typeof process !== 'undefined' ? Boolean(process.stdout?.isTTY) : false)
     this.showReasoning = opts.showReasoning ?? true
     this.showSystemEvents = opts.showSystemEvents ?? true
@@ -116,25 +95,24 @@ export class ChatBox implements ActivitySink {
 
   // ───────────────────────────── Banner ─────────────────────────────
 
-  /** Slim one-line session banner, printed once at startup. */
   printBanner(meta: SessionBannerMeta = {}): void {
     const parts: string[] = []
-    if (meta.version) parts.push(`${meta.version}`)
+    if (meta.version) parts.push(meta.version)
     if (meta.model) parts.push(this.c(ESC.gray) + meta.model + this.c(ESC.reset))
     if (meta.target) parts.push(this.c(ESC.gray) + '· ' + meta.target + this.c(ESC.reset))
     if (meta.engine) parts.push(this.c(ESC.gray) + '· ' + meta.engine + this.c(ESC.reset))
     const line = parts.join('  ')
-    if (line) this.write(this.c(ESC.bold) + line + this.c(ESC.reset) + '\n')
+    if (line) this.write(this.c(ESC.bold) + 'ULTIMATRIX' + this.c(ESC.reset) + '  ' + line + '\n')
+    this.write('\n')
   }
 
   // ───────────────────────────── User message ─────────────────────────────
 
-  /** Print the user's submitted line, immediately, so it pairs with the reply. */
   printUserMessage(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
     const label = trimmed.length > 200 ? trimmed.slice(0, 197) + '…' : trimmed
-    this.write(`${this.c(ESC.green)}you:${this.c(ESC.reset)} ${label}\n`)
+    this.write(this.c(ESC.dim) + '> ' + label + this.c(ESC.reset) + '\n')
   }
 
   // ───────────────────────────── Assistant turn ─────────────────────────────
@@ -143,45 +121,41 @@ export class ChatBox implements ActivitySink {
     if (this.assistantActive) this.endAssistant(this.model)
     this.assistantActive = true
     this.model = createRenderModel()
-    this.liveAssistantRows = 0
     this.paintedReasoningLen = 0
     this.paintedAnswerLen = 0
+    this.liveAnswerRows = 0
     this.reasoningExpanded = false
-    this.write(this.c(ESC.bold) + 'assistant:' + this.c(ESC.reset) + '\n')
+    this.finalized = false
+    this.toolRows.clear()
+    this.toolLinesWritten = 0
   }
 
-  /** Fold one stream message and repaint the live assistant region. */
   streamAssistant(msg: SolverStreamMessage): void {
     if (!this.assistantActive) this.beginAssistant()
     reduceMessage(this.model, msg)
     this.paintAssistantLive()
   }
 
+  /**
+   * Append-only streaming. Each zone is independent:
+   * - Reasoning: accumulated silently in model.reasoning (never written to screen)
+   * - Tools: append new/changed rows, permanent via toolRows Map
+   * - Answer: append markdown delta, tracked by paintedAnswerLen + liveAnswerRows
+   *
+   * On endAssistant(), the entire live region is erased and re-rendered
+   * in content-forward order (answer → tools → collapsed reasoning).
+   */
   private paintAssistantLive(): void {
     const model = this.model
-    // Erase the previous live frame (reasoning tail + answer tail + tool rows).
-    if (this.liveAssistantRows > 0 && this.tty) {
-      this.write(`\x1b[${this.liveAssistantRows}A\x1b[J`)
-      this.liveAssistantRows = 0
-    }
 
-    const width = this.widthOf()
-    const blocks: string[] = []
-
-    // Live reasoning (violet), tail-only so it never re-echoes the full buffer.
-    if (this.showReasoning && model.reasoning.trim()) {
-      const tail = model.reasoning.slice(this.paintedReasoningLen)
+    // ── Reasoning: accumulate silently, don't write to screen ──
+    if (model.reasoning.length > this.paintedReasoningLen) {
       this.paintedReasoningLen = model.reasoning.length
-      if (tail.trim()) {
-        const rendered = renderMarkdown(tail, { ...this.opts, isTTY: this.tty })
-        if (rendered.trim()) {
-          blocks.push(this.c(ESC.violet) + rendered.trimEnd() + this.c(ESC.reset))
-        }
-      }
     }
 
-    // Tool rows (permanent-ish, above the live answer).
+    // ── Tool rows: append-only, tracked by id ──
     for (const t of model.tools) {
+      const prev = this.toolRows.get(t.id)
       const mark = t.state === 'ok' ? `${this.c(ESC.green)}✓${this.c(ESC.reset)}`
         : t.state === 'err' ? `${this.c(ESC.red)}✗${this.c(ESC.reset)}`
         : `${this.c(ESC.yellow)}…${this.c(ESC.reset)}`
@@ -192,96 +166,156 @@ export class ChatBox implements ActivitySink {
         const body = summarizeResult(t.result)
         if (body) line += `  ${this.c(ESC.gray)}${body}${this.c(ESC.reset)}`
       }
-      blocks.push(line)
-    }
-
-    // Live answer (markdown), in-place redraw of the whole answer.
-    if (model.answer.trim()) {
-      const rendered = renderMarkdown(model.answer, { ...this.opts, isTTY: this.tty })
-      const caret = !model.complete ? `${this.c(ESC.dim)}▊${this.c(ESC.reset)}` : ''
-      blocks.push(rendered.trimEnd() + caret)
-    }
-
-    if (blocks.length === 0) return
-    const body = blocks.join('\n') + '\n'
-    const rows = countVisualRows(body, width)
-    this.write(body)
-    this.liveAssistantRows = rows
-  }
-
-  /** Finalize the assistant turn with the correct chrome for chat vs work. */
-  endAssistant(model?: RenderModel): void {
-    if (!this.assistantActive) return
-    if (model) this.model = model
-    const m = this.model
-
-    // Erase live frame.
-    if (this.liveAssistantRows > 0 && this.tty) {
-      this.write(`\x1b[${this.liveAssistantRows}A\x1b[J`)
-    }
-    this.liveAssistantRows = 0
-
-    const didWork = (m.tools.length > 0) || (m.done?.steps ?? 0) > 0 || (m.findings.length > 0)
-
-    const _width = this.widthOf()
-    const blocks: string[] = []
-
-    if (this.showReasoning && m.reasoning.trim()) {
-      const lines = m.reasoning.trim().split('\n').length
-      if (this.reasoningExpanded) {
-        blocks.push(this.c(ESC.violet) + m.reasoning.trim() + this.c(ESC.reset))
-      } else {
-        blocks.push(this.c(ESC.cyan) + `reasoning (${lines} lines) — /r to expand` + this.c(ESC.reset))
+      if (prev === undefined) {
+        this.write(line + '\n')
+        this.toolRows.set(t.id, line)
+        this.toolLinesWritten++
+      } else if (prev !== line) {
+        this.write(line + '\n')
+        this.toolRows.set(t.id, line)
+        this.toolLinesWritten++
       }
     }
 
-    if (m.answer.trim()) {
-      blocks.push(renderMarkdown(m.answer, { ...this.opts, isTTY: this.tty }).trimEnd())
+    // ── Answer: append delta only ──
+    const answer = visibleAssistantText(model.answer)
+    if (answer.trim()) {
+      const tail = answer.slice(this.paintedAnswerLen)
+      if (tail) {
+        this.paintedAnswerLen = answer.length
+        const rendered = renderMarkdown(tail, { ...this.opts, isTTY: this.tty })
+        this.write(rendered)
+        this.liveAnswerRows += countVisualRows(rendered, this.widthOf())
+      }
+    }
+  }
+
+  /**
+   * Finalize the assistant turn. Erases the live region and re-renders
+   * in content-forward order: answer (hero) → tools → collapsed reasoning
+   * → findings → footer → system events.
+   */
+  endAssistant(model?: RenderModel): void {
+    if (!this.assistantActive) return
+    if (model) this.model = model
+    this.finalized = true
+    const m = this.model
+
+    const didWork = (m.tools.length > 0) || (m.done?.steps ?? 0) > 0 || (m.findings.length > 0)
+    const answer = visibleAssistantText(m.answer)
+    const hasAnswer = answer.trim().length > 0
+    const hasReasoning = m.reasoning.trim().length > 0
+
+    // Erase live streaming region (tools + answer) and re-render cleanly.
+    const totalLiveRows = this.toolLinesWritten + this.liveAnswerRows
+    if (totalLiveRows > 0 && this.tty) {
+      this.pause?.()
+      this.write(ESC.up(totalLiveRows) + ESC.clearDown)
+    }
+    this.liveAnswerRows = 0
+    this.toolLinesWritten = 0
+
+    // ── Re-render answer first — content-forward design ──
+    // INVARIANT: reasoning implies answer. An LLM cannot produce reasoning
+    // without answer text in the same forward pass. When the answer is
+    // missing (budget killed mid-generation, filtered tool-intent), we
+    // compose from the reasoning tail — the last 10 lines contain the
+    // brain's conclusion. This makes "(no answer)" structurally impossible
+    // whenever the brain produced any reasoning at all.
+    if (hasAnswer) {
+      const rendered = renderMarkdown(answer, { ...this.opts, isTTY: this.tty })
+      this.write(rendered + '\n')
+    } else if (hasReasoning) {
+      const lines = m.reasoning.trim().split('\n').filter(l => l.trim())
+      const tail = lines.slice(-10).join('\n').trim()
+      if (tail) {
+        const rendered = renderMarkdown(tail, { ...this.opts, isTTY: this.tty })
+        this.write(rendered + '\n')
+      } else {
+        this.write(this.c(ESC.dim) + '(no response)' + this.c(ESC.reset) + '\n')
+      }
+    } else if (!didWork) {
+      this.write(this.c(ESC.dim) + '(no response)' + this.c(ESC.reset) + '\n')
+    } else {
+      const status = m.done?.status ?? (m.complete ? 'done' : 'stopped')
+      const reason = status === 'budget_reached' ? 'budget reached'
+        : status === 'stale' ? 'no new information'
+        : status === 'frontier_exhausted' ? 'frontier exhausted'
+        : status === 'interrupted' ? 'interrupted'
+        : status
+      this.write(this.c(ESC.dim) + `(no answer — ${reason})` + this.c(ESC.reset) + '\n')
     }
 
-    if (!blocks.length && !didWork) {
-      blocks.push(this.c(ESC.yellow) + '[no assistant answer returned]' + this.c(ESC.reset))
+    // ── Re-render tool rows ──
+    for (const line of this.toolRows.values()) {
+      this.write(line + '\n')
     }
 
-    if (blocks.length) this.write(blocks.join('\n') + '\n')
+    // ── Collapsed / expanded reasoning block ──
+    if (this.showReasoning && hasReasoning) {
+      const lines = m.reasoning.trim().split('\n').length
+      if (this.reasoningExpanded) {
+        const body = m.reasoning.trim().split('\n')
+          .map((r) => `${this.c(ESC.dim)}${r || ' '}${this.c(ESC.reset)}`)
+          .join('\n')
+        this.write(body + '\n')
+      } else {
+        this.write(this.c(ESC.dim) + `reasoning (${lines} lines) — /r to expand` + this.c(ESC.reset) + '\n')
+      }
+    }
 
-    // Solver-run artifacts only when the turn actually did work.
+    // ── Findings — severity-colored, inline ──
+    if (m.findings.length > 0) {
+      for (const f of m.findings) {
+        const sevCol = f.severity === 'critical' || f.severity === 'high'
+          ? this.c(ESC.red)
+          : f.severity === 'medium'
+            ? this.c(ESC.yellow)
+            : this.c(ESC.cyan)
+        const glyph = f.severity === 'critical' || f.severity === 'high'
+          ? `${this.c(ESC.red)}✗${this.c(ESC.reset)}`
+          : `${this.c(ESC.green)}✓${this.c(ESC.reset)}`
+        const where = f.endpoint ? `  ${this.c(ESC.dim)}@ ${f.endpoint}${this.c(ESC.reset)}` : ''
+        this.write(`  ${glyph} ${sevCol}${f.severity.toUpperCase()}${this.c(ESC.reset)} ${f.technique}${where}\n`)
+      }
+    }
+
+    // ── Footer — minimal status line (only for working turns) ──
     if (didWork) {
       const steps = m.done?.steps ?? 0
       const tools = m.tools.length
+      const findings = m.findings.length
       const status = m.done?.status ?? (m.complete ? 'done' : 'stopped')
-      this.write(
-        this.c(ESC.dim) +
-        `── ${status} · ${steps} steps · ${tools} tools ──` +
-        this.c(ESC.reset) + '\n'
-      )
+      const duration = m.done?.durationMs ? formatDuration(m.done.durationMs) : ''
+      const parts = [status, `${steps} steps`, `${tools} tools`]
+      if (findings > 0) parts.push(`${findings} finding${findings > 1 ? 's' : ''}`)
+      if (duration) parts.push(duration)
+      this.write(this.c(ESC.dim) + `── ${parts.join(' · ')} ──` + this.c(ESC.reset) + '\n')
     }
 
-    // System-events block (captured log.* lines) only for working turns.
+    // ── System events — only for working turns ──
     if (this.showSystemEvents && didWork && this.sinkBuffer.length) {
       this.flushSinkBlock()
     } else {
-      // Pure chat turn: drop the captured system lines (e.g. "Steps: 0 ...")
-      // so they don't leak into the next turn.
       this.sinkBuffer = []
     }
 
+    this.resume?.()
     this.assistantActive = false
   }
 
   toggleReasoning(): void {
     if (!this.assistantActive) return
     this.reasoningExpanded = !this.reasoningExpanded
-    this.paintAssistantLive()
   }
 
-  // ───────────────────────────── Activity (spider/progress) ─────────────────────────────
+  // ───────────────────────────── Activity ─────────────────────────────
 
   beginActivity(label: string): void {
     if (this.activityActive) this.endActivity('ok')
     this.activityActive = true
     this.activityRows = 0
-    const line = `${this.c(ESC.gray)}⠿ ${label}${this.c(ESC.reset)}`
+    const line = `${this.c(ESC.dim)}├─ ⠿ ${label}${this.c(ESC.reset)}`
     this.write(line + '\n')
     this.activityRows = 1
   }
@@ -289,14 +323,13 @@ export class ChatBox implements ActivitySink {
   updateActivity(text: string): void {
     if (!this.activityActive) return
     if (!this.tty) {
-      // Non-TTY: append plainly (no in-place rewrite), prefixed for clarity.
-      this.write(`${this.c(ESC.gray)}⠿ ${text}${this.c(ESC.reset)}\n`)
+      this.write(`${this.c(ESC.dim)}│  ⠿ ${text}${this.c(ESC.reset)}\n`)
       return
     }
     if (this.activityRows > 0) {
       this.write(`\x1b[${this.activityRows}A\x1b[J`)
     }
-    const line = `${this.c(ESC.gray)}⠿ ${text}${this.c(ESC.reset)}`
+    const line = `${this.c(ESC.dim)}│  ⠿ ${text}${this.c(ESC.reset)}`
     this.write(line + '\n')
     this.activityRows = 1
   }
@@ -307,7 +340,7 @@ export class ChatBox implements ActivitySink {
       : status === 'warn' ? this.c(ESC.yellow) + '?'
       : this.c(ESC.red) + '✗'
     const text = detail
-      ? `${glyph} ${detail}${this.c(ESC.reset)}`
+      ? `${this.c(ESC.dim)}└─${this.c(ESC.reset)} ${glyph} ${detail}${this.c(ESC.reset)}`
       : `${glyph}${this.c(ESC.reset)}`
     if (this.tty && this.activityRows > 0) {
       this.write(`\x1b[${this.activityRows}A\x1b[J`)
@@ -319,11 +352,10 @@ export class ChatBox implements ActivitySink {
 
   // ───────────────────────────── System / misc ─────────────────────────────
 
-  /** Dim startup/status line. */
   printSystem(text: string, level: 'info' | 'warn' | 'error' | 'success' | 'dim' = 'info'): void {
     const tag = level === 'warn' ? this.c(ESC.yellow) + '? '
       : level === 'error' ? this.c(ESC.red) + '? '
-      : level === 'success' ? this.c(ESC.green) + '? '
+      : level === 'success' ? this.c(ESC.green) + '✔ '
       : this.c(ESC.gray)
     this.write(`${tag}${text}${this.c(ESC.reset)}\n`)
   }
@@ -340,15 +372,13 @@ export class ChatBox implements ActivitySink {
     this.write(this.c(ESC.cyan) + text + this.c(ESC.reset) + '\n')
   }
 
-  // ───────────────────────────── LogSink (capture log.*) ─────────────────────────────
+  // ───────────────────────────── LogSink ─────────────────────────────
 
-  /** Install ChatBox as the global log sink for the session. */
   installSink(): void {
     setLogSink(this.asSink())
     this.sinkInstalled = true
   }
 
-  /** Restore the previous logger behavior. */
   uninstallSink(): void {
     setLogSink(null)
     this.sinkInstalled = false
@@ -359,36 +389,25 @@ export class ChatBox implements ActivitySink {
     return (level: string, msg: string) => {
       if (level === 'nl') return
       const tag = level === 'warn' ? '? '
-        : level === 'error' ? '? '
-        : level === 'success' ? '? '
+        : level === 'error' ? '! '
         : ''
       this.sinkBuffer.push(`${this.c(ESC.gray)}[sys] ${tag}${msg}${this.c(ESC.reset)}`)
     }
   }
 
-  /** Write the captured sink buffer as one dim block (no clear). */
   private flushSinkBlock(): void {
     if (!this.sinkBuffer.length) return
-    this.write(this.c(ESC.dim) + '------ system events ------' + this.c(ESC.reset) + '\n')
+    this.write(this.c(ESC.dim) + '── system events ──' + this.c(ESC.reset) + '\n')
     for (const line of this.sinkBuffer) this.write(line + '\n')
-    this.write(this.c(ESC.dim) + '--------------------------' + this.c(ESC.reset) + '\n')
     this.sinkBuffer = []
   }
 
-  /** Flush any remaining sink buffer as a system block (call at turn end). */
   flush(): void {
     if (this.showSystemEvents && this.sinkBuffer.length) {
-      // Only flush inside a working turn's endAssistant; if called standalone,
-      // emit as a plain block.
       this.flushSinkBlock()
     }
   }
 
-  /**
-   * Emit the captured sink buffer as a system-events block NOW and clear it.
-   * Used for non-assistant turns (e.g. /council) where log.* output would
-   * otherwise leak into the next assistant turn.
-   */
   flushSystem(): void {
     if (this.showSystemEvents && this.sinkBuffer.length) {
       this.flushSinkBlock()
@@ -398,29 +417,169 @@ export class ChatBox implements ActivitySink {
   }
 }
 
-// ───────────────────────────── Local helpers (shape-only) ─────────────────────────────
+// ───────────────────────────── Helpers ─────────────────────────────
 
+/**
+ * Shape-based tool arg summary. Reads structural fields by key.
+ * Never shows raw JSON — returns empty string for unknown shapes.
+ */
 function summarizeArgs(args?: Record<string, unknown>): string {
   if (!args || typeof args !== 'object') return ''
   const parts: string[] = []
   const push = (s: string) => { if (s) parts.push(s) }
+
+  // HTTP-style: METHOD URL
   if (typeof args.method === 'string') push(args.method.toUpperCase())
-  if (typeof args.url === 'string') push(String(args.url))
-  else if (typeof args.endpoint === 'string') push(String(args.endpoint))
-  else if (typeof args.query === 'string') push(String(args.query))
+  if (typeof args.url === 'string') {
+    try {
+      const u = new URL(String(args.url))
+      push(u.pathname + (u.search || ''))
+    } catch {
+      push(String(args.url))
+    }
+  } else if (typeof args.endpoint === 'string') {
+    push(String(args.endpoint))
+  } else if (typeof args.query === 'string') {
+    push(String(args.query))
+  }
+
+  // Skill/technique context
   if (typeof args.severity === 'string') push(`sev:${args.severity}`)
   if (typeof args.technique === 'string') push(String(args.technique))
-  let out = parts.join(' ')
-  if (!out && typeof args === 'object') {
-    const json = JSON.stringify(args)
-    out = json.length > 60 ? json.slice(0, 60) + '…' : json
+
+  // Named targets
+  if (!parts.length && typeof args.target === 'string') push(String(args.target))
+  if (!parts.length && typeof args.prompt === 'string') {
+    const p = String(args.prompt)
+    push(p.length > 40 ? p.slice(0, 37) + '…' : p)
   }
+  if (!parts.length && typeof args.skillId === 'string') push(String(args.skillId))
+  if (!parts.length && typeof args.id === 'string') push(String(args.id))
+  if (!parts.length && typeof args.prefix === 'string') push(String(args.prefix))
+
+  const out = parts.join(' ')
   return out.slice(0, 80)
 }
 
+/**
+ * Shape-based tool result summary. Parses JSON structure to extract
+ * human-readable meaning. Never shows raw JSON — returns empty string
+ * when no meaningful summary can be extracted.
+ */
 function summarizeResult(result?: string): string {
   if (!result) return ''
-  let preview = result.replace(/\s+/g, ' ').trim()
-  if (preview.length > 80) preview = preview.slice(0, 80) + '…'
-  return preview
+
+  let parsed: Record<string, unknown> | undefined
+  try {
+    parsed = JSON.parse(result) as Record<string, unknown>
+  } catch {
+    // Not JSON — plain text, show truncated
+    const preview = result.replace(/\s+/g, ' ').trim()
+    return preview.length > 80 ? preview.slice(0, 77) + '…' : preview
+  }
+
+  if (!parsed || typeof parsed !== 'object') return ''
+
+  // Extract from Mastra content format: { content: [{ type: "text", text: "..." }] }
+  let inner: Record<string, unknown> | undefined
+  if (parsed.content) {
+    const content = Array.isArray(parsed.content) ? parsed.content[0] : parsed.content
+    if (content?.text && typeof content.text === 'string') {
+      try { inner = JSON.parse(content.text) as Record<string, unknown> } catch { inner = undefined }
+    }
+  }
+  if (!inner && typeof parsed.text === 'string') {
+    try { inner = JSON.parse(parsed.text) as Record<string, unknown> } catch { inner = undefined }
+  }
+  if (!inner && typeof parsed.result === 'string') {
+    try { inner = JSON.parse(parsed.result) as Record<string, unknown> } catch { inner = undefined }
+  }
+
+  const obj = inner ?? parsed
+
+  // ── ok/error patterns ──
+  if (obj.ok === false || obj.success === false) {
+    const err = typeof obj.error === 'string' ? obj.error : typeof obj.message === 'string' ? obj.message : ''
+    if (err) return err.length > 80 ? err.slice(0, 77) + '…' : err
+    return 'failed'
+  }
+
+  // ── Browser tools (success: boolean) ──
+  if (obj.success === true) {
+    if (typeof obj.title === 'string' && typeof obj.url === 'string') return `loaded "${obj.title}"`
+    if (typeof obj.url === 'string') return `navigated`
+    if (typeof obj.action === 'string') return obj.action
+    if (typeof obj.ariaSnapshot === 'string') return 'observed page'
+    if (typeof obj.base64 === 'string') return 'screenshot captured'
+    if (Array.isArray(obj.tabs)) return `${obj.tabs.length} tab${obj.tabs.length !== 1 ? 's' : ''}`
+    if (typeof obj.remainingTabs === 'number') return `${obj.remainingTabs} tab${obj.remainingTabs !== 1 ? 's' : ''}`
+    if (typeof obj.url === 'string') return obj.url
+    return 'ok'
+  }
+
+  // ── ok: true with message ──
+  if (obj.ok === true && typeof obj.message === 'string') {
+    return obj.message.length > 80 ? obj.message.slice(0, 77) + '…' : obj.message
+  }
+
+  // ── Tool list: { tools: { builtin: [...] } } ──
+  if (obj.tools && typeof obj.tools === 'object') {
+    const tools = obj.tools as Record<string, unknown>
+    let count = 0
+    for (const v of Object.values(tools)) {
+      if (Array.isArray(v)) count += v.length
+    }
+    if (count > 0) return `${count} tool${count !== 1 ? 's' : ''}`
+  }
+
+  // ── HTTP response: { ok: true, value: { status, url, body, ... } } ──
+  const value = obj.value as Record<string, unknown> | undefined
+  if (value && typeof value === 'object') {
+    if (typeof value.status === 'number') {
+      const size = typeof value.body === 'string' ? value.body.length : 0
+      const ct = typeof value.headers === 'object' && value.headers
+        ? String((value.headers as Record<string, string>)['content-type'] ?? '').split(';')[0]
+        : ''
+      const parts = [`${value.status}`]
+      if (size > 0) parts.push(size > 1024 ? `${Math.round(size / 1024)}KB` : `${size}B`)
+      if (ct) parts.push(ct)
+      return parts.join(' · ')
+    }
+
+    // Array values: count items
+    for (const [k, v] of Object.entries(value)) {
+      if (Array.isArray(v)) {
+        return `${v.length} ${k.replace(/s$/, '')}${v.length !== 1 ? 's' : ''}`
+      }
+    }
+
+    // String message in value
+    if (typeof value.message === 'string') {
+      return value.message.length > 80 ? value.message.slice(0, 77) + '…' : value.message
+    }
+  }
+
+  // ── Top-level arrays ──
+  for (const [k, v] of Object.entries(obj)) {
+    if (Array.isArray(v) && k !== 'content') {
+      return `${v.length} ${k.replace(/s$/, '')}${v.length !== 1 ? 's' : ''}`
+    }
+  }
+
+  // ── Top-level counts ──
+  if (typeof obj.count === 'number') return `${obj.count}`
+  if (typeof obj.total === 'number') return `${obj.total}`
+  if (typeof obj.introspectionEnabled === 'boolean') {
+    return obj.introspectionEnabled ? 'introspection enabled' : 'introspection disabled'
+  }
+
+  // Never return raw JSON
+  return ''
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
 }

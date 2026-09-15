@@ -228,6 +228,32 @@ export function createSolverRenderer(
     return render
   }
 
+  // ─── ChatBox renderer (default for TTY interact) ──
+  // Uses the restyled ChatBox for a clean, content-forward hacker aesthetic.
+  // Falls through to the legacy ChatStream for non-TTY.
+  const tty = !opts.plain && !opts.chatbox && Boolean(process.stdout?.isTTY)
+  if (tty) {
+    const cb = new ChatBox({
+      isTTY: true,
+      showReasoning: opts.interaction?.showReasoning !== false,
+      showSystemEvents: opts.interaction?.showSystemEvents ?? true,
+      width: process.stdout?.columns,
+    })
+    cb.installSink()
+    cb.printUserMessage(ctx.prompt ?? ctx.goal ?? '')
+    cb.beginAssistant()
+    const render = (msg: SolverStreamMessage): void => {
+      reduceMessage(model, msg)
+      cb.streamAssistant(msg)
+    }
+    render.final = (): void => { cb.endAssistant() }
+    render.flush = (): void => { cb.uninstallSink() }
+    render.toggleReasoning = (): void => { cb.toggleReasoning() }
+    render.exit = (): void => { cb.uninstallSink() }
+    return render
+  }
+
+  // ─── Legacy ChatStream fallback (non-TTY or --chatbox) ──
   const stream = new ChatStream({ showReasoning })
   stream.begin(ctx.prompt, ctx.goal)
 
@@ -243,10 +269,10 @@ export function createSolverRenderer(
   }
   setLogSink(sink)
 
-  const render = (msg: SolverStreamMessage): void => {
-    reduceMessage(model, msg)
-    stream.push(model)
-  }
+    const render = (msg: SolverStreamMessage): void => {
+      reduceMessage(model, msg)
+      stream.push(model)
+    }
   render.final = (): void => {
     stream.final(model)
   }
@@ -273,7 +299,7 @@ function tagFor(level: string): string {
   switch (level) {
     case 'warn': return chalk.yellow('? ')
     case 'error': return chalk.red('? ')
-    case 'success': return chalk.green('? ')
+    case 'success': return chalk.green('✔ ')
     case 'dim': return ''
     default: return ''
   }

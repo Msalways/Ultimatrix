@@ -109,6 +109,21 @@ export class Logger {
     this.nl()
   }
 
+  /** Box-drawn block with title and lines. Used for summaries, findings, status. */
+  box(title: string, lines: string[]): void {
+    const maxLen = Math.max(title.length + 4, ...lines.map(l => l.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length))
+    const w = maxLen + 4
+    const b = { tl: '┌', tr: '┐', bl: '└', br: '┘', h: '─', v: '│' }
+    const d = chalk.dim
+    this.raw(`  ${d}${b.tl}${b.h} ${chalk.bold(title)} ${b.h.repeat(Math.max(0, w - title.length - 3))}${b.tr}`)
+    for (const line of lines) {
+      const visLen = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length
+      const pad = Math.max(0, maxLen - visLen)
+      this.raw(`  ${d}${b.v}${chalk.reset('')}  ${line}${' '.repeat(pad)}  ${d}${b.v}`)
+    }
+    this.raw(`  ${d}${b.bl}${b.h.repeat(w - 1)}${b.br}${chalk.reset('')}`)
+  }
+
   markdown(html: string): void {
     this.raw(html)
   }

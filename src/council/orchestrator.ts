@@ -237,6 +237,11 @@ export async function debateOnce(params: DebateOnceParams): Promise<DebateCycleR
     : 1
   const llmMembers = members.filter(m => m.role !== 'human')
 
+  // Sync fresh facts from the solver's blackboard before debating
+  if ('syncFromInner' in blackboard && typeof blackboard.syncFromInner === 'function') {
+    blackboard.syncFromInner()
+  }
+
   // ── Phase 1: All members speak in parallel ──────────────────────────────
   onPhase?.('debate', round)
   const transcript = bus.transcript(20)

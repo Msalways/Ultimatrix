@@ -116,13 +116,14 @@ export async function fakeTaskRuntime(pool: ReturnType<typeof fakeWorkerPool>) {
 }
 
 /** Fake ModelSelector — returns a deterministic routing decision (no live model). */
-export function fakeModelSelector(decision: { tier?: string; modelId?: string; provider?: string; reasoning?: string } = {}) {
+export function fakeModelSelector(decision: { tier?: string; modelId?: string; provider?: string; reasoning?: string; budget?: { maxAllowedModelCalls?: number } } = {}) {
   return {
     selectForTask: (_task: WorkerTask, _role: 'brain' | 'worker' | 'spider') => ({
       tier: decision.tier ?? 'powerful',
       modelId: decision.modelId ?? 'groq/llama-3.3-70b-versatile',
       provider: decision.provider ?? 'groq',
       reasoning: decision.reasoning ?? 'eval: deterministic routing',
+      budget: { maxAllowedModelCalls: decision.budget?.maxAllowedModelCalls ?? 50 },
     }),
   } as unknown as ModelSelector
 }

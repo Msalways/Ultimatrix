@@ -143,7 +143,7 @@ describe('TaskCoordinator lifecycle proof', () => {
     })
     const persisted = (await WorkflowStore.loadOrCreate(path, { target: 'https://runtime.example' })).state.tasks[0]
 
-    expect(calls).toBe(2)
+    expect(calls).toBe(1)
     expect(result).toMatchObject({
       status: 'budget_exceeded', attempts: 2,
       usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, modelCalls: 2, reportedCalls: 2 },
@@ -162,6 +162,31 @@ describe('TaskCoordinator lifecycle proof', () => {
 
     expect(result).toMatchObject({
       status: 'budget_unverifiable',
+      usage: { totalTokens: 0, modelCalls: 1, reportedCalls: 0 },
+    })
+  })
+
+  it('enforces request-count budget even when provider usage is unavailable', async () => {
+    const { store } = await createStore('model-call-budget')
+    let calls = 0
+    const coordinator = new TaskCoordinator(store, async () => {
+      calls++
+      const budgetError = attributeModelCall()
+      if (budgetError) throw budgetError
+      throw new Error('retryable provider failure')
+    })
+
+    const result = await coordinator.run({
+      taskId: 'request-budgeted',
+      objective: 'bounded requests',
+      modelCallLimit: 1,
+      maxAttempts: 2,
+      retryOn: ['failed'],
+    })
+
+    expect(calls).toBe(2)
+    expect(result).toMatchObject({
+      status: 'budget_exceeded',
       usage: { totalTokens: 0, modelCalls: 1, reportedCalls: 0 },
     })
   })

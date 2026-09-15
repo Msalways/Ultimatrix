@@ -34,16 +34,36 @@ function toCouncilIntent(i: BoardIntent): CouncilIntent {
 }
 
 export class SharedBlackboard extends Blackboard {
+  private innerRef?: Blackboard
+
   /** Create a SharedBlackboard, optionally wrapping an existing Blackboard instance. */
   constructor(inner?: Blackboard) {
     if (inner) {
       super({ origin: (inner as any).origin ?? 'shared', goal: (inner as any).goal ?? '' })
+      this.innerRef = inner
       for (const fact of inner.getFactStrings()) {
         super.addFact(fact, 'shared')
       }
     } else {
       super()
     }
+  }
+
+  /**
+   * Pull new facts from the inner blackboard that are not yet in this instance.
+   * Call before each debate cycle to stay in sync with the solver's state.
+   */
+  syncFromInner(): number {
+    if (!this.innerRef) return 0
+    const existing = new Set(this.getFactStrings())
+    let added = 0
+    for (const fact of this.innerRef.getFactStrings()) {
+      if (!existing.has(fact)) {
+        super.addFact(fact, 'synced')
+        added++
+      }
+    }
+    return added
   }
   /** Add a fact by plain string (council compat). */
   addFactString(fact: string): void {

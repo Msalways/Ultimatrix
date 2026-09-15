@@ -8,7 +8,7 @@ import { createProviderLimiter, getProviderFromModelId } from './limiter-factory
 import { getGlobalQuotaTracker } from './quota-tracker'
 import { ContextWindowRegistry } from './context-window-registry'
 import { withOverflowRecovery } from './overflow-handler'
-import { beginModelCall, getTaskAttribution, reportModelUsage } from '../runtime/task-attribution'
+import { admitModelCall, getTaskAttribution, reportModelUsage } from '../runtime/task-attribution'
 
 function normalizeUsage(value: unknown): { inputTokens: number; outputTokens: number; totalTokens: number } | undefined {
   if (!value || typeof value !== 'object') return undefined
@@ -92,6 +92,8 @@ function sanitizeMessageOrdering(messages: any[]): any[] {
  */
 export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): LanguageModelV2 {
   const rl = config.rateLimit ?? { requestsPerMinute: DEFAULTS.rateLimit.requestsPerMinute, maxConcurrent: DEFAULTS.rateLimit.maxConcurrent, retryOnLimit: DEFAULTS.rateLimit.retryOnLimit, maxRetries: DEFAULTS.rateLimit.maxRetries, backoffStrategy: DEFAULTS.rateLimit.backoffStrategy, backoffSteps: DEFAULTS.rateLimit.backoffSteps, baseBackoffMs: DEFAULTS.rateLimit.baseBackoffMs, maxBackoffMs: DEFAULTS.rateLimit.maxBackoffMs, useHeaders: DEFAULTS.rateLimit.useHeaders }
+  // Hoist outside Proxy handler — re-created once per wrapModel, not per call
+  const registry = new ContextWindowRegistry(config)
 
   return new Proxy(model, {
     get(target, prop, receiver) {
@@ -112,13 +114,19 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
         // Resolve provider from model ID or target modelId
         const modelIdStr = args?.model || args?.modelId || (target as any).modelId || 'unknown'
         const provider = getProviderFromModelId(String(modelIdStr))
+        const quota = getGlobalQuotaTracker()
+        const sessionRequestLimit = config.budgetPolicy?.scope === 'session'
+          ? config.budgetPolicy.maxModelCallsPerTask
+          : undefined
 
         // Overflow recovery: wraps the entire call (including semaphore + rate-limit retry)
         // so that compaction + retry re-enters the full call chain.
-        const registry = new ContextWindowRegistry(config)
 
         return withOverflowRecovery(
           async (compactedArgs) => {
+            const preflightError = quota.checkRequest(provider, sessionRequestLimit)
+            if (preflightError) throw preflightError
+
             // Get per-provider limiter
             const providerLimiter = rl.requestsPerMinute > 0 ? createProviderLimiter(provider, config) : undefined
 
@@ -131,7 +139,17 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
 
               for (let attempt = 0; attempt < attempts; attempt++) {
                 const taskAttribution = getTaskAttribution()
-                beginModelCall(taskAttribution)
+                if (
+                  taskAttribution?.modelCallLimit !== undefined &&
+                  taskAttribution.usage.modelCalls >= taskAttribution.modelCallLimit
+                ) {
+                  const taskBudgetError = admitModelCall(taskAttribution)
+                  if (taskBudgetError) throw taskBudgetError
+                }
+                const quotaError = quota.admitRequest(provider, sessionRequestLimit)
+                if (quotaError) throw quotaError
+                const taskBudgetError = admitModelCall(taskAttribution)
+                if (taskBudgetError) throw taskBudgetError
                 try {
                   const result = await originalMethod.call(target, compactedArgs)
 
@@ -147,9 +165,6 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                   if ((result as any)?.headers && typeof (result as any).headers === 'object') {
                     providerLimiter?.syncFromHeaders((result as any).headers)
                   }
-
-                  // Record request in quota tracker
-                  getGlobalQuotaTracker().recordRequest(provider)
 
                   const usage = prop === 'doGenerate' ? normalizeUsage((result as any)?.usage) : undefined
                   let budgetError: Error | undefined
@@ -230,20 +245,24 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                   }
 
                   // Rate limit or cumulative quota — retry with provider-specific backoff
-                  if ((isRateLimitError(err) || isCumulativeQuotaExhausted(err)) && attempt < attempts - 1) {
+                  if (isCumulativeQuotaExhausted(err)) {
+                    providerLimiter?.recordExhaustion()
+                    quota.recordExhaustion(provider, Number.MAX_SAFE_INTEGER)
+                    throw new Error(
+                      `Provider ${provider} exhausted its cumulative request quota: ${err?.message || String(err)}. ` +
+                      'Switch provider/model or reset provider health before retrying.',
+                      { cause: err },
+                    )
+                  }
+
+                  if (isRateLimitError(err) && attempt < attempts - 1) {
                     const backoffMs = computeBackoff(attempt, rl)
-                    const label = isCumulativeQuotaExhausted(err) ? 'Quota exhausted' : 'Rate limited'
-                    log.warn(`${label} [${provider}], retry ${attempt + 1}/${rl.maxRetries} in ${backoffMs}ms`)
+                    log.warn(`Rate limited [${provider}], retry ${attempt + 1}/${rl.maxRetries} in ${backoffMs}ms`)
                     await new Promise(r => setTimeout(r, backoffMs))
                     continue
                   }
 
                   // Cumulative quota — activate cooldown for provider
-                  if (isCumulativeQuotaExhausted(err)) {
-                    providerLimiter?.recordExhaustion()
-                    getGlobalQuotaTracker().recordExhaustion(provider)
-                  }
-
                   const duration = Math.round(performance.now() - start)
                   getForensicLog()?.log({
                     type: 'tool-error',

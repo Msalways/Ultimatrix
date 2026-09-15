@@ -12,6 +12,8 @@ interface ProviderQuota {
   cooldownUntil: number
 }
 
+const TERMINAL_COOLDOWN_MS = Number.MAX_SAFE_INTEGER
+
 /**
  * Tracks per-provider quota usage and exhaustion state.
  * Provides observability into rate limit health across providers.
@@ -24,12 +26,35 @@ export class QuotaTracker {
     q.used++
   }
 
+  checkRequest(provider: string, limit?: number): Error | undefined {
+    if (this.isExhausted(provider)) {
+      return new Error(`Provider ${provider} is exhausted for this session. Switch provider/model or reset provider health before retrying.`)
+    }
+    const q = this.getOrCreate(provider)
+    if (limit !== undefined && limit > 0) {
+      q.limit = limit
+      if (q.used >= limit) {
+        this.recordExhaustion(provider, TERMINAL_COOLDOWN_MS)
+        return new Error(`Provider ${provider} request budget exhausted (${q.used}/${limit}). Switch provider/model or raise budgetPolicy.maxModelCallsPerTask.`)
+      }
+    }
+    return undefined
+  }
+
+  admitRequest(provider: string, limit?: number): Error | undefined {
+    const error = this.checkRequest(provider, limit)
+    if (error) return error
+    const q = this.getOrCreate(provider)
+    q.used++
+    return undefined
+  }
+
   recordExhaustion(provider: string, cooldownMs = 60_000): void {
     const q = this.getOrCreate(provider)
     q.exhaustionCount++
     q.lastExhaustion = Date.now()
     q.inCooldown = true
-    q.cooldownUntil = Date.now() + cooldownMs
+    q.cooldownUntil = cooldownMs === TERMINAL_COOLDOWN_MS ? TERMINAL_COOLDOWN_MS : Date.now() + cooldownMs
 
     log.warn(`Quota exhausted [${provider}]: exhaustion #${q.exhaustionCount}, cooldown ${cooldownMs}ms`)
 
@@ -113,17 +138,18 @@ export class QuotaTracker {
   }
 }
 
-let _globalQuotaTracker: QuotaTracker | null = null
-
 export function getGlobalQuotaTracker(): QuotaTracker {
   const owned = getEngagementServices()?.quota
   if (owned) return owned
-  if (!_globalQuotaTracker) {
-    _globalQuotaTracker = new QuotaTracker()
-  }
-  return _globalQuotaTracker
+  throw new Error('getGlobalQuotaTracker() called outside engagement context')
 }
 
 export function resetGlobalQuotaTracker(): void {
-  _globalQuotaTracker = null
+  // Only for test cleanup - must be called within engagement context
+  const owned = getEngagementServices()?.quota
+  if (owned) {
+    // Reset by creating a new one
+    const svc = getEngagementServices()
+    if (svc) svc.quota = new QuotaTracker()
+  }
 }

@@ -76,6 +76,9 @@ export class LazySolverServices {
       const session = await this.options.runtime.startBrowser()
       this.options.runtime.services.dialogWatcher.attach(session.browser)
       this.browserValue = session.browser
+      // Bridge to BrowserManagerState so getActivePage()/getActiveBrowser() work
+      this.options.runtime.services.browserManager.browser = session.browser
+      this.options.runtime.services.browserManager.activeBrowser = session.browser
       return session.browser
     })().finally(() => {
       this.browserPromise = undefined

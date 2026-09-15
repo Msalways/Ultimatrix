@@ -32,7 +32,7 @@ export const jwtToolAdapter: ToolAdapter = {
   description:
     'JWT attack toolkit. Runs the local jwt_tool binary against a supplied token to test alg:none forgery, RSA->HMAC key confusion, and weak-secret cracking. Requires jwt-tool installed on PATH.',
   async isAvailable() {
-    return (await isToolAvailable('jwt_tool')) || isToolAvailable('jwttool')
+    return (await isToolAvailable('jwt_tool')) || (await isToolAvailable('jwttool'))
   },
   async run(opts): Promise<ToolResult> {
     const target = opts.target

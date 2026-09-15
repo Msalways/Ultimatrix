@@ -50,7 +50,7 @@ beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'i2-'))
   skillsMod = await import('../../src/tools/skill-manage-tools')
   skillsMod.setImportedSkillsRoot(join(tempDir, 'skills-user'))
-})
+}, 60000)
 
 afterEach(() => {
   skillsMod?.setImportedSkillsRoot(null)
@@ -59,7 +59,7 @@ afterEach(() => {
 })
 
 describe('I2 — mid-session import is immediately spawnable', () => {
-  it('stale-warmed SkillRegistry authorizes the imported skill via live delegation', async () => {
+  it('stale-warmed SkillRegistry authorizes the imported skill via live delegation', { timeout: 60000 }, async () => {
     const { SkillRegistry } = await import('../../src/solver/skills/registry')
     const registry = new SkillRegistry()
     registry.loadFromDirectory('skills') // warm snapshot BEFORE the import

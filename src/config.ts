@@ -723,6 +723,57 @@ export const PROVIDER_INFO: Record<string, ProviderInfo> = {
 }
 
 /**
+ * Known model defaults: context window and max output tokens.
+ * Used by init wizard for smart defaults — when a model name matches,
+ * the user doesn't have to manually enter limits.
+ */
+export const MODEL_DEFAULTS: Record<string, { contextWindow: number; maxOutputTokens: number }> = {
+  // OpenAI
+  'gpt-4o': { contextWindow: 128000, maxOutputTokens: 4096 },
+  'gpt-4o-mini': { contextWindow: 128000, maxOutputTokens: 4096 },
+  'gpt-4-turbo': { contextWindow: 128000, maxOutputTokens: 4096 },
+  'o1': { contextWindow: 200000, maxOutputTokens: 100000 },
+  'o3-mini': { contextWindow: 200000, maxOutputTokens: 100000 },
+  // Anthropic
+  'claude-sonnet-4-20250514': { contextWindow: 200000, maxOutputTokens: 8192 },
+  'claude-3-5-sonnet-20241022': { contextWindow: 200000, maxOutputTokens: 8192 },
+  'claude-3-5-haiku-20241022': { contextWindow: 200000, maxOutputTokens: 8192 },
+  'claude-3-opus-20240229': { contextWindow: 200000, maxOutputTokens: 4096 },
+  // Google
+  'gemini-2.0-flash': { contextWindow: 1048576, maxOutputTokens: 8192 },
+  'gemini-1.5-pro': { contextWindow: 2097152, maxOutputTokens: 8192 },
+  'gemini-1.5-flash': { contextWindow: 1048576, maxOutputTokens: 8192 },
+  // Groq
+  'llama3-8b-8192': { contextWindow: 8192, maxOutputTokens: 2048 },
+  'llama3-70b-8192': { contextWindow: 8192, maxOutputTokens: 2048 },
+  'mixtral-8x7b-32768': { contextWindow: 32768, maxOutputTokens: 4096 },
+  'gemma2-9b-it': { contextWindow: 8192, maxOutputTokens: 2048 },
+  // NVIDIA
+  'nvidia/nemotron-4-340b-instruct': { contextWindow: 4096, maxOutputTokens: 2048 },
+  // DeepSeek
+  'deepseek-chat': { contextWindow: 32768, maxOutputTokens: 4096 },
+  'deepseek-coder': { contextWindow: 32768, maxOutputTokens: 4096 },
+  // Mistral
+  'mistral-large-latest': { contextWindow: 32768, maxOutputTokens: 4096 },
+  'codestral-latest': { contextWindow: 32768, maxOutputTokens: 4096 },
+}
+
+/** Look up model defaults by model name (substring match for flexibility). */
+export function lookupModelDefaults(model: string): { contextWindow: number; maxOutputTokens: number } | null {
+  // Exact match first
+  if (MODEL_DEFAULTS[model]) return MODEL_DEFAULTS[model]
+  // Substring match — find the longest matching key
+  let best: { contextWindow: number; maxOutputTokens: number } | null = null
+  let bestLen = 0
+  for (const [key, val] of Object.entries(MODEL_DEFAULTS)) {
+    if (model.includes(key) || key.includes(model)) {
+      if (key.length > bestLen) { best = val; bestLen = key.length }
+    }
+  }
+  return best
+}
+
+/**
  * Resolve a provider alias to its base provider name.
  * e.g., "groq-free" → "groq", "openai-preview" → "openai"
  * If the name is already a known provider, returns it as-is.
@@ -735,6 +786,20 @@ export function resolveProviderAlias(provider: string): string {
     if (PROVIDER_INFO[base]) return base
   }
   return provider
+}
+
+/**
+ * Seed process.env from config.creds for providers whose env vars are not
+ * already set. This bridges providers.yaml → Mastra gateway resolution,
+ * which reads process.env[envVar] only. Existing env vars are NEVER overwritten.
+ */
+export function seedEnvFromCreds(creds: ProviderCredentials): void {
+  for (const [providerId, info] of Object.entries(PROVIDER_INFO)) {
+    const cred = creds[providerId as keyof ProviderCredentials]
+    if (!cred || !('apiKey' in cred) || !cred.apiKey) continue
+    if (process.env[info.envVar]) continue
+    process.env[info.envVar] = cred.apiKey
+  }
 }
 
 // ─── Config errors ──────────────────────────────────────────────────
@@ -846,6 +911,14 @@ export function validateConfig(
 
   // Required: creds for the primary provider
   const creds = (raw.creds ?? {}) as ProviderCredentials
+  // An entry counts only when it carries a usable secret: ApiKeyCreds-shaped
+  // entries with an empty apiKey (e.g. freshly added in Settings) are missing.
+  const hasUsableKey = (p: string): boolean => {
+    const entry = (creds as Record<string, unknown>)[p] as Record<string, unknown> | undefined
+    if (!entry || typeof entry !== 'object') return false
+    if ('apiKey' in entry) return typeof entry.apiKey === 'string' && entry.apiKey.length > 0
+    return true
+  }
   if (requireCredentials && provider && PROVIDER_INFO[provider]) {
     const providerCreds = creds[provider]
     if (!providerCreds) {
@@ -983,12 +1056,12 @@ export function validateConfig(
       if (tierVal && typeof tierVal === 'string') {
         // Backward compat: "provider/model" string
         const tierProvider = tierVal.includes('/') ? tierVal.split('/')[0] : provider
-        if (tierProvider && !creds[tierProvider]) {
+        if (tierProvider && !hasUsableKey(tierProvider)) {
           errors.push(`creds.${tierProvider} is required for modelTiers.${tier} = "${tierVal}"`)
         }
       } else if (tierVal && typeof tierVal === 'object' && 'provider' in tierVal && 'model' in tierVal) {
         const tierCfg = tierVal as { provider: string; model: string }
-        if (tierCfg.provider && !creds[tierCfg.provider]) {
+        if (tierCfg.provider && !hasUsableKey(tierCfg.provider)) {
           errors.push(`creds.${tierCfg.provider} is required for modelTiers.${tier}`)
         }
       }
@@ -1051,7 +1124,7 @@ export function validateConfig(
     }
     for (const [path, val] of roleEntries) {
       const cfg = parseTierConfigValue(val, provider ?? 'groq')
-      if (cfg?.provider && !creds[cfg.provider]) {
+      if (cfg?.provider && !hasUsableKey(cfg.provider)) {
         errors.push(`creds.${cfg.provider} is required for ${path}`)
       }
     }
@@ -1209,8 +1282,9 @@ export function validateConfig(
 
   const browserRawForValidation = raw.browser as Record<string, unknown> | undefined
   if (browserRawForValidation) {
-    if (browserRawForValidation.provider !== undefined && browserRawForValidation.provider !== 'stagehand') {
-      errors.push('browser.provider must be "stagehand"')
+const provider = browserRawForValidation.provider
+    if (typeof provider === 'string' && provider && !['stagehand', 'camofox'].includes(provider)) {
+      errors.push('browser.provider must be "stagehand" or "camofox"')
     }
     if (browserRawForValidation.sessionScope !== undefined && browserRawForValidation.sessionScope !== 'workflow') {
       errors.push('browser.sessionScope must be "workflow"')
@@ -1500,7 +1574,9 @@ export function loadConfig(options: ConfigValidationOptions = {}): UltimatrixCon
     providerKeys: undefined,
   }
 
-  return validateConfig(merged, options)
+  const config = validateConfig(merged, options)
+  seedEnvFromCreds(config.creds)
+  return config
 }
 
 /** One-time migration from the legacy global credential file. */

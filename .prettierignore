@@ -1,0 +1,9 @@
+dist/
+.next/
+node_modules/
+coverage/
+output/
+*.db
+*.db-shm
+*.db-wal
+graphify-out/

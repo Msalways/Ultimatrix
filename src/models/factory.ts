@@ -51,7 +51,7 @@ function buildModel(
   let model: LanguageModelV2
 
   if (!info) {
-    console.warn(`[resolveModel] Unknown provider "${provider}" - creating client with no base URL. Set creds.${provider} or use a known provider.`)
+    log.warn(`[resolveModel] Unknown provider "${provider}" - creating client with no base URL. Set creds.${provider} or use a known provider.`)
     model = createOpenAICompatible({
       name: provider,
       baseURL: 'https://localhost',
@@ -106,7 +106,9 @@ function buildModel(
 
       default: {
         const apiKeyCreds = creds as import('../config').ApiKeyCreds | undefined
-        const apiKey = apiKeyCreds?.apiKey || ''
+        // Parity with browser/CLI paths: fall back to the provider env var
+        // (e.g. GROQ_API_KEY) so a model works when the key lives in env.
+        const apiKey = apiKeyCreds?.apiKey || process.env[info.envVar] || ''
         const baseUrl = apiKeyCreds?.baseUrl || info.defaultBaseUrl
 
         model = createOpenAICompatible({

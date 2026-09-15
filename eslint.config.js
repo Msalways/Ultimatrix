@@ -13,18 +13,29 @@ export default tseslint.config(
       'src/app/**',
       'src/components/**',
       'src/swarm/**',
-      'src/context/**',
-      'src/core/**',
-      'src/lib/**',
+      'src/ui/**',
+      'src/hooks/**',
+      'src/stores/**',
     ],
   },
   {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
-      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/ban-ts-comment': 'off',
+      '@typescript-eslint/no-floating-promises': 'warn',
+      '@typescript-eslint/consistent-type-imports': ['warn', { prefer: 'type-imports' }],
       'no-empty': 'off',
+      'no-control-regex': 'off',
       'prefer-const': 'error',
+      'eqeqeq': ['warn', 'always'],
+      'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },
 )

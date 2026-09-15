@@ -60,11 +60,9 @@ export function isConsoleInputActive(): boolean {
 
 export function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS, question = ''): Promise<string> {
   if (consoleInputResolver) {
-    // Console mode: readline is absent. The question is shown by the Ink
-    // InputBar (store.pendingInput); the answer arrives via store.resolveInput.
-    // The resolver surfaces `question` to the user. Single stdin owner (Ink).
     return consoleInputResolver(question).catch(() => '')
   }
+  // Delegate to readline for TTY input
   if (!rl) return Promise.resolve('')
   return new Promise<string>((resolve) => {
     let timer: ReturnType<typeof setTimeout> | null = null

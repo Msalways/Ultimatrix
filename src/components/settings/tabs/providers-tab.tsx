@@ -51,7 +51,44 @@ export function ProvidersTab() {
   const removeProvider = (provider: string) => {
     const currentCreds = { ...config.creds }
     delete currentCreds[provider]
-    update({ creds: currentCreds })
+    const patch: Record<string, any> = { creds: currentCreds }
+    // Cascade: drop tier assignments, capability entries, and role overrides
+    // that point at the removed provider so they can't resurrect it.
+    if (config.modelTiers) {
+      const tiers: Record<string, any> = {}
+      for (const [tier, entry] of Object.entries(config.modelTiers)) {
+        if ((entry as any)?.provider !== provider) tiers[tier] = entry
+      }
+      patch.modelTiers = tiers
+    }
+    if (config.modelCapabilities) {
+      const caps: Record<string, any> = {}
+      for (const [id, cap] of Object.entries(config.modelCapabilities)) {
+        if (!id.startsWith(`${provider}/`)) caps[id] = cap
+      }
+      patch.modelCapabilities = caps
+    }
+    if (config.modelRoles) {
+      const roles: Record<string, any> = { ...config.modelRoles }
+      for (const [role, entry] of Object.entries(roles)) {
+        if (role === 'worker' && entry && typeof entry === 'object') {
+          const worker: Record<string, any> = {}
+          for (const [complexity, w] of Object.entries(entry as Record<string, any>)) {
+            if ((w as any)?.provider !== provider) worker[complexity] = w
+          }
+          roles[role] = worker
+        } else if ((entry as any)?.provider === provider) {
+          delete roles[role]
+        }
+      }
+      patch.modelRoles = roles
+    }
+    if (config.provider === provider) {
+      const remaining = Object.keys(currentCreds).filter((k) => (currentCreds as any)[k])
+      patch.provider = remaining[0] ?? ''
+      patch.model = ''
+    }
+    update(patch)
   }
 
   return (

@@ -30,6 +30,7 @@ import { diagnoseTargetTool } from '../orchestration/tools'
 import { createExtensionTools } from '../extensions/tool-tools'
 import { DynamicToolRegistry } from '../extensions/tool-registry'
 import { Logger } from '../utils/logger'
+import { webSearch } from '../tools/web-search'
 
 type ExtensionTools = ReturnType<typeof createExtensionTools>
 
@@ -167,6 +168,8 @@ export type ToolRegistry = {
   // Extension Discovery (Phase 3)
   listTools: ExtensionTools['listTools']
   loadTool: ExtensionTools['loadTool']
+  // Web Search (open-source: DuckDuckGo + Sploitus)
+  webSearch: typeof webSearch
 }
 
 // Centralized tool registry with consistent IDs
@@ -310,6 +313,8 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     // Extension Discovery (Phase 3)
     listTools: extensionTools.listTools,
     loadTool: extensionTools.loadTool,
+    // Web Search (open-source: DuckDuckGo + Sploitus)
+    webSearch,
   }
 
   // Delegate built-ins into the DynamicToolRegistry so MCP/plugin tools resolve
@@ -422,6 +427,7 @@ export const TOOL_IDS = [
   'corsy',
   'subfinder',
   'gitleaks',
+  'webSearch',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]

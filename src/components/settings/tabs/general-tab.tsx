@@ -38,6 +38,16 @@ export function GeneralTab() {
     label: `${p.name} (${p.envVar})`,
   }))
 
+  const providerInfo = providers.find((p) => p.id === config.provider)
+  const credEntry = (config.creds as Record<string, any> | undefined)?.[config.provider] as Record<string, any> | undefined
+  const defaultKeyMissing =
+    Boolean(config.provider) &&
+    !(credEntry && typeof credEntry === 'object'
+      ? 'apiKey' in credEntry
+        ? typeof credEntry.apiKey === 'string' && credEntry.apiKey.length > 0
+        : true
+      : false)
+
   return (
     <div className="space-y-4">
       <ConfigField label="Provider">
@@ -56,6 +66,12 @@ export function GeneralTab() {
           className="w-full px-3 py-1.5 text-sm bg-zinc-800 border border-zinc-700 rounded text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
           placeholder="model-id"
         />
+        {defaultKeyMissing && (
+          <div className="mt-1 text-[11px] text-amber-400">
+            No API key saved for {config.provider}
+            {providerInfo?.envVar ? ` (env: ${providerInfo.envVar})` : ''} — add one in the Providers tab or the model will fail at first use.
+          </div>
+        )}
       </ConfigField>
 
       <ConfigField label="Target" description="Target URL (optional, can be set per-session)">

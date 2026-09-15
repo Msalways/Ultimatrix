@@ -25,6 +25,7 @@ import { recordStructuredEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
 import { wireRenderTrace } from '../capture/render-bridge'
 import { getGlobalObserver } from '../capture/human-observer'
+import { isCamofoxHandle } from './provider'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -35,6 +36,29 @@ const STAGEHAND_TOOL_NAMES = [
   'stagehand_tabs',
   'stagehand_close',
 ]
+
+const CAMOUFOX_TOOL_NAMES = [
+  'stagehand_navigate',
+  'stagehand_act',
+  'stagehand_extract',
+  'stagehand_observe',
+  'stagehand_screenshot',
+  'stagehand_tabs',
+  'stagehand_close',
+]
+
+function getToolNamesForBrowser(browser: any): string[] {
+  // Both providers use stagehand_* tool IDs
+  return STAGEHAND_TOOL_NAMES
+}
+
+function getCloseToolName(browser: any): string {
+  return 'stagehand_close'
+}
+
+function getNavigateToolName(browser: any): string {
+  return isCamofoxHandle(browser) ? 'camofox_navigate' : 'stagehand_navigate'
+}
 
 function buildDialogEvidence(newDialogs: DialogEvent[]): string {
   if (newDialogs.length === 0) return ''
@@ -50,7 +74,7 @@ function buildReactionEvidence(reactionResult: ReactionResult): string {
 }
 
 /**
- * Wrap all Stagehand tools so every tool result includes dialog evidence
+ * Wrap browser tools (Stagehand or Camoufox) so every tool result includes dialog evidence
  * and UI reaction detection.
  *
  * Before execution: snapshot dialog count + capture reaction baseline.
@@ -58,15 +82,19 @@ function buildReactionEvidence(reactionResult: ReactionResult): string {
  */
 export function wrapStagehandTools(browser: any): Record<string, any> {
   // Use the browser's configured toolset so lifecycle-sensitive exclusions
-  // (notably stagehand_close for the shared session) cannot be reintroduced.
+  // (notably close for the shared session) cannot be reintroduced.
   const raw = browser.getTools() as Record<string, any>
   const wrapped: Record<string, any> = {}
   const watcher = getGlobalDialogWatcher()
   const reactionObserver = getGlobalReactionObserver()
 
+  const toolNames = getToolNamesForBrowser(browser)
+  const closeToolName = getCloseToolName(browser)
+  const navigateToolName = getNavigateToolName(browser)
+
   for (const [name, tool] of Object.entries(raw)) {
-    if (name === 'stagehand_close') continue
-    if (!STAGEHAND_TOOL_NAMES.includes(name)) {
+    if (name === closeToolName) continue
+    if (!toolNames.includes(name)) {
       wrapped[name] = tool
       continue
     }
@@ -81,7 +109,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
       ...tool,
       execute: async (input: any, context: any) => {
         // Scope guard for browser navigation (explicit target URL)
-        if (name === 'stagehand_navigate' && input?.url) {
+        if (name === navigateToolName && input?.url) {
           const scopeCheck = isUrlInScope(input.url)
           if (!scopeCheck.allowed) {
             return { success: false, error: `Scope violation: ${scopeCheck.reason}` }
@@ -89,7 +117,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         }
 
         // Scope guard for every other browser action: must stay on a scoped page.
-        if (name !== 'stagehand_navigate') {
+        if (name !== navigateToolName) {
           const page = context?.page
           const pageUrl = page?.url?.()
           if (pageUrl && pageUrl !== 'about:blank' && pageUrl !== '') {
@@ -108,14 +136,14 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         const result = await originalExecute(input, context)
 
          // Auto-record page after navigation
-         if (name === 'stagehand_navigate' && result && result.success) {
+         if (name === navigateToolName && result && result.success) {
            try {
              const page = context?.page
              if (page) {
                const store = getGlobalGraphStore()
                // Wrap in transaction if store supports it
                 if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
-                  store.beginTransaction().then(async () => {
+                  await store.beginTransaction().then(async () => {
                     try {
                       if ('mergePage' in store && typeof store.mergePage === 'function') {
                         store.mergePage(page.url(), {

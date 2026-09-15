@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 15000)
+    const timeout = setTimeout(() => controller.abort(), 30000)
 
     try {
       const res = await fetch(url, {
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     } catch (fetchErr: unknown) {
       clearTimeout(timeout)
       if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
-        return Response.json({ ok: false, error: 'Connection timed out (15s)' })
+        return Response.json({ ok: false, error: 'Connection timed out (30s)' })
       }
       throw fetchErr
     }

@@ -25,7 +25,7 @@ describe('ChatBox — terminal owner for interact', () => {
   it('prints the user message as a chat line', () => {
     const { box, out } = makeBox()
     box.printUserMessage('find the login bypass')
-    expect(join(out)).toContain('you: find the login bypass')
+    expect(join(out)).toContain('> find the login bypass')
   })
 
   it('does not print an empty user message', () => {
@@ -49,7 +49,6 @@ describe('ChatBox — terminal owner for interact', () => {
     box.streamAssistant({ kind: 'answer', text: 'Try `/login` with a null byte.' })
     box.endAssistant()
     const text = join(out)
-    expect(text).toContain('assistant:')
     expect(text).toContain('null byte')
     // No "steps" footer because no work was done.
     expect(text).not.toContain('steps')
@@ -103,7 +102,7 @@ describe('ChatBox — terminal owner for interact', () => {
     log.info('Steps: 3 | Tool calls: 1')
     box.flushSystem()
     const text = join(out)
-    expect(text).toContain('------ system events ------')
+    expect(text).toContain('── system events ──')
     expect(text).toContain('Steps: 3 | Tool calls: 1')
     // Buffer cleared after flush.
     box.flushSystem()
@@ -128,7 +127,7 @@ describe('ChatBox — terminal owner for interact', () => {
     box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [], completed: false, status: 'response_complete', durationMs: 1, steps: 0, toolCalls: 0, newFindings: 0 } })
     box.endAssistant()
     const text = join(out)
-    expect(text).toContain('[no assistant answer returned]')
+    expect(text).toContain('(no response)')
     expect(text).not.toContain('response_complete')
     expect(text).not.toContain('system events')
     expect(text).not.toContain('steps')

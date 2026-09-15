@@ -19,6 +19,7 @@ import type {
   FactNode,
 } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
+import { getSignalFamilyTags } from '../orchestration/technique-planner'
 import type {
   CampaignPlan,
   CampaignSlice,
@@ -37,18 +38,6 @@ const GENERIC_TECHNIQUE_TAGS = ['recon', 'info-disclosure', 'information-disclos
 
 // Techniques that only matter when the endpoint requires authentication.
 const AUTH_TECHNIQUE_TAGS = ['auth', 'authorization', 'session', 'jwt', 'idor', 'privilege', 'bypass']
-
-// Endpoint signal → technique tag families (Phase 9 / T6). Structured routing:
-// a primitive whose derived tags overlap an endpoint's signal family is strongly
-// relevant to THAT endpoint, instead of blanket-relevant to any param'd endpoint.
-const ENDPOINT_SIGNAL_TECHNIQUE_TAGS: Array<{ signal: string; tags: string[] }> = [
-  { signal: 'graphql', tags: ['graphql', 'introspection', 'depth'] },
-  { signal: 'state-changing', tags: ['race', 'concurrency', 'business', 'workflow'] },
-  { signal: 'object-id-param', tags: ['idor', 'bola', 'authz', 'object', 'id', 'privilege', 'escalation'] },
-  { signal: 'url-like-param', tags: ['ssrf', 'oast', 'redirect', 'open', 'cloud'] },
-  { signal: 'custom-header', tags: ['smuggling', 'header', 'injection', 'host'] },
-  { signal: 'serialized-content', tags: ['deserialization', 'type', 'juggling', 'xml'] },
-]
 
 const STANDARD_HEADERS = new Set([
   'accept', 'accept-encoding', 'accept-language', 'authorization', 'cache-control',
@@ -108,9 +97,9 @@ function signalMatchedTags(primitive: PrimitiveRef, signals: Set<string>): strin
   const tags = primitive.tags ?? []
   const matched: string[] = []
   for (const s of signals) {
-    const family = ENDPOINT_SIGNAL_TECHNIQUE_TAGS.find((f) => f.signal === s)
-    if (!family) continue
-    if (family.tags.some((t) => tags.includes(t))) matched.push(s)
+    const familyTags = getSignalFamilyTags(s)
+    if (familyTags.length === 0) continue
+    if (familyTags.some((t) => tags.includes(t))) matched.push(s)
   }
   return matched
 }

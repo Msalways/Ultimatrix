@@ -183,14 +183,15 @@ export function isUrlInScope(url: string, config: ScopeConfig | null = getScopeC
  * single transport-level scope enforcer used by HTTP / browser / traditional
  * tools. Deny-by-default makes it safe even when misconfigured.
  */
-export function enforceScope(url: string, config: ScopeConfig | null = _config): void {
-  const result = isUrlInScope(url, config)
+export function enforceScope(url: string, config: ScopeConfig | null = null): void {
+  const effectiveConfig = config ?? getScopeConfig()
+  const result = isUrlInScope(url, effectiveConfig)
   if (!result.allowed) {
     throw new Error(`Scope violation: ${result.reason}`)
   }
 }
 
-export function assertInScope(url: string, config: ScopeConfig | null = _config): void {
+export function assertInScope(url: string, config: ScopeConfig | null = null): void {
   enforceScope(url, config)
 }
 

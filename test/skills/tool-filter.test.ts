@@ -64,10 +64,10 @@ describe('CORE_TOOLS includes only invariant tools', () => {
     expect(getCoreTools()).not.toContain('getOastUrl')
   })
 
-  it('includes discovery tools listTools and loadTool', () => {
+  it('includes discovery tools listSkills and loadSkillBody', () => {
     const core = getCoreTools()
-    expect(core).toContain('listTools')
-    expect(core).toContain('loadTool')
+    expect(core).toContain('listSkills')
+    expect(core).toContain('loadSkillBody')
   })
 
   it('does not expose execution tools without an active skill', () => {

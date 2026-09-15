@@ -18,7 +18,6 @@ import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
-import { finalizeEngagementMemory } from '../intelligence/cross-engagement'
 import type { FindingNode } from '../graph/schema'
 import { runSpiderRuntime, stableTargetId, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
 import { spiderEventLine } from '../spider/render'
@@ -147,6 +146,9 @@ export class SessionLifecycle {
   private cleanupFns: Array<() => Promise<void>> = []
   private runtime?: EngagementRuntime
   private shuttingDown = false
+  /** AbortController for SIGINT — signals solver and tool calls to stop. */
+  readonly abortController = new AbortController()
+  private sigintHandler?: () => void
 
   get resources(): Readonly<Partial<SessionResources>> {
     return this._resources
@@ -163,16 +165,17 @@ export class SessionLifecycle {
     const consoleMode = Boolean(opts.consoleMode)
     const approvedOrigins = opts.approvedOrigins ?? []
 
-    // Clear any stale limiter state from previous sessions
-    resetAllProviderLimiters()
-
     const config = loadConfig()
     if (targetUrl) config.target = targetUrl
 
     const target = config.target || ''
     if (target) {
       this.runtime = await createEngagementRuntime(config, target)
-      return this.runtime.run(() => this.initConfigured(config, target, consoleMode, approvedOrigins))
+      return this.runtime.run(() => {
+        // Clear any stale limiter state from previous sessions (must be inside engagement context)
+        resetAllProviderLimiters()
+        return this.initConfigured(config, target, consoleMode, approvedOrigins)
+      })
     }
     return this.initConfigured(config, target, consoleMode, approvedOrigins)
   }
@@ -283,20 +286,6 @@ export class SessionLifecycle {
       wf.syncModelUsage(getGlobalUsageTracker().getEntries())
       if (wf.state.status === 'running') wf.setStatus('completed')
       await wf.save()
-    })
-
-    // Finalize cross-engagement memory (anonymized structural features only)
-    // so future sessions on the same target-origin can reuse technique priors.
-    // Runs at cleanup regardless of how the session ended.
-    const targetOrigin = target ? new URL(target).origin : ''
-    this.registerCleanup(async () => {
-      if (!targetOrigin) return
-      try {
-        const store = workspace.getGraphStore()
-        if (store) await finalizeEngagementMemory(store, targetOrigin)
-      } catch (err) {
-        log.dim(`Cross-engagement finalize skipped: ${err instanceof Error ? err.message : String(err)}`)
-      }
     })
 
     this.phase = 'config'
@@ -796,6 +785,76 @@ export class SessionLifecycle {
       throw new Error('Console mode requires readline to be null (Ink must own stdin).')
     }
 
+    // ─── Non-console mode (default for TTY interact) ──
+    if (!consoleMode) {
+      const { ChatBox } = await import('../output/chatbox')
+      const { dashedBorder } = await import('../ui/theme')
+
+      let promptTarget = 'no-target'
+      if (target) {
+        try { promptTarget = new URL(target).hostname } catch { promptTarget = target }
+      }
+
+      // Banner
+      const cb = new ChatBox({
+        isTTY: Boolean(process.stdout?.isTTY),
+        showReasoning: config.interaction?.showReasoning !== false,
+        showSystemEvents: config.interaction?.showSystemEvents === true && process.env.ULTIMATRIX_DEBUG_EVENTS === '1',
+        pause: rl ? () => rl.pause() : undefined,
+        resume: rl ? () => rl.resume() : undefined,
+      })
+      cb.printBanner({
+        version: 'v8',
+        model: config.model,
+        target: target ?? undefined,
+        engine: config.engine,
+      })
+
+      try {
+        if (!target) {
+          log.info('No target set. Tell me a URL to investigate.')
+          log.nl()
+        }
+
+        for (;;) {
+          // Dashed-border prompt (Claude Code signature)
+          process.stdout.write(dashedBorder() + '\n')
+          process.stdout.write(`${promptTarget}> `)
+
+          const line = await new Promise<string | null>((resolve) => {
+            if (!rl) { resolve(null); return }
+            const onLine = (l: string) => {
+              rl.removeListener('close', onClose)
+              resolve(l)
+            }
+            const onClose = () => {
+              rl.removeListener('line', onLine)
+              resolve(null)
+            }
+            rl.once('line', onLine)
+            rl.once('close', onClose)
+          })
+
+          if (line === null) break
+          if (!line.trim()) continue
+
+          try {
+            process.stdout.write('\n')
+            const shouldContinue = await onInput(line)
+            if (shouldContinue === false) break
+          } catch (err) {
+            process.stdout.write('\n')
+            log.error(err instanceof Error ? err.message : String(err))
+          }
+          process.stdout.write('\n')
+        }
+      } finally {
+        await this.cleanup()
+      }
+      return
+    }
+
+    // ─── Console mode (Ink) — legacy path ──
     log.banner(
       'Ultimatrix v8',
       'Model: ' + config.provider + '/' + config.model + (target ? '  |  Target: ' + target : '') + `  |  OAST: ${oastPort ? `:${oastPort}` : 'deferred'}` + (useSolver ? `  |  Engine: ${config.engine}` : '  |  Engine: legacy'),
@@ -818,12 +877,7 @@ export class SessionLifecycle {
           try { promptTarget = new URL(target).hostname } catch { promptTarget = target }
         }
         process.stdout.write(`${promptTarget}> `)
-        // Console mode: Ink owns stdin. The REPL consumes goals from the
-        // `uiGoalEmitter` queue (fed by the Ink InputBar) — NO readline
-        // listener, so there is exactly one owner of stdin. Non-console mode
-        // keeps the legacy readline `getLine` (reversible).
-        // In non-console mode rl is guaranteed non-null (readline was attached).
-        const line = consoleMode ? await getConsoleLine() : await getLine(rl!)
+        const line = await getConsoleLine()
         if (line === null) break
         if (!line.trim()) continue
 
@@ -878,6 +932,12 @@ export class SessionLifecycle {
     if (this.phase === 'done') return
     this.phase = 'done'
 
+    // Remove SIGINT handler to prevent leaks
+    if (this.sigintHandler) {
+      process.off('SIGINT', this.sigintHandler)
+      this.sigintHandler = undefined
+    }
+
     emitSessionComplete(0, 0, 0, 0)
     log.info('Shutting down gracefully...')
 
@@ -902,16 +962,20 @@ export class SessionLifecycle {
   // â”€â”€ SIGINT handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private setupSIGINT(): void {
-    process.on('SIGINT', async () => {
+    // Remove any previous handler to prevent double-registration
+    if (this.sigintHandler) process.off('SIGINT', this.sigintHandler)
+    this.sigintHandler = () => {
       if (this.shuttingDown) {
         log.info('Forced exit.')
         process.exit(1)
       }
       this.shuttingDown = true
+      this.abortController.abort()
       process.stdout.write('\n')
-      await this.cleanup()
-      process.exit(0)
-    })
+      // Run cleanup synchronously-then-exit (Node does not await async SIGINT handlers)
+      void this.cleanup().then(() => process.exit(0))
+    }
+    process.on('SIGINT', this.sigintHandler)
   }
 
   // â”€â”€ Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

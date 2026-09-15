@@ -10,6 +10,14 @@ import { ConfigSection } from '../config-section'
 interface ProviderInfo {
   id: string
   name: string
+  envVar?: string
+}
+
+function providerHasKey(creds: Record<string, any> | undefined, provider: string): boolean {
+  const entry = creds?.[provider] as Record<string, any> | undefined
+  if (!entry || typeof entry !== 'object') return false
+  if ('apiKey' in entry) return typeof entry.apiKey === 'string' && entry.apiKey.length > 0
+  return true
 }
 const TIERS = ['fast', 'balanced', 'powerful'] as const
 const MODULES = ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'] as const
@@ -74,6 +82,18 @@ export function ModelTiersTab() {
     update({ modelTiers: { ...tiers, [tier]: { ...((tiers as any)[tier] || {}), [field]: value } } })
   }
 
+  const clearTier = (tier: string) => {
+    const next = { ...tiers }
+    delete (next as any)[tier]
+    update({ modelTiers: next })
+  }
+
+  const removeCapability = (modelId: string) => {
+    const next = { ...capabilities }
+    delete (next as any)[modelId]
+    update({ modelCapabilities: next })
+  }
+
   const updateModuleTier = (role: string, tier: string) => {
     update({ modelRoleTiers: { ...roleTiers, [role]: tier } })
   }
@@ -88,6 +108,7 @@ export function ModelTiersTab() {
         <div className="space-y-2">
           {modelIds.map((modelId) => {
             const cap = (capabilities as any)[modelId] || {}
+            const stored = (capabilities as any)[modelId] !== undefined
             return (
               <div key={modelId} className="grid grid-cols-12 gap-2 rounded-lg border border-zinc-800 p-2 text-xs">
                 <div className="col-span-4 truncate text-zinc-300" title={modelId}>{modelId}</div>
@@ -105,36 +126,74 @@ export function ModelTiersTab() {
                     min={1}
                   />
                 </div>
-                <div className="col-span-2 text-zinc-500">ctx / out</div>
+                <div className="col-span-1 text-zinc-500">ctx / out</div>
+                <div className="col-span-1 text-right">
+                  {stored && (
+                    <button
+                      type="button"
+                      onClick={() => removeCapability(modelId)}
+                      className="text-red-400 hover:text-red-300"
+                      title={`Remove ${modelId}`}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}
         </div>
       </ConfigSection>
 
-      <ConfigSection title="Tier assignment" description="Pick the model used for fast, balanced, and powerful work.">
+      <ConfigSection title="Tier assignment" description="Pick the model used for fast, balanced, and powerful work. Empty tiers fall back to the default model.">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {TIERS.map((tier) => (
-            <div key={tier} className="space-y-3 rounded-lg border border-zinc-800 p-4">
-              <div className="text-xs font-medium text-zinc-200">{tier}</div>
-              <ConfigField label="Provider">
-                <ConfigSelect
-                  value={(tiers as any)[tier]?.provider || config.provider}
-                  onChange={(v) => updateTier(tier, 'provider', v)}
-                  options={providerOptions}
-                  placeholder="Select provider"
-                />
-              </ConfigField>
-              <ConfigField label="Model">
-                <input
-                  value={(tiers as any)[tier]?.model || config.model}
-                  onChange={(e) => updateTier(tier, 'model', e.target.value)}
-                  className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
-                  placeholder="model-id"
-                />
-              </ConfigField>
-            </div>
-          ))}
+          {TIERS.map((tier) => {
+            const entry = (tiers as any)[tier]
+            const tierProvider = entry?.provider || config.provider
+            const keyMissing = !providerHasKey(config.creds, tierProvider)
+            return (
+              <div key={tier} className="space-y-3 rounded-lg border border-zinc-800 p-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-medium text-zinc-200">{tier}</div>
+                  {entry !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => clearTier(tier)}
+                      className="text-[11px] text-zinc-500 hover:text-red-400"
+                      title={`Clear ${tier} (use default model)`}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {!entry && (
+                  <div className="text-[11px] text-zinc-500">Using default model ({config.provider}/{config.model})</div>
+                )}
+                <ConfigField label="Provider">
+                  <ConfigSelect
+                    value={entry?.provider || ''}
+                    onChange={(v) => updateTier(tier, 'provider', v)}
+                    options={providerOptions}
+                    placeholder={`Default (${config.provider})`}
+                  />
+                </ConfigField>
+                <ConfigField label="Model">
+                  <input
+                    value={entry?.model || ''}
+                    onChange={(e) => updateTier(tier, 'model', e.target.value)}
+                    className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                    placeholder={`Default (${config.model})`}
+                  />
+                </ConfigField>
+                {keyMissing && (
+                  <div className="text-[11px] text-amber-400">
+                    No API key saved for {tierProvider}
+                    {providers[tierProvider]?.envVar ? ` (env: ${providers[tierProvider].envVar})` : ''} — add one in the Providers tab.
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </ConfigSection>
 

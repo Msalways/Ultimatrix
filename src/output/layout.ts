@@ -36,21 +36,7 @@ import {
   resultSummary,
   visibleAssistantText,
 } from './render-model'
-
-const ESC = {
-  up: (n: number) => `\x1b[${n}A`,
-  clearDown: '\x1b[J',
-  clearLine: '\x1b[K',
-  dim: '\x1b[2m',
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m',
-  violet: '\x1b[35m',
-  gray: '\x1b[90m',
-}
+import { ESC } from '../ui/theme'
 
 const SEV_GLYPH: Record<string, string> = {
   critical: '✗',
@@ -301,8 +287,6 @@ export class ChatStream {
     }
     this.write(`${this.c(ESC.dim)}─────── ${footer(model)} ───────${this.c(ESC.reset)}\n`)
     return
-    const status = model.complete ? `${this.c(ESC.dim)}done${this.c(ESC.reset)}` : `${this.c(ESC.green)}stopped${this.c(ESC.reset)}`
-    this.write(`${this.c(ESC.dim)}─────── ${status} · ${model.step} steps · ${model.tools.length} tools ───────${this.c(ESC.reset)}\n`)
   }
 }
 

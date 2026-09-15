@@ -130,8 +130,11 @@ export function isToolIntentText(text: string): boolean {
     const parsed = JSON.parse(trimmed) as unknown
     if (!parsed || typeof parsed !== 'object') return false
     const record = parsed as Record<string, unknown>
-    return (typeof record.tool === 'string' || typeof record.tool_name === 'string') &&
-      (record.arguments === undefined || record.arguments === null || typeof record.arguments === 'object')
+    // Only suppress if it has a tool/tool_name AND arguments — this is a tool request,
+    // not a valid JSON answer. Pure JSON answers without arguments should pass through.
+    const hasTool = typeof record.tool === 'string' || typeof record.tool_name === 'string'
+    const hasArgs = record.arguments !== undefined && record.arguments !== null && typeof record.arguments === 'object'
+    return hasTool && hasArgs
   } catch {
     return false
   }
@@ -190,8 +193,12 @@ export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): Ren
           endpoint: f.endpoint,
         }))
       }
-      // The final answer content supersedes any partial deltas.
-      if (msg.answer.content) model.answer = visibleAssistantText(msg.answer.content)
+      // The done event is the source of truth — always supersede any partial
+      // streaming deltas (which may contain filtered tool-intent JSON).
+      // Synthesis in solver.ts guarantees msg.answer.content is non-empty
+      // whenever reasoning exists; when it IS empty, model.answer is cleared
+      // so the ChatBox invariant (reasoning implies answer) can enforce.
+      model.answer = typeof msg.answer.content === 'string' ? visibleAssistantText(msg.answer.content) : ''
       if (msg.answer.reasoning) model.reasoning = msg.answer.reasoning
       break
   }

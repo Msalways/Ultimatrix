@@ -23,6 +23,16 @@ import type { ProviderAwareLimiter } from '../models/provider-limiter'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { ObservedFacts } from '../intelligence/evidence-ledger'
 
+let _testFallback: EngagementServices | null = null
+
+export function __setTestFallback(services: EngagementServices | null): void {
+  _testFallback = services
+}
+
+export function __getTestFallback(): EngagementServices | null {
+  return _testFallback
+}
+
 export interface BufferedFindingEvidence {
   type: string
   data: string
@@ -70,7 +80,7 @@ export interface EngagementServices {
 const storage = new AsyncLocalStorage<EngagementServices>()
 
 export function getEngagementServices(): EngagementServices | undefined {
-  return storage.getStore()
+  return storage.getStore() ?? _testFallback ?? undefined
 }
 
 export function runWithEngagementServices<T>(services: EngagementServices, run: () => T): T {
