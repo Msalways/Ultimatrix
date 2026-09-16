@@ -260,12 +260,21 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   const discoveryTools = Object.fromEntries(Object.entries(extensionTools).map(([id, tool]) => [id, sanitizeTool(tool, provider)]))
   // Build the adaptive plan BEFORE creating the tool function so it's scope-locked
   const modelRef = resolveModelRef(config, { role: 'brain' })
-  const contextWindow = new ContextWindowRegistry(config).getContextWindow(modelRef.modelId)
-    || new ContextWindowRegistry(config).getContextWindow(modelRef.model)
-    || 128_000
+  const registry = new ContextWindowRegistry(config)
+  const modelContextWindow = registry.getContextWindow(modelRef.modelId)
+    || registry.getContextWindow(modelRef.model)
+  // F22 FIX: No 128k fallback. Unknown models get a conservative default.
+  if (!modelContextWindow && modelRef.modelId) {
+    console.warn(`[context] Unknown model "${modelRef.modelId}" — brain will use conservative token sizing.`)
+  }
+  const contextWindow = modelContextWindow || 32_000
 
   // ─── Adaptive Brain: compress instructions to fit model ──
-  const fullBrainInstructions = getBrainInstructions(config) + loadMethodologySkill(config.target ?? '')
+  // F24 FIX: Removed eager loadMethodologySkill(). Methodology is now served
+  // on-demand by the skill registry when the brain calls loadSkillBody.
+  // This avoids pre-anchoring behavior and consuming context before the model
+  // understands the task.
+  const fullBrainInstructions = getBrainInstructions(config)
   const estimateTokens = (t: string) => Math.ceil(t.split(/\s+/).filter(Boolean).length * 1.3)
   const fullInstructionTokens = estimateTokens(fullBrainInstructions)
 

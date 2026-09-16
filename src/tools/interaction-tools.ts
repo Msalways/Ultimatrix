@@ -15,6 +15,8 @@ const ASK_USER_TIMEOUT_MS = 300_000 // 5 minutes
  * or close (fail-safe: never auto-approve).
  */
 export async function askUserConfirm(question: string, timeoutMs = ASK_USER_TIMEOUT_MS): Promise<boolean> {
+  // F26 FIX: In 'run' mode, auto-approve HITL confirmations.
+  if (interactionMode === 'run') return true
   const answer = consoleInputResolver ? await consoleInputResolver(question) : await waitForInput(timeoutMs)
   if (!answer || answer === '__TIMEOUT__') return false
   return answer.trim().toLowerCase().startsWith('y')
@@ -53,12 +55,32 @@ export function setConsoleInputResolver(fn: ((question: string) => Promise<strin
   consoleInputResolver = fn
 }
 
+/**
+ * F26 FIX: Interaction mode controls HITL behavior.
+ * When mode is 'run', askUser/askUserConfirm auto-approve without waiting.
+ * When mode is 'ask' (or unset), human input is required.
+ */
+let interactionMode: 'ask' | 'run' | undefined
+
+export function setInteractionMode(mode: 'ask' | 'run' | undefined): void {
+  interactionMode = mode
+}
+
+export function getInteractionMode(): 'ask' | 'run' | undefined {
+  return interactionMode
+}
+
 /** True when the console owns input (readline-free path is active). */
 export function isConsoleInputActive(): boolean {
   return consoleInputResolver !== null
 }
 
 export function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS, question = ''): Promise<string> {
+  // F26 FIX: In 'run' mode, auto-approve without waiting for human input.
+  // The LLM proceeds autonomously; HITL prompts resolve immediately.
+  if (interactionMode === 'run') {
+    return Promise.resolve('y')
+  }
   if (consoleInputResolver) {
     return consoleInputResolver(question).catch(() => '')
   }

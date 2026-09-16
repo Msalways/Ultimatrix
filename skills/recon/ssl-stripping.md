@@ -458,3 +458,43 @@ First determine whether an HSTS policy exists and its directives (same checks as
 ## Verification & Impact
 
 CONFIRMED when a captured response shows: HSTS absent/not-preloaded with content served over HTTP on first request, a session cookie missing `Secure`, or active mixed-content scripts/iframes over HTTP. SUSPECTED when a theoretical downgrade window exists but isn't reproduced — record as candidate. Document impact by exposure: credential interception (high when cookies lack `Secure`), session hijack, or mixed-content script injection. Capture the raw HTTP/HTTPS responses and cookie headers via `recordEvidence`.
+
+---
+
+## Cheat Sheet — SSL Stripping Quick Reference
+
+### Test HSTS Status
+
+```bash
+curl -sI https://target.com | grep -i strict-transport-security
+curl -s "https://hstspreload.org/api/v2/status?domain=target.com" | jq .
+```
+
+### Test HTTP Behavior
+
+```bash
+curl -sIL http://target.com | head -20
+# 200 = vulnerable, 302 + HSTS = hardened
+```
+
+### Cookie Audit
+
+```bash
+curl -sk -X POST https://target.com/login -d 'user=test&pass=test' -D - | grep -i set-cookie
+# Check: Secure? HttpOnly? SameSite?
+```
+
+### Mixed Content
+
+```bash
+curl -sk https://target.com/ | grep -oE '(src|href)="http://[^"]+"'
+curl -sk https://target.com/ | grep -oE '(src|href)="//[^"]+"'
+```
+
+### mitmproxy Script
+
+```python
+def response(flow):
+    flow.response.headers.pop("Strict-Transport-Security", None)
+    flow.response.headers.pop("Content-Security-Policy", None)
+```

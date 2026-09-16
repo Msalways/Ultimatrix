@@ -22,7 +22,8 @@ import {
 
 // ── Structured tag extraction ──────────────────────────────────────────────
 
-const PATH_TAG_RE = /\[PATH:\s*([a-z_]+)\]/i
+// F16 FIX: Allow hyphens in PATH tags — brain.md examples use "auth-bypass", "access-control", etc.
+const PATH_TAG_RE = /\[PATH:\s*([a-z_-]+)\]/i
 
 /**
  * Extract the agent's self-declared attack-path tag from LLM output.

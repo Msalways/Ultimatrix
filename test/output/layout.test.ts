@@ -313,3 +313,40 @@ describe('chat: pause/resume hooks are optional no-ops', () => {
     }).not.toThrow()
   })
 })
+
+describe('F39: StreamSegment chronological ordering', () => {
+  it('records segments in arrival order with monotonically increasing seq', () => {
+    const m = feed([
+      { kind: 'reasoning', text: 'thinking 1' },
+      { kind: 'tool', name: 'httpRequest', args: { url: 'https://x' } },
+      { kind: 'reasoning', text: 'thinking 2' },
+      { kind: 'tool-result', name: 'httpRequest', ok: true, result: '200 ok' },
+      { kind: 'answer', text: 'the answer' },
+    ])
+    expect(m.segments).toHaveLength(5)
+    const seqs = m.segments.map(s => s.seq)
+    // Strictly increasing
+    for (let i = 1; i < seqs.length; i++) {
+      expect(seqs[i]).toBeGreaterThan(seqs[i - 1])
+    }
+    // Kinds match original order
+    expect(m.segments.map(s => s.kind)).toEqual([
+      'reasoning', 'tool', 'reasoning', 'tool-result', 'answer',
+    ])
+  })
+
+  it('segments have timestamps', () => {
+    const before = Date.now()
+    const m = feed([{ kind: 'answer', text: 'hello' }])
+    expect(m.segments).toHaveLength(1)
+    expect(m.segments[0].timestamp).toBeGreaterThanOrEqual(before)
+    expect(m.segments[0].timestamp).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('segments payload preserves original message shape', () => {
+    const msg: SolverStreamMessage = { kind: 'event', event: 'model.selected', label: 'brain gpt-4o', status: 'ok' }
+    const m = feed([msg])
+    expect(m.segments[0].payload.kind).toBe('event')
+    expect((m.segments[0].payload as any).event).toBe('model.selected')
+  })
+})

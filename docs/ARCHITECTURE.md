@@ -1,6 +1,6 @@
 # Ultimatrix Architecture — v8.6
 
-> Intelligence-augmented security researcher. Dual engine + Council. 29 technique primitives, 57 skills, 60+ tools, 17 LLM providers.
+> Intelligence-augmented security researcher. Dual engine + Council. 29 technique primitives, 74 skills, 60+ tools, 17 LLM providers.
 
 ---
 
@@ -41,7 +41,7 @@
               ▼                      ▼
      ┌──────────────┐      ┌──────────────────┐
      │  Skills Lib  │      │  ToolPack        │
-     │  57 skills   │      │  60+ tools       │
+     │  74 skills   │      │  60+ tools       │
      │  10 domains  │      │  core + http +   │
      │  YAML meta   │      │  skill + research│
      └──────────────┘      └──────────────────┘
@@ -200,7 +200,7 @@ All primitives flow through `framework.ts` → `EvidenceGate` → `writeFinding`
 
 ## Skills Library (`skills/`)
 
-57 skill files across 10 domains. YAML frontmatter declares metadata, toolRefs, and composition rules.
+74 skill files across 18 domains. YAML frontmatter declares metadata, toolRefs, and composition rules.
 
 | Domain | Skills | Count |
 |--------|--------|-------|
@@ -616,7 +616,7 @@ src/
 └── observability.ts       # Pino telemetry
 
 test/                      # 168 test files across 38 directories
-skills/                    # 57 skill .md files across 10 domains
+skills/                    # 74 skill .md files across 18 domains
 ```
 
 ---

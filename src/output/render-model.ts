@@ -16,6 +16,24 @@ import type {
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 
+/**
+ * F39: Ordered stream segment — preserves chronological interleaving of
+ * reasoning, tools, events, and answer chunks. The RenderModel's flat
+ * channels (reasoning/answer/tools/events) lose ordering when a reasoning
+ * chunk arrives between two tool calls. This array maintains the true
+ * order the LLM emitted.
+ */
+export interface StreamSegment {
+  /** Monotonic sequence number within the stream. */
+  seq: number
+  /** Segment kind — matches SolverStreamMessage.kind. */
+  kind: 'reasoning' | 'answer' | 'tool' | 'tool-result' | 'event' | 'phase' | 'done'
+  /** The raw payload for this segment. */
+  payload: Record<string, unknown>
+  /** Wall-clock timestamp when this segment was received. */
+  timestamp: number
+}
+
 export interface RenderFinding {
   id: string
   severity: Severity
@@ -32,6 +50,8 @@ export interface RenderToolCall {
   args?: Record<string, unknown>
   /** Structured worker output body (compact string form). Undefined until the result arrives. */
   result?: string
+  /** F40 FIX: Stable tool-call identifier for matching start/result events. */
+  toolCallId?: string
 }
 
 export interface RenderRuntimeEvent {
@@ -51,6 +71,8 @@ export interface RenderModel {
   tools: RenderToolCall[]
   /** Runtime activity timeline: model/context/memory/skill/worker/connector events. */
   events: RenderRuntimeEvent[]
+  /** F39: Ordered segments preserving chronological interleaving. */
+  segments: StreamSegment[]
   /** Findings surfaced so far (final answer may re-emit them). */
   findings: RenderFinding[]
   /** Current phase. */
@@ -72,6 +94,7 @@ export interface RenderModel {
 
 let _toolSeq = 0
 let _eventSeq = 0
+let _segmentSeq = 0
 
 export function createRenderModel(): RenderModel {
   return {
@@ -79,6 +102,7 @@ export function createRenderModel(): RenderModel {
     answer: '',
     tools: [],
     events: [],
+    segments: [],
     findings: [],
     phase: null,
     done: null,
@@ -145,6 +169,14 @@ export function visibleAssistantText(text: string): string {
 }
 
 export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): RenderModel {
+  // F39: Record every message as an ordered segment for chronological access.
+  model.segments.push({
+    seq: ++_segmentSeq,
+    kind: msg.kind,
+    payload: msg as unknown as Record<string, unknown>,
+    timestamp: Date.now(),
+  })
+
   switch (msg.kind) {
     case 'reasoning':
       model.reasoning = appendDelta(model.reasoning, msg.text)
@@ -154,10 +186,13 @@ export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): Ren
       break
     case 'tool':
       _toolSeq += 1
-      model.tools.push({ id: _toolSeq, name: msg.name, state: 'start', args: msg.args })
+      model.tools.push({ id: _toolSeq, name: msg.name, state: 'start', args: msg.args, toolCallId: msg.toolCallId })
       break
     case 'tool-result': {
-      const last = [...model.tools].reverse().find(t => t.name === msg.name && t.state === 'start')
+      // F40 FIX: Match by toolCallId first (stable), fall back to name-based matching.
+      const last = msg.toolCallId
+        ? model.tools.find(t => t.toolCallId === msg.toolCallId && t.state === 'start')
+        : [...model.tools].reverse().find(t => t.name === msg.name && t.state === 'start')
       if (last) {
         last.state = msg.ok ? 'ok' : 'err'
         if (typeof msg.result === 'string') last.result = msg.result
@@ -193,12 +228,13 @@ export function reduceMessage(model: RenderModel, msg: SolverStreamMessage): Ren
           endpoint: f.endpoint,
         }))
       }
-      // The done event is the source of truth — always supersede any partial
-      // streaming deltas (which may contain filtered tool-intent JSON).
-      // Synthesis in solver.ts guarantees msg.answer.content is non-empty
-      // whenever reasoning exists; when it IS empty, model.answer is cleared
-      // so the ChatBox invariant (reasoning implies answer) can enforce.
-      model.answer = typeof msg.answer.content === 'string' ? visibleAssistantText(msg.answer.content) : ''
+      // The done event is the source of truth — supersede partial streaming
+      // deltas (which may contain filtered tool-intent JSON) WHEN the done
+      // event carries a non-empty content. When content is undefined/empty,
+      // preserve the accumulated streaming answer (it's the ground truth).
+      if (typeof msg.answer.content === 'string' && msg.answer.content.trim()) {
+        model.answer = visibleAssistantText(msg.answer.content)
+      }
       if (msg.answer.reasoning) model.reasoning = msg.answer.reasoning
       break
   }

@@ -7,7 +7,7 @@
 - **Slice 11 (Memory Split) DONE**: `src/memory/policy.ts` shape-based target-sensitive gate + `evaluateMemoryWrite` routing (project accepts all, global reroutes workflow-scoped, blocks sensitive fail-closed); `src/memory/global-store.ts` gated global prefs; cross-engagement routed through gate. 29 boundary tests.
 - **Dual engine**: Legacy supervisor (v6/v7) + OODA solver engine (v8)
 - **Council engine**: Parallel debate with structured typed outputs (no regex/text parsing)
-- **56 skills** (10 domains), payload-complete (P0 restoration), primitive-wired with drift guards
+- **74 skills** (18 domains), payload-complete (P0 restoration), primitive-wired with drift guards
 - **Skill-driven tool filtering**: Skills declare toolRefs in YAML frontmatter, tools filtered per-agent
 - **Human-in-the-Loop**: Browser visibility, action capture, session storage, flow reproduction
 - **FIX-PLAN v8.2 COMPLETED**: All root-cause fixes implemented and verified
@@ -51,7 +51,7 @@
                     ▼                      ▼
            ┌──────────────┐      ┌──────────────────┐
            │  Skills Lib  │      │  Skill-Tool      │
-            │  (56 skills) │      │  Filter          │
+            │  (74 skills) │      │  Filter          │
            │  YAML meta   │      │  core tools      │
            └──────────────┘      │  always included │
                                  └──────────────────┘
@@ -133,7 +133,7 @@ OODA loop: REASON → EXPLORE → CONCLUDE with intelligence layers observing pa
 | **Registry** | `src/solver/skills/registry.ts` | Graph-aware skill selection by endpoint type, auth, technique history |
 | **Technique Registry** | `src/skills/technique-registry.ts` | Single source of truth for attack techniques, tool mappings, chain rules |
 
-### Skills Library (56 skills, 10 domains)
+### Skills Library (74 skills, 18 domains)
 
 Skills live at `skills/` (project root). YAML frontmatter declares metadata, toolRefs, and composition rules.
 
@@ -142,13 +142,20 @@ Skills live at `skills/` (project root). YAML frontmatter declares metadata, too
 | Injection | exploitation, vuln-discovery, nosql-injection, second-order-sqli, ssti, xxe, command-injection-advanced, email-injection |
 | Web Attacks | web-pentest, web-security-advanced, waf-bypass, blind-ssrf, business-logic, race-conditions-advanced, http-smuggling, deserialization, cors-misconfig, clickjacking, cache-poisoning, open-redirect, prototype-pollution, host-header-injection, css-injection, file-upload-attacks, type-juggling, modern-xss, security-headers-audit |
 | Auth Security | authorization, jwt-advanced, jwt-algorithm-confusion |
-| Recon | recon, osint-recon, information-disclosure, intranet-pentest, post-exploitation, subdomain-takeover, hsts-bypass, ssl-stripping, ctf-misc |
-| Crypto | crypto-toolkit, ctf-crypto |
+| Recon | recon, osint-recon, information-disclosure, intranet-pentest, subdomain-takeover, hsts-bypass, ssl-stripping, ctf-misc |
+| Crypto | crypto-toolkit, ctf-crypto, tls-attacks |
 | API Security | api-security, api-fuzzing, ai-mcp-security, graphql-attacks, graphql-depth-introspection, websocket-attacks |
 | Cloud Security | aws-iam-exploitation, azure-exploitation, gcp-exploitation, docker-escape, kubernetes-security, serverless-attacks |
 | LLM Security | llm-agentic-security |
 | Supply Chain | supply-chain |
 | Reports | reporting |
+| Offensive | edr-evasion, shellcode-exploit-dev |
+| Privesc | linux-privesc, windows-privesc |
+| Post-Exploitation | lateral-movement, persistence, data-exfiltration, anti-forensics, c2-frameworks |
+| Social Engineering | phishing, social-engineering |
+| Network | network-attacks |
+| Mobile | mobile-security |
+| IoT | iot-security |
 
 ### Campaign Engine (`src/campaign/`)
 

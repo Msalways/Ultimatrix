@@ -234,3 +234,50 @@ Work passive-before-active to avoid premature detection. Phase 1: passive — te
 ## Verification & Impact
 
 CONFIRMED when a discovered item is backed by a real captured response — an endpoint that responds, a secret found in a JS bundle, a disclosed config file, or an introspectable GraphQL schema. SUSPECTED when a path is guessed but unverified — record as candidate. Document impact by what the discovery enables (attack surface for later skills, exposed credentials = high). Capture each discovery with `recordEvidence` and summarize the full surface via `writeFinding`/graph updates.
+
+---
+
+## Cheat Sheet — Recon Tools & Commands
+
+### Shodan / Censys
+
+```bash
+# Shodan CLI
+shodan search "org:Target ssl.cert.subject.CN:target.com"
+shodan host 1.2.3.4
+
+# Censys
+censys search "services.tls.certificates.leaf_names: target.com"
+```
+
+### Certificate Transparency
+
+```bash
+# crt.sh
+curl -s "https://crt.sh/?q=%.target.com&output=json" | jq -r '.[].name_value' | sort -u
+
+# CT log monitoring
+certspotter -d target.com
+```
+
+### WAF Fingerprinting
+
+```bash
+# Identify WAF vendor
+wafw00f https://target.com
+
+# Probe WAF rules
+curl -sI "https://target.com/?id=1' AND 1=1--"
+# Look for: 403, custom error pages, WAF headers (cf-ray, x-sucuri, x-akamai)
+```
+
+### Technology Stack
+
+```bash
+# whatweb
+whatweb https://target.com
+
+# wappalyzer (browser extension)
+# HTTP header analysis
+curl -sI https://target.com | grep -i "server\|x-powered-by\|x-aspnet"
+```

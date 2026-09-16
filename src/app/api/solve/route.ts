@@ -6,6 +6,10 @@
  * - C4: Client disconnect detection via req.signal.addEventListener('abort')
  * - A4: Proper error propagation and cleanup
  * - SSE: force-dynamic, X-Accel-Buffering: no for proxy compatibility
+ *
+ * F36: 50ms write batching + desiredSize backpressure check.
+ * F37: Single terminal done event (solver's internal done filtered).
+ * F42: Envelope {runId, seq, timestamp} on every SSE frame.
  */
 
 import { NextRequest } from 'next/server'
@@ -46,14 +50,45 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder()
     let controllerClosed = false
 
+    // F42: SSE frame envelope — every frame carries runId + monotonic seq + timestamp.
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    let seq = 0
+
+    // F36: Write batching — buffer frames for 50ms then flush.
+    // Checks controller.desiredSize for backpressure (don't enqueue faster than
+    // the network can drain).
+    const flushBuffer: string[] = []
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    let flushController: ReadableStreamDefaultController<Uint8Array> | null = null
+
+    const flush = () => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+      if (!flushController || flushBuffer.length === 0) return
+      // Backpressure: skip batched writes when the buffer is full
+      const canWrite = flushController.desiredSize === null || flushController.desiredSize > 0
+      if (!canWrite) return
+      const batch = flushBuffer.splice(0).join('')
+      try {
+        flushController.enqueue(encoder.encode(batch))
+      } catch {
+        controllerClosed = true
+      }
+    }
+
     const stream = new ReadableStream({
       async start(controller) {
+        flushController = controller
+
         const send = (event: string, data: unknown) => {
           if (controllerClosed) return
-          try {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
-          } catch {
-            controllerClosed = true
+          // F42: envelope every frame
+          const frame = `event: ${event}\ndata: ${JSON.stringify({ runId, seq: seq++, ts: Date.now(), payload: data })}\n\n`
+          flushBuffer.push(frame)
+          // If buffer is large, flush immediately (avoid memory buildup)
+          if (flushBuffer.length >= 20) {
+            flush()
+          } else if (!flushTimer) {
+            flushTimer = setTimeout(flush, 50)
           }
         }
 
@@ -80,18 +115,20 @@ export async function POST(req: NextRequest) {
         on('browser:ready', (e) => send('browser:ready', e))
         on('browser:failed', (e) => send('browser:failed', e))
         on('spider:progress', (e) => send('spider:progress', e))
-        // Slice 10 — forward the full typed spider event stream (parity with
-        // the CLI). The UI renders typed fields, not text deltas.
         on('spider:event', (e) => send('spider:event', e))
 
         const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 30_000)
         const cleanup = () => {
           clearInterval(heartbeat)
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
           for (const [event, handler] of listeners) emitter.off(event as any, handler)
+          // Final flush
+          flush()
         }
         const close = () => {
           if (controllerClosed) return
           controllerClosed = true
+          flush()
           try { controller.close() } catch {}
         }
 
@@ -107,7 +144,9 @@ export async function POST(req: NextRequest) {
             goal,
             interactionMode: interactionMode === 'run' ? 'run' : undefined,
             solverConfig,
-            onMessage: (msg) => send('solver', msg),
+            // F37 FIX: Skip forwarding the solver's internal "done" message —
+            // the route sends its own canonical "done" event with the full result.
+            onMessage: (msg) => { if (msg.kind !== 'done') send('solver', msg) },
             onPhase: (event) => send('phase', event),
           })
           send('done', result)

@@ -43,7 +43,7 @@ npx ultimatrix interact -t https://target.com # Terminal REPL
                     ▼                      ▼
            ┌──────────────┐      ┌──────────────────┐
            │  Skills Lib  │      │  Tool Filter     │
-           │  (59 skills) │      │  (60+ tools)     │
+            │  (74 skills) │      │  (60+ tools)     │
            └──────────────┘      └──────────────────┘
 ```
 
@@ -120,7 +120,7 @@ CLI (src/cli/index.ts)
 
 ### Skill System (`skills/`, `src/solver/skills/`)
 
-59 skills across 10 domains. Each skill is a `.md` file with YAML frontmatter:
+74 skills across 18 domains. Each skill is a `.md` file with YAML frontmatter:
 
 ```yaml
 ---

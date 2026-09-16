@@ -19,6 +19,7 @@ import { useChatStore, type StreamMessage, type ToolCallMessage, type ChatMessag
 import { useBudgetStore } from '@/stores/budget-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui-store'
+import { useConfigStore } from '@/stores/config-store'
 import { useResourceStore } from '@/stores/resource-store'
 import { ToolCallCard } from './tool-call-card'
 import { FindingCard } from './finding-card'
@@ -84,6 +85,7 @@ export function ChatStream() {
   const openSidebar = useUIStore((s) => s.openSidebar)
   const setHistoryState = useChatStore((s) => s.setHistoryState)
   const historyState = useChatStore((s) => s.historyState)
+  const showReasoning = useConfigStore((s) => s.config?.interaction?.showReasoning ?? true)
   const [historyReadyTarget, setHistoryReadyTarget] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -180,6 +182,8 @@ export function ChatStream() {
           const msg = parsed
           switch (msg.kind) {
             case 'reasoning':
+              // F30 FIX: When showReasoning is disabled, skip rendering thinking cards entirely.
+              if (!showReasoning) break
               thinkingBuffer = appendDelta(thinkingBuffer, msg.text)
               if (!thinkingBuffer.trim()) break
               if (!liveThinkingId) {
@@ -510,13 +514,22 @@ export function ChatStream() {
           const outcome = deriveRunOutcome({
             ...outcomeInput,
           })
-          removeMessage(streamStatusId)
-          // Remove live streaming preview if present — canonical answer replaces it
-          if (liveAnswerId) {
-            removeMessage(liveAnswerId)
+          // F38 FIX: Transition existing messages instead of remove+recreate.
+          // This preserves React's key-based reconciliation — components don't
+          // unmount/remount, avoiding identity destruction and flicker.
+          updateMessage(streamStatusId, {
+            status: 'done',
+            label: outcome.label,
+          } as any)
+          if (liveAnswerId && finalContent) {
+            // Transition live preview into the canonical answer — same identity,
+            // just updated content. React keeps the DOM node stable.
+            updateMessage(liveAnswerId, {
+              content: finalContent,
+              timestamp: Date.now(),
+            } as any)
             liveAnswerId = null
-          }
-          if (finalContent) {
+          } else if (finalContent) {
             addMessage({
               id: nextId(),
               role: 'assistant',
@@ -552,7 +565,11 @@ export function ChatStream() {
             } as any)
           }
         } else if (event === 'error') {
-          removeMessage(streamStatusId)
+          // F38: Transition status to error instead of remove+recreate.
+          updateMessage(streamStatusId, {
+            status: 'error',
+            label: parsed.message || 'Unknown error',
+          } as any)
           addMessage({
             id: nextId(),
             type: 'error',

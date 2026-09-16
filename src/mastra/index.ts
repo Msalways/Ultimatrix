@@ -122,7 +122,7 @@ export function createAgent(
     : ''
 
   let fullInstructions = [
-    getAgentInstructions(config, skillInstructions),
+    getAgentInstructions(config, skillInstructions, options?.role),
     options?.taskInstructions ? `\n## Current Task\n${options.taskInstructions}` : '',
   ].filter(Boolean).join('\n')
 
@@ -137,7 +137,11 @@ export function createAgent(
   const cwdRegistry = new ContextWindowRegistry(config)
   const ctxWindow = cwdRegistry.getContextWindow(modelRoute.modelId)
     || cwdRegistry.getContextWindow(modelRoute.model)
-    || 128_000
+  // F22 FIX: Unknown models get conservative 32k default, not 128k which causes overflow.
+  if (!ctxWindow) {
+    log.warn(`[context] Unknown model "${modelRoute.modelId}" — using conservative 32k token window.`)
+  }
+  const effectiveCtxWindow = ctxWindow || 32_000
   const estimateTokens = (t: string) => Math.ceil(t.split(/\s+/).filter(Boolean).length * 1.3)
   const instrTokens = estimateTokens(fullInstructions)
   const toolCount = Object.keys(allTools).length
@@ -145,7 +149,7 @@ export function createAgent(
   const estimatedToolTokens = toolCount * 120
 
   const adaptivePlan = planAdaptiveContext({
-    contextWindow: ctxWindow,
+    contextWindow: effectiveCtxWindow,
     systemPromptTokens: instrTokens,
     toolSchemasTokens: estimatedToolTokens,
     goalTokens: 200,
@@ -175,7 +179,7 @@ export function createAgent(
   if (adaptivePlan.detailLevel !== 'full') {
     agentConfig.inputProcessors = [
       ...existingProcessors,
-      new TokenLimiterProcessor({ limit: Math.floor(ctxWindow * 0.7), trimMode: 'best-fit' }),
+      new TokenLimiterProcessor({ limit: Math.floor(effectiveCtxWindow * 0.7), trimMode: 'best-fit' }),
     ]
   } else if (existingProcessors.length > 0) {
     agentConfig.inputProcessors = existingProcessors
@@ -196,7 +200,7 @@ export function createAgent(
   return new Agent(agentConfig)
 }
 
-function getAgentInstructions(config: UltimatrixConfig, skillInstructions: string = ''): string {
+function getAgentInstructions(config: UltimatrixConfig, skillInstructions: string = '', role?: string): string {
   const baseInstructions = `
 You are Ultimatrix, an autonomous security researcher. You test web applications for vulnerabilities by directly executing attacks using your tools. You are NOT a router — you are the attacker.
 
@@ -205,8 +209,7 @@ Core Principles:
 2. Use the skill methodology loaded below to guide your approach
 3. Record every observation in the graph with updateGraph
 4. Write findings with evidence using writeFinding
-5. If you need parallel testing, delegate with spawn-worker or spawn-swarm
-6. Learn from failures — if an approach fails, try the next one from the skill
+5. Learn from failures — if an approach fails, try the next one from the skill
 
 Attack Protocol:
 1. Read the loaded skill methodology below — it tells you HOW to test
@@ -214,7 +217,6 @@ Attack Protocol:
 3. Record what you find (endpoints, responses, errors, patterns)
 4. When you confirm a vulnerability, write a finding with evidence
 5. If you hit a dead end, try a different approach from the skill
-6. If you need to test many endpoints in parallel, spawn workers
 
 Human-in-the-Loop (Mutual Attack):
 - If the client says they will handle something (log in, solve CAPTCHA, do an action), navigate to the target and let them — do NOT call askUser
@@ -229,6 +231,14 @@ Safety:
 - Do not cause denial of service
 `
 
+  // F10 FIX: Workers don't have spawn-worker/spawn-swarm/orchestration tools.
+  // Only include orchestration instructions for the brain (non-worker roles).
+  const orchestrationBlock = role === 'worker' ? '' : `
+Parallel Execution:
+- If you need parallel testing, delegate with spawn-worker or spawn-swarm
+- If you need to test many endpoints in parallel, spawn workers
+`
+
   const targetBlock = config.target
     ? `\n\nCurrent Target: ${config.target}`
     : ''
@@ -237,7 +247,7 @@ Safety:
     ? `\n\n## Loaded Skill Methodology\n\n${skillInstructions}`
     : '\n\nNo skill loaded. Use searchSkills to find relevant methodology, or proceed with general web security testing knowledge.'
 
-  return baseInstructions + targetBlock + skillBlock
+  return baseInstructions + orchestrationBlock + targetBlock + skillBlock
 }
 
 // Agent creation utilities for different worker types

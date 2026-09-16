@@ -16,7 +16,7 @@ import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitBrowserHumanAction, emitSessionInit, emitSessionComplete, getGlobalEmitter } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
-import { userInputEmitter, setReadlineInterface, uiGoalEmitter } from '../tools/interaction-tools'
+import { userInputEmitter, uiInputEmitter, setReadlineInterface, setConsoleInputResolver, setInteractionMode, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import type { FindingNode } from '../graph/schema'
 import { runSpiderRuntime, stableTargetId, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
@@ -308,9 +308,31 @@ export class SessionLifecycle {
 
     if (this._resources.consoleMode) {
       this._resources.readline = null
+      // F25 FIX: Wire the console input resolver so that askUser/askUserConfirm
+      // work when Ink owns stdin (no readline available). The resolver bridges
+      // Ink's InputBar responses through uiInputEmitter.
+      setConsoleInputResolver(async (question: string) => {
+        return new Promise<string>((resolve) => {
+          const timer = setTimeout(() => { resolve('') }, 300_000)
+          const onAnswer = (answer: string) => { clearTimeout(timer); resolve(answer) }
+          uiInputEmitter.once('askUser-response', onAnswer)
+        })
+      })
     } else {
       const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
       setReadlineInterface(rl)
+      // F25 FIX: Bridge readline into the console input resolver so askUser works
+      // through the resolver codepath consistently. Previously setConsoleInputResolver
+      // was never called, leaving askUser broken when Ink owned stdin.
+      setConsoleInputResolver(async (_question: string) => {
+        return new Promise<string>((resolve) => {
+          const timer = setTimeout(() => { resolve('__TIMEOUT__') }, 300_000)
+          const onLine = (line: string) => { clearTimeout(timer); rl.removeListener('close', onClose); resolve(line.trim()) }
+          const onClose = () => { clearTimeout(timer); resolve('') }
+          rl.once('line', onLine)
+          rl.once('close', onClose)
+        })
+      })
       this._resources.readline = rl
       this.registerCleanup(async () => { rl.close() })
 

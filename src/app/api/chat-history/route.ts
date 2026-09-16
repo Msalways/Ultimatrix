@@ -22,7 +22,12 @@ function sanitizeMessages(messages: unknown): PersistedMessage[] {
     .filter((message): message is PersistedMessage => {
       if (!message || typeof message !== 'object') return false
       const candidate = message as Record<string, unknown>
-      return typeof candidate.id === 'string' && typeof candidate.timestamp === 'number'
+      if (typeof candidate.id !== 'string' || typeof candidate.timestamp !== 'number') return false
+      // F29 FIX: Filter out transient thinking/reasoning messages that should
+      // not persist across page reloads. These are scratch-pad analysis, not
+      // durable conversation state.
+      if (candidate.type === 'thinking' || candidate.type === 'reasoning') return false
+      return true
     })
     .slice(-300)
 }

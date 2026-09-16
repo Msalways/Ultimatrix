@@ -99,6 +99,13 @@ export function createSpawnWorkerTool(
           provider: selection?.provider,
           tier: routedTier,
           signal: (context as any)?.abortSignal,
+          // F13 FIX: Provide acceptance criteria so task quality is evaluated,
+          // not just completion status. Workers that finish without producing
+          // findings or evidence can be flagged as incomplete.
+          acceptanceCriteria: [
+            { id: 'worker-completed', description: 'Worker completed without error', type: 'summary_present' },
+            { id: 'worker-graph-mutation', description: 'At least one graph mutation was recorded', type: 'evidence_count', minCount: 1 },
+          ],
           onWorkerAssigned: (worker) => {
             workerId = worker.workerId
             workerName = worker.workerName

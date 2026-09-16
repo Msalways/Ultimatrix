@@ -31,6 +31,8 @@ import { resolveModelRef } from "../models/routing";
 import { getGlobalQuotaTracker } from "../models/quota-tracker";
 import { appendDelta, visibleAssistantText } from "../output/render-model";
 import { buildRuntimeEnvelope, type RuntimeAlert } from "../runtime/context-envelope";
+import { getEngagementServices } from "../runtime/engagement-context";
+import { setInteractionMode } from "../tools/interaction-tools";
 import { getCapturedRequestStore } from "../capture/captured-request-store";
 import { CrossEngagementMemory } from "../intelligence/cross-engagement";
 import type { WorkflowStore } from "../workflow/store";
@@ -97,8 +99,8 @@ export interface SolverAnswer {
 export type SolverStreamMessage =
   | { kind: "reasoning"; text: string; index: number }
   | { kind: "answer"; text: string; index: number }
-  | { kind: "tool"; name: string; args?: Record<string, unknown>; workerId?: string; workerName?: string }
-  | { kind: "tool-result"; name: string; ok: boolean; result?: string; workerId?: string; workerName?: string }
+  | { kind: "tool"; name: string; args?: Record<string, unknown>; workerId?: string; workerName?: string; toolCallId?: string }
+  | { kind: "tool-result"; name: string; ok: boolean; result?: string; workerId?: string; workerName?: string; toolCallId?: string }
   | { kind: "phase"; phase: SolverPhase; step: number }
   | { kind: "event"; event: string; label: string; status?: "info" | "running" | "ok" | "warn" | "error"; data?: Record<string, unknown> }
   | { kind: "done"; answer: SolverAnswer };
@@ -378,10 +380,25 @@ export async function solve(
         board.addFact(`Hint: ${h}`, "hint");
       }
     }
+    // F19 FIX: Load reflexion hints from prior sessions/failures.
+    // This closes the learning loop — the brain can now consume prior-session
+    // knowledge about what worked and what failed.
+    try {
+      const { loadRelevantHints } = await import("../intelligence/reflexion-store");
+      const priorHints = loadRelevantHints("", params.origin);
+      if (priorHints.length > 0) {
+        for (const h of priorHints) {
+          board.addFact(`Prior learning: ${h}`, "reflexion-hint");
+        }
+      }
+    } catch {
+      // Reflexion store not available
+    }
   }
 
   const capabilityRegistry = (agent as any).capabilityRegistry as DynamicToolRegistry | undefined;
-  capabilityRegistry?.resetTurn();
+  // F1 FIX: Do NOT call resetTurn() here — capabilities persist across turns.
+  // Previously discovered/activated tools (browser, workers, crawl) remain available.
 
   const contextRegistry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as UltimatrixConfig);
   const resolvedContextModel = params.ultimatrixConfig?.model
@@ -392,8 +409,14 @@ export async function solve(
     ?? resolvedContextModel?.modelId
     ?? params.model
     ?? "";
-  const contextWindow = contextRegistry.getContextWindow(contextModelId)
-    || 128_000;
+  // F22 FIX: Unknown models get a conservative default (not 128k which causes overflow).
+  // The solver logs a warning so operators know to register the model's context window.
+  const DEFAULT_CONTEXT_WINDOW = 32_000;
+  const contextWindow = contextRegistry.getContextWindow(contextModelId);
+  if (!contextWindow && contextModelId) {
+    log.warn(`[context] Unknown model "${contextModelId}" — using conservative ${DEFAULT_CONTEXT_WINDOW} token window. Register in ContextWindowRegistry for accurate sizing.`);
+  }
+  const effectiveContextWindow = contextWindow || DEFAULT_CONTEXT_WINDOW;
   if (resolvedContextModel) {
     emitMessage({
       kind: "event",
@@ -427,7 +450,7 @@ export async function solve(
 
   const runtimeEnvelope = buildRuntimeEnvelope({
     target: params.origin,
-    contextWindow,
+    contextWindow: effectiveContextWindow,
     graph: getGlobalGraphStore(),
     workflow: params.workflow,
     blackboard: board,
@@ -503,7 +526,7 @@ export async function solve(
       enrichedGoal,
       expectedOutputTokens,
     });
-    const capacity = ctxManager.getContextWindow(contextModelId) || contextWindow;
+    const capacity = ctxManager.getContextWindow(contextModelId) || effectiveContextWindow;
     const hasCapabilityData = Boolean(
       registry.getContextWindow(contextModelId) ||
       (contextModelId && caps?.[contextModelId]) ||
@@ -571,17 +594,13 @@ export async function solve(
         }
 
         // 3. Reduce tool surface if needed
+        // F20 FIX: The brain's prepareStep (in brain-tools.ts:311) already calls
+        // filteredCurrentTools() which applies the adaptive budget. The old
+        // setTurnTools() method never existed on the agent — this block was dead code.
+        // Tool filtering is now handled by prepareStep returning the filtered set.
         const allToolEntries = Object.entries(activeTools);
         if (allToolEntries.length > adaptivePlan.toolBudget) {
-          const filtered = filterToolsToBudget(allToolEntries, adaptivePlan.toolBudget);
-          // Replace agent tools with filtered set
-          try {
-            const agentAny = agent as any;
-            if (typeof agentAny.setTurnTools === "function") {
-              agentAny.setTurnTools(filtered);
-            }
-          } catch {}
-          log.dim(`[context] Adaptive: filtered tools ${allToolEntries.length}→${adaptivePlan.toolBudget}`);
+          log.dim(`[context] Adaptive: tools ${allToolEntries.length} exceed budget ${adaptivePlan.toolBudget} — prepareStep will filter`);
         }
 
         // 4. Re-validate with compressed payload and truncate goal if still overflows
@@ -620,6 +639,7 @@ export async function solve(
   let answerText = "";
   let reasoningText = "";
   let toolCallCount = 0;
+  let toolCallIdCounter = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalTokens = 0;
@@ -632,12 +652,19 @@ export async function solve(
 
   // Snapshot graph state for stale detection (compare before/after tool calls)
   const graphStateSnapshot = { findings: 0, endpoints: 0, tests: 0 };
+  // F14 FIX: Immutable turn-start snapshot for accurate newFindings delta.
+  // graphStateSnapshot is mutated during the turn for stale detection;
+  // turnStartSnapshot stays frozen so newFindings = current - turnStart.
+  const turnStartSnapshot = { findings: 0, endpoints: 0, tests: 0 };
   try {
     const graphStore = getGlobalGraphStore();
     const initialSummary = graphStore.getTargetSummary();
     graphStateSnapshot.findings = initialSummary.totalFindings;
     graphStateSnapshot.endpoints = initialSummary.totalEndpoints;
     graphStateSnapshot.tests = initialSummary.totalTests;
+    turnStartSnapshot.findings = initialSummary.totalFindings;
+    turnStartSnapshot.endpoints = initialSummary.totalEndpoints;
+    turnStartSnapshot.tests = initialSummary.totalTests;
     emitMessage({
       kind: "event",
       event: "memory.loaded",
@@ -673,6 +700,10 @@ export async function solve(
   });
 
   try {
+    // F26 FIX: Set interaction mode before agent.stream() so askUser/askUserConfirm
+    // auto-approve in 'run' mode. Reset after the stream completes.
+    setInteractionMode(params.interactionMode);
+
     const stream = await agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
@@ -680,6 +711,7 @@ export async function solve(
     });
 
     let lastToolCallArgs: Record<string, unknown> | undefined;
+    let lastToolCallId: string | undefined;
     const workerToolNames = new Set(["spawnWorker", "spawn-worker", "spawnSwarm", "spawn-swarm", "runTaskGraph", "run-task-graph"]);
 
     for await (const chunk of stream.fullStream) {
@@ -696,6 +728,13 @@ export async function solve(
           // incremental chunks (openai/anthropic) unchanged.
           answerText = appendDelta(answerText, chunk.payload.text);
           emitMessage({ kind: "answer", text: chunk.payload.text, index: streamIndex++ });
+          // F15 FIX: Extract attack path from assistant's VISIBLE text output,
+          // not from tool-result output. The brain is instructed to declare
+          // [PATH: <class>] in its visible output.
+          const detectedPathInText = extractAttackPath(fullText);
+          if (detectedPathInText) {
+            loopDetector.recordAttackPath(detectedPathInText);
+          }
           break;
 
         case "reasoning-delta":
@@ -710,7 +749,9 @@ export async function solve(
         case "tool-call":
           if (chunk.payload.toolName && chunk.payload.toolName !== "askUser") {
             toolCallCount++;
+            const currentToolCallId = `tc-${++toolCallIdCounter}`;
             lastToolCallArgs = chunk.payload.args as Record<string, unknown> | undefined;
+            lastToolCallId = currentToolCallId;
 
             const descriptor = await capabilityRegistry?.describe(chunk.payload.toolName);
             emit({
@@ -724,6 +765,7 @@ export async function solve(
               kind: "tool",
               name: chunk.payload.toolName,
               args: chunk.payload.args as Record<string, unknown> | undefined,
+              toolCallId: currentToolCallId,
             });
             if (workerToolNames.has(chunk.payload.toolName)) {
               const args = chunk.payload.args as Record<string, unknown> | undefined;
@@ -760,7 +802,7 @@ export async function solve(
             // Record tool output in evidence gate
             evidence.recordToolOutput(output);
 
-            emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: toolOk, result: output });
+            emitMessage({ kind: "tool-result", name: chunk.payload.toolName, ok: toolOk, result: output, toolCallId: lastToolCallId });
             if (workerToolNames.has(chunk.payload.toolName) && result && typeof result === "object") {
               const routing = result.routing && typeof result.routing === "object" ? result.routing : undefined;
               emitMessage({
@@ -779,11 +821,8 @@ export async function solve(
               });
             }
 
-            // Track attack paths
-            const detectedPath = extractAttackPath(output);
-            if (detectedPath) {
-              loopDetector.recordAttackPath(detectedPath);
-            }
+            // F15 FIX: Attack path extraction moved to text-delta handler (line ~701).
+            // The brain declares [PATH:] in visible output, not in tool results.
 
             // Determine if this tool call produced graph changes (not just tool name substring)
             let hasNewFinding = false;
@@ -803,11 +842,26 @@ export async function solve(
               // Graph store not available — treat as no finding
             }
 
-            // Update loop detector (stale tracking)
-            loopDetector.recordRound(hasNewFinding);
+            // F17 FIX: Only track stale rounds when there is MEANINGFUL progress.
+            // Previously every tool call incremented the stale counter, causing
+            // informational tools (queryGraph, getSessionContext) to trigger staleness.
+            // Now we only reset on actual findings/endpoint/test changes.
+            if (hasNewFinding) {
+              loopDetector.recordRound(true);
+            }
 
-            // Record failures in reflexion engine
-            if (!toolOk) {
+            // F18 FIX: Record BOTH failures AND successes in reflexion engine.
+            // Previously only failures were recorded, causing failure state to
+            // accumulate across productive turns without reset.
+            if (toolOk) {
+              reflexion.recordAttempt(
+                chunk.payload.toolName,
+                true,
+                null,
+                "",
+                undefined,
+              );
+            } else {
                 const vulnType = extractVulnType(lastToolCallArgs);
                 reflexion.recordAttempt(
                   chunk.payload.toolName,
@@ -966,9 +1020,12 @@ export async function solve(
   let newFindings = 0;
   try {
     const currentSummary = getGlobalGraphStore().getTargetSummary();
+    // F14 FIX: Use immutable turnStartSnapshot (not the rolling graphStateSnapshot
+    // which is mutated during tool calls). This ensures newFindings accurately
+    // reflects what THIS turn actually discovered.
     newFindings = Math.max(
       0,
-      currentSummary.totalFindings - graphStateSnapshot.findings,
+      currentSummary.totalFindings - turnStartSnapshot.findings,
     );
   } catch {
     // Graph store not available
@@ -1090,50 +1147,40 @@ export async function solve(
   }
 
   // Assemble the structured final answer (single source of truth for UI).
-  // ─── Synthesis invariant: reasoning implies answer. An LLM cannot produce
-  // reasoning without also producing answer text in the same forward pass.
-  // If the visible answer is empty or filtered (tool-intent JSON), we ALWAYS
-  // compose from the reasoning tail. This makes "(no answer)" structurally
-  // impossible whenever the brain produced any reasoning at all.
+  // F28 FIX: Synthesize ONLY from findings and plan — never from reasoning.
+  // Reasoning is transient scratch; incorporating it into the answer creates
+  // confusing echo/duplication when the UI also shows reasoning separately.
   let answerContent = visibleAssistantText(answerText).trim();
   const answerReasoning = reasoningText.trim();
   const hasVisibleAnswer = answerContent.length > 0;
 
-  if (!hasVisibleAnswer && (answerReasoning || newFindings > 0)) {
+  if (!hasVisibleAnswer && newFindings > 0) {
     const parts: string[] = [];
-    // Findings summary (highest-signal)
-    if (newFindings > 0) {
-      try {
-        const store = getGlobalGraphStore();
-        const findingNodes = (store.queryNodes?.(NodeType.FINDING) || []) as Array<{
-          properties?: { severity?: string; technique?: string; endpoint?: string };
-        }>;
-        const recent = findingNodes.slice(-5);
-        if (recent.length > 0) {
-          parts.push(`**${recent.length} finding(s) discovered:**`);
-          for (const f of recent) {
-            const sev = f.properties?.severity ?? 'unknown';
-            const tech = f.properties?.technique ?? '';
-            const ep = f.properties?.endpoint ? ` @ ${f.properties.endpoint}` : '';
-            parts.push(`- [${sev}] ${tech}${ep}`);
-          }
+    // Findings summary (highest-signal — the ONLY source for synthesized answers)
+    try {
+      const store = getGlobalGraphStore();
+      const findingNodes = (store.queryNodes?.(NodeType.FINDING) || []) as Array<{
+        properties?: { severity?: string; technique?: string; endpoint?: string };
+      }>;
+      const recent = findingNodes.slice(-5);
+      if (recent.length > 0) {
+        parts.push(`**${recent.length} finding(s) discovered:**`);
+        for (const f of recent) {
+          const sev = f.properties?.severity ?? 'unknown';
+          const tech = f.properties?.technique ?? '';
+          const ep = f.properties?.endpoint ? ` @ ${f.properties.endpoint}` : '';
+          parts.push(`- [${sev}] ${tech}${ep}`);
         }
-      } catch { /* graph unavailable */ }
-    }
+      }
+    } catch { /* graph unavailable */ }
     // Plan summary (what the brain was trying to do)
     try {
       const plan = board.planSummary?.();
       if (plan && plan !== '(no plan)') parts.push(`**Plan:** ${plan}`);
     } catch { /* plan unavailable */ }
-    // Reasoning tail (last 10 lines of the brain's analysis — the conclusion)
-    if (answerReasoning) {
-      const lines = answerReasoning.split('\n').filter(l => l.trim());
-      const tail = lines.slice(-10).join('\n').trim();
-      if (tail) parts.push(`**Analysis:**\n${tail}`);
-    }
     if (parts.length > 0) {
       answerContent = parts.join('\n\n');
-      emitMessage({ kind: "event", event: "answer.synthesized", label: `synthesized answer from ${parts.length} sources (reasoning + findings)`, status: "ok" });
+      emitMessage({ kind: "event", event: "answer.synthesized", label: `synthesized answer from ${parts.length} finding(s)`, status: "ok" });
     }
   }
   let findingRefs: SolverAnswer["findings"] = [];
@@ -1165,6 +1212,23 @@ export async function solve(
     toolCalls: toolCallCount,
     newFindings,
   };
+
+  // F23 FIX: Wire model routing feedback so the ModelSelector learns which
+  // provider/model combos succeed vs fail. Previously recordSuccess/recordFailure
+  // were defined in selector.ts but never called from the solver loop.
+  if (resolvedContextModel?.provider && resolvedContextModel?.modelId) {
+    const selector = getEngagementServices()?.modelSelector;
+    if (selector) {
+      if (completed) {
+        selector.recordSuccess(resolvedContextModel.provider, resolvedContextModel.modelId);
+      } else if (!completed) {
+        selector.recordFailure(resolvedContextModel.provider, resolvedContextModel.modelId);
+      }
+    }
+  }
+
+  // F26 FIX: Reset interaction mode after solver completes.
+  setInteractionMode(undefined);
 
   emitMessage({ kind: "done", answer });
 

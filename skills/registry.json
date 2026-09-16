@@ -7,7 +7,20 @@
     { "name": "sqli-to-data-exfiltration", "source": "sqli", "target": "data-exfiltration", "description": "SQL injection allows data extraction", "severity": "critical" },
     { "name": "ssrf-to-internal-scan", "source": "ssrf", "target": "internal-scan", "description": "SSRF enables internal network scanning", "severity": "high" },
     { "name": "idor-to-mass-assignment", "source": "idor", "target": "mass-assignment", "description": "IDOR may enable mass assignment attacks", "severity": "medium" },
-    { "name": "jwt-to-session-hijack", "source": "jwt", "target": "session-hijack", "description": "Weak JWT tokens enable session hijacking", "severity": "high" }
+    { "name": "jwt-to-session-hijack", "source": "jwt", "target": "session-hijack", "description": "Weak JWT tokens enable session hijacking", "severity": "high" },
+    { "name": "edr-evasion-to-rce", "source": "edr-evasion", "target": "rce", "description": "EDR evasion enables undetected code execution", "severity": "critical" },
+    { "name": "shellcode-to-privesc", "source": "shellcode-exploit-dev", "target": "privilege-escalation", "description": "Buffer overflow exploit leads to privilege escalation", "severity": "critical" },
+    { "name": "linux-privesc-to-rce", "source": "linux-privesc", "target": "rce", "description": "Linux privilege escalation enables root code execution", "severity": "critical" },
+    { "name": "windows-privesc-to-rce", "source": "windows-privesc", "target": "rce", "description": "Windows privilege escalation enables SYSTEM code execution", "severity": "critical" },
+    { "name": "lateral-movement-to-domain", "source": "lateral-movement", "target": "active-directory", "description": "Lateral movement enables domain compromise", "severity": "critical" },
+    { "name": "persistence-to-rce", "source": "persistence", "target": "rce", "description": "Persistence mechanism enables recurring code execution", "severity": "critical" },
+    { "name": "data-exfil-to-breach", "source": "data-exfiltration", "target": "data-exfiltration", "description": "Data exfiltration completes breach chain", "severity": "critical" },
+    { "name": "c2-to-lateral", "source": "c2-frameworks", "target": "lateral-movement", "description": "C2 framework enables network pivot", "severity": "high" },
+    { "name": "phishing-to-cred-harvest", "source": "phishing", "target": "credential-theft", "description": "Phishing enables credential theft", "severity": "high" },
+    { "name": "network-attack-to-credential", "source": "network-attacks", "target": "credential-theft", "description": "Network attack enables credential capture", "severity": "high" },
+    { "name": "mobile-to-credential", "source": "mobile-security", "target": "credential-theft", "description": "Mobile app bypass enables credential extraction", "severity": "high" },
+    { "name": "iot-to-network", "source": "iot-security", "target": "internal-scan", "description": "IoT compromise enables network pivot", "severity": "high" },
+    { "name": "tls-attack-to-credential", "source": "tls-attacks", "target": "credential-theft", "description": "TLS attack enables credential interception", "severity": "high" }
   ],
 
   "entityFields": {
@@ -135,7 +148,22 @@
     "config": ["config", "misconfiguration", "default config", "exposed config"],
     "open_redirect": ["open redirect", "url redirect"],
     "csrf": ["csrf", "cross-site request forgery"],
-    "cors": ["cors", "cross-origin"]
+    "cors": ["cors", "cross-origin"],
+    "edr_evasion": ["edr", "av evasion", "defender bypass", "hook unhooking"],
+    "shellcode": ["shellcode", "buffer overflow", "rop", "exploit dev"],
+    "linux_privesc": ["linux privesc", "suid", "sudo exploit", "capabilities"],
+    "windows_privesc": ["windows privesc", "potato", "dll hijack", "uac bypass"],
+    "lateral_movement": ["lateral movement", "psexec", "winrm", "kerberoast"],
+    "persistence": ["persistence", "scheduled task", "registry run", "ssh key"],
+    "data_exfiltration": ["data exfil", "dns tunnel", "https tunnel"],
+    "anti_forensics": ["anti forensics", "log clear", "timestomp", "secure delete"],
+    "c2": ["c2", "cobalt strike", "sliver", "mythic", "command and control"],
+    "phishing": ["phishing", "credential harvest", "gophish", "evilginx"],
+    "social_engineering": ["social engineering", "pretexting", "vishing", "smishing"],
+    "network_attacks": ["arp spoof", "llmnr", "vlan hopping", "dns spoof"],
+    "mobile_security": ["mobile", "android", "ios", "frida", "apk"],
+    "iot_security": ["iot", "uart", "jtag", "firmware", "mqtt"],
+    "tls_attacks": ["tls", "ssl", "poodle", "drown", "heartbleed", "hsts"]
   },
 
   "toolInferenceRules": [
@@ -155,6 +183,21 @@
     { "keywords": ["deserializ", "unsafe"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
     { "keywords": ["smuggl", "http request smuggling"], "tools": ["httpRequest", "parseResponse"], "priority": "medium" },
     { "keywords": ["clickjack", "frame"], "tools": ["httpRequest", "evaluateRendered"], "priority": "low" },
-    { "keywords": ["cache", "poison"], "tools": ["httpRequest", "parseResponse"], "priority": "low" }
+    { "keywords": ["cache", "poison"], "tools": ["httpRequest", "parseResponse"], "priority": "low" },
+    { "keywords": ["edr", "av evasion", "defender"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["shellcode", "buffer overflow", "rop"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["linux privesc", "suid", "sudo"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["windows privesc", "potato", "dll hijack"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["lateral movement", "psexec", "winrm"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["persistence", "scheduled task", "registry"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["data exfil", "tunnel", "dns tunnel"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["anti forensics", "log clear", "timestomp"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["c2", "cobalt", "sliver", "mythic"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["phishing", "credential harvest", "gophish"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["social engineering", "pretexting", "vishing"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["arp spoof", "llmnr", "vlan"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["mobile", "android", "ios", "frida"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["iot", "uart", "jtag", "firmware", "mqtt"], "tools": ["httpRequest", "updateGraph"], "priority": "low" },
+    { "keywords": ["tls", "ssl", "poodle", "drown", "heartbleed"], "tools": ["httpRequest", "parseResponse", "encodeDecode"], "priority": "low" }
   ]
 }

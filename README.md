@@ -63,10 +63,10 @@ The result is not another chat wrapper around a scanner. It is a workspace where
 
 <table>
   <tr>
-    <td align="center" width="25%"><strong>56</strong><br>security skill documents</td>
+    <td align="center" width="25%"><strong>74</strong><br>security skill documents</td>
     <td align="center" width="25%"><strong>9</strong><br>external-tool adapters</td>
     <td align="center" width="25%"><strong>24 + 20</strong><br>graph node + edge types</td>
-    <td align="center" width="25%"><strong>176</strong><br>test files</td>
+    <td align="center" width="25%"><strong>247</strong><br>test files</td>
   </tr>
 </table>
 
@@ -185,7 +185,7 @@ Given an authorized target from a public or private bug bounty program, its best
 | Anti-loop detection | Coverage campaigns | HITL approval | Cross-engagement patterns |
 | Parallel council | Flow reproduction | Forensic events | Reports and case files |
 
-**56 knowledge-based skills** cover web, injection, authorization, API, cloud, recon, cryptography, LLM, supply-chain, and reporting work. Skills bring methodology and relevant tools into a turn instead of flooding every agent with every capability.
+**74 knowledge-based skills** across 18 domains: injection, web attacks, auth security, recon, crypto, API security, cloud security, LLM security, supply chain, reporting, offensive security, privilege escalation, post-exploitation, social engineering, network attacks, mobile security, IoT security, and methodology. Skills bring methodology and relevant tools into a turn instead of flooding every agent with every capability.
 
 ## Tools and Runtime
 

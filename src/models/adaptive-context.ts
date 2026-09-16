@@ -177,12 +177,14 @@ export function filterToolsToBudget(
     recordOutcome: 5,
     getOastUrlTool: 5,
     checkOastCallbacks: 5,
-    listSkills: 5,
-    searchSkills: 5,
-    loadSkillReference: 5,
-    loadSkillBody: 5,
-    manageSkills: 5,
     selectModel: 5,
+    // F3 FIX: Skill routing tools are load-bearing, not auxiliary.
+    // Elevate to tier 2 (same as browser tools) so they survive context pressure.
+    listSkills: 2,
+    searchSkills: 2,
+    loadSkillReference: 2,
+    loadSkillBody: 2,
+    manageSkills: 2,
   }
 
   const scored = allToolEntries
@@ -202,8 +204,8 @@ export function filterToolsToBudget(
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function stripSection(text: string, heading: string): string {
-  // Match ### heading to next ### or ## or end
-  const regex = new RegExp(`\\n### ${escapeRegex(heading)}\\n[\\s\\S]*?(?=\\n### |\\n## |$)`, 'i')
+  // F21 FIX: Match both ## and ### headings. brain.md uses ##, sub-sections use ###.
+  const regex = new RegExp(`\\n##+ ${escapeRegex(heading)}\\n[\\s\\S]*?(?=\\n##+ |$)`, 'i')
   return text.replace(regex, '')
 }
 

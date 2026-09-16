@@ -149,8 +149,19 @@ export class ChatBox implements ActivitySink {
     const model = this.model
 
     // ── Reasoning: accumulate silently, don't write to screen ──
+    // F31 FIX: When showReasoning is enabled, stream reasoning live.
     if (model.reasoning.length > this.paintedReasoningLen) {
+      const newReasoning = model.reasoning.slice(this.paintedReasoningLen)
       this.paintedReasoningLen = model.reasoning.length
+      if (this.showReasoning && newReasoning.trim()) {
+        const rendered = renderMarkdown(newReasoning, { ...this.opts, isTTY: this.tty })
+        const lines = rendered.split('\n').filter(l => l.trim())
+        if (lines.length > 0) {
+          const preview = lines.slice(0, 2).join('\n')
+          this.write(`${this.c(ESC.dim)}│  ${preview}${lines.length > 2 ? '\n│  ...' : ''}${this.c(ESC.reset)}\n`)
+          this.liveAnswerRows += lines.length
+        }
+      }
     }
 
     // ── Tool rows: append-only, tracked by id ──
@@ -167,25 +178,40 @@ export class ChatBox implements ActivitySink {
         if (body) line += `  ${this.c(ESC.gray)}${body}${this.c(ESC.reset)}`
       }
       if (prev === undefined) {
-        this.write(line + '\n')
+        // F33 FIX: Track tool rows for finalization even in non-TTY mode,
+        // but skip live writes (non-TTY can't erase/re-render).
         this.toolRows.set(t.id, line)
-        this.toolLinesWritten++
+        if (this.tty) {
+          this.write(line + '\n')
+          this.toolLinesWritten++
+        }
       } else if (prev !== line) {
-        this.write(line + '\n')
         this.toolRows.set(t.id, line)
-        this.toolLinesWritten++
+        if (this.tty) {
+          this.write(line + '\n')
+          this.toolLinesWritten++
+        }
       }
     }
 
     // ── Answer: append delta only ──
+    // F34/F35 FIX: Buffer raw answer text during streaming. Only render markdown
+    // on finalization to avoid partial/incomplete markdown rendering and
+    // inaccurate row accounting from chunk-based visual row counting.
     const answer = visibleAssistantText(model.answer)
     if (answer.trim()) {
       const tail = answer.slice(this.paintedAnswerLen)
       if (tail) {
         this.paintedAnswerLen = answer.length
-        const rendered = renderMarkdown(tail, { ...this.opts, isTTY: this.tty })
-        this.write(rendered)
-        this.liveAnswerRows += countVisualRows(rendered, this.widthOf())
+        if (this.tty) {
+          // TTY: show dim streaming indicator (no markdown rendering yet)
+          const preview = tail.replace(/\n+/g, ' ').slice(0, 80)
+          this.write(`${this.c(ESC.dim)}│  ${preview}${tail.length > 80 ? '...' : ''}${this.c(ESC.reset)}\r`)
+          this.liveAnswerRows = 1
+        } else {
+          // Non-TTY: write raw text (finalization renders full markdown)
+          this.write(tail)
+        }
       }
     }
   }
@@ -200,6 +226,8 @@ export class ChatBox implements ActivitySink {
     if (model) this.model = model
     this.finalized = true
     const m = this.model
+    // F32 FIX: Capture reasoning for post-turn /reasoning toggle.
+    this.lastTurnReasoning = m.reasoning
 
     const didWork = (m.tools.length > 0) || (m.done?.steps ?? 0) > 0 || (m.findings.length > 0)
     const answer = visibleAssistantText(m.answer)
@@ -304,9 +332,22 @@ export class ChatBox implements ActivitySink {
     this.assistantActive = false
   }
 
+  // Last-turn reasoning state — persists after assistantActive is false
+  // so /reasoning can display the previous turn's analysis.
+  private lastTurnReasoning = ''
+
   toggleReasoning(): void {
-    if (!this.assistantActive) return
     this.reasoningExpanded = !this.reasoningExpanded
+    // F32 FIX: Removed assistantActive guard. The reasoning toggle now works
+    // both during and after the assistant turn. When called after endAssistant(),
+    // it displays the last-turn reasoning that was captured at finalization.
+    if (!this.assistantActive && this.lastTurnReasoning) {
+      const lines = this.lastTurnReasoning.split('\n').filter(l => l.trim())
+      const tail = lines.slice(-10)
+      for (const line of tail) {
+        this.write(`${this.c(ESC.dim)}│  ${line}${this.c(ESC.reset)}\n`)
+      }
+    }
   }
 
   // ───────────────────────────── Activity ─────────────────────────────
