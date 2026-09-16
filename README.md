@@ -66,7 +66,7 @@ The result is not another chat wrapper around a scanner. It is a workspace where
     <td align="center" width="25%"><strong>74</strong><br>security skill documents</td>
     <td align="center" width="25%"><strong>9</strong><br>external-tool adapters</td>
     <td align="center" width="25%"><strong>24 + 20</strong><br>graph node + edge types</td>
-    <td align="center" width="25%"><strong>247</strong><br>test files</td>
+    <td align="center" width="25%"><strong>250</strong><br>test files</td>
   </tr>
 </table>
 
@@ -184,8 +184,26 @@ Given an authorized target from a public or private bug bounty program, its best
 | Reflexion | Security-tool adapters | Budgets and quotas | Session resume |
 | Anti-loop detection | Coverage campaigns | HITL approval | Cross-engagement patterns |
 | Parallel council | Flow reproduction | Forensic events | Reports and case files |
+| Streaming architecture | Chronological interleaving | Resumable event identity | Backpressure control |
 
 **74 knowledge-based skills** across 18 domains: injection, web attacks, auth security, recon, crypto, API security, cloud security, LLM security, supply chain, reporting, offensive security, privilege escalation, post-exploitation, social engineering, network attacks, mobile security, IoT security, and methodology. Skills bring methodology and relevant tools into a turn instead of flooding every agent with every capability.
+
+## Audit & Streaming Architecture
+
+Ultimatrix has completed a comprehensive 42-finding security and architecture audit, addressing all critical and high-severity issues across 11 phases:
+
+| Area | Key Fixes | Status |
+|---|---|---|
+| **Foundation** | Capability lifecycle, worker tool inheritance, skill system | ✅ Complete |
+| **Context Pressure** | Adaptive context, prompt compression, model defaults | ✅ Complete |
+| **Intelligence Layer** | Anti-loop, reflexion, session context, turn accounting | ✅ Complete |
+| **Worker Quality** | Prompt filtering, context budgeting, acceptance criteria | ✅ Complete |
+| **Streaming Core** | Reasoning separation, thinking persistence, stable message identity | ✅ Complete |
+| **Streaming CLI** | Live reasoning, `/reasoning` toggle, non-TTY dedup, chunk-safe rows | ✅ Complete |
+| **Streaming Web** | SSE write batching, backpressure, message identity preservation | ✅ Complete |
+| **Event Identity** | `{runId, seq, timestamp}` envelope, ordered `StreamSegment[]` | ✅ Complete |
+
+**Test suite:** 2,389 tests across 250 files, zero failures, clean TypeScript build.
 
 ## Tools and Runtime
 
@@ -336,10 +354,12 @@ Ultimatrix already has the core pieces: persistent cases, observable execution, 
 ## Development
 
 ```bash
-npm test
-npm run typecheck
-npm run build:cli
-npm run build:web
+npm test                    # 2,389 tests across 250 files
+npm run typecheck           # TypeScript strict mode
+npm run build:cli           # tsup: ESM + CJS + DTS
+npm run build:web           # Next.js production build
+npm run lint                # ESLint (src/)
+npm run test:evals          # Architecture evaluation cases
 ```
 
 Declared as MIT in `package.json`.
