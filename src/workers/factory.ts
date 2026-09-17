@@ -4,6 +4,8 @@ import type { TaskComplexity } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import { createAgent } from '../mastra/index'
 import type { DynamicToolRegistry } from '../extensions/tool-registry'
+import { compileCapabilities } from '../capabilities/compiler'
+import { CapabilityFacade } from '../capabilities/facade'
 
 export interface WorkerConfig {
   skillId: string
@@ -45,9 +47,26 @@ export class WorkerFactory {
 
     // F8 FIX: Pass parent brain's extension registry as extraTools so workers
     // inherit discovered/activated capabilities (MCP tools, plugins, browser tools).
-    // When parentTools is empty/undefined, createAgent falls back to createToolRegistry().
     const parentTools = this.extensionRegistry?.getActiveToolset()
     const hasParentTools = parentTools && Object.keys(parentTools).length > 0
+
+    // Phase 6: Capability Compiler — single operation that compiles the full
+    // tool surface, scoped primitives, and evidence policy for this worker.
+    const compiled = compileCapabilities({ skillIds: [workerConfig.skillId] })
+    const facade = new CapabilityFacade(compiled)
+
+    // Merge facade extras with parent brain tools
+    const extraTools: Record<string, any> = { ...facade.getExtraTools() }
+    if (hasParentTools) {
+      for (const [key, tool] of Object.entries(parentTools!)) {
+        // Facade extras take precedence (scoped runPrimitive beats global)
+        if (!(key in extraTools)) {
+          extraTools[key] = tool
+        }
+      }
+    }
+
+    const hasExtraTools = Object.keys(extraTools).length > 0
 
     const agent = createAgent(this.config, {
       browser: workerConfig.browser,
@@ -55,9 +74,9 @@ export class WorkerFactory {
       modelId: workerConfig.modelId,
       role: 'worker',
       complexity: workerConfig.complexity,
-      skillIds: [workerConfig.skillId],
+      toolIds: facade.getToolIds(),
       skills: [skill],
-      extraTools: hasParentTools ? parentTools : undefined,
+      extraTools: hasExtraTools ? extraTools : undefined,
       // F11 FIX: Task is sent as the user prompt in pool.ts generate().
       // Only include context metadata in system instructions to avoid duplication.
       taskInstructions: workerConfig.context !== undefined

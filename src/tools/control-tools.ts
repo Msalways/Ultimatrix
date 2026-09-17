@@ -72,7 +72,7 @@ export function resetStructuredLedger(): void {
 
 export const recordEvidence = createTool({
   id: 'recordEvidence',
-  description: 'Record an evidence item to attach to a subsequently emitted finding.',
+  description: `Attach ADDITIONAL evidence to a finding claim — for observations NOT already captured by tool execution. httpRequest, runPrimitive, and other tools auto-record their request/response evidence into the structured ledger. Use this tool only for extra evidence: screenshots, manual observations, browser effects, DOM snapshots, or any observation the model makes outside a tool call. Do NOT re-enter request/response data that httpRequest already captured.`,
   inputSchema: z.object({
     type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
     data: z.string(),
@@ -796,3 +796,17 @@ export async function verifyPendingFindings(options?: {
 
   return { verified, rejected, skipped }
 }
+
+// ─── Phase 3: Semantic alias ───────────────────────────────────────────────
+
+/**
+ * `linkEvidenceToClaim` is the preferred name for the manual evidence
+ * attachment tool. `recordEvidence` is kept as the primary ID for backward
+ * compat with 30+ skill toolRefs. Both point to the same execute function.
+ */
+export const linkEvidenceToClaim = createTool({
+  id: 'linkEvidenceToClaim',
+  description: `Preferred name for recordEvidence. Attach ADDITIONAL evidence to a finding claim — for observations NOT already captured by tool execution. httpRequest, runPrimitive, and other tools auto-record their request/response evidence. Use this tool only for extra evidence: screenshots, manual observations, browser effects, DOM snapshots, or any observation outside a tool call.`,
+  inputSchema: recordEvidence.inputSchema,
+  execute: (recordEvidence as any).execute,
+})

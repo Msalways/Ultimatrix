@@ -6,7 +6,7 @@ import { manageSkills } from '../tools/skill-manage-tools'
 import { recordTestCase } from '../tools/record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from '../tools/observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from '../tools/session-tools'
-import { recordEvidence, writeFinding } from '../tools/control-tools'
+import { recordEvidence, linkEvidenceToClaim, writeFinding } from '../tools/control-tools'
 import { readAppModelSection, writeAppModelSection } from '../tools/app-model-tools'
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from '../tools/recon-tools'
 import { askUser } from '../tools/interaction-tools'
@@ -31,6 +31,7 @@ import { createExtensionTools } from '../extensions/tool-tools'
 import { DynamicToolRegistry } from '../extensions/tool-registry'
 import { Logger } from '../utils/logger'
 import { webSearch } from '../tools/web-search'
+import { requestAsActor, listActors } from '../tools/actor-tools'
 
 type ExtensionTools = ReturnType<typeof createExtensionTools>
 
@@ -62,6 +63,7 @@ export type ToolRegistry = {
   
   // Control Tools
   recordEvidence: typeof recordEvidence
+  linkEvidenceToClaim: typeof linkEvidenceToClaim
   writeFinding: typeof writeFinding
   
   // Graph Tools (focused)
@@ -170,6 +172,9 @@ export type ToolRegistry = {
   loadTool: ExtensionTools['loadTool']
   // Web Search (open-source: DuckDuckGo + Sploitus)
   webSearch: typeof webSearch
+  // Actor Replay (Strix Adaptation Phase D)
+  requestAsActor: typeof requestAsActor
+  listActors: typeof listActors
 }
 
 // Centralized tool registry with consistent IDs
@@ -207,6 +212,7 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     
     // Control Tools
     recordEvidence,
+    linkEvidenceToClaim,
     writeFinding,
     
     // Graph Tools (focused)
@@ -315,6 +321,9 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     loadTool: extensionTools.loadTool,
     // Web Search (open-source: DuckDuckGo + Sploitus)
     webSearch,
+    // Actor Replay (Strix Adaptation Phase D)
+    requestAsActor,
+    listActors,
   }
 
   // Delegate built-ins into the DynamicToolRegistry so MCP/plugin tools resolve
@@ -344,6 +353,7 @@ export const TOOL_IDS = [
   'extractCsrfToken',
   'useSession',
   'recordEvidence',
+  'linkEvidenceToClaim',
   'writeFinding',
   'queryGraph',
   'updateGraph',
@@ -428,6 +438,8 @@ export const TOOL_IDS = [
   'subfinder',
   'gitleaks',
   'webSearch',
+  'requestAsActor',
+  'listActors',
 ] as const
 
 export type ToolId = typeof TOOL_IDS[number]
@@ -831,6 +843,31 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
   recordEvidence: {
     id: 'recordEvidence',
     description: 'Record an evidence item that will be included in the next writeFinding call',
+    category: 'control',
+    inputSchema: z.object({
+      type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
+      data: z.string(),
+      label: z.string(),
+      session: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      value: z.object({
+        recorded: z.boolean(),
+        timestamp: z.number(),
+        evidence: z.object({
+          type: z.string(),
+          data: z.string(),
+          label: z.string(),
+          timestamp: z.number(),
+          session: z.string().optional(),
+        }),
+      }),
+    }),
+  },
+  linkEvidenceToClaim: {
+    id: 'linkEvidenceToClaim',
+    description: 'Preferred name for recordEvidence. Attach additional evidence not captured by tool execution.',
     category: 'control',
     inputSchema: z.object({
       type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
@@ -1618,7 +1655,7 @@ export {
   recordTestCase,
   parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
   extractSessionCookie, extractCsrfToken, useSession,
-  recordEvidence, writeFinding,
+  recordEvidence, linkEvidenceToClaim, writeFinding,
   queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows,
   upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addRBACRole, addAttack, chainFindings,
   readAppModelSection, writeAppModelSection,

@@ -28,6 +28,43 @@ export interface CompositionRule {
   conflicts?: string[]
 }
 
+// ─── Skill Contract types (Strix Adaptation Phase A) ────────────────────────
+
+/** A single stage in a skill's execution procedure. */
+export interface ProcedureStage {
+  id: string
+  goal: string
+}
+
+/** A coverage requirement declared by a skill's verification contract. */
+export interface CoverageRequirement {
+  id: string
+  required: boolean
+}
+
+/** Declares what the skill produces (output schema). */
+export interface SkillOutput {
+  schema: string
+}
+
+/**
+ * Structured Skill Contract — machine-readable execution contract.
+ *
+ * Skills that declare a contract enable the Capability Compiler to validate
+ * coverage and produce a narrowed worker surface. Skills without a contract
+ * fall back to the legacy toolRefs + primitives resolution.
+ */
+export interface SkillContract {
+  /** Semantic capability IDs (e.g. "network.request", "primitive.execute") */
+  capabilities: string[]
+  /** Execution procedure stages (ordered) */
+  procedure: ProcedureStage[]
+  /** Required coverage outcomes for task acceptance */
+  coverage: CoverageRequirement[]
+  /** Output schema name */
+  output: SkillOutput
+}
+
 /** Lightweight metadata loaded at init (frontmatter only). */
 export interface SkillMeta {
   id: string
@@ -45,12 +82,20 @@ export interface SkillMeta {
   compositionRules: CompositionRule
   mitreAttack: string[]
   owaspRefs: string[]
+  /** Structured Skill Contract (Strix Adaptation). Present when the skill declares
+   *  requires/procedure/verification/output in YAML frontmatter. Undefined for
+   *  legacy skills that rely on toolRefs + primitives only. */
+  contract?: SkillContract
 }
 
 /** Full skill with instructions body (loaded on demand). */
 export interface Skill extends SkillMeta {
   instructions: string
   references: Reference[]
+  /** Knowledge fragments — focused subsections split from the main body.
+   *  Each fragment is a standalone .md file in the skill's subfolder.
+   *  Empty array when no fragments exist (backward compat). */
+  fragments: Reference[]
 }
 
 let metaCache: Map<string, SkillMeta> | null = null
@@ -128,10 +173,61 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
     // Parse OWASP references
     const owaspRefs = Array.isArray(meta.owaspRefs) ? meta.owaspRefs.filter((o): o is string => typeof o === 'string') : []
 
+    // Parse Skill Contract (Strix Adaptation Phase A)
+    // Contract fields: requires.capabilities, procedure.stages, verification.coverage, output.schema
+    let contract: SkillContract | undefined
+    const rawRequires = meta.requires && typeof meta.requires === 'object' && !Array.isArray(meta.requires)
+      ? meta.requires as Record<string, unknown>
+      : null
+    const rawProcedure = meta.procedure && typeof meta.procedure === 'object' && !Array.isArray(meta.procedure)
+      ? meta.procedure as Record<string, unknown>
+      : null
+    const rawVerification = meta.verification && typeof meta.verification === 'object' && !Array.isArray(meta.verification)
+      ? meta.verification as Record<string, unknown>
+      : null
+    const rawOutput = meta.output && typeof meta.output === 'object' && !Array.isArray(meta.output)
+      ? meta.output as Record<string, unknown>
+      : null
+
+    // Only build a contract if at least one contract field is present
+    if (rawRequires || rawProcedure || rawVerification || rawOutput) {
+      const capabilities = rawRequires && Array.isArray(rawRequires.capabilities)
+        ? rawRequires.capabilities.filter((c): c is string => typeof c === 'string')
+        : []
+
+      const stages = rawProcedure && Array.isArray(rawProcedure.stages)
+        ? rawProcedure.stages
+            .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+            .map(s => ({
+              id: typeof s.id === 'string' ? s.id : 'unnamed',
+              goal: typeof s.goal === 'string' ? s.goal : '',
+            }))
+        : []
+
+      const coverage = rawVerification && Array.isArray(rawVerification.coverage)
+        ? rawVerification.coverage
+            .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
+            .map(c => ({
+              id: typeof c.id === 'string' ? c.id : 'unnamed',
+              required: c.required === true,
+            }))
+        : []
+
+      const outputSchema = rawOutput && typeof rawOutput.schema === 'string' ? rawOutput.schema : ''
+
+      contract = {
+        capabilities,
+        procedure: stages,
+        coverage,
+        output: { schema: outputSchema },
+      }
+    }
+
     return {
       id, name, domain, category: (typeof meta.category === 'string' ? meta.category : domain), tier, description,
       toolRefs, primitives, triggers, contextBoosts, toolChains, compositionRules,
       mitreAttack, owaspRefs,
+      ...(contract ? { contract } : {}),
     }
   } catch {
     return null
@@ -142,7 +238,29 @@ function parseSkillBody(filePath: string, meta: SkillMeta): Skill | null {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const { body } = parseFrontmatter(raw)
-    return { ...meta, instructions: body, references: [] }
+
+    // Auto-discover knowledge fragments from the skill's subfolder
+    const skillDir = dirname(filePath)
+    const fragmentDir = join(skillDir, meta.id)
+    const fragments: Reference[] = []
+    if (existsSync(fragmentDir) && statSync(fragmentDir).isDirectory()) {
+      try {
+        const files = readdirSync(fragmentDir).filter(f => f.endsWith('.md'))
+        for (const file of files) {
+          try {
+            const content = readFileSync(join(fragmentDir, file), 'utf-8')
+            const titleMatch = content.match(/^#\s+(.+)/m)
+            fragments.push({
+              id: basename(file, '.md'),
+              title: titleMatch ? titleMatch[1].trim() : basename(file, '.md'),
+              content,
+            })
+          } catch {}
+        }
+      } catch {}
+    }
+
+    return { ...meta, instructions: body, references: [], fragments }
   } catch {
     return null
   }
@@ -170,6 +288,75 @@ function loadReferences(skillDir: string): Reference[] {
   } catch {}
 
   return refs
+}
+
+// ─── Phase 5: Knowledge fragment loading ───────────────────────────────────
+
+/**
+ * Load knowledge fragments for a skill from its subfolder.
+ *
+ * Fragments are standalone .md files in `<skill-dir>/<skill-name>/` that
+ * contain focused subsections split from the main body (e.g., "jwt-attacks.md",
+ * "idor-automation.md"). Fragment ID = filename sans .md.
+ *
+ * When `fragmentIds` is provided, only those fragments are loaded (on-demand).
+ * When omitted, ALL fragments are loaded.
+ *
+ * Backward compat: returns [] when no subfolder or fragments exist.
+ */
+export function loadSkillFragments(skillId: string, fragmentIds?: string[]): Reference[] {
+  const filePath = resolveSkillPath(skillId)
+  if (!filePath) return []
+
+  const skillDir = dirname(filePath)
+  const fragmentDir = join(skillDir, skillId)
+
+  if (!existsSync(fragmentDir) || !statSync(fragmentDir).isDirectory()) return []
+
+  const refs: Reference[] = []
+  try {
+    const files = readdirSync(fragmentDir).filter(f => f.endsWith('.md'))
+    for (const file of files) {
+      const id = basename(file, '.md')
+
+      // If specific fragment IDs requested, skip non-matching
+      if (fragmentIds && !fragmentIds.includes(id)) continue
+
+      try {
+        const content = readFileSync(join(fragmentDir, file), 'utf-8')
+        const titleMatch = content.match(/^#\s+(.+)/m)
+        refs.push({
+          id,
+          title: titleMatch ? titleMatch[1].trim() : id,
+          content,
+        })
+      } catch {}
+    }
+  } catch {}
+
+  return refs
+}
+
+/**
+ * List available fragment IDs for a skill (without loading content).
+ * Useful for the brain to discover what fragments exist.
+ */
+export function listSkillFragments(skillId: string): string[] {
+  const filePath = resolveSkillPath(skillId)
+  if (!filePath) return []
+
+  const skillDir = dirname(filePath)
+  const fragmentDir = join(skillDir, skillId)
+
+  if (!existsSync(fragmentDir) || !statSync(fragmentDir).isDirectory()) return []
+
+  try {
+    return readdirSync(fragmentDir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => basename(f, '.md'))
+  } catch {
+    return []
+  }
 }
 
 /** Resolve the file path for a skill by ID (uses the index built at init). */

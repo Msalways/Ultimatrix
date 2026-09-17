@@ -11,6 +11,7 @@ export type ArtifactKind =
   | 'generated_test'
   | 'finding'
   | 'session'
+  | 'exchange'
 
 export type ArtifactStatus = 'created' | 'redacted' | 'linked' | 'reported' | 'deleted'
 
@@ -150,4 +151,81 @@ export function setArtifactCreateListener(fn: ((record: ArtifactRecord) => void)
   const owned = getEngagementServices()?.artifacts
   if (owned) owned.setCreateListener(fn)
   else getGlobalArtifactRegistry().setCreateListener(fn)
+}
+
+// ─── ExchangeArtifact (Strix Adaptation Phase F) ────────────────────────────
+/**
+ * Cross-links the three recording sinks so any finding can be traced back
+ * to its originating request/response and forensic log entry.
+ *
+ * Sink mapping:
+ * - CapturedRequestStore: `cap-*` IDs (HTTP request/response pairs)
+ * - EvidenceLedger: `ev-*` IDs (structured evidence items)
+ * - ForensicLog: tool-call events with timestamps
+ * - ResultStore: `tool-result:*` IDs (bounded results)
+ */
+export interface ExchangeArtifact {
+  /** Unique exchange ID: `ex-*` */
+  exchangeId: string
+  /** Captured request ID from CapturedRequestStore */
+  capturedRequestId?: string
+  /** Evidence ID from EvidenceLedger */
+  evidenceId?: string
+  /** ForensicLog event timestamp (ms) for correlation */
+  forensicTimestamp?: number
+  /** Result store reference (from BoundedResult) */
+  resultRef?: string
+  /** Artifact kind for the ArtifactRegistry */
+  artifactId?: string
+  /** When the exchange was created */
+  createdAt: number
+  /** Free-text note about what this exchange represents */
+  note?: string
+}
+
+/** In-memory store of exchange artifacts for the current session */
+const exchanges = new Map<string, ExchangeArtifact>()
+
+/** Create a new cross-linked exchange artifact */
+export function createExchangeArtifact(links: {
+  capturedRequestId?: string
+  evidenceId?: string
+  forensicTimestamp?: number
+  resultRef?: string
+  artifactId?: string
+  note?: string
+}): ExchangeArtifact {
+  const id = `ex-${randomUUID()}`
+  const exchange: ExchangeArtifact = {
+    exchangeId: id,
+    ...links,
+    createdAt: Date.now(),
+  }
+  exchanges.set(id, exchange)
+  return exchange
+}
+
+/** Look up an exchange by ID */
+export function getExchangeArtifact(exchangeId: string): ExchangeArtifact | undefined {
+  return exchanges.get(exchangeId)
+}
+
+/** Find exchanges by any linked ID (reverse lookup) */
+export function findExchangesByLink(
+  linkType: 'capturedRequestId' | 'evidenceId' | 'resultRef' | 'artifactId',
+  linkValue: string,
+): ExchangeArtifact[] {
+  return [...exchanges.values()].filter(e => e[linkType] === linkValue)
+}
+
+/** Find exchanges by forensic timestamp range */
+export function findExchangesByTimeRange(startMs: number, endMs: number): ExchangeArtifact[] {
+  return [...exchanges.values()].filter(
+    e => e.forensicTimestamp !== undefined && e.forensicTimestamp >= startMs && e.forensicTimestamp <= endMs,
+  )
+}
+
+/** Clear all exchanges (for tests) */
+export function clearExchangeArtifacts(): void {
+  exchanges.clear()
 }

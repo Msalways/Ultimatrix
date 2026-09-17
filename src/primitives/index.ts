@@ -408,6 +408,97 @@ export const runPrimitiveTool = createTool({
   },
 })
 
+// ─── Scoped runPrimitive tool (Phase 1: skill-enforced primitive boundary) ─
+
+/**
+ * Create a scoped `runPrimitive` tool whose schema is limited to the given
+ * primitive IDs. This enforces the skill's `primitives[]` declaration both:
+ *   1. at schema level (model only sees allowed options)
+ *   2. at runtime (double-checks the allowlist before execution)
+ *
+ * Falls through to the global `runPrimitiveTool` when no scope is needed.
+ */
+export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
+  const valid = allowedPrimitiveIds.filter(id => getPrimitive(id))
+
+  if (valid.length === 0) {
+    throw new Error(`No authorized primitives from: ${allowedPrimitiveIds.join(', ')}`)
+  }
+
+  const ids = valid as [string, ...string[]]
+  const allowSet = new Set(valid)
+
+  return createTool({
+    id: 'runPrimitive',
+    description: `Run an authorized technique primitive. Allowed: ${valid.join(', ')}. Returns a PrimitiveResult with confirmed/unconfirmed + evidence, verified against the EvidenceGate.`,
+    inputSchema: z.object({
+      primitiveId: z.enum(ids).describe('Primitive id to run (skill-scoped)'),
+      context: z.object({
+        target: z.string().optional().describe('Target base URL'),
+        endpointUrl: z.string().optional().describe('Endpoint URL to test'),
+        endpointMethod: z.string().optional().default('GET').describe('HTTP method of the endpoint'),
+        params: z.array(z.object({ name: z.string(), type: z.string().optional(), in: z.string().optional(), required: z.boolean().optional() })).optional(),
+        param: z.string().optional().describe('Specific parameter under test'),
+        role: z.string().optional(),
+        roles: z.array(z.string()).optional(),
+        sessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for the actor'),
+        altSessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for an alternate actor'),
+        objectId: z.string().optional().describe('Object id owned by the actor (IDOR)'),
+        altObjectId: z.string().optional().describe('Object id owned by another user (IDOR)'),
+        workflowSteps: z.array(z.string()).optional(),
+        payloads: z.array(z.string()).optional(),
+        state: z.record(z.string(), z.any()).optional(),
+        authRequired: z.boolean().optional(),
+        authType: z.string().optional(),
+        useCase: z.string().optional().describe('Analyser-assigned endpoint use-case'),
+        tags: z.array(z.string()).optional().describe('Typed endpoint tags from the graph'),
+        relationSeed: z.object({
+          relationType: z.string().describe('Relation type from queryRelations'),
+          sourceValue: z.string().describe('The captured value flowing from source to sink.'),
+          sinkParam: z.string().describe('The sink parameter/header name that receives it.'),
+          sourceKind: z.string().describe('Where the value originates.'),
+        }).optional().describe('Optional relation-seeded mutation spec.'),
+        variant: z.string().optional().describe('Technique variant'),
+        dbms: z.string().optional().describe('Target DBMS hint'),
+        oastHost: z.string().optional().describe('Override OAST callback host'),
+        requestTemplate: z.object({
+          method: z.string(),
+          url: z.string(),
+          headers: z.record(z.string(), z.string()),
+          body: z.string().optional(),
+        }).optional().describe('Captured request to replay with mutations'),
+        payloadSet: z.object({
+          category: z.string(),
+          variant: z.string().optional(),
+          limit: z.number().optional(),
+        }).optional().describe('Explicit payload selection from the PayloadStore'),
+        multiParam: z.boolean().optional().describe('Test all params'),
+        concurrency: z.number().optional().describe('Override default concurrency'),
+        maxAttempts: z.number().optional().describe('Override default attempt count'),
+      }).describe('Target context for the primitive'),
+      commit: z.boolean().optional().default(true).describe('If confirmed, write the finding to the knowledge graph'),
+    }),
+    execute: async ({ primitiveId, context, commit }: any) => {
+      // Runtime allowlist enforcement (defense-in-depth: schema already restricts options)
+      if (!allowSet.has(primitiveId)) {
+        return {
+          ok: false,
+          error: `Primitive "${primitiveId}" is not authorized for this worker. Allowed: ${valid.join(', ')}`,
+        }
+      }
+
+      const res = await runPrimitiveById(primitiveId, context ?? {}, { commit: commit !== false })
+      return {
+        ok: res.ok,
+        skipped: res.skipped ?? false,
+        reason: res.reason,
+        available: valid,
+        result: res.result,
+      }
+    },
+  })
+}
+
 export const listPrimitiveCapabilitiesTool = createTool({
   id: 'listPrimitiveCapabilities',
   description: 'List all available technique primitives, their variants, and supported options. Use this to discover what attack variants are available before selecting one via runPrimitive.',

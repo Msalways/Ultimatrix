@@ -7,6 +7,7 @@ import {isUrlInScope} from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { getGlobalSessionManager } from '../http/session-manager'
 
 const globalLoopDetector = new LoopDetector()
 
@@ -118,11 +119,12 @@ export const httpRequest = createTool({
     headers: z.record(z.string(), z.string()).optional().describe('Request headers. Pass auth/session headers previously captured from the target session.'),
     body: z.string().optional().describe('Request body — only valid with POST, PUT, or PATCH'),
     timeoutMs: z.number().int().positive().default(10000).describe('Timeout in milliseconds'),
+    sessionRef: z.string().optional().describe('Session reference name (e.g. "admin:https://example.com"). When provided, auto-merges session headers (cookies, bearer token) under any explicit headers. Use useSession or storeSession to create sessions.'),
   }).refine(
     (data) => !['GET', 'HEAD'].includes(data.method) || data.body === undefined,
     { message: 'GET and HEAD requests cannot have a body. Use POST/PUT/PATCH for requests with a body.' },
   ),
-  execute: async ({  method, url, headers, body, timeoutMs  }) => {
+  execute: async ({  method, url, headers, body, timeoutMs, sessionRef  }) => {
     const start = performance.now()
     try {
       const scopeCheck = isUrlInScope(url)
@@ -135,9 +137,20 @@ export const httpRequest = createTool({
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
       await waitForHostSlot(url)
+
+      // Phase 4: Auto-merge session headers when sessionRef is provided.
+      // Session headers go underneath; explicit headers override them.
+      let mergedHeaders: Record<string, string> = { ...(headers ?? {}) }
+      if (sessionRef) {
+        const sessionManager = getGlobalSessionManager()
+        const sessionHeaders = sessionManager.getAllHeaders(sessionRef)
+        // Session headers are the base; explicit headers win
+        mergedHeaders = { ...sessionHeaders, ...mergedHeaders }
+      }
+
       const fetchOpts: RequestInit = {
         method,
-        headers: headers ?? {},
+        headers: mergedHeaders,
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs ?? 10000),
       }
@@ -153,7 +166,7 @@ export const httpRequest = createTool({
       getCapturedRequestStore().record({
         method,
         url,
-        ...(headers ? { headers } : {}),
+        ...(mergedHeaders ? { headers: mergedHeaders } : {}),
         ...(body !== undefined ? { body } : {}),
         status: raw.status,
         responseHeaders: resHeaders,
@@ -163,14 +176,14 @@ export const httpRequest = createTool({
         type: 'raw_response',
         data: responseBody,
         label: `${method} ${url} → ${raw.status}`,
-        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, ...(headers ? { requestHeaders: headers } : {}), ...(body ? { requestBody: body } : {}) },
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
       })
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
       getForensicLog()?.log({
         type: 'http-request',
         agent: 'worker',
         tool: 'httpRequest',
-        args: { method, url, headers, body: body?.substring(0, 1000) },
+        args: { method, url, headers: mergedHeaders, body: body?.substring(0, 1000) },
         result: { status: raw.status, headers: resHeaders, bodyLength: responseBody.length },
         duration: Math.round(performance.now() - start),
       })

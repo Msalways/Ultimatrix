@@ -2,7 +2,7 @@
 import { recordTestCase } from './record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from './observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from './session-tools'
-import { recordEvidence, writeFinding } from './control-tools'
+import { recordEvidence, linkEvidenceToClaim, writeFinding } from './control-tools'
 import { verifyChainsTool } from './detect-chains-tool'
 import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
 import { readAppModelSection, writeAppModelSection } from './app-model-tools'
@@ -28,13 +28,14 @@ import { scannerTools } from './scanner-tools'
 import { listCapturedRequests, replayCapturedRequest } from './replay-tools'
 import { manageSkills } from './skill-manage-tools'
 import { webSearch } from './web-search'
+import { requestAsActor, listActors } from './actor-tools'
 
 export {
   httpRequest, multipartUpload, followRedirects, omitHeader,
   recordTestCase,
   parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
   extractSessionCookie, extractCsrfToken, useSession,
-  recordEvidence, writeFinding,
+  recordEvidence, linkEvidenceToClaim, writeFinding,
   verifyChainsTool,
   queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
   getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds,
@@ -61,6 +62,8 @@ export {
     replayCapturedRequest,
     manageSkills,
     webSearch,
+    requestAsActor,
+    listActors,
   }
 
 export function registerAllTools() {
@@ -69,7 +72,7 @@ export function registerAllTools() {
     recordTestCase,
     parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
     extractSessionCookie, extractCsrfToken, useSession,
-    recordEvidence, writeFinding,
+    recordEvidence, linkEvidenceToClaim, writeFinding,
     verifyChains: verifyChainsTool,
     queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
     getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds,
@@ -94,6 +97,8 @@ export function registerAllTools() {
     listCapturedRequests,
     replayCapturedRequest,
     manageSkills,
+    requestAsActor,
+    listActors,
     nuclei: scannerTools.nuclei,
     sqlmap: scannerTools.sqlmap,
     ffuf: scannerTools.ffuf,

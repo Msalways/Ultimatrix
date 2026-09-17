@@ -5,7 +5,7 @@
  * class of bugs where a worker is silently filtered to a non-existent tool.
  */
 import { describe, it, expect } from 'vitest'
-import { getCoreTools, getExecutionTools, resolveToolsForSkills } from '../../src/solver/skills/tool-filter'
+import { getCoreTools, getExecutionTools, resolveToolsForSkills, resolveToolsForSkillsWorker, getWorkerUniversal } from '../../src/solver/skills/tool-filter'
 import { getAllSkills } from '../../src/solver/skills/loader'
 import { TOOL_IDS } from '../../src/mastra/tools'
 
@@ -43,5 +43,18 @@ describe('skill→tool wiring drift guard', () => {
     const resolved = resolveToolsForSkills(skillIds)
     const missing = resolved.filter(id => !registry.has(id))
     expect(missing, `resolveToolsForSkills returned missing tools: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('every WORKER_UNIVERSAL entry is a real registry tool', () => {
+    const missing = getWorkerUniversal().filter(id => !registry.has(id))
+    expect(missing, `WORKER_UNIVERSAL references missing tools: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('resolveToolsForSkillsWorker only returns real registry tools', () => {
+    const skills = getAllSkills()
+    const skillIds = skills.map(s => s.id)
+    const resolved = resolveToolsForSkillsWorker(skillIds)
+    const missing = resolved.filter(id => !registry.has(id))
+    expect(missing, `resolveToolsForSkillsWorker returned missing tools: ${missing.join(', ')}`).toEqual([])
   })
 })

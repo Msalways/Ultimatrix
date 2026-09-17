@@ -57,6 +57,7 @@ import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import { webSearch } from '../tools/web-search'
+import { requestAsActor, listActors } from '../tools/actor-tools'
 import {
   buildResearchMap, planResearchExperiments, compareResearchResponses,
   evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
@@ -132,6 +133,8 @@ function httpTools(p: string): Record<string, any> {
     followRedirects: s(followRedirects, p),
     listCapturedRequests: s(listCapturedRequests, p),
     replayCapturedRequest: s(replayCapturedRequest, p),
+    requestAsActor: s(requestAsActor, p),
+    listActors: s(listActors, p),
   }
 }
 

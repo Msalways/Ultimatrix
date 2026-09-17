@@ -117,8 +117,19 @@ export function createAgent(
     allTools = candidates
   }
 
+  // Build skill instructions: compact contract + task-relevant knowledge fragments.
   const skillInstructions = options?.skills
-    ? options.skills.map(s => s.instructions).join('\n\n')
+    ? options.skills.map(s => {
+        // Compact contract (always included)
+        const parts = [s.instructions]
+        // Knowledge fragments (loaded by parseSkillBody from subfolder)
+        if (s.fragments && s.fragments.length > 0) {
+          for (const frag of s.fragments) {
+            parts.push(`--- ${frag.title} ---\n${frag.content}`)
+          }
+        }
+        return parts.join('\n\n')
+      }).join('\n\n')
     : ''
 
   let fullInstructions = [
@@ -272,6 +283,7 @@ export function createReconAgent(
     storeSession: toolRegistry.storeSession,
     evaluateRendered: toolRegistry.evaluateRendered,
     recordEvidence: toolRegistry.recordEvidence,
+    linkEvidenceToClaim: toolRegistry.linkEvidenceToClaim,
     recordTestCase: toolRegistry.recordTestCase,
     updateGraph: toolRegistry.updateGraph,
     queryGraph: toolRegistry.queryGraph,
@@ -325,6 +337,7 @@ export function createInjectionAgent(
     evaluateRendered: toolRegistry.evaluateRendered,
     checkWaf: toolRegistry.checkWaf,
     recordEvidence: toolRegistry.recordEvidence,
+    linkEvidenceToClaim: toolRegistry.linkEvidenceToClaim,
     writeFinding: toolRegistry.writeFinding,
     queryGraph: toolRegistry.queryGraph,
     updateGraph: toolRegistry.updateGraph,
@@ -379,6 +392,7 @@ export function createAuthControlAgent(
     httpRequest: toolRegistry.httpRequest,
     parseResponse: toolRegistry.parseResponse,
     recordEvidence: toolRegistry.recordEvidence,
+    linkEvidenceToClaim: toolRegistry.linkEvidenceToClaim,
     writeFinding: toolRegistry.writeFinding,
     queryGraph: toolRegistry.queryGraph,
     updateGraph: toolRegistry.updateGraph,
@@ -435,6 +449,7 @@ export function createAdvancedAgent(
     compareResponses: toolRegistry.compareResponses,
     checkWaf: toolRegistry.checkWaf,
     recordEvidence: toolRegistry.recordEvidence,
+    linkEvidenceToClaim: toolRegistry.linkEvidenceToClaim,
     writeFinding: toolRegistry.writeFinding,
     queryGraph: toolRegistry.queryGraph,
     updateGraph: toolRegistry.updateGraph,
