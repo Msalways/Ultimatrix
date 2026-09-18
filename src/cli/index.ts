@@ -88,6 +88,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
   const knownCommands = new Set([
     'init', 'learn', 'generate', 'replay', 'report', 'scan', 'solve', 'ci', 'assess',
     'verify', 'interact', 'resume', 'web', 'models', 'budget', 'ratelimit', 'tools', 'mcp', 'config', 'providers',
+    'skills',
   ])
   if (subcommand && !subcommand.startsWith('-') && !knownCommands.has(subcommand)) {
     process.stderr.write(`Unknown command: ${subcommand}\n`)

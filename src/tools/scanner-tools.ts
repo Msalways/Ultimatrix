@@ -8,6 +8,9 @@
  *     Finding is possible) and returns BOTH the raw result and the bridge
  *     verdict (confirmed vs candidate) so the brain can decide what to persist.
  *
+ * When sandbox config is enabled (Phase S / TS.7), adapter tools auto-fallback
+ * to Docker execution when the local binary is not installed.
+ *
  * No substring routing — the brain selects the tool from its own reasoning and
  * the skill `toolRefs` it is allowed to use.
  */
@@ -81,5 +84,43 @@ export const scannerTools = Object.fromEntries(adapterTools.map(t => [t.id, t]))
   string,
   ReturnType<typeof buildAdapterTool>
 >
+
+/**
+ * Build sandbox-aware adapter tools (TS.7).
+ *
+ * When sandbox config is enabled, wraps each adapter with Docker fallback:
+ * local-first, sandbox-second, skip-last. Falls back to regular adapterTools
+ * if sandbox is not configured or unavailable.
+ */
+export async function buildSandboxAwareTools(
+  sandboxConfig?: { enabled?: boolean; image?: string; networkMode?: 'host' | 'bridge' | 'none'; timeoutMs?: number },
+): Promise<Record<string, ReturnType<typeof buildAdapterTool>>> {
+  if (!sandboxConfig?.enabled) return scannerTools
+
+  try {
+    const { getGlobalSandboxManager } = await import('../execution/sandbox-manager')
+    const { createSandboxAdapter, TOOL_COMMANDS } = await import('../execution/sandbox-adapter')
+
+    const manager = getGlobalSandboxManager({
+      enabled: true,
+      image: sandboxConfig.image,
+      networkMode: sandboxConfig.networkMode,
+      timeoutMs: sandboxConfig.timeoutMs,
+    })
+
+    const wrappedAdapters = ALL_ADAPTERS.map((adapter) => {
+      const commandBuilder = TOOL_COMMANDS[adapter.id]
+      if (commandBuilder) {
+        return createSandboxAdapter(adapter, manager, commandBuilder)
+      }
+      return adapter
+    })
+
+    const tools = wrappedAdapters.map(buildAdapterTool)
+    return Object.fromEntries(tools.map(t => [t.id, t])) as Record<string, ReturnType<typeof buildAdapterTool>>
+  } catch {
+    return scannerTools
+  }
+}
 
 export { ALL_ADAPTERS, getAdapter }

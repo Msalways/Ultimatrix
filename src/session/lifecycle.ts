@@ -149,6 +149,10 @@ export class SessionLifecycle {
   /** AbortController for SIGINT — signals solver and tool calls to stop. */
   readonly abortController = new AbortController()
   private sigintHandler?: () => void
+  /** True while a solver turn is executing (REPL turn in progress). */
+  private turnActive = false
+  /** Set when a turn was soft-aborted — next SIGINT forces full exit. */
+  private turnAborted = false
 
   get resources(): Readonly<Partial<SessionResources>> {
     return this._resources
@@ -156,6 +160,30 @@ export class SessionLifecycle {
 
   get currentPhase(): SessionPhase {
     return this.phase
+  }
+
+  /** Mark a solver turn as active (enables soft-abort on Ctrl+C). */
+  markTurnActive(): void {
+    this.turnActive = true
+    this.turnAborted = false
+  }
+
+  /** Mark the current solver turn as complete. */
+  markTurnComplete(): void {
+    this.turnActive = false
+    this.turnAborted = false
+    // Recreate the abort controller so the next turn gets a fresh signal
+    // (AbortController.abort() is one-shot — once aborted, signal stays aborted).
+    if (this.abortController.signal.aborted) {
+      const fresh = new AbortController()
+      // Transfer the reference (the old controller's signal is consumed)
+      ;(this as { abortController: AbortController }).abortController = fresh
+    }
+  }
+
+  /** True when a turn was soft-aborted (the solver should stop gracefully). */
+  get isTurnAborted(): boolean {
+    return this.turnAborted
   }
 
   // â”€â”€ Phase 0: Config + Resources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -990,6 +1018,16 @@ export class SessionLifecycle {
       if (this.shuttingDown) {
         log.info('Forced exit.')
         process.exit(1)
+      }
+      // Soft-abort: if a solver turn is active, abort the turn but keep the session alive.
+      // First Ctrl+C during a turn → abort turn, return to prompt.
+      // Second Ctrl+C (or first when idle) → full shutdown.
+      if (this.turnActive && !this.turnAborted) {
+        this.turnAborted = true
+        this.abortController.abort()
+        process.stdout.write('\n')
+        log.dim('Turn interrupted. Ctrl+C again to exit the session.')
+        return
       }
       this.shuttingDown = true
       this.abortController.abort()

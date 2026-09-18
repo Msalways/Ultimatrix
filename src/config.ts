@@ -304,6 +304,21 @@ export interface OastConfig {
   callbackTtlMs?: number
 }
 
+export interface SandboxConfig {
+  /** Enable sandbox execution (default: false). */
+  enabled?: boolean
+  /** Docker image to use (default: 'ultimatrix-sandbox:latest'). */
+  image?: string
+  /** Network mode for the container. Default: 'none'. */
+  networkMode?: 'host' | 'bridge' | 'none'
+  /** Per-command timeout in ms. Default: 120000. */
+  timeoutMs?: number
+  /** Memory limit (e.g. '512m', '1g'). Default: '512m'. */
+  memoryLimit?: string
+  /** CPU quota (100000 = 1 CPU). Default: 100000. */
+  cpuQuota?: number
+}
+
 /**
  * @deprecated 'solver' is an alias for 'multi-model'.
  * 'council' is deprecated — council is now a REPL command (`/council <goal>`),
@@ -543,6 +558,8 @@ export interface UltimatrixConfig {
   context?: ContextConfig
   /** Test account credentials keyed by role name (e.g. { admin: { email, password } }). */
   credentials?: Record<string, { email: string; password: string }>
+  /** Phase S: Docker sandbox for external tool execution. */
+  sandbox?: SandboxConfig
 }
 
 // ─── Extensibility config types (Phase 1 / 5) ─────────────────────────
@@ -1464,6 +1481,7 @@ const provider = browserRawForValidation.provider
     ...(raw.context ? { context: raw.context as ContextConfig } : {}),
     ...(raw.council ? { council: raw.council as import('./council/types').CouncilConfig } : {}),
     ...(raw.credentials ? { credentials: raw.credentials as Record<string, { email: string; password: string }> } : {}),
+    ...(raw.sandbox ? { sandbox: raw.sandbox as SandboxConfig } : {}),
     ...(raw.providerKeys ? { providerKeys: raw.providerKeys as Record<string, ApiKeyCreds> } : {}),
     ...(raw.oast ? { oast: raw.oast as OastConfig } : {}),
     ...(Array.isArray(raw.mcp) ? { mcp: raw.mcp as McpServerConfig[] } : {}),

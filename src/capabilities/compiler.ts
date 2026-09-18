@@ -17,6 +17,7 @@ import type {
 } from './types'
 import { DEFAULT_COMPILER_POLICY, TOKENS_PER_TOOL } from './types'
 import { isToolAllowedByPolicy, getToolCategory } from './registry'
+import { aggregateEffects } from './effects'
 import { initSkillIndex } from '../solver/skills/loader'
 
 /**
@@ -128,6 +129,9 @@ export function compileCapabilities(input: CompilerInput): CompiledCapabilitySet
   // ─── Estimate tokens ─────────────────────────────────────────────────
   const estimatedTokens = tools.size * TOKENS_PER_TOOL
 
+  // ─── Aggregate effects ───────────────────────────────────────────────
+  const effects = aggregateEffects([...tools])
+
   // ─── Skill Contract validation (Strix Adaptation Phase B) ────────────
   const contract = primarySkill.contract
   let coverageValidation: CapabilityCoverageValidation | undefined
@@ -161,6 +165,7 @@ export function compileCapabilities(input: CompilerInput): CompiledCapabilitySet
     evidencePolicy,
     skill: primarySkill,
     estimatedTokens,
+    effects,
     ...(contract ? { contract } : {}),
     ...(coverageValidation ? { coverageValidation } : {}),
   }

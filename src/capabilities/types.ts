@@ -24,6 +24,8 @@ export interface CompiledCapabilitySet {
   contract?: SkillContract
   /** Capability coverage validation result (present when contract exists) */
   coverageValidation?: CapabilityCoverageValidation
+  /** Aggregated effect metadata for the compiled tool set */
+  effects?: CapabilityEffects
 }
 
 /** Result of validating a compiled tool surface against contract capabilities */
@@ -83,3 +85,31 @@ export const DEFAULT_COMPILER_POLICY: Required<CompilerPolicy> = {
 
 /** Estimated tokens per tool schema (used for budget enforcement) */
 export const TOKENS_PER_TOOL = 60
+
+/** Effect metadata for a capability or tool */
+export interface CapabilityEffects {
+  /** Tool makes network requests */
+  network?: boolean
+  /** Tool requires/uses browser */
+  browser?: boolean
+  /** Tool accesses filesystem */
+  filesystem?: boolean
+  /** Tool reads secrets (tokens, cookies, headers) */
+  readsSecrets?: boolean
+  /** Tool writes persistent state */
+  writesState?: boolean
+  /** Tool creates artifacts (files, screenshots, reports) */
+  createsArtifact?: boolean
+  /** Tool mutates the target (active exploitation) */
+  mutatesTarget?: boolean
+  /** Tool spawns child workers */
+  spawnsWorker?: boolean
+  /** Tool's effects are externally visible to the target */
+  externallyVisible?: boolean
+  /** Estimated latency in milliseconds */
+  estimatedLatencyMs?: number
+  /** Estimated token cost for this tool's schema */
+  estimatedTokenCost?: number
+  /** Whether the tool's effects are reversible */
+  reversibility?: 'read-only' | 'reversible' | 'irreversible'
+}

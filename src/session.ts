@@ -602,59 +602,76 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         chatbox,
       })
       lastRenderMsg = renderMsg
-      const result = await solve(resources.solverBrain!, {
-        origin: target || 'conversation',
-        goal: line,
-        model: config.model,
-        memory: { thread: threadId, resource: resourceId },
-        blackboard: resources.coreServices.blackboard,
-        evidence: resources.sessionEvidence,
-        loopDetector: resources.coreServices.loopDetector,
-        reflexion: resources.coreServices.reflexion,
-        config: {
-          maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
-          maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
-          staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
-          maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
-        },
-        onToolComplete: (_toolName: string, _result?: unknown) => {
-          getGlobalWorkspace().getGraphStore()?.scheduleSave()
-        },
-        onMessage: renderMsg,
-        onPhase: (event) => {
-          resources.forensicLog.log({
-            type: 'solver-phase',
-            agent: 'solver-brain',
-            args: {
-              phase: event.phase,
-              step: event.step,
-              toolName: event.toolName,
-              toolArgs: event.toolArgs,
-              reason: event.reason,
-              activity: event.activity,
-            },
-          })
-        },
-        workflow: resources.workflow,
-        ultimatrixConfig: config,
-      })
+      lifecycle.markTurnActive()
+      let result: Awaited<ReturnType<typeof solve>> | null = null
+      let aborted = false
+      try {
+        result = await solve(resources.solverBrain!, {
+          origin: target || 'conversation',
+          goal: line,
+          model: config.model,
+          memory: { thread: threadId, resource: resourceId },
+          blackboard: resources.coreServices.blackboard,
+          evidence: resources.sessionEvidence,
+          loopDetector: resources.coreServices.loopDetector,
+          reflexion: resources.coreServices.reflexion,
+          config: {
+            maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
+            maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
+            staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
+            maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+          },
+          signal: lifecycle.abortController.signal,
+          onToolComplete: (_toolName: string, _result?: unknown) => {
+            getGlobalWorkspace().getGraphStore()?.scheduleSave()
+          },
+          onMessage: renderMsg,
+          onPhase: (event) => {
+            resources.forensicLog.log({
+              type: 'solver-phase',
+              agent: 'solver-brain',
+              args: {
+                phase: event.phase,
+                step: event.step,
+                toolName: event.toolName,
+                toolArgs: event.toolArgs,
+                reason: event.reason,
+                activity: event.activity,
+              },
+            })
+          },
+          workflow: resources.workflow,
+          ultimatrixConfig: config,
+        })
+      } catch (err: any) {
+        // Soft-abort: solver was interrupted by Ctrl+C — show message, skip summary
+        if (lifecycle.isTurnAborted || err?.message === 'Solver interrupted') {
+          aborted = true
+        } else {
+          throw err
+        }
+      } finally {
+        lifecycle.markTurnComplete()
+      }
 
       renderMsg.final()
-      if (result.toolCalls > 0 || result.error) {
-        logSolveSummary(result)
-        log.info(`Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0}`)
-      }
+      if (!aborted) {
+        if (result && (result.toolCalls > 0 || result.error)) {
+          logSolveSummary(result)
+          log.info(`Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0}`)
+        }
 
-      const quotaTracker = getGlobalQuotaTracker()
-      const providerStatus = quotaTracker.getStatus()
-      const providerInfo = providerStatus[config.provider]
-      if (providerInfo) {
-        log.dim(`[quota] ${config.provider}: ${providerInfo.used} requests this session` +
-          (providerInfo.inCooldown ? ' (COOLDOWN)' : ''))
-      }
-      if (result.planSummary) {
-        log.info('Plan summary:')
-        log.info(result.planSummary)
+        const quotaTracker = getGlobalQuotaTracker()
+        const providerStatus = quotaTracker.getStatus()
+        const providerInfo = providerStatus[config.provider]
+        if (providerInfo) {
+          log.dim(`[quota] ${config.provider}: ${providerInfo.used} requests this session` +
+            (providerInfo.inCooldown ? ' (COOLDOWN)' : ''))
+        }
+        if (result?.planSummary) {
+          log.info('Plan summary:')
+          log.info(result.planSummary)
+        }
       }
       renderMsg.flush()
     } else {

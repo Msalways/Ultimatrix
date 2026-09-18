@@ -1,16 +1,25 @@
 /**
- * Coverage Ledger (Strix Adaptation Phase G) — persistent coverage tracking.
+ * Coverage Ledger (Strix Adaptation Phase G + E2E Phase 1).
  *
  * Tracks which skill contract stages have been executed and which findings
  * cover each stage. The LLM can query coverage to know what's been tested
  * and what's still missing. Persists to the graph store.
+ *
+ * Phase 1: Coverage is keyed by runId+taskId+skillId (not just skillId).
+ * Parallel tasks using the same skill maintain completely separate coverage.
+ * Events are stored for replay/projection.
  */
 
-import { randomUUID } from 'node:crypto'
 import type { SkillContract, ProcedureStage } from '../solver/skills/loader'
-import { getGlobalGraphStore } from '../graph/store'
 
 export type StageStatus = 'pending' | 'executed' | 'covered' | 'skipped'
+
+/** Coverage scope — uniquely identifies a coverage context */
+export interface CoverageScope {
+  runId: string
+  taskId: string
+  skillId: string
+}
 
 export interface StageCoverage {
   stageId: string
@@ -27,7 +36,7 @@ export interface StageCoverage {
 }
 
 export interface SkillCoverage {
-  skillId: string
+  scope: CoverageScope
   stages: StageCoverage[]
   complete: boolean
   totalStages: number
@@ -35,15 +44,40 @@ export interface SkillCoverage {
   lastUpdated: number
 }
 
-/** In-memory coverage state keyed by skillId */
+/** Coverage events for event-sourced projection */
+export type CoverageEventType = 'stage.executed' | 'stage.covered' | 'stage.skipped'
+
+export interface CoverageEvent {
+  type: CoverageEventType
+  scope: CoverageScope
+  stageId: string
+  timestamp: number
+  ref?: string
+}
+
+/** Composite key for scope-based lookup */
+function scopeKey(scope: CoverageScope): string {
+  return `${scope.runId}:${scope.taskId}:${scope.skillId}`
+}
+
+/** Legacy key (backward compat) */
+function legacyKey(skillId: string): string {
+  return `default:default:${skillId}`
+}
+
+/** In-memory coverage state keyed by scope */
 const coverageMap = new Map<string, SkillCoverage>()
+
+/** Event log for replay/projection */
+const eventLog: CoverageEvent[] = []
 
 /**
  * Initialize coverage tracking for a skill from its contract.
- * Idempotent: calling again with the same skillId doesn't overwrite existing state.
+ * Idempotent: calling again with the same scope doesn't overwrite existing state.
  */
-export function initCoverage(skillId: string, contract: SkillContract): SkillCoverage {
-  const existing = coverageMap.get(skillId)
+export function initCoverage(scope: CoverageScope, contract: SkillContract): SkillCoverage {
+  const key = scopeKey(scope)
+  const existing = coverageMap.get(key)
   if (existing) return existing
 
   const stages: StageCoverage[] = contract.procedure.map(s => ({
@@ -55,7 +89,7 @@ export function initCoverage(skillId: string, contract: SkillContract): SkillCov
   }))
 
   const coverage: SkillCoverage = {
-    skillId,
+    scope,
     stages,
     complete: false,
     totalStages: stages.length,
@@ -63,7 +97,7 @@ export function initCoverage(skillId: string, contract: SkillContract): SkillCov
     lastUpdated: Date.now(),
   }
 
-  coverageMap.set(skillId, coverage)
+  coverageMap.set(key, coverage)
   return coverage
 }
 
@@ -71,11 +105,12 @@ export function initCoverage(skillId: string, contract: SkillContract): SkillCov
  * Mark a stage as executed (test was run against it).
  */
 export function markStageExecuted(
-  skillId: string,
+  scope: CoverageScope,
   stageId: string,
   exchangeId?: string,
 ): SkillCoverage | undefined {
-  const coverage = coverageMap.get(skillId)
+  const key = scopeKey(scope)
+  const coverage = coverageMap.get(key)
   if (!coverage) return undefined
 
   const stage = coverage.stages.find(s => s.stageId === stageId)
@@ -91,6 +126,16 @@ export function markStageExecuted(
 
   coverage.lastUpdated = Date.now()
   recalculate(coverage)
+
+  // Record event
+  eventLog.push({
+    type: 'stage.executed',
+    scope,
+    stageId,
+    timestamp: Date.now(),
+    ref: exchangeId,
+  })
+
   return coverage
 }
 
@@ -98,11 +143,12 @@ export function markStageExecuted(
  * Mark a stage as covered (finding confirms it was tested successfully).
  */
 export function markStageCovered(
-  skillId: string,
+  scope: CoverageScope,
   stageId: string,
   findingId: string,
 ): SkillCoverage | undefined {
-  const coverage = coverageMap.get(skillId)
+  const key = scopeKey(scope)
+  const coverage = coverageMap.get(key)
   if (!coverage) return undefined
 
   const stage = coverage.stages.find(s => s.stageId === stageId)
@@ -116,6 +162,16 @@ export function markStageCovered(
 
   coverage.lastUpdated = Date.now()
   recalculate(coverage)
+
+  // Record event
+  eventLog.push({
+    type: 'stage.covered',
+    scope,
+    stageId,
+    timestamp: Date.now(),
+    ref: findingId,
+  })
+
   return coverage
 }
 
@@ -123,11 +179,12 @@ export function markStageCovered(
  * Skip a stage (not applicable for this target).
  */
 export function markStageSkipped(
-  skillId: string,
+  scope: CoverageScope,
   stageId: string,
   reason?: string,
 ): SkillCoverage | undefined {
-  const coverage = coverageMap.get(skillId)
+  const key = scopeKey(scope)
+  const coverage = coverageMap.get(key)
   if (!coverage) return undefined
 
   const stage = coverage.stages.find(s => s.stageId === stageId)
@@ -136,21 +193,31 @@ export function markStageSkipped(
   stage.status = 'skipped'
   coverage.lastUpdated = Date.now()
   recalculate(coverage)
+
+  // Record event
+  eventLog.push({
+    type: 'stage.skipped',
+    scope,
+    stageId,
+    timestamp: Date.now(),
+    ref: reason,
+  })
+
   return coverage
 }
 
 /**
- * Get the current coverage status for a skill.
+ * Get the current coverage status for a scope.
  */
-export function getCoverageStatus(skillId: string): SkillCoverage | undefined {
-  return coverageMap.get(skillId)
+export function getCoverageStatus(scope: CoverageScope): SkillCoverage | undefined {
+  return coverageMap.get(scopeKey(scope))
 }
 
 /**
- * Get uncovered stages for a skill — what still needs testing.
+ * Get uncovered stages for a scope — what still needs testing.
  */
-export function getUncoveredStages(skillId: string): StageCoverage[] {
-  const coverage = coverageMap.get(skillId)
+export function getUncoveredStages(scope: CoverageScope): StageCoverage[] {
+  const coverage = coverageMap.get(scopeKey(scope))
   if (!coverage) return []
   return coverage.stages.filter(s => s.status === 'pending' || s.status === 'executed')
 }
@@ -158,11 +225,11 @@ export function getUncoveredStages(skillId: string): StageCoverage[] {
 /**
  * Get a summary string suitable for LLM context.
  */
-export function coverageSummary(skillId: string): string {
-  const coverage = coverageMap.get(skillId)
-  if (!coverage) return `No coverage data for ${skillId}`
+export function coverageSummary(scope: CoverageScope): string {
+  const coverage = coverageMap.get(scopeKey(scope))
+  if (!coverage) return `No coverage data for ${scope.skillId} (run=${scope.runId}, task=${scope.taskId})`
 
-  const lines = [`## Coverage: ${skillId}`]
+  const lines = [`## Coverage: ${scope.skillId} (run=${scope.runId}, task=${scope.taskId})`]
   lines.push(`${coverage.coveredStages}/${coverage.totalStages} stages covered`)
   lines.push('')
 
@@ -186,10 +253,63 @@ export function coverageSummary(skillId: string): string {
 }
 
 /**
+ * Get all coverage events for a scope (for replay).
+ */
+export function getCoverageEvents(scope: CoverageScope): CoverageEvent[] {
+  return eventLog.filter(e =>
+    e.scope.runId === scope.runId &&
+    e.scope.taskId === scope.taskId &&
+    e.scope.skillId === scope.skillId,
+  )
+}
+
+/**
+ * Get all coverage events (for debugging/inspection).
+ */
+export function getAllCoverageEvents(): CoverageEvent[] {
+  return [...eventLog]
+}
+
+/**
  * Clear all coverage data (for tests).
  */
 export function clearCoverage(): void {
   coverageMap.clear()
+  eventLog.length = 0
+}
+
+// ─── Backward-compatible overloads ──────────────────────────────────────────
+
+/**
+ * Initialize coverage with just a skillId (backward compat).
+ * Uses 'default' for runId and taskId.
+ */
+export function initCoverageLegacy(skillId: string, contract: SkillContract): SkillCoverage {
+  return initCoverage({ runId: 'default', taskId: 'default', skillId }, contract)
+}
+
+export function markStageExecutedLegacy(skillId: string, stageId: string, exchangeId?: string): SkillCoverage | undefined {
+  return markStageExecuted({ runId: 'default', taskId: 'default', skillId }, stageId, exchangeId)
+}
+
+export function markStageCoveredLegacy(skillId: string, stageId: string, findingId: string): SkillCoverage | undefined {
+  return markStageCovered({ runId: 'default', taskId: 'default', skillId }, stageId, findingId)
+}
+
+export function markStageSkippedLegacy(skillId: string, stageId: string, reason?: string): SkillCoverage | undefined {
+  return markStageSkipped({ runId: 'default', taskId: 'default', skillId }, stageId, reason)
+}
+
+export function getCoverageStatusLegacy(skillId: string): SkillCoverage | undefined {
+  return getCoverageStatus({ runId: 'default', taskId: 'default', skillId })
+}
+
+export function getUncoveredStagesLegacy(skillId: string): StageCoverage[] {
+  return getUncoveredStages({ runId: 'default', taskId: 'default', skillId })
+}
+
+export function coverageSummaryLegacy(skillId: string): string {
+  return coverageSummary({ runId: 'default', taskId: 'default', skillId })
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
