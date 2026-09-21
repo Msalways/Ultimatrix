@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { generateAuthToken, initAuth, maskToken } from '../web/auth'
 
-const PORT = Number(process.env.PORT) || 3000
+const PORT = Number(process.env.PORT) || 3001
 const HOST = process.env.HOST || '127.0.0.1'
 
 export async function webCommand(): Promise<void> {

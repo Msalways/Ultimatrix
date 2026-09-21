@@ -38,6 +38,7 @@ function parseGitleaks(stdout: string): AdapterFinding[] {
 
 export const gitleaksAdapter: ToolAdapter = {
   id: 'gitleaks',
+  parseOutput: parseGitleaks,
   description:
     'Secret scanner. Runs the local gitleaks binary against a source path (cloned repo, downloaded JS bundle dir) to detect leaked keys/tokens. Requires gitleaks installed on PATH.',
   async isAvailable() {

@@ -28,6 +28,7 @@ function printCliHelp(): void {
     '  replay [-o <dir>]                  Replay generated tests',
     '  models | tools | mcp | budget      Inspect runtime capabilities',
     '  providers list|set|remove          Manage project provider keys',
+    '  sandbox [--json]                  Check Docker sandbox readiness',
     '  config doctor                      Check setup health and effective routing',
     '  config path                        Show the canonical config file',
     '  config migrate-credentials         Import the legacy credential store',
@@ -88,7 +89,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
   const knownCommands = new Set([
     'init', 'learn', 'generate', 'replay', 'report', 'scan', 'solve', 'ci', 'assess',
     'verify', 'interact', 'resume', 'web', 'models', 'budget', 'ratelimit', 'tools', 'mcp', 'config', 'providers',
-    'skills',
+    'skills', 'sandbox',
   ])
   if (subcommand && !subcommand.startsWith('-') && !knownCommands.has(subcommand)) {
     process.stderr.write(`Unknown command: ${subcommand}\n`)
@@ -284,7 +285,8 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       const target = getTarget(args.slice(1), loadConfig)
       const outputDir = getOutputDir(args.slice(1))
       if (!target) { log.error('solve requires a target: ultimatrix solve -t <url>'); process.exit(1) }
-      showDisclaimer(target)
+      // solveCommand owns the authorization banner so the CLI has one
+      // lifecycle owner and cannot print the disclaimer twice.
       await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)))
       break
     }
@@ -391,6 +393,12 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
 
     case 'providers': {
       await providersCommand(args.slice(1))
+      break
+    }
+
+    case 'sandbox': {
+      const { sandboxCommand } = await import('./sandbox')
+      await sandboxCommand(args.slice(1))
       break
     }
 

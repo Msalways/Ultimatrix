@@ -28,15 +28,32 @@ function setup() {
   const brain: any = createSolverBrain({ provider: 'groq', model: 'test', engine: 'solver' } as any, {
     skillRegistry: { list: () => [], search: () => [] } as any,
     extensionRegistry,
+    lazyServices: { getBrowserTools: async () => ({}) } as any,
   })
   return { brain, extensionRegistry }
 }
 
 describe('solver brain lazy tool view', () => {
-  it('starts with only catalog discovery and exact loading', () => {
+  it('starts with control-plane tools plus catalog discovery', () => {
     const { brain } = setup()
-    expect(Object.keys(brain.tools())).toEqual(['listTools', 'loadTool'])
-    expect(brain.defaultOptions.activeTools).toEqual(['listTools', 'loadTool'])
+    expect(Object.keys(brain.tools())).toEqual(expect.arrayContaining([
+      'listTools', 'loadTool', 'getTargetSummary', 'queryGraph', 'getGraphSchema',
+      'getWorkflowAround', 'getSessionContext', 'getCaptureOverview',
+      'webSearch', 'buildResearchMap', 'planResearchExperiments',
+      'compareResearchResponses', 'evaluateResearchExperiment',
+      'recordFindingCandidate', 'assessCandidateReportability', 'getResearchStatus',
+      'listSkills', 'searchSkills', 'discoverSkillsForTarget',
+      'loadSkillReference', 'loadSkillBody',
+    ]))
+    expect(brain.defaultOptions.activeTools).toEqual(expect.arrayContaining([
+      'listTools', 'loadTool', 'getTargetSummary', 'webSearch',
+      'buildResearchMap', 'planResearchExperiments',
+      'searchSkills', 'discoverSkillsForTarget', 'loadSkillBody',
+    ]))
+    // Gated schemas stay stable across Mastra steps; execution returns a typed
+    // METHODOLOGY_REQUIRED result until the research prerequisites are met.
+    expect(brain.defaultOptions.activeTools).toContain('httpRequest')
+    expect(brain.defaultOptions.activeTools).toContain('stagehand_navigate')
   })
 
   it('refreshes the native toolset after activation', async () => {
@@ -51,4 +68,14 @@ describe('solver brain lazy tool view', () => {
     const { brain } = setup()
     expect(Object.keys(brain.tools())).not.toContain('invokeTool')
   })
+
+  it('allows passive baseline observation before methodology is loaded', async () => {
+    const { brain } = setup()
+    const tools = brain.tools()
+    const getResult = await tools.httpRequest.execute({ method: 'GET', url: 'https://example.com' })
+    const postResult = await tools.httpRequest.execute({ method: 'POST', url: 'https://example.com', body: {} })
+    expect(getResult?.code).not.toBe('METHODOLOGY_REQUIRED')
+    expect(postResult?.code).toBe('METHODOLOGY_REQUIRED')
+  })
+
 })

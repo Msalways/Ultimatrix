@@ -64,6 +64,49 @@ describe('generateHypotheses (relation-native, no keyword regex)', () => {
     expect(hs.find(h => h.kind === 'information_disclosure')).toBeTruthy()
   })
 
+  it('does not promote a bundle-only route into a hypothesis', () => {
+    const jsOnly = ep('js1', 'https://app.test/api/orders/12345')
+    jsOnly.properties.tags = ['js-mined']
+    jsOnly.properties.source = 'post-crawl-discovery'
+    const store = makeStore([jsOnly])
+    const entity: ResearchEntity = {
+      id: 'entity:orders', name: 'Orders', ids: ['12345'], endpoints: ['js1'],
+      ownerFields: [], roleFields: [], sensitiveFields: [], lifecycleStates: [], confidence: 0.5,
+    }
+    expect(generateHypotheses(store, [], [entity])).toHaveLength(0)
+  })
+
+  it('uses JS route context after runtime correlation', () => {
+    const correlated = ep('js2', 'https://app.test/api/orders/12345')
+    correlated.properties.tags = ['js-mined', 'js-correlated']
+    correlated.properties.source = 'har-bridge, post-crawl-discovery'
+    const store = makeStore([correlated])
+    const entity: ResearchEntity = {
+      id: 'entity:orders', name: 'Orders', ids: ['12345'], endpoints: ['js2'],
+      ownerFields: [], roleFields: [], sensitiveFields: [], lifecycleStates: [], confidence: 0.5,
+    }
+    expect(generateHypotheses(store, [], [entity]).find(h => h.kind === 'idor')).toBeTruthy()
+  })
+
+  it('derives access-control hypotheses from captured endpoint structure', () => {
+    const endpoint = ep('e5', 'https://app.test/api/orders/41', 'GET')
+    endpoint.properties.headers = { Authorization: 'Bearer redacted' }
+    const hs = generateHypotheses(makeStore([endpoint]), [], [])
+    expect(hs.find(h => h.kind === 'broken_access_control')?.targetEndpoints).toEqual(['e5'])
+  })
+
+  it('does not prioritize metadata endpoints as application hypotheses', () => {
+    const endpoint = ep('e6', 'https://app.test/rest/admin/application-version', 'GET')
+    endpoint.properties.headers = { Cookie: 'session=redacted' }
+    expect(generateHypotheses(makeStore([endpoint]), [], [])).toHaveLength(0)
+  })
+
+  it('does not prioritize transport polling as application behavior', () => {
+    const endpoint = ep('e7', 'https://app.test/socket.io/', 'POST', [{ name: 'sid' }])
+    endpoint.properties.headers = { Cookie: 'session=redacted' }
+    expect(generateHypotheses(makeStore([endpoint]), [], [])).toHaveLength(0)
+  })
+
   it('rates workflow risk high from observedRoles / requiredAuth, not name keywords', () => {
     const store = makeStore([])
     const wfRole: ResearchWorkflow = {

@@ -12,8 +12,26 @@ function skip(tool: string, target: string, reason: string): ToolResult {
   return { tool, target, status: 'skip', output: reason, findings: [], duration: 0 }
 }
 
+function parseFfuf(stdout: string): AdapterFinding[] {
+  try {
+    const data = JSON.parse(stdout) as { results?: Array<{ status: number; url: string; words?: number; lines?: number }> }
+    return (data.results ?? []).map(r => ({
+      url: r.url,
+      severity: 'info' as const,
+      detail: `Status ${r.status} ${r.url} [Words:${r.words ?? '?'} Lines:${r.lines ?? '?'}]`,
+      raw: JSON.stringify(r),
+    }))
+  } catch {
+    return stdout.split('\n').flatMap(line => {
+      const m = line.match(/\[Status:\s*(\d+).*?URL:\s*(\S+?)\]/)
+      return m ? [{ url: m[2], severity: 'info' as const, detail: `Status ${m[1]}: ${m[2]}`, raw: line }] : []
+    })
+  }
+}
+
 export const ffufAdapter: ToolAdapter = {
   id: 'ffuf',
+  parseOutput: parseFfuf,
   description:
     'Fast web fuzzer. Runs the local ffuf binary to discover hidden endpoints, files, and directories by brute-forcing with a wordlist. Requires ffuf installed on PATH.',
   async isAvailable() {

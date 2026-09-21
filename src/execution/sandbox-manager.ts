@@ -14,7 +14,7 @@ import type {
   ExecutionPlatform,
 } from './types'
 import { SANDBOX_DEFAULTS } from './types'
-import { detectPlatform, getPlatformCapabilities } from './platform'
+import { detectPlatform, getPlatformCapabilities, getPlatformDiagnostic } from './platform'
 import {
   pullImage,
   createContainer,
@@ -48,6 +48,7 @@ export class SandboxManager {
       dockerAvailable: this.platform !== 'no-docker',
       containerRunning: !!this.containerId,
       containerId: this.containerId,
+      diagnostic: this.platform === 'no-docker' ? getPlatformDiagnostic() : undefined,
     }
   }
 
@@ -93,6 +94,9 @@ export class SandboxManager {
         memoryLimit: this.config.memoryLimit,
         cpuQuota: this.config.cpuQuota,
         readOnlyRoot: false,
+        // Nmap's Kali build requires both capabilities to initialize its
+        // packet engine under Docker Desktop's Linux VM.
+        capabilities: ['NET_RAW', 'NET_ADMIN'],
       })
       await startContainer(this.containerId)
       this.ready = true

@@ -18,11 +18,7 @@ import { z } from 'zod'
 import { httpRequest } from './http-tools'
 import { isUrlInScope } from '../safety/scope-guard'
 import { observeEndpoints } from '../primitives/observers'
-
-const SEED_PATHS = ['/openapi.json', '/api/openapi.json', '/swagger.json', '/swagger/v1/swagger.json', '/v1/openapi.json', '/docs', '/api-docs']
-const VERSION_PREFIXES = ['/v1', '/v2', '/v3', '/api/v1', '/api/v2']
-// Relevance scoring words (data, not a detection vocabulary).
-const RELEVANCE = ['admin', 'internal', 'debug', 'manage', 'secret', 'config', 'console', 'backdoor', 'private', 'test']
+import { loadSkill } from '../solver/skills/loader'
 
 export const shadowApiDiscovery = createTool({
   id: 'shadowApiDiscovery',
@@ -50,8 +46,12 @@ export const shadowApiDiscovery = createTool({
       if (!found.has(p)) found.set(p, { path: p, source })
     }
 
-    // Probe OpenAPI / doc seeds.
-    for (const seed of [...SEED_PATHS, ...(ctx.extraSeeds ?? [])]) {
+    const strategy = loadSkill('recon')?.strategy
+    const seedPaths = [...(strategy?.seedPaths ?? []), ...(ctx.extraSeeds ?? [])]
+    const versionPrefixes = strategy?.versionPrefixes ?? []
+    const relevanceSignals = strategy?.relevanceSignals ?? []
+    // Probe seeds supplied by the selected recon skill, plus target-derived additions.
+    for (const seed of seedPaths) {
       try {
         const r: any = await (httpRequest as any).execute({ method: 'GET', url: `${base}${seed}`, headers: {} })
         if (r?.ok && r.value?.body) {
@@ -81,13 +81,13 @@ export const shadowApiDiscovery = createTool({
     // Version-prefixed variants of discovered endpoints (shadow versioning).
     const base2 = [...found.keys()]
     for (const p of base2) {
-      for (const vp of VERSION_PREFIXES) {
+      for (const vp of versionPrefixes) {
         if (!p.startsWith(vp)) add(`${vp}${p}`, 'version-prefix')
       }
     }
 
     const endpoints = [...found.entries()].map(([path, meta]) => {
-      const relevant = RELEVANCE.some((w) => path.toLowerCase().includes(w))
+      const relevant = relevanceSignals.some((w) => path.toLowerCase().includes(w))
       return { path, source: meta.source, relevant, inScope: isUrlInScope(`${base}${path}`).allowed }
     })
     return { ok: true, endpoints }

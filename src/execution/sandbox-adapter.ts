@@ -46,18 +46,22 @@ export function createSandboxAdapter(
       }
 
       // 2. Try sandbox execution
+      // Lazy startup keeps tool registration cheap, while making the Docker
+      // backend real when an external tool is actually selected.
+      if (!sandboxManager.isAvailable()) await sandboxManager.ensureReady()
       if (sandboxManager.isAvailable()) {
         const command = commandBuilder(opts)
         const result = await sandboxManager.execute(command)
+        const output = [result.stdout, result.stderr].filter(Boolean).join('\n')
 
         return {
           tool: localAdapter.id,
           target: opts.target,
           status: result.timedOut ? 'timeout' : result.exitCode === 0 ? 'success' : 'error',
-          output: result.stdout,
-          findings: [], // Findings are extracted by the bridge, not here
+          output,
+          findings: localAdapter.parseOutput?.(output, opts) ?? [],
           duration: result.durationMs,
-          rawOutput: result.stdout,
+          rawOutput: output,
         }
       }
 
@@ -66,7 +70,7 @@ export function createSandboxAdapter(
         tool: localAdapter.id,
         target: opts.target,
         status: 'skip',
-        output: `${localAdapter.id} not available locally and sandbox not configured`,
+        output: `${localAdapter.id} not available locally and sandbox is unavailable: ${sandboxManager.getStatus().diagnostic ?? 'sandbox is not configured or Docker is unavailable'}`,
         findings: [],
         duration: 0,
       }
@@ -89,11 +93,14 @@ export const TOOL_COMMANDS: Record<string, CommandBuilder> = {
   }),
   ffuf: (opts) => ({
     toolId: 'ffuf',
-    args: ['ffuf', '-u', `${opts.target}/FUZZ`, '-w', '/usr/share/seclists/Discovery/Web-Content/common.txt', '-o', '/tmp/ffuf-out.json', '-of', 'json'],
+    args: ['ffuf', '-u', `${opts.target}/FUZZ`, '-w', String(opts.options?.wordlist ?? '/usr/share/seclists/Discovery/Web-Content/common.txt'), '-o', '/dev/stdout', '-of', 'json'],
   }),
   nmap: (opts) => ({
     toolId: 'nmap',
-    args: ['nmap', '-sV', '-oX', '/tmp/nmap-out.xml', opts.target],
+    user: 'root',
+    // Kali's /usr/bin/nmap wrapper attempts a second exec that Docker
+    // Desktop's seccomp profile rejects. Invoke the verified binary directly.
+    args: ['/usr/lib/nmap/nmap', '-sV', '-oX', '/tmp/nmap-out.xml', opts.target],
   }),
   gobuster: (opts) => ({
     toolId: 'gobuster',
@@ -103,12 +110,9 @@ export const TOOL_COMMANDS: Record<string, CommandBuilder> = {
     toolId: 'nikto',
     args: ['nikto', '-h', opts.target, '-Format', 'json', '-output', '/tmp/nikto-out.json'],
   }),
-  hydra: (opts) => ({
-    toolId: 'hydra',
-    args: ['hydra', '-L', '/usr/share/seclists/Usernames/top-usernames-shortlist.txt', '-P', '/usr/share/seclists/Passwords/Common-Credentials/top-1000.txt', opts.target, 'ssh'],
-  }),
   masscan: (opts) => ({
     toolId: 'masscan',
+    user: 'root',
     args: ['masscan', opts.target, '-p0-65535', '--rate=1000', '-oJ', '/tmp/masscan-out.json'],
   }),
   subfinder: (opts) => ({
@@ -118,5 +122,36 @@ export const TOOL_COMMANDS: Record<string, CommandBuilder> = {
   httpx: (opts) => ({
     toolId: 'httpx',
     args: ['httpx', '-l', '/dev/stdin', '-json', '-o', '/tmp/httpx-out.json'],
+  }),
+  jwttool: (opts) => {
+    const token = String(opts.options?.token ?? opts.target)
+    const modes = Array.isArray(opts.options?.modes) ? (opts.options?.modes as unknown[]).map(String) : ['-a', '-T', '-I', '-n', '-b']
+    return { toolId: 'jwttool', args: ['jwt_tool', token, ...modes] }
+  },
+  arjun: (opts) => ({
+    toolId: 'arjun',
+    args: ['arjun', '-u', opts.target, '--quiet', '-w', String(opts.options?.wordlist ?? '/opt/wordlists/params.txt')],
+  }),
+  corsy: (opts) => ({
+    toolId: 'corsy',
+    args: ['corsy', '-u', opts.target, ...(typeof opts.options?.headers === 'string' ? ['-h', opts.options.headers] : [])],
+  }),
+  hydra: (opts) => {
+    // Hydra requires a protocol/service positional argument. SSH is the
+    // conservative default; callers can select another service explicitly.
+    const service = String(opts.options?.service ?? 'ssh')
+    const userList = String(opts.options?.userList ?? '')
+    const passwordList = String(opts.options?.passwordList ?? '')
+    return { toolId: 'hydra', args: ['hydra', '-L', userList, '-P', passwordList, '-f', '-V', opts.target, service] }
+  },
+  john: (opts) => ({
+    toolId: 'john',
+    args: ['john', String(opts.options?.hashFile ?? ''), ...(typeof opts.options?.wordlist === 'string' ? [`--wordlist=${opts.options.wordlist}`] : [])],
+  }),
+  gitleaks: (opts) => ({
+    toolId: 'gitleaks',
+    // stdout keeps the report available to the parent process; writing a
+    // container-local temp file would otherwise discard every finding.
+    args: ['gitleaks', 'detect', '--source', String(opts.options?.source ?? opts.target), '--report-format', 'json', '--report-path', '/dev/stdout', '--no-banner', '--redact'],
   }),
 }

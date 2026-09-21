@@ -50,6 +50,8 @@ export function installHint(toolName: string): string {
     corsy: 'Install corsy: `pip install corsy` or https://github.com/sopheroo/Corsy',
     subfinder: 'Install subfinder: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`',
     gitleaks: 'Install gitleaks: `go install github.com/gitleaks/gitleaks@latest` or https://github.com/gitleaks/gitleaks',
+    hydra: 'Install hydra: `apt install hydra`',
+    john: 'Install John the Ripper: `apt install john`',
   }
   return `${toolName} is not installed or not on PATH. ${hints[toolName] ?? `Install ${toolName} and ensure it is on your PATH.`}`
 }

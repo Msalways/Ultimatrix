@@ -32,6 +32,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 
   // Planner discovery
   listSkills: 'planner-discovery',
+  discoverSkillsForTarget: 'planner-discovery',
   loadSkillBody: 'planner-discovery',
   searchSkills: 'planner-discovery',
   manageSkills: 'planner-discovery',
@@ -139,6 +140,7 @@ const TOOL_RISK_MAP: Record<string, CapabilityRisk> = {
   explainReachability: 'read',
   getUntestedWorkarounds: 'read',
   listSkills: 'read',
+  discoverSkillsForTarget: 'read',
   searchSkills: 'read',
   loadSkillReference: 'read',
   loadSkillBody: 'read',

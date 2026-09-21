@@ -10,11 +10,11 @@ import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMeta
 import { askUser } from './interaction-tools'
 import { getOastUrlTool, checkOastCallbacks, clearOastCallbacks } from '../oast/tools'
 import { getCapturedHeaders, storeSession } from './har-tools'
-import { listSkills, loadSkillReference, searchSkillTool, loadSkillBodyTool } from './skill-tools'
+import { listSkills, loadSkillReference, searchSkillTool, loadSkillBodyTool, discoverSkillsForTarget } from './skill-tools'
 import { getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds } from '../graph/relation-tools'
 import { encodeDecode } from './encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from './flow-tools'
-import { buildResearchMap, planResearchExperiments, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
+import { buildResearchMap, planResearchExperiments, executePlannedExperiment, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from './research-tools'
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { diagnoseTargetTool } from '../orchestration/tools'
@@ -45,9 +45,9 @@ export {
   askUser,
   getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
   getCapturedHeaders, storeSession,
-  loadSkillReference, listSkills, searchSkillTool, loadSkillBodyTool, encodeDecode,
+  loadSkillReference, listSkills, searchSkillTool, loadSkillBodyTool, discoverSkillsForTarget, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
-  buildResearchMap, planResearchExperiments, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
+  buildResearchMap, planResearchExperiments, executePlannedExperiment, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
   runPrimitiveTool,
   runCampaignTool,
   diagnoseTargetTool,
@@ -82,9 +82,9 @@ export function registerAllTools() {
     askUser,
     getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
     getCapturedHeaders, storeSession,
-    loadSkillReference, listSkills, searchSkills: searchSkillTool, loadSkillBody: loadSkillBodyTool, encodeDecode,
+    loadSkillReference, listSkills, searchSkills: searchSkillTool, loadSkillBody: loadSkillBodyTool, discoverSkillsForTarget, encodeDecode,
     saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
-    buildResearchMap, planResearchExperiments, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
+    buildResearchMap, planResearchExperiments, executePlannedExperiment, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
     runPrimitive: runPrimitiveTool,
     runCampaign: runCampaignTool,
     diagnoseTarget: diagnoseTargetTool,
@@ -108,5 +108,7 @@ export function registerAllTools() {
     corsy: scannerTools.corsy,
     subfinder: scannerTools.subfinder,
     gitleaks: scannerTools.gitleaks,
+    hydra: scannerTools.hydra,
+    john: scannerTools.john,
   }
 }

@@ -13,7 +13,11 @@ export async function startHarCapture(target: string, excludeDomains: string[]):
   const capture = new NetworkCapture({ excludeDomains })
   capture.start(page)
 
-  page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+  // Await the baseline navigation before returning the capture handle. If the
+  // caller stops immediately after its own observation, a fire-and-forget
+  // navigation leaves the fallback HAR empty.
+  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+  await page.waitForTimeout(500).catch(() => {})
 
   return {
     capture,

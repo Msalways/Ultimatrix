@@ -33,6 +33,13 @@ export interface SolverBrainOptions {
   lazyServices?: LazySolverServices
 }
 
+export interface MethodologyState {
+  /** A canonical skill body has been selected for this target. */
+  methodologyLoaded?: boolean
+  researchMapBuilt?: boolean
+  experimentPlanned?: boolean
+}
+
 function sanitizeTool(tool: any, provider?: string): any {
   if (tool.inputSchema && typeof tool.inputSchema === 'object' && '~standard' in tool.inputSchema) {
     return { ...tool, inputSchema: createSanitizedInputSchema(tool.inputSchema as StandardSchemaWithJSON, provider) }
@@ -43,8 +50,8 @@ function sanitizeTool(tool: any, provider?: string): any {
 const READ_ONLY = new Set([
   'queryGraph', 'getTargetSummary', 'getEndpointsWithParams', 'getGraphSchema', 'getCaptureOverview',
   'queryRelations', 'getGraphNeighborhood', 'getWorkflowAround', 'traceValue', 'explainReachability', 'getUntestedWorkarounds',
-  'listSkills', 'searchSkills', 'loadSkillReference', 'loadSkillBody', 'getCapturedHeaders',
-  'getDialogEvidence', 'getRecentChanges', 'getResearchStatus', 'getPriorPatterns', 'getToolResult', 'selectModel',
+  'listSkills', 'searchSkills', 'loadSkillReference', 'loadSkillBody', 'discoverSkillsForTarget', 'getCapturedHeaders',
+  'getDialogEvidence', 'getRecentChanges', 'getResearchStatus', 'getPriorPatterns', 'getFailurePatterns', 'getPayloadStats', 'getToolResult', 'selectModel',
 ])
 
 const BROWSER_DESCRIPTORS: Record<string, string> = {
@@ -57,9 +64,75 @@ const BROWSER_DESCRIPTORS: Record<string, string> = {
 }
 
 const WORKER_CAPABILITIES = new Set(['spawnWorker', 'spawnSwarm', 'runTaskGraph', 'executeDirect', 'runAdvancedPlaybook'])
-const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
+const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'useCredential', 'extractBrowserAuth', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
 const CAPTURE_DEPENDENT = new Set(['observeHumanActions'])
 const OAST_DEPENDENT = new Set(['getOastUrlTool', 'checkOastCallbacks'])
+
+// These are the engagement control-plane tools. They must be present in the
+// first model turn: asking a model to discover basic graph/network state via a
+// second tool-loading protocol makes the assessment dependent on perfect tool
+// choreography and was observed to produce repeated "tool not found" loops.
+const BOOTSTRAP_TOOL_IDS = new Set([
+  'getTargetSummary',
+  'queryGraph',
+  'getGraphSchema',
+  'getWorkflowAround',
+  'getSessionContext',
+  'detectAuthFlows',
+  'testSessionValid',
+  'useCredential',
+  'extractBrowserAuth',
+  'getCaptureOverview',
+  'httpRequest',
+  'listCapturedRequests',
+  'replayCapturedRequest',
+  'writeFinding',
+  // Research loop: target-specific search, hypothesis generation, and
+  // baseline/mutation experiment planning must be reachable without a
+  // second tool-discovery round.
+  'webSearch',
+  'buildResearchMap',
+  'planResearchExperiments',
+  'executePlannedExperiment',
+  'compareResearchResponses',
+  'evaluateResearchExperiment',
+  'recordFindingCandidate',
+  'assessCandidateReportability',
+  'getResearchStatus',
+  // Skill discovery is the generic replacement for target-specific hardcode:
+  // identify and load applicable methodology before choosing attack tools.
+  'listSkills',
+  'searchSkills',
+  'discoverSkillsForTarget',
+  'loadSkillReference',
+  'loadSkillBody',
+])
+
+const METHODOLOGY_GATE_TOOLS = new Set([
+  'httpRequest', 'listCapturedRequests', 'replayCapturedRequest', 'writeFinding',
+  'executePlannedExperiment',
+  'stagehand_navigate', 'stagehand_act', 'stagehand_extract', 'stagehand_observe',
+  'stagehand_screenshot', 'stagehand_tabs',
+  'detectAuthFlows', 'testSessionValid',
+])
+
+/**
+ * Methodology protects state-changing tests, not baseline observation. A
+ * target-agnostic GET/HEAD/OPTIONS request and passive browser inspection are
+ * evidence collection; requiring an experiment plan for those calls deadlocks
+ * the agent before it can discover the parameters needed to build a plan.
+ */
+function isPassiveInvocation(toolId: string, args: unknown[]): boolean {
+  if (toolId === 'httpRequest') {
+    const input = (args[0] && typeof args[0] === 'object' ? args[0] : {}) as Record<string, unknown>
+    return ['GET', 'HEAD', 'OPTIONS'].includes(String(input.method ?? 'GET').toUpperCase())
+  }
+  return new Set([
+    'listCapturedRequests', 'stagehand_navigate', 'stagehand_observe',
+    'stagehand_extract', 'stagehand_screenshot', 'stagehand_tabs',
+    'detectAuthFlows', 'testSessionValid',
+  ]).has(toolId)
+}
 
 /**
  * Auto-detect target type from URL and load the appropriate methodology skill.
@@ -172,6 +245,63 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     },
   }), provider)
 
+  // G7: Expose failure pattern analysis as brain tool — the brain can query
+  // what categories of attacks failed and what actions to take.
+  extras.getFailurePatterns = sanitizeTool(createTool({
+    id: 'getFailurePatterns',
+    description: 'Analyze the current session\'s failure patterns: which categories of attacks failed, how many times, and what to try instead.',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const { getEngagementServices } = await import('../runtime/engagement-context')
+        const services = getEngagementServices()
+        const reflexion = services?.reflexion
+        if (!reflexion) return { ok: true, value: { patterns: [], message: 'No reflexion engine available' } }
+        const patterns = reflexion.analyzeFailurePatterns()
+        return {
+          ok: true,
+          value: {
+            patterns,
+            escalationLevel: reflexion.getEscalationLevel(),
+            consecutiveFailures: reflexion.getConsecutiveFailures(),
+            shouldReflect: reflexion.shouldReflect(),
+            shouldEscalate: reflexion.shouldEscalate(),
+          },
+        }
+      } catch {
+        return { ok: true, value: { patterns: [], message: 'Failure analysis unavailable' } }
+      }
+    },
+  }), provider)
+
+  // G9: Expose payload effectiveness history — which payloads worked/failed
+  // on this session, so the brain can learn from historical payload data.
+  extras.getPayloadStats = sanitizeTool(createTool({
+    id: 'getPayloadStats',
+    description: 'Query historical payload effectiveness for this session. Returns which payloads worked or failed, grouped by vulnerability type.',
+    inputSchema: z.object({
+      vulnType: z.string().optional().describe('Optional vuln type filter (e.g. "SQL Injection", "XSS")'),
+    }),
+    execute: async ({ vulnType }) => {
+      try {
+        const { getOutcomeFeedbackStore } = await import('../intelligence/outcome-feedback')
+        const store = getOutcomeFeedbackStore()
+        const payloads = store.getPayloadEffectiveness(vulnType)
+        return {
+          ok: true,
+          value: {
+            total: payloads.length,
+            worked: payloads.filter(p => p.worked).length,
+            failed: payloads.filter(p => !p.worked).length,
+            payloads: payloads.slice(0, 20),
+          },
+        }
+      } catch {
+        return { ok: true, value: { total: 0, worked: 0, failed: 0, payloads: [] } }
+      }
+    },
+  }), provider)
+
   const catalog = { ...baseTools, ...extras }
   for (const [id, tool] of Object.entries(catalog)) {
     const requirements = CAPTURE_DEPENDENT.has(id)
@@ -257,7 +387,115 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     }
   }
 
-  const discoveryTools = Object.fromEntries(Object.entries(extensionTools).map(([id, tool]) => [id, sanitizeTool(tool, provider)]))
+  const lazyBrowserTools = options.lazyServices
+    ? Object.fromEntries([
+        ...Object.entries(BROWSER_DESCRIPTORS),
+        ['crawlTarget', 'Discover the authorized target surface with the configured crawler and persist references to the graph and capture artifacts.'],
+      ].map(([id, description]) => [id, createTool({
+        id,
+        description,
+        // Browser/provider schemas are resolved lazily. Passing through the
+        // object keeps the capability callable on the first turn while the
+        // provider initializes and supplies its precise runtime tool.
+        inputSchema: z.object({}).passthrough(),
+        execute: async (args: Record<string, unknown>, context: unknown) => {
+          const tool = await options.extensionRegistry.activate(id)
+          return (tool as any).execute(args, context)
+        },
+      })]))
+    : {}
+
+  const discoveryTools = Object.fromEntries([
+    ...Object.entries(extensionTools),
+    ...Object.entries(catalog).filter(([id]) => BOOTSTRAP_TOOL_IDS.has(id)),
+    ...Object.entries(lazyBrowserTools),
+  ].map(([id, tool]) => [id, sanitizeTool(tool, provider)]))
+
+  // Generic methodology gate: the brain must select and load applicable
+  // domain knowledge before it can execute attack traffic. This prevents a
+  // model from burning the turn on blind browser/HTTP actions while keeping
+  // the policy target-agnostic.
+  let methodologyLoaded = false
+  let researchMapBuilt = false
+  let experimentPlanned = false
+  const setupResults = new Map<string, unknown>()
+  for (const id of [
+    'discoverSkillsForTarget', 'searchSkills', 'loadSkillBody',
+    'buildResearchMap', 'planResearchExperiments', 'executePlannedExperiment',
+  ]) {
+    const tool = discoveryTools[id]
+    if (!tool) continue
+    const execute = tool.execute
+    discoveryTools[id] = {
+      ...tool,
+      execute: async (...args: any[]) => {
+        // Setup is deterministic and already persisted in the graph. Reusing
+        // the typed result prevents a stalled model from repeatedly rebuilding
+        // the same map/plan and exhausting the turn budget.
+        if ((id === 'buildResearchMap' || id === 'planResearchExperiments') && setupResults.has(id)) {
+          const cached = setupResults.get(id) as any
+          return cached && typeof cached === 'object' ? { ...cached, reused: true } : cached
+        }
+        const result = await execute(...args)
+        if (result?.ok !== false) {
+          if (id === 'loadSkillBody') methodologyLoaded = true
+          if (id === 'buildResearchMap') researchMapBuilt = true
+          if (id === 'planResearchExperiments') experimentPlanned = true
+          if (id === 'buildResearchMap' || id === 'planResearchExperiments') setupResults.set(id, result)
+        }
+        return result
+      },
+    }
+  }
+  // Keep gated tool schemas stable across Mastra steps. Providers may emit a
+  // call using the previous step's tool surface; removing the schema makes a
+  // registered capability look "not found" even though it is intentionally
+  // blocked. Return a typed policy result instead, preserving fail-closed
+  // execution while allowing the model to recover and complete setup.
+  for (const id of METHODOLOGY_GATE_TOOLS) {
+    const tool = discoveryTools[id]
+    if (!tool) continue
+    const execute = tool.execute
+    discoveryTools[id] = {
+      ...tool,
+      description: `${String(tool.description ?? id)} (requires methodology setup before execution)`,
+      execute: async (...args: any[]) => {
+        if (!(methodologyLoaded && researchMapBuilt && experimentPlanned) && !isPassiveInvocation(id, args)) {
+          return {
+            ok: false,
+            code: 'METHODOLOGY_REQUIRED',
+            error: 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
+            next: ['load applicable skill body', 'build research map', 'plan research experiment'],
+          }
+        }
+        return execute(...args)
+      },
+    }
+  }
+  const listTools = discoveryTools.listTools
+  if (listTools) {
+    const execute = listTools.execute
+    discoveryTools.listTools = {
+      ...listTools,
+      execute: async (...args: any[]) => {
+        const result = await execute(...args)
+        if (methodologyLoaded && researchMapBuilt && experimentPlanned) return result
+        const tools = result?.tools
+        if (!tools || typeof tools !== 'object') return result
+        const filtered = {
+          ...tools,
+          builtin: Array.isArray(tools.builtin)
+            ? tools.builtin.filter((tool: any) => !METHODOLOGY_GATE_TOOLS.has(tool.id))
+            : tools.builtin,
+        }
+        return {
+          ...result,
+          tools: filtered,
+          content: { type: 'text', text: JSON.stringify({ tools: filtered, connectors: result.connectors ?? [] }, null, 2) },
+        }
+      },
+    }
+  }
   // Build the adaptive plan BEFORE creating the tool function so it's scope-locked
   const modelRef = resolveModelRef(config, { role: 'brain' })
   const registry = new ContextWindowRegistry(config)
@@ -294,8 +532,10 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   const brainInstructions = compressBrainInstructions(fullBrainInstructions, adaptivePlan)
 
   const currentTools = () => ({
-    ...discoveryTools,
     ...options.extensionRegistry.getActiveToolset(),
+    // Discovery wrappers are the canonical policy boundary. Active lazy
+    // implementations must not overwrite methodology/scope/evidence gates.
+    ...discoveryTools,
   })
 
   // Adaptive tool filtering: respect the tool budget computed by planAdaptiveContext.
@@ -303,8 +543,10 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   // and flooding small-context models with 2000+ tokens of schemas.
   const filteredCurrentTools = () => {
     const all = currentTools()
+    // Gated tools remain in the schema for cross-step/provider consistency;
+    // their wrappers above enforce the readiness policy at execution time.
     const entries = Object.entries(all)
-    if (entries.length <= adaptivePlan.toolBudget) return all
+    if (entries.length <= adaptivePlan.toolBudget) return Object.fromEntries(entries)
     return filterToolsToBudget(entries, adaptivePlan.toolBudget)
   }
 
@@ -325,6 +567,14 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
 
   agent.id = 'ultimatrix-solver-brain'
   agent.name = 'Ultimatrix Solver Brain'
+  // The deterministic solver bootstrap can complete research setup before the
+  // first model turn. Keep the methodology gate in sync with that runtime
+  // state; otherwise the brain is forced to repeat setup that already ran.
+  ;(agent as any).setMethodologyState = (state: MethodologyState) => {
+    if (state.methodologyLoaded) methodologyLoaded = true
+    if (state.researchMapBuilt) researchMapBuilt = true
+    if (state.experimentPlanned) experimentPlanned = true
+  }
   ;(agent as any).capabilityRegistry = options.extensionRegistry
   ;(agent as any).lazyServices = options.lazyServices
   ;(agent as any).getTurnToolset = filteredCurrentTools

@@ -23,6 +23,7 @@ function parseNmap(stdout: string): AdapterFinding[] {
 
 export const nmapAdapter: ToolAdapter = {
   id: 'nmap',
+  parseOutput: parseNmap,
   description:
     'Network port/service scanner. Runs the local nmap binary to discover open ports, services, and versions on a target host. Requires nmap installed on PATH.',
   async isAvailable() {

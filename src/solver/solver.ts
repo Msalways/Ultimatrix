@@ -35,8 +35,14 @@ import { getEngagementServices } from "../runtime/engagement-context";
 import { setInteractionMode } from "../tools/interaction-tools";
 import { getCapturedRequestStore } from "../capture/captured-request-store";
 import { CrossEngagementMemory } from "../intelligence/cross-engagement";
+import { buildBudgetedGoal, type GoalSection } from "./budgeted-goal";
+import { buildDoneIndex } from "./done-index";
 import type { WorkflowStore } from "../workflow/store";
 import type { DynamicToolRegistry } from "../extensions/tool-registry";
+import type { LazySolverServices } from "../runtime/lazy-services";
+import { buildResearchMap, planResearchExperiments, executePlannedExperiment } from "../tools/research-tools";
+import { useCredential } from "../tools/credential-tools";
+import { discoverSkillsForTarget, loadSkillBodyTool } from "../tools/skill-tools";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -157,7 +163,11 @@ export interface SolveResult {
     | "frontier_exhausted"
     | "budget_reached"
     | "stale"
-    | "interrupted";
+    | "interrupted"
+    | "model_failed"
+    | "tool_unavailable"
+    | "browser_failed"
+    | "tool_failed";
   steps: number;
   toolCalls: number;
   /** Findings added during this turn, excluding persisted findings. */
@@ -200,6 +210,8 @@ export interface SolveParams {
    * from the anonymized cross-engagement memory (no-op when empty/unavailable).
    */
   priorsPromptBlock?: string;
+  /** Target-scoped services used for autonomous observation before reasoning. */
+  lazyServices?: LazySolverServices;
 }
 
 const SOLVER_DEFAULTS: Required<SolverConfig> = {
@@ -220,7 +232,46 @@ interface CompletionResult {
   reason: SolveResult["reason"];
 }
 
+/** Bound provider stalls between stream chunks so deterministic research can
+ * hand back a partial, honest result instead of hanging the whole turn. */
+async function* withProgressWatchdog<T>(
+  source: AsyncIterable<T>,
+  timeoutMs: number,
+): AsyncGenerator<T> {
+  const iterator = source[Symbol.asyncIterator]()
+  while (true) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const next = await Promise.race([
+        iterator.next(),
+        new Promise<IteratorResult<T>>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Model progress watchdog expired after ${timeoutMs}ms`)), timeoutMs)
+        }),
+      ])
+      if (next.done) return
+      yield next.value
+    } catch (error) {
+      await iterator.return?.()
+      throw error
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+}
+
 // ─── Recent Discoveries (per-turn graph diff) ───────────────
+
+function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
 
 interface DiscoverySnapshot {
   endpoints: Set<string>;
@@ -365,6 +416,36 @@ export async function solve(
   // Wire EvidenceGate into writeFinding for Maker/Checker split
   const { setEvidenceGateForFindings } = await import("../tools/control-tools");
   setEvidenceGateForFindings(evidence);
+  // Establish the approval boundary before deterministic research bootstrap.
+  // Safe GET experiments may run during observation; mutations require the
+  // explicit run-mode decision and are checked again inside the research tool.
+  setInteractionMode(params.interactionMode);
+
+  // G1: Load persisted outcome feedback from prior sessions into the
+  // in-memory store so technique weights are restored at session start.
+  // This closes the learning loop: outcomes saved to graph at engagement
+  // end are loaded back into the registry at next session start.
+  try {
+    const { loadOutcomeFeedback } = await import("../intelligence/reflexion-store");
+    const { getOutcomeFeedbackStore } = await import("../intelligence/outcome-feedback");
+    const persisted = loadOutcomeFeedback(params.origin);
+    if (persisted.length > 0) {
+      const store = getOutcomeFeedbackStore();
+      store.ingestAll(persisted);
+    }
+  } catch { /* outcome feedback not available */ }
+
+  // G4: Load persisted technique weights from prior sessions.
+  // Weights survive process restart — the registry starts with whatever
+  // the last engagement learned about technique effectiveness.
+  try {
+    const { loadTechniqueWeights } = await import("../intelligence/reflexion-store");
+    const loaded = await loadTechniqueWeights();
+    if (loaded > 0) {
+      log.dim(`[evolution] Restored ${loaded} technique weights from prior sessions`);
+    }
+  } catch { /* weight loading not available */ }
+
   const emit = (event: PhaseEvent) => params.onPhase?.(event);
   const emitMessage = (message: SolverStreamMessage) => params.onMessage?.(message);
   const startTime = Date.now();
@@ -397,8 +478,177 @@ export async function solve(
   }
 
   const capabilityRegistry = (agent as any).capabilityRegistry as DynamicToolRegistry | undefined;
+  // Autonomous observation is a runtime responsibility, not an LLM decision.
+  // LazySolverServices.crawl() owns browser startup, HAR/passive capture,
+  // graph ingestion, and post-crawl discovery; invoke it once before the
+  // first reasoning turn when this is a real engagement agent.
+  const lazyServices = params.lazyServices ?? (agent as any).lazyServices as {
+    observe?: () => Promise<{ requests: number; url: string }>;
+    observationState?: { status: 'completed' | 'failed'; result?: { requests: number; url: string }; error?: string };
+    researchBootstrapState?: 'pending' | 'completed';
+    markResearchBootstrapAttempted?: () => void;
+    crawl?: () => Promise<unknown>;
+    crawlState?: unknown;
+  } | undefined;
+  const observationWasAttempted = Boolean(lazyServices?.observationState)
+  if (lazyServices?.observe && !observationWasAttempted && !lazyServices.crawlState) {
+    log.info('[observation] starting deterministic browser/HAR baseline');
+    emit({ phase: "observe", step: 0, activity: "autonomous-observation" });
+    emitMessage({ kind: "event", event: "observation.started", label: "observing target surface", status: "running" });
+    try {
+      const observed = await lazyServices.observe();
+      board.addFact(
+        `Autonomous observation completed: ${observed.requests} captured requests at ${observed.url}; use captured browser traffic and discovered endpoints as evidence.`,
+        "observation",
+      );
+      emitMessage({ kind: "event", event: "observation.completed", label: "target surface observed", status: "ok" });
+      log.info(`[observation] captured ${observed.requests} requests from ${observed.url}`);
+      // Recon/spider crawling is part of observation, not exploitation. Run it
+      // before handing control to the brain so the first hypothesis is based
+      // on the discovered surface rather than guessed paths.
+      if (lazyServices.crawl && !lazyServices.crawlState) {
+        emitMessage({ kind: "event", event: "recon.started", label: "mapping links, forms, and workflows", status: "running" });
+        try {
+          const crawlTimeoutMs = Math.min(45_000, Math.max(5_000, params.config?.maxDurationMs ? Math.floor(params.config.maxDurationMs * 0.15) : 45_000));
+          const spider = await Promise.race([
+            lazyServices.crawl(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`crawl timeout after ${crawlTimeoutMs}ms`)), crawlTimeoutMs)),
+          ]);
+          const spiderState = spider && typeof spider === "object" ? spider as Record<string, unknown> : undefined;
+          board.addFact(`Recon crawl completed${spiderState?.pagesSeen ? `: ${String(spiderState.pagesSeen)} pages seen` : ""}; use the discovered surface for attack selection.`, "recon");
+          emitMessage({ kind: "event", event: "recon.completed", label: "target surface mapped", status: "ok" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          board.addFact(`Recon crawl failed: ${message}. Retain baseline HAR and use observed endpoints for fallback.`, "recon-failure");
+          emitMessage({ kind: "event", event: "recon.failed", label: "recon unavailable; baseline capture retained", status: "warn" });
+          // A timed-out adaptive crawler can still leave useful HAR/script
+          // traffic behind. Run passive/shadow discovery over that partial
+          // capture so the research map does not stop at the landing page.
+          try {
+            const { runPostCrawlDiscovery } = await import('../discovery/post-crawl');
+            await runPostCrawlDiscovery(params.origin);
+            board.addFact('Post-crawl discovery completed over the partial capture after recon failure.', 'post-crawl-fallback');
+          } catch (discoveryError) {
+            board.addFact(`Post-crawl fallback failed: ${discoveryError instanceof Error ? discoveryError.message : String(discoveryError)}`, 'post-crawl-fallback-failure');
+          }
+        }
+      }
+    } catch (error) {
+      // Observation failure is recoverable: retain an explicit fact so the
+      // brain can choose generic HTTP reconnaissance instead of believing the
+      // target was observed successfully.
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn(`[observation] baseline unavailable: ${message}`);
+      board.addFact(`Browser observation failed: ${message}. Use bounded HTTP reconnaissance as fallback.`, "observation-failure");
+      emitMessage({ kind: "event", event: "observation.failed", label: "browser observation unavailable; HTTP fallback allowed", status: "warn" });
+    }
+  } else if (lazyServices?.observationState?.status === 'failed') {
+    // A model/provider fallback shares the same engagement services. Surface
+    // the prior capability failure as typed context instead of repeating a
+    // browser launch and producing a second misleading progress sequence.
+    const message = lazyServices.observationState.error ?? 'browser observation unavailable'
+    board.addFact(`Browser observation already failed for this engagement: ${message}. Use bounded HTTP reconnaissance; do not retry browser startup in this turn.`, 'observation-failure-reused')
+    emitMessage({ kind: "event", event: "observation.reused", label: "reusing browser failure; HTTP fallback active", status: "warn" })
+  }
   // F1 FIX: Do NOT call resetTurn() here — capabilities persist across turns.
   // Previously discovered/activated tools (browser, workers, crawl) remain available.
+
+  // Seed a bounded graph-driven research cycle after observation so a cold
+  // engagement makes progress even when the model stalls before tool use.
+  // Collaborative/ask mode auto-runs only idempotent GETs; explicit run mode
+  // authorizes the bounded state-changing experiments selected by the graph.
+  const researchBootstrapPending = !lazyServices || lazyServices.researchBootstrapState !== 'completed'
+  if (researchBootstrapPending) {
+  try {
+    // Select and load one canonical methodology skill through the live shared
+    // registry. This is the durable setup seam for the generic gate; it is
+    // intentionally target-aware via metadata, not a hardcoded prompt or a
+    // legacy methodology file.
+    emitMessage({ kind: "event", event: "skill.discovery.started", label: "selecting target methodology skill", status: "running", data: { source: "skill-registry" } });
+    const skillDiscovery = await (discoverSkillsForTarget as any).execute({ url: params.origin }, {} as never) as any;
+    const selectedSkillId = skillDiscovery?.ok && skillDiscovery.value?.suggestions?.[0]?.id
+      ? String(skillDiscovery.value.suggestions[0].id)
+      : 'web-pentest';
+    const methodology = await (loadSkillBodyTool as any).execute({ skillId: selectedSkillId }, {} as never) as any;
+    emitMessage({
+      kind: "event",
+      event: methodology?.ok ? "skill.loaded" : "skill.load.failed",
+      label: methodology?.ok ? `loaded methodology skill: ${selectedSkillId}` : `methodology skill unavailable: ${selectedSkillId}`,
+      status: methodology?.ok ? "ok" : "warn",
+      data: { source: "skill-registry", skillId: selectedSkillId },
+    });
+    board.addFact(
+      methodology?.ok
+        ? `Canonical methodology selected: ${selectedSkillId}. Load its body for the target-specific procedure and verification contract.`
+        : `Canonical methodology selection unavailable for ${selectedSkillId}; use the research contract and passive evidence only until a skill is loaded.`,
+      'methodology',
+    );
+
+    // Surface available authorized test identities without exposing secrets.
+    // The model can then locate the login flow and authenticate autonomously.
+    const credentialInventory = await useCredential.execute({ action: 'list' }, {} as never) as any;
+    board.addFact(
+      credentialInventory?.ok
+        ? `Authorized credential roles available: ${(credentialInventory.roles ?? []).join(', ')}. Locate the login flow, authenticate with an appropriate role, extract browser auth, and save the session before protected testing.`
+        : 'No authorized credential roles are configured; continue with anonymous and authorization-boundary testing.',
+      'auth-availability',
+    );
+    const mapResult = await buildResearchMap.execute({ maxHypotheses: 12 }, {} as never) as any;
+    const planResult = mapResult?.ok
+      ? await planResearchExperiments.execute({ maxExperiments: 6 }, {} as never) as any
+      : undefined;
+    const planned = planResult?.ok ? (planResult.value?.experiments ?? []) : [];
+    // Synchronize deterministic setup with the brain's methodology gate.
+    // Without this, bootstrap-generated maps/plans are invisible to the gate,
+    // so the model can spend its entire turn re-discovering setup and stop
+    // before active testing.
+    (agent as any).setMethodologyState?.({
+      methodologyLoaded: Boolean(methodology?.ok),
+      researchMapBuilt: Boolean(mapResult?.ok),
+      experimentPlanned: Boolean(planResult?.ok && planned.length > 0),
+    });
+    let autoExecuted = 0;
+    for (const experiment of planned) {
+      // Missing method metadata is a read-only GET by HTTP convention. Treat
+      // it as safe so anonymous/collaborative turns do not silently skip every
+      // plan generated from sparse graph endpoints.
+      const method = String(experiment.baselineRequest?.method ?? 'GET').toUpperCase();
+      if (params.interactionMode !== 'run' && !['GET', 'HEAD', 'OPTIONS'].includes(method)) continue;
+      emitMessage({
+        kind: "tool",
+        name: "executePlannedExperiment",
+        args: { experimentId: experiment.id, method },
+      });
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id }, {} as never) as any;
+      emitMessage({
+        kind: "tool-result",
+        name: "executePlannedExperiment",
+        ok: Boolean(result?.ok),
+        result: result?.ok ? JSON.stringify(result.value ?? { ok: true }) : String(result?.error ?? 'experiment failed'),
+      });
+      getForensicLog()?.log({
+        type: result?.ok ? 'tool-result' : 'tool-error',
+        agent: 'solver-brain',
+        tool: 'executePlannedExperiment',
+        result: result?.ok ? result.value : undefined,
+        error: result?.ok ? undefined : result?.error,
+      });
+      if (result?.ok) autoExecuted++;
+      if (autoExecuted >= 3) break;
+    }
+    board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned, ${autoExecuted} idempotent experiments executed.`, 'research-bootstrap');
+    emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${autoExecuted} experiments executed`, status: "ok" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    board.addFact(`Autonomous research bootstrap unavailable: ${message}; continue with model-selected tools.`, 'research-bootstrap-failure');
+    emitMessage({ kind: "event", event: "research.bootstrap.failed", label: "research bootstrap unavailable; model path retained", status: "warn" });
+  } finally {
+    lazyServices?.markResearchBootstrapAttempted?.();
+  }
+  } else if (lazyServices?.researchBootstrapState === 'completed') {
+    board.addFact('Research bootstrap already completed for this engagement; reusing its graph and captured evidence.', 'research-bootstrap-reused');
+    emitMessage({ kind: "event", event: "research.bootstrap.reused", label: "reusing engagement research map", status: "ok" });
+  }
 
   const contextRegistry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as UltimatrixConfig);
   const resolvedContextModel = params.ultimatrixConfig?.model
@@ -421,7 +671,7 @@ export async function solve(
     emitMessage({
       kind: "event",
       event: "model.selected",
-      label: `brain ${resolvedContextModel.provider}/${resolvedContextModel.model}`,
+      label: `brain ${resolvedContextModel.modelId}`,
       status: "ok",
       data: {
         role: "brain",
@@ -448,6 +698,26 @@ export async function solve(
     capturedRequestTotal = 0;
   }
 
+  // G10: Expose validated techniques and weight overrides from prior sessions
+  let validatedTechniques: string[] = [];
+  let techniqueWeights: Array<{ techniqueId: string; weight: number; confidence: number }> = [];
+  try {
+    const { getTechniqueRegistry } = await import("../skills/technique-registry");
+    const reg = getTechniqueRegistry();
+    validatedTechniques = reg.getValidatedTechniques();
+    const overrides = reg.getAllRuntimeOverrides();
+    for (const [techniqueId, override] of overrides) {
+      if (override.confidenceDelta !== 0) {
+        techniqueWeights.push({
+          techniqueId,
+          weight: reg.getTechniqueWeight(techniqueId),
+          confidence: reg.getTechniqueConfidence(techniqueId),
+        });
+      }
+    }
+    techniqueWeights = techniqueWeights.sort((a, b) => b.weight - a.weight).slice(0, 10);
+  } catch { /* technique registry not available */ }
+
   const runtimeEnvelope = buildRuntimeEnvelope({
     target: params.origin,
     contextWindow: effectiveContextWindow,
@@ -458,39 +728,50 @@ export async function solve(
     blackboardFacts: { total: factStrings.length, recent: recentFacts },
     capturedRequests: { total: capturedRequestTotal },
     budget: { steps: 0, maxSteps: cfg.maxToolCalls, elapsedMs: 0, maxDurationMs: cfg.maxDurationMs },
+    validatedTechniques,
+    techniqueWeights,
   });
-  // Keep the goal lean: raw goal + runtime index. Reflexion, priors, and
-  // discoveries are available via the getSessionContext tool — the brain calls
-  // it on-demand instead of receiving everything pre-concatenated.
-  let enrichedGoal = `${params.goal}${runtimeEnvelope}`;
+  // ─── Build budgeted goal from priority-ordered sections ───
+  // Replaces the ad-hoc string concatenation with a single function that
+  // respects a model-proportional token budget (5% of context window).
+  // Sections are sorted by priority and added until budget is exhausted.
+  const goalContent = `${params.goal}${runtimeEnvelope}`;
 
-  // Inject stale detection context — HARD GATE: mandatory strategy change
-  if (alerts.some(alert => alert.type === "stale-execution")) {
-    emit({
-      phase: "stale",
-      step: 0,
-      text: "Stale detection triggered — switching strategy",
-    });
-    // Inject mandatory instruction into the goal so the brain MUST change approach
-    const mandatory = loopDetector.getMandatoryInstruction(cfg.staleThreshold);
-    if (mandatory) {
-      enrichedGoal = `${mandatory}\n\n---\n\nOriginal goal: ${enrichedGoal}`;
+  const sections: GoalSection[] = [
+    { name: 'Goal', priority: 100, content: goalContent },
+  ];
+
+  // Coverage status — compact tested/untested summary (~200-500 tokens)
+  try {
+    const doneIndex = buildDoneIndex(getGlobalGraphStore(), board, 500);
+    if (doneIndex.trim()) {
+      sections.push({ name: 'Coverage Status', priority: 70, content: doneIndex });
     }
-  }
+  } catch { /* graph may not be ready */ }
 
-  // ─── Budget-pressure injection: tell the brain its step + time budget so it
-  // can self-regulate. Without this, the brain has no idea it's burning toward
-  // a 300s wall clock and spins indefinitely. The brain sees:
-  //   [BUDGET: 0/50 steps · 0/300 sec — you MUST synthesize findings into a
-  //    final answer before the budget is exhausted]
-  // This is a STRUCTURED field (not prose parsing) that the brain can reason about.
+  // Budget-pressure: tell the brain its step + time budget
   const budgetInstruction = [
     `[BUDGET: 0/${cfg.maxToolCalls} steps · 0/${Math.round(cfg.maxDurationMs / 1000)} sec`,
     `You have a hard step and time limit. As you progress, your runtime context shows remaining budget.`,
     `When remaining steps < ${Math.max(5, Math.floor(cfg.maxToolCalls * 0.15))} or remaining time < 60s, STOP exploring and SYNTHESIZE your findings into a final answer.`,
     `If you reach the budget without a clean answer, the system will attempt to compose one from your reasoning and findings — but a proactive answer is always better.]`,
   ].join(' ');
-  enrichedGoal = `${budgetInstruction}\n\n---\n\n${enrichedGoal}`;
+  sections.push({ name: 'Budget', priority: 80, content: budgetInstruction });
+
+  let enrichedGoal = buildBudgetedGoal(sections, params.ultimatrixConfig ?? {});
+
+  // Stale detection — prepended BEFORE the budgeted goal (highest priority override)
+  if (alerts.some(alert => alert.type === "stale-execution")) {
+    emit({
+      phase: "stale",
+      step: 0,
+      text: "Stale detection triggered — switching strategy",
+    });
+    const mandatory = loopDetector.getMandatoryInstruction(cfg.staleThreshold);
+    if (mandatory) {
+      enrichedGoal = `${mandatory}\n\n---\n\n${enrichedGoal}`;
+    }
+  }
 
   const caps = params.modelCapabilities ?? params.ultimatrixConfig?.modelCapabilities;
   const budgetPolicy = params.budgetPolicy ?? params.ultimatrixConfig?.budgetPolicy;
@@ -644,6 +925,11 @@ export async function solve(
   let totalOutputTokens = 0;
   let totalTokens = 0;
   let lastError: string | undefined;
+  // Unknown tool names can come from stale model context or connector
+  // hallucinations. Allow the model to recover from a few of these within the
+  // same stream; terminate only when it keeps selecting unavailable tools.
+  let unavailableToolErrors = 0;
+  let terminalFailureReason: Extract<SolveResult['reason'], 'model_failed' | 'tool_unavailable' | 'browser_failed' | 'tool_failed'> | undefined;
   let ranCapabilityTurn = false;
   const timeoutSignal = AbortSignal.timeout(cfg.maxDurationMs);
   const streamSignal = params.signal
@@ -704,17 +990,18 @@ export async function solve(
     // auto-approve in 'run' mode. Reset after the stream completes.
     setInteractionMode(params.interactionMode);
 
-    const stream = await agent.stream(enrichedGoal, {
+    const progressTimeoutMs = Math.max(15_000, Math.min(60_000, Math.floor(cfg.maxDurationMs / 4)))
+    const stream = await withPromiseTimeout(agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
       abortSignal: streamSignal,
-    });
+    }), progressTimeoutMs, "Model stream startup");
 
     let lastToolCallArgs: Record<string, unknown> | undefined;
     let lastToolCallId: string | undefined;
     const workerToolNames = new Set(["spawnWorker", "spawn-worker", "spawnSwarm", "spawn-swarm", "runTaskGraph", "run-task-graph"]);
 
-    for await (const chunk of stream.fullStream) {
+    for await (const chunk of withProgressWatchdog(stream.fullStream, progressTimeoutMs)) {
       if (streamSignal.aborted) {
         throw new Error(params.signal?.aborted
           ? "Solver interrupted"
@@ -752,6 +1039,12 @@ export async function solve(
             const currentToolCallId = `tc-${++toolCallIdCounter}`;
             lastToolCallArgs = chunk.payload.args as Record<string, unknown> | undefined;
             lastToolCallId = currentToolCallId;
+
+            // Record tool call into blackboard for dedup + prompt graph
+            try {
+              const argsStr = lastToolCallArgs ? JSON.stringify(lastToolCallArgs).slice(0, 200) : '';
+              board.recordToolCall(chunk.payload.toolName, argsStr);
+            } catch { /* non-critical */ }
 
             const descriptor = await capabilityRegistry?.describe(chunk.payload.toolName);
             emit({
@@ -920,6 +1213,23 @@ export async function solve(
               tool: chunk.payload.toolName,
               error,
             });
+
+            // An unavailable capability is usually recoverable: the model may
+            // have stale connector metadata or selected a capability that was
+            // deliberately gated. Keep the stream alive so it can inspect the
+            // returned error and choose an actually registered tool. Repeated
+            // invalid calls still fail closed to prevent an unbounded loop.
+            if (/tool .*not found|available tools:/i.test(error)) {
+              unavailableToolErrors += 1;
+              if (unavailableToolErrors >= 3) {
+                terminalFailureReason = "tool_unavailable";
+                throw new Error(`Tool unavailable after ${unavailableToolErrors} invalid selections: ${error}`);
+              }
+            }
+
+            if (/browser|stagehand|page|navigation/i.test(error)) {
+              terminalFailureReason = "browser_failed";
+            }
           }
           break;
 
@@ -960,9 +1270,17 @@ export async function solve(
       // provider-normalized final text. No timeout: the outer
       // AbortSignal.timeout(maxDurationMs) already bounds wall-clock time.
       const [resolvedObject, resolvedText, resolvedReasoning] = await Promise.all([
-        ((stream as any).object ?? Promise.resolve(undefined)) as Promise<unknown>,
-        stream.text as Promise<string | undefined>,
-        stream.reasoningText as Promise<string | undefined>,
+        withPromiseTimeout(
+          ((stream as any).object ?? Promise.resolve(undefined)) as Promise<unknown>,
+          progressTimeoutMs,
+          "Model canonical object",
+        ),
+        withPromiseTimeout(stream.text as Promise<string | undefined>, progressTimeoutMs, "Model canonical text"),
+        withPromiseTimeout(
+          stream.reasoningText as Promise<string | undefined>,
+          progressTimeoutMs,
+          "Model canonical reasoning",
+        ),
       ]);
       const objectResponse = resolvedObject && typeof resolvedObject === "object" && "response" in resolvedObject
         ? (resolvedObject as { response?: unknown }).response
@@ -996,17 +1314,37 @@ export async function solve(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Provide actionable error messages for common failures
-    if (params.signal?.aborted) {
+    if (terminalFailureReason) {
+      lastError = `${terminalFailureReason}: ${errMsg}`;
+    } else if (params.signal?.aborted) {
       lastError = 'Solver interrupted by user.';
     } else if (timeoutSignal.aborted) {
       lastError = `Solver timed out after ${cfg.maxDurationMs}ms. Increase solver.maxDurationMs in config.`;
     } else if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('Rate limited') || errMsg.includes('Quota exhausted')) {
+      terminalFailureReason = "model_failed";
       lastError = `Model rate limited or quota exhausted: ${errMsg}. Try switching provider/model in config.`;
+    } else if (errMsg.includes('503') || errMsg.includes('service_unavailable') || errMsg.includes('temporarily overloaded')) {
+      terminalFailureReason = "model_failed";
+      lastError = `Model service unavailable: ${errMsg}. Try switching provider/model or retrying.`;
+    } else if (errMsg.includes('Model progress watchdog')) {
+      terminalFailureReason = "model_failed";
+      lastError = `Model progress stalled: ${errMsg}. Partial research state was preserved; retry or switch model/provider.`;
     } else if (errMsg.includes('timeout') || errMsg.includes('Solver timeout')) {
       lastError = `Solver timed out: ${errMsg}. Increase solver.maxDurationMs in config.`;
     } else {
+      terminalFailureReason = terminalFailureReason ?? "model_failed";
       lastError = `Solver error: ${errMsg}`;
     }
+    // Keep provider/memory failures visible to interactive renderers. The
+    // structured done envelope still carries the same status, but a live
+    // ChatBox needs an event it can paint before the turn is closed.
+    emitMessage({
+      kind: "event",
+      event: "turn.failed",
+      label: lastError,
+      status: "error",
+      data: { reason: terminalFailureReason ?? "model_failed" },
+    });
     log.error(lastError);
     forensicLog?.log({
       type: "error",
@@ -1032,7 +1370,9 @@ export async function solve(
   }
 
   // Classify this turn from its own work, not findings persisted by older runs.
-  const { completed, reason } = params.signal?.aborted
+  const { completed, reason } = terminalFailureReason
+    ? { completed: false, reason: terminalFailureReason }
+    : params.signal?.aborted
     ? { completed: false, reason: "interrupted" as const }
     : timeoutSignal.aborted
       ? { completed: false, reason: "budget_reached" as const }
@@ -1152,6 +1492,30 @@ export async function solve(
   // confusing echo/duplication when the UI also shows reasoning separately.
   let answerContent = visibleAssistantText(answerText).trim();
   const answerReasoning = reasoningText.trim();
+
+  // A provider can finish after emitting only reasoning or tool calls. That
+  // is a valid execution outcome, but an empty answer is not a valid user
+  // contract: it makes the REPL look frozen and leaves API consumers unable to
+  // distinguish “nothing was produced” from a transport failure. Synthesize a
+  // factual status from typed execution state only; never infer a finding.
+  if (!answerContent) {
+    if (lastError) {
+      answerContent = `Assessment could not complete: ${lastError}`;
+    } else if (toolCallCount > 0) {
+      answerContent = `Assessment stopped after ${toolCallCount} tool call${toolCallCount === 1 ? "" : "s"}; no new verified findings were produced.`;
+    } else if (answerReasoning) {
+      answerContent = "The model ended without producing a deliverable response.";
+    } else {
+      answerContent = "No deliverable response was produced.";
+    }
+    emitMessage({
+      kind: "event",
+      event: "answer.synthesized",
+      label: "generated an explicit execution-status response",
+      status: "warn",
+      data: { reason, toolCalls: toolCallCount, hadReasoning: Boolean(answerReasoning), hadError: Boolean(lastError) },
+    });
+  }
   const hasVisibleAnswer = answerContent.length > 0;
 
   if (!hasVisibleAnswer && newFindings > 0) {

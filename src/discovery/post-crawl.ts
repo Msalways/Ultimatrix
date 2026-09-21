@@ -37,7 +37,50 @@ function isMineableContentType(contentType?: string): boolean {
   )
 }
 
+function ingestApiSchema(store: ReturnType<typeof getGlobalGraphStore>, body: string, documentUrl: string): number {
+  let document: any
+  try { document = JSON.parse(body) } catch { return 0 }
+  if (!document || typeof document !== 'object' || !document.paths || typeof document.paths !== 'object') return 0
+  let added = 0
+  let origin: URL
+  try { origin = new URL(documentUrl) } catch { return 0 }
+  for (const [path, item] of Object.entries(document.paths as Record<string, any>)) {
+    if (!path.startsWith('/') || !item || typeof item !== 'object') continue
+    for (const method of ['get', 'post', 'put', 'patch', 'delete', 'options', 'head']) {
+      const operation = item[method]
+      if (!operation || typeof operation !== 'object') continue
+      let url: string
+      try { url = new URL(path, origin).toString() } catch { continue }
+      const parameters = [...(Array.isArray(item.parameters) ? item.parameters : []), ...(Array.isArray(operation.parameters) ? operation.parameters : [])]
+        .filter((parameter: any) => parameter?.name)
+        .map((parameter: any) => ({ name: String(parameter.name), type: String(parameter.schema?.type ?? parameter.type ?? 'string'), in: String(parameter.in ?? 'query') }))
+      const bodySchema = operation.requestBody?.content
+        ? Object.values(operation.requestBody.content as Record<string, any>)[0]?.schema
+        : undefined
+      store.mergeEndpoint({
+        url,
+        method: method.toUpperCase(),
+        params: parameters,
+        ...(bodySchema ? { bodySchema } : {}),
+        ...(operation.summary || operation.description ? { description: String(operation.summary ?? operation.description) } : {}),
+        tags: ['openapi', ...(Array.isArray(operation.tags) ? operation.tags.map(String) : [])],
+        source: 'api-schema-discovery',
+        authRequired: Array.isArray(operation.security) ? operation.security.length > 0 : Array.isArray(document.security) ? document.security.length > 0 : undefined,
+      })
+      added++
+    }
+  }
+  return added
+}
+
 const MAX_JS_CANDIDATES = 50
+
+function looksLikeApiSchemaUrl(url: string): boolean {
+  try {
+    const path = new URL(url).pathname.toLowerCase()
+    return /(?:^|\/)(?:openapi|swagger)(?:\.json)?$/.test(path)
+  } catch { return false }
+}
 
 export async function runPostCrawlDiscovery(target: string): Promise<PostCrawlDiscoveryResult> {
   const result: PostCrawlDiscoveryResult = { shadowEndpoints: 0, jsCandidates: 0, errors: [] }
@@ -78,11 +121,12 @@ export async function runPostCrawlDiscovery(target: string): Promise<PostCrawlDi
   // 2. JS/HTML body mining over captured traffic (passive).
   try {
     const captureStore = getCapturedRequestStore()
-    const existing = new Set(
+    const runtimeObserved = new Set(
       (store.queryNodes?.(NodeType.ENDPOINT) ?? []).map(
         (n) => `${String((n.properties as any).method ?? 'GET').toUpperCase()}:${String((n.properties as any).url ?? '')}`,
       ),
     )
+    const processed = new Set<string>()
 
     let added = 0
     for (const ref of captureStore.list()) {
@@ -90,24 +134,36 @@ export async function runPostCrawlDiscovery(target: string): Promise<PostCrawlDi
       const entry = captureStore.get(ref.id)
       const contentType =
         Object.entries(entry?.responseHeaders ?? {}).find(([k]) => k.toLowerCase() === 'content-type')?.[1]
-      if (!isMineableContentType(contentType)) continue
       const body = entry?.responseBody
       if (!body) continue
+
+      const schemaAdded = ingestApiSchema(store, body, entry!.url)
+      if (schemaAdded > 0) result.shadowEndpoints += schemaAdded
+      if (!isMineableContentType(contentType) && !looksLikeApiSchemaUrl(entry!.url)) continue
 
       for (const candidate of mineJsEndpoints(body, entry!.url)) {
         if (added >= MAX_JS_CANDIDATES) break
         if (!candidate.url || !candidate.inScope) continue
         const key = `${(candidate.method ?? 'GET').toUpperCase()}:${candidate.url}`
-        if (existing.has(key)) continue
+        if (processed.has(key)) continue
+        processed.add(key)
+        // Keep static analysis as provenance, but mark it as correlated when
+        // the same route was observed at runtime.  This lets the research
+        // layer use the JS client as workflow context without promoting a
+        // bundle-only string into active attack traffic.
+        const correlated = runtimeObserved.has(key)
         try {
-          store.addEndpoint({
+          store.mergeEndpoint({
             url: candidate.url,
             method: candidate.method ?? 'GET',
             params: candidate.params.map((name) => ({ name, type: 'string', in: 'query' })),
-            tags: ['js-mined', `signal:${candidate.source}`],
+            tags: [
+              'js-mined',
+              ...(correlated ? ['js-correlated'] : []),
+              `signal:${candidate.source}`,
+            ],
             source: 'post-crawl-discovery',
           })
-          existing.add(key)
           added++
         } catch {
           /* non-fatal */
@@ -117,6 +173,15 @@ export async function runPostCrawlDiscovery(target: string): Promise<PostCrawlDi
     result.jsCandidates = added
   } catch (err) {
     result.errors.push(`js-miner: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  // Shadow and JS-mined endpoints are graph state, not transient diagnostics.
+  // Persist them before returning so the following research-map pass can
+  // select and execute against the discovered application surface.
+  try {
+    await store.save()
+  } catch (err) {
+    result.errors.push(`graph-save: ${err instanceof Error ? err.message : String(err)}`)
   }
 
   return result

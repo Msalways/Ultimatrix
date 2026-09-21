@@ -5,7 +5,7 @@ import type { UltimatrixConfig } from '../config'
 import { getSanitizeKeywords, sanitizeRequestBody } from './schema-sanitizer'
 import { wrapModel } from './middleware'
 import type { ModelSelector } from './selector'
-import { resolveModelRef, type ModelRole, type TaskComplexity } from './routing'
+import { fullModelId, resolveModelRef, type ModelRole, type TaskComplexity } from './routing'
 import { log } from '../utils/logger'
 
 /**
@@ -26,7 +26,7 @@ export function resolveModel(
     ? resolveModelRef(config, { tier: tierOrOptions })
     : resolveModelRef(config, tierOrOptions ?? {})
 
-  log.dim(`Resolving model: ${route.provider}/${route.model} (${route.tier}: ${route.reason})`)
+  log.dim(`Resolving model: ${fullModelId(route.provider, route.model)} (${route.tier}: ${route.reason})`)
 
   return buildModel(config, route.provider, route.model)
 }
@@ -45,9 +45,17 @@ function buildModel(
   const info = PROVIDER_INFO[baseProvider]
   const keywords = getSanitizeKeywords(baseProvider)
 
-  const transformRequestBody = keywords
-    ? (body: Record<string, unknown>) => sanitizeRequestBody(body, keywords)
-    : undefined
+  // Some OpenAI-compatible SDK layers strip the provider namespace from the
+  // model before serializing the request. If the configured model is already
+  // namespaced (for example `nvidia/nemotron-...`), restore that exact ID at
+  // the final wire boundary. Short model names remain untouched.
+  const wireModelId = modelId.includes('/') ? modelId : undefined
+  const transformRequestBody = (body: Record<string, unknown>) => {
+    const sanitized = keywords ? sanitizeRequestBody(body, keywords) : body
+    return wireModelId && sanitized.model !== wireModelId
+      ? { ...sanitized, model: wireModelId }
+      : sanitized
+  }
   let model: LanguageModelV2
 
   if (!info) {

@@ -29,6 +29,7 @@ function parseSqlMap(stdout: string): AdapterFinding[] {
 
 export const sqlmapAdapter: ToolAdapter = {
   id: 'sqlmap',
+  parseOutput: parseSqlMap,
   description:
     'Automated SQL injection testing. Runs the local sqlmap binary against a URL to detect and exploit SQL injection in parameters, POST data, and cookies. Requires sqlmap installed on PATH.',
   async isAvailable() {

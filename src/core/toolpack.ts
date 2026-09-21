@@ -46,12 +46,14 @@ import {
   getUntestedWorkarounds,
 } from '../graph/relation-tools'
 import { verifyChainsTool } from '../tools/detect-chains-tool'
-import { loadSkillReference, searchSkillTool, listSkills, loadSkillBodyTool } from '../tools/skill-tools'
+import { loadSkillReference, searchSkillTool, listSkills, loadSkillBodyTool, discoverSkillsForTarget } from '../tools/skill-tools'
 import { runPrimitiveTool } from '../primitives'
 import { createCampaignTool } from '../campaign/campaign-tool'
 import { createRunAdvancedPlaybookTool, diagnoseTargetTool } from '../orchestration/tools'
 import { getCapturedHeaders, storeSession } from '../tools/har-tools'
-import { scannerTools } from '../tools/scanner-tools'
+import { ALL_ADAPTERS, buildAdapterTool } from '../tools/scanner-tools'
+import { createSandboxAdapter, TOOL_COMMANDS } from '../execution/sandbox-adapter'
+import { getGlobalSandboxManager } from '../execution/sandbox-manager'
 import { useSession, extractSessionCookie } from '../tools/session-tools'
 import { getOastUrlTool, checkOastCallbacks } from '../oast/tools'
 import { saveSession, restoreSession, observeHumanActions } from '../tools/flow-tools'
@@ -59,7 +61,7 @@ import { recordOutcomeTool } from '../intelligence/outcome-feedback'
 import { webSearch } from '../tools/web-search'
 import { requestAsActor, listActors } from '../tools/actor-tools'
 import {
-  buildResearchMap, planResearchExperiments, compareResearchResponses,
+  buildResearchMap, planResearchExperiments, executePlannedExperiment, compareResearchResponses,
   evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus,
 } from '../tools/research-tools'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
@@ -69,6 +71,8 @@ import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 import { getSessionContext } from '../tools/context-tools'
+import { useCredential } from '../tools/credential-tools'
+import { extractBrowserAuth } from '../tools/extract-browser-auth'
 
 // ─── Types ─────────────────────────────────────────────────────────────
 
@@ -144,6 +148,7 @@ function skillTools(p: string): Record<string, any> {
     searchSkills: s(searchSkillTool, p),
     loadSkillReference: s(loadSkillReference, p),
     loadSkillBody: s(loadSkillBodyTool, p),
+    discoverSkillsForTarget: s(discoverSkillsForTarget, p),
     manageSkills: s(manageSkills, p),
   }
 }
@@ -156,6 +161,8 @@ function sessionTools(p: string): Record<string, any> {
     restoreSession: s(restoreSession, p),
     useSession: s(useSession, p),
     extractSessionCookie: s(extractSessionCookie, p),
+    useCredential: s(useCredential, p),
+    extractBrowserAuth: s(extractBrowserAuth, p),
   }
 }
 
@@ -177,6 +184,7 @@ function researchTools(p: string): Record<string, any> {
   return {
     buildResearchMap: s(buildResearchMap, p),
     planResearchExperiments: s(planResearchExperiments, p),
+    executePlannedExperiment: s(executePlannedExperiment, p),
     compareResearchResponses: s(compareResearchResponses, p),
     evaluateResearchExperiment: s(evaluateResearchExperiment, p),
     recordFindingCandidate: s(recordFindingCandidate, p),
@@ -251,11 +259,18 @@ function externalTools(config: UltimatrixConfig, p: string): Record<string, any>
   const enabled = config.externalTools.tools ?? {}
   const tools = Object.keys(enabled).filter((id) => enabled[id as keyof typeof enabled])
   if (tools.length === 0) return {}
-  return Object.fromEntries(
-    tools
-      .filter((id) => id in scannerTools)
-      .map((id) => [id, s(scannerTools[id as keyof typeof scannerTools], p)]),
-  )
+  const sandbox = config.sandbox?.enabled
+    ? getGlobalSandboxManager(config.sandbox)
+    : undefined
+  return Object.fromEntries(tools.flatMap((id) => {
+    const adapter = ALL_ADAPTERS.find(candidate => candidate.id === id)
+    if (!adapter) return []
+    const commandBuilder = sandbox ? TOOL_COMMANDS[id] : undefined
+    const tool = commandBuilder
+      ? buildAdapterTool(createSandboxAdapter(adapter, sandbox, commandBuilder))
+      : buildAdapterTool(adapter)
+    return [[id, s(tool, p)]]
+  }))
 }
 
 function modelSelectionTools(

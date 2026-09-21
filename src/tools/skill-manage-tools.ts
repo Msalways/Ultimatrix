@@ -13,8 +13,8 @@
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync } from 'fs'
-import { join, resolve } from 'path'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync, copyFileSync } from 'fs'
+import { join, resolve, relative, isAbsolute, sep } from 'path'
 import { getGlobalWorkspace } from '../workspace'
 import { getConfig } from '../config'
 import { validateSkillMarkdown, validateSkillFile } from '../solver/skills/validate'
@@ -26,10 +26,21 @@ function importedRoot(): string {
   return resolve(workspace.getTargetDir(workspace.getCurrentTarget() ?? 'global'), 'skills-user')
 }
 
+function revisionRoot(): string {
+  if (overrideRevisionRoot) return overrideRevisionRoot
+  return resolve(getGlobalWorkspace().getGlobalMemoryDir(), 'skill-revisions')
+}
+
 /** Test seam: pin the imported-skills root (mirrors resetGlobalBotHandler style). */
 let overrideRoot: string | null = null
 export function setImportedSkillsRoot(dir: string | null): void {
   overrideRoot = dir
+}
+
+/** Test seam for promotion without writing the real global memory directory. */
+let overrideRevisionRoot: string | null = null
+export function setSkillRevisionRoot(dir: string | null): void {
+  overrideRevisionRoot = dir
 }
 
 /**
@@ -57,15 +68,17 @@ function registerAndReload(): void {
 export const manageSkills = createTool({
   id: 'manageSkills',
   description:
-    'Manage imported skills at runtime: list what is installed (bundled vs imported), add a skill from markdown text or a file path (validated: frontmatter, tool refs, primitive ids, non-empty payload blocks), remove an imported skill, or hot-reload the index. Adding a skill makes it immediately discoverable to search.',
+    'Manage imported skills at runtime: list what is installed (bundled vs imported), synthesize reviewable revisions from shared outcome knowledge, add a skill from markdown text or a file path (validated: frontmatter, tool refs, primitive ids, non-empty payload blocks), promote a reviewed shared-knowledge revision, remove an imported skill, or hot-reload the index. Adding or promoting a skill makes it immediately discoverable to search.',
   inputSchema: z.object({
-    action: z.enum(['list', 'add', 'remove', 'reload']),
+    action: z.enum(['list', 'synthesizeRevisions', 'add', 'promoteRevision', 'remove', 'reload']),
     /** Markdown content for add (preferred over path). */
     markdown: z.string().optional(),
     /** File path for add (alternative to markdown). */
     path: z.string().optional(),
     /** Skill id for remove. */
     id: z.string().optional(),
+    /** Minimum confirmed outcomes required for a revision proposal. */
+    minConfirmed: z.number().int().min(2).optional(),
   }),
   outputSchema: z.object({
     ok: z.boolean(),
@@ -78,8 +91,15 @@ export const manageSkills = createTool({
       primitives: z.array(z.string()).optional(),
       toolRefs: z.array(z.string()).optional(),
     })).optional(),
+    revisions: z.array(z.object({
+      skillId: z.string(),
+      path: z.string(),
+      confirmed: z.number(),
+      failed: z.number(),
+      inconclusive: z.number(),
+    })).optional(),
   }),
-  execute: async ({ action, markdown, path, id }) => {
+  execute: async ({ action, markdown, path, id, minConfirmed }) => {
     if (action === 'list') {
       return {
         ok: true,
@@ -98,6 +118,26 @@ export const manageSkills = createTool({
       return { ok: true, message: `skill index reloaded (${getAllSkills().length} skills)` }
     }
 
+    if (action === 'synthesizeRevisions') {
+      try {
+        const { synthesizeSharedSkillRevisions } = await import('../intelligence/skill-revisions')
+        const result = await synthesizeSharedSkillRevisions({ minConfirmed })
+        return {
+          ok: true,
+          message: `synthesized ${result.created.length} reviewable shared skill revision(s)`,
+          revisions: result.created.map(revision => ({
+            skillId: revision.skillId,
+            path: revision.path,
+            confirmed: revision.confirmed,
+            failed: revision.failed,
+            inconclusive: revision.inconclusive,
+          })),
+        }
+      } catch (err) {
+        return { ok: false, errors: [`revision synthesis failed: ${err instanceof Error ? err.message : String(err)}`] }
+      }
+    }
+
     if (action === 'remove') {
       if (!id) return { ok: false, errors: ['remove requires id'] }
       const clean = id.startsWith('user/') ? id.slice('user/'.length) : id
@@ -114,6 +154,44 @@ export const manageSkills = createTool({
       if (!removed) return { ok: false, errors: [`no imported skill found at ${clean}`] }
       registerAndReload()
       return { ok: true, message: `removed imported skill ${clean}; index reloaded` }
+    }
+
+    if (action === 'promoteRevision') {
+      if (!path) return { ok: false, errors: ['promoteRevision requires path'] }
+      try {
+        const candidate = resolve(path)
+        const revisionsRoot = revisionRoot()
+        const escaped = relative(revisionsRoot, candidate)
+        if (escaped === '..' || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) {
+          return { ok: false, errors: ['revision path must be inside the global skill-revisions directory'] }
+        }
+        const source = readFileSync(candidate, 'utf8')
+        if (!source.includes('UNVALIDATED REVISION PROPOSAL')) {
+          return { ok: false, errors: ['file is not an unvalidated shared-knowledge revision proposal'] }
+        }
+        const validation = validateSkillMarkdown(source)
+        if (!validation.valid || !validation.meta) return { ok: false, errors: validation.errors }
+        if (!/^[a-zA-Z0-9._-]+$/.test(validation.meta.name) || validation.meta.name === '.' || validation.meta.name === '..') {
+          return { ok: false, errors: ['revision frontmatter name must be a safe skill identifier'] }
+        }
+
+        const root = importedRoot()
+        if (!existsSync(root)) mkdirSync(root, { recursive: true })
+        const dest = join(root, validation.meta.name)
+        const destFile = join(dest, 'SKILL.md')
+        if (existsSync(destFile)) {
+          const history = join(dest, 'revisions')
+          mkdirSync(history, { recursive: true })
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+          copyFileSync(destFile, join(history, `pre-promotion-${stamp}.md`))
+        }
+        mkdirSync(dest, { recursive: true })
+        writeFileSync(destFile, source.replace(/^\uFEFF/, ''), 'utf8')
+        registerAndReload()
+        return { ok: true, message: `revision promoted as user/${validation.meta.name}; previous imported content was preserved when present` }
+      } catch (err) {
+        return { ok: false, errors: [`revision promotion failed: ${err instanceof Error ? err.message : String(err)}`] }
+      }
     }
 
     // action === 'add'

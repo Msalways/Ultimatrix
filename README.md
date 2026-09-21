@@ -1,80 +1,322 @@
 <p align="center">
-  <img src="public/favicon.svg" width="104" height="104" alt="Ultimatrix logo">
+  <img src="public/favicon.svg" width="92" height="92" alt="Ultimatrix logo">
 </p>
 
 <h1 align="center">Ultimatrix</h1>
 
 <p align="center">
-  <strong>A security research platform that builds a case, not just a report.</strong><br>
-  Observe, hypothesize, test, verify, learn — and pick up exactly where you left off.
+  <strong>The target is a URL. The work is a case.</strong><br>
+  An intelligence-augmented security researcher for people who want to understand a system before testing it.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/ultimatrix"><img src="https://img.shields.io/npm/v/ultimatrix?style=flat-square&color=10b981" alt="npm version"></a>
   <img src="https://img.shields.io/badge/Node.js-22.13%2B-10b981?style=flat-square" alt="Node.js 22.13 or newer">
-  <img src="https://img.shields.io/badge/workspaces-Web%20%2B%20CLI-18181b?style=flat-square" alt="Web and CLI workspaces">
-  <img src="https://img.shields.io/badge/findings-evidence%20gated-2563eb?style=flat-square" alt="Evidence-gated findings">
+  <img src="https://img.shields.io/badge/indexed%20skills-82-2563eb?style=flat-square" alt="82 indexed skills">
+  <img src="https://img.shields.io/badge/evidence-gated-2563eb?style=flat-square" alt="Evidence gated findings">
   <img src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square" alt="MIT license">
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Quick Start</strong></a> |
-  <a href="docs/USER-GUIDE.md"><strong>User Guide</strong></a> |
-  <a href="#the-case-lifecycle"><strong>How It Works</strong></a> |
-  <a href="#inside-the-engine"><strong>Architecture</strong></a> |
-  <a href="#sdk"><strong>SDK</strong></a>
+  <a href="#start-here"><strong>Start</strong></a> ·
+  <a href="#the-story"><strong>The story</strong></a> ·
+  <a href="#what-it-solves"><strong>Why it exists</strong></a> ·
+  <a href="#how-it-works"><strong>How it works</strong></a> ·
+  <a href="docs/USER-GUIDE.md"><strong>Docs</strong></a>
 </p>
 
 ---
 
-## Why Ultimatrix Exists
+## First, the difference
 
-A scanner gives you output. Ultimatrix gives you a **case** — a living record of observed behavior, tested hypotheses, confirmed evidence, dead ends, and the next unanswered question. Every session resumes from the same graph, the same findings, and the same context.
+| A conventional scanner | Ultimatrix |
+|---|---|
+| Starts with a URL and a bag of payloads | Starts with a target, scope, credentials, and a question |
+| Fires requests, then sorts responses | Observes the application and builds a case graph first |
+| Repeats the same crawl after every restart | Resumes endpoints, actors, workflows, hypotheses, and failures |
+| Treats a model as a request generator | Gives the model structured state, skills, tools, and proof rules |
+| Calls an interesting string a finding | Keeps leads separate from evidence-backed claims |
+| Makes the human drive every next step | Lets you collaborate, supervise, or let the loop continue autonomously |
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🧠 It remembers</h3>
-      Target state, chat history, graph nodes, findings, and research context survive reloads, restarts, and new sessions.
-    </td>
-    <td width="33%" valign="top">
-      <h3>🔍 It shows its work</h3>
-      Every reasoning step, tool call, HTTP exchange, evidence claim, and outcome has a typed state — not just a log line.
-    </td>
-    <td width="33%" valign="top">
-      <h3>🤝 It keeps humans in</h3>
-      Watch the browser, demonstrate flows, approve critical actions, and steer the investigation with human judgment.
-    </td>
-  </tr>
-</table>
+The product is solving a coordination problem: **security testing is not one action. It is a sequence of observations, decisions, experiments, failed paths, and proofs that must stay connected.**
 
----
+<p align="center">
+  <img src="docs/assets/ultimatrix-case-board.svg" alt="Ultimatrix case board: observe, orient, test, prove, remember" width="1100">
+</p>
 
-## The Case Lifecycle
+<p align="center"><sub>The board is the product: every observation becomes context, every test changes the next question, and every claim has a path back to evidence.</sub></p>
+
+## The story
+
+Imagine you hand Ultimatrix an authorized web application and say:
+
+> “Understand the checkout flow. Look for authorization mistakes. Do not mutate customer data.”
+
+This is what should happen.
+
+### 1. The URL becomes a surface
+
+The first job is not to guess a payload. The runtime opens the browser and watches what the application actually does: routes, rendered controls, forms, Fetch/XHR calls, cookies, headers, JavaScript assets, redirects, and state changes. Direct HTTP and HAR/CDP capture add what the browser does not make obvious.
 
 ```text
-  OBSERVE              ORIENT               TEST                VERIFY               REMEMBER
-  ─────────          ─────────            ─────────           ─────────            ─────────
-  crawl traffic   →  build graph     →   fire tools       →  evidence gate    →  persist case
-  watch user          extract skills      browser + HTTP       cross-check          resume later
-  capture HAR         form hypotheses     campaigns            findings             same context
+target URL
+   |
+   +--> pages, routes, forms, inputs
+   +--> requests, responses, headers, cookies
+   +--> workflows, actors, auth transitions
+   +--> scripts, API hints, shadow endpoints
 ```
 
-Each phase feeds the next. Observations inform hypotheses. Hypotheses drive tests. Tests produce evidence. Evidence confirms or rejects findings. The case grows — and nothing is lost between sessions.
+If the browser cannot start, a provider is unavailable, or Docker cannot be reached, that becomes an explicit state. The system does not convert an infrastructure failure into a fake observation.
 
-### What this means in practice
+### 2. The surface becomes a case
 
-| Instead of... | Ultimatrix does... |
+Observations are projected into a graph instead of being left as a scrolling log. An endpoint can be connected to the page that revealed it, the actor that reached it, the input that influenced it, the hypothesis that targets it, and the experiment that tested it.
+
+```text
+Page -> Action -> Input -> Endpoint -> Hypothesis -> Experiment
+  \                                      |              |
+   -> AuthFlow / RBACRole ---------------+              v
+                                      Evidence -> Proof -> Finding
+```
+
+This is why a later turn can ask “what remains untested?” instead of starting the crawl from zero.
+
+### 3. The case becomes a question
+
+The research brain does not need a target-specific script. The live skill registry selects methodology from the observed state: authorization, API behavior, business logic, injection, GraphQL, race conditions, and so on. A skill can contribute:
+
+- the relevant tools and primitives;
+- an ordered procedure;
+- baseline, mutation, comparison, and reproduction stages;
+- a coverage contract describing what “done” means;
+- composition and conflict rules for adjacent techniques.
+
+The model still chooses the next move. The runtime decides which capabilities are available, which URLs are in scope, what needs approval, and what evidence is sufficient.
+
+### 4. The question becomes an experiment
+
+For example, after observing an order endpoint, the buddy may propose:
+
+```text
+Hypothesis: the object owner is checked in the API, not only in the UI.
+
+Baseline:  GET /api/orders/42 as the owner actor
+Mutation:  replay the captured request as the analyst actor
+Compare:   status, body shape, ownership fields, side effects
+Reproduce: repeat the difference with a fresh capture
+```
+
+The request is not valuable because it was sent. It is valuable because it answers a falsifiable question.
+
+### 5. The experiment becomes evidence
+
+Every claim is checked against typed evidence: method, URL, actor, status, response facts, provenance, and reproduction references. The EvidenceGate and proof rules decide whether a claim can be promoted.
+
+An exposed token-shaped string can remain an informational lead. A failed request can remain a failure. A confirmed authorization flaw gets a finding, severity, lifecycle state, and—when the proof floor is met—an exploit-proof record.
+
+### 6. The evidence becomes the next move
+
+Success changes technique weights. Failure becomes reflexion: what was blocked, what was stale, which assumption was wrong, and what should be tried next. Captured flows, graph facts, and policy-approved outcomes remain available to the next turn and the next session.
+
+That is the loop:
+
+```text
+ observe -> orient -> test -> prove -> learn
+     ^                                  |
+     +---------- next best question ----+
+```
+
+### The full traversal
+
+The important detail is that the model does not own the whole system. It proposes research moves; session services, capability policy, scope, resource claims, evidence rules, and persistence carry those moves through the product.
+
+<p align="center">
+  <img src="docs/assets/ultimatrix-runtime-flow.svg" alt="Ultimatrix three-lane runtime workflow from human intent to evidence and persistence" width="1200">
+</p>
+
+<p align="center"><sub>Human and policy shape the boundary. The research brain chooses the question. Deterministic runtime services execute, verify, and preserve the result.</sub></p>
+
+### What actually travels through the system
+
+The hand-offs are typed and inspectable. A request does not jump directly from prompt to payload:
+
+| Step | Artifact that moves forward | Who owns the decision | What can stop or redirect it |
+|---|---|---|---|
+| 1 | Goal, target, scope, interaction mode | Session runner + human | Missing target, invalid scope, unsupported mode |
+| 2 | Pages, requests, responses, DOM reactions, auth transitions | Browser/HTTP/HAR observers | Browser/provider failure, out-of-scope URL, rate limit |
+| 3 | Graph facts, endpoint state, actors, workflows, frontier | Engagement graph + blackboard | Duplicate observation, stale state, missing authorization |
+| 4 | Skill metadata and selected methodology body | Live skill registry | Unknown skill, invalid import, missing tool/primitive |
+| 5 | Capability pack, plan, hypothesis, experiment contract | Research brain + capability compiler | Policy, budget, risk, resource claim, dependency |
+| 6 | Typed tool call and typed tool result | Tool registry / worker / campaign | Tool unavailable, timeout, sandbox boundary, model/provider error |
+| 7 | Evidence item, provenance, comparison, reproduction | Evidence ledger + EvidenceGate | Insufficient proof, conflicting status, missing actor/state |
+| 8 | Candidate, verified finding, exploit proof, or reflexion | Finding/proof rules | Rejected claim, failed proof floor, needs human review |
+| 9 | Graph persistence, forensic log, next question, report | Engagement services | Checkpoint failure is surfaced; it is not silently discarded |
+
+The same traversal feeds the user-facing stream as typed messages: `phase`, `event`, `reasoning`, `tool`, `tool-result`, `answer`, and `done`. That is what lets the CLI and web workspace show progress without pretending every line is model reasoning.
+
+## What it solves
+
+### Context loss
+
+**Problem:** a restarted agent forgets routes, actors, failed attempts, and why a request mattered.
+
+**Response:** a per-engagement graph, workflow checkpoint, captured-request store, forensic log, and policy-gated memory preserve the case. Global memory is not a dumping ground for target secrets.
+
+### Blind tool use
+
+**Problem:** a model sees thirty tools and picks an HTTP request because it is the easiest button to press.
+
+**Response:** skill metadata, capability compilation, tool filtering, research hypotheses, budgets, and typed tool results narrow the decision surface. Browser, replay, campaign, sandbox, and specialist-worker tools are available when the observed problem justifies them.
+
+### “The model said it is vulnerable” findings
+
+**Problem:** a plausible explanation gets reported without a response difference or reproduction.
+
+**Response:** the evidence ledger, EvidenceGate, proof rules, finding lifecycle, and exploit-proof nodes separate hypotheses, candidates, verified findings, and rejected claims.
+
+### Human intervention becoming a dead end
+
+**Problem:** login, MFA, CAPTCHA, business context, or a risky action blocks the agent—or the user has to dictate every next request.
+
+**Response:** `interact` is a mutual research loop. The buddy can ask a focused question, wait for a browser action, observe what the human did, accept a correction, and continue from the same state. `solve` can run within a configured autonomous policy.
+
+### Tools that fail mysteriously
+
+**Problem:** a missing binary, provider outage, Docker permission, or unavailable browser looks like “the target is secure.”
+
+**Response:** capability checks, model routing/fallback, browser-provider lifecycle, sandbox diagnostics, rate limits, timeouts, and explicit skip/error events keep environmental gaps separate from security conclusions.
+
+## How it works
+
+```text
+YOU / WEB UI / CLI
+        |
+        v
+SESSION RUNNER  ---- owns one engagement and its lifecycle
+        |
+        +--> SOLVER (OODA) ------- reason, explore, conclude
+        +--> COUNCIL -------------- debate typed proposals
+        +--> LEGACY ---------------- compatibility workflow
+        |
+        v
+CASE SERVICES
+  graph | capture | memory | blackboard | evidence | model selector
+        |
+        +--> skills + capability compiler
+        +--> browser + HTTP + replay + workers
+        +--> campaigns + task graphs + sandbox adapters
+        |
+        v
+DELIVERABLES
+  findings | exploit proofs | reports | replayable evidence | next question
+```
+
+### The main building blocks
+
+| Building block | Responsibility |
 |---|---|
-| Scanning and dumping results | Building a knowledge graph that grows with every interaction |
-| Losing context between runs | Resuming from persisted graph state, auth sessions, and findings |
-| Black-box tool execution | Showing every HTTP exchange, reasoning step, and decision in a timeline |
-| Manual IDOR/BOLA testing | Automatically swapping actors, comparing responses, and flagging differences |
-| Generic "find XSS" prompts | Loading domain-specific skills with methodology and tool prescriptions |
+| [Observation](src/capture/) | Stagehand/Playwright browser control, optional Camoufox, HTTP, HAR/CDP capture, passive DOM/network observation, spidering, JavaScript/shadow discovery |
+| [Case graph](src/graph/) | Pages, rendered elements, endpoints, actors, auth flows, roles, workflows, hypotheses, experiments, findings, reachability, and proof relationships |
+| [Skill registry](src/solver/skills/) | 82 indexed skills across 19 domains; lazy bodies, tool references, primitives, contracts, composition/conflict rules, and import validation |
+| [Research brain](src/solver/) | OODA loop, hypothesis generation, experiment planning, reflexion, attack paths, model selection, recovery, and fallback routing |
+| [Execution](src/tools/) | Browser and HTTP tools, captured-request replay, campaigns, task graphs, specialist workers, council delegation, OAST, and Linux/Docker adapters |
+| [Evidence](src/intelligence/) | Typed observations, provenance, differential checks, proof floors, finding lifecycle, exploit proofs, and chain verification |
+| [Output](src/output/) + [web](src/app/api/) | Append-only terminal stream, web SSE stream, graph views, finding cards, reports, forensic NDJSON, and resumable sessions |
 
----
+<details>
+<summary><strong>The complete skill map</strong> - what the registry can load today</summary>
 
-## Quick Start
+The registry currently indexes these 82 skills. They are discoverable metadata first and loaded as methodology only when the case needs them; this list is not a promise that every target exercises every skill.
+
+| Domain | Indexed skills |
+|---|---|
+| API security | `ai-mcp-security`, `api-fuzzing`, `api-security`, `graphql-attacks`, `graphql-depth-introspection`, `websocket-attacks` |
+| Authentication | `authorization`, `jwt-advanced`, `jwt-algorithm-confusion` |
+| Bug bounty | `account-takeover-chains`, `api-authorization-matrix`, `bug-bounty-research`, `bug-bounty-scenarios`, `cache-boundary-testing`, `graphql-authorization`, `http-desync`, `web-message-boundaries`, `webhook-ssrf` |
+| Cloud | `aws-iam-exploitation`, `azure-exploitation`, `docker-escape`, `gcp-exploitation`, `kubernetes-security`, `serverless-attacks` |
+| Crypto | `crypto-toolkit`, `ctf-crypto`, `tls-attacks` |
+| Injection | `command-injection-advanced`, `email-injection`, `exploitation`, `nosql-injection`, `second-order-sqli`, `ssti`, `vuln-discovery`, `xxe` |
+| IoT / LLM / mobile | `iot-security`, `llm-agentic-security`, `mobile-security` |
+| Methodology | `api-methodology`, `cloud-methodology`, `web-methodology` |
+| Network / recon | `network-attacks`, `ctf-misc`, `hsts-bypass`, `information-disclosure`, `intranet-pentest`, `osint-recon`, `post-exploitation`, `recon`, `ssl-stripping`, `subdomain-takeover` |
+| Offensive | `edr-evasion`, `shellcode-exploit-dev` |
+| Post-exploitation | `anti-forensics`, `c2-frameworks`, `data-exfiltration`, `lateral-movement`, `persistence` |
+| Privilege escalation | `linux-privesc`, `windows-privesc` |
+| Reporting | `reporting` |
+| Social / supply chain | `phishing`, `social-engineering`, `supply-chain` |
+| Web attacks | `blind-ssrf`, `business-logic`, `cache-poisoning`, `clickjacking`, `cors-misconfig`, `css-injection`, `deserialization`, `host-header-injection`, `http-smuggling`, `modern-xss`, `open-redirect`, `prototype-pollution`, `race-conditions-advanced`, `security-headers-audit`, `type-juggling`, `waf-bypass`, `web-pentest`, `web-security-advanced` |
+</details>
+
+<details>
+<summary><strong>The toolbox</strong> - what a selected skill can reach</summary>
+
+| Tool family | Examples |
+|---|---|
+| Observe and orient | `getTargetSummary`, `getCaptureOverview`, `getGraphSchema`, `queryGraph`, `queryRelations`, `getWorkflowAround`, `traceValue`, `explainReachability` |
+| Discover methodology | `listSkills`, `searchSkills`, `discoverSkillsForTarget`, `loadSkillBody`, `loadSkillReference`, `manageSkills` |
+| Browser and human | Stagehand/Camoufox navigation, observation, actions, extraction, `askUser`, `observeHumanActions`, `reproduceFlow` |
+| HTTP and replay | `httpRequest`, `listCapturedRequests`, `replayCapturedRequest`, `getCapturedHeaders`, `encodeDecode` |
+| Research execution | `runRecon`, `runPrimitive`, `runCampaign`, worker routing, task graphs, council execution |
+| Evidence and findings | `recordEvidence`, `linkEvidenceToClaim`, `recordOutcome`, `recordFindingCandidate`, `writeFinding`, `verifyChains` |
+| External execution | Nuclei, SQLMap, FFUF, Nmap, Gobuster, Nikto, Masscan, Subfinder, HTTPX, Arjun, Corsy, JWT tooling, Hydra, John, and Gitleaks through capability-gated adapters |
+</details>
+
+<details>
+<summary><strong>Graph depth</strong> - what is persisted</summary>
+
+The graph currently defines 25 node types and 21 edge types. It is the case memory, not a transcript archive. Captured requests can be replayed with structural mutations, and failed approaches can become reflexion rather than disappearing after a timeout.
+</details>
+
+<details>
+<summary><strong>Parallelism</strong> - when it is actually used</summary>
+
+Normal solver turns are not silently duplicated. Campaigns, task graphs, and council cycles may request bounded parallel slices. Dependencies, resource claims, budgets, and rate limits constrain that work. The configured default is conservative (`maxParallel: 1`).
+</details>
+
+<details>
+<summary><strong>Memory</strong> - what “learns” means</summary>
+
+Engagement memory contains target-sensitive state. Reflexion and technique-outcome stores learn from failed and confirmed experiments. Cross-engagement/global writes pass through a sensitivity policy; secrets, target URLs, auth state, storage, and request payloads are not promoted automatically.
+</details>
+
+## Two ways to work with it
+
+| Surface | What it feels like | Runtime behavior |
+|---|---|---|
+| `ultimatrix interact -t <url>` | A research partner at the keyboard | Ask mode; you can redirect, provide credentials, act in the browser, or approve a meaningful step |
+| `ultimatrix solve -t <url>` | A bounded autonomous assessment | Run mode; the loop continues without waiting for HITL prompts, but scope, budgets, capability checks, and evidence gates remain active |
+| `ultimatrix web` | The case wall | Chat, graph, findings, approvals, and live progress in one workspace |
+
+The stream has typed channels rather than one ambiguous text blob:
+
+```text
+runtime  observing target surface
+skill    authorization loaded
+tool     replayCapturedRequest  GET /api/orders/42
+tool     result                  200 application/json
+brain    compare this response under the analyst actor
+finding  HIGH  cross-tenant object access  @ /api/orders/42
+```
+
+Reasoning is shown only when the provider emits a reasoning channel. Runtime labels are never presented as the model’s private thought.
+
+## Coverage, honestly stated
+
+| Surface | Boundary |
+|---|---|
+| SPAs, routed applications, Fetch/XHR, and APIs | Browser routes, rendered elements, requests, responses, headers, parameters, timing, and replay |
+| Authenticated workflows | Requires credentials or an observed browser flow |
+| Authorization and business logic | Depends on observed actors, states, invariants, and workflows |
+| GraphQL, injection, and modern web attacks | Skill-driven and target-dependent |
+| Race testing | Bounded primitive against an authorized state-changing endpoint |
+| CAPTCHA and anti-bot | Human-assisted pause/resume |
+| WebSockets | Methodology exists; dedicated frame capture remains partial |
+| Linux tools | Local-first, Docker fallback, capability-gated |
+
+Camoufox requires a provisioned executable. Docker tools require an accessible daemon and image. A provider outage can stop model-driven exploration. Those are visible boundaries, not claims about the target.
+
+## Start here
 
 ```bash
 git clone https://github.com/Msalways/Ultimatrix.git
@@ -84,243 +326,18 @@ npx playwright install chromium
 npx ultimatrix init
 ```
 
-Choose how you want to work:
-
 ```bash
-# Visual workspace — see everything, steer the investigation
-npx ultimatrix web
-
-# Guided terminal — interactive prompts, focused commands
+# Mutual research loop
 npx ultimatrix interact -t https://app.example.com
 
-# Autonomous OODA — reason, explore, conclude, repeat
+# Bounded autonomous OODA assessment
 npx ultimatrix solve -t https://app.example.com
+
+# Web workspace
+npx ultimatrix web
 ```
 
-> [!IMPORTANT]
-> Use Ultimatrix only on systems you own or are explicitly authorized to test. Define scope before starting any execution run.
-
----
-
-## Two Workspaces, One Case
-
-| | Web | CLI |
-|---|---|---|
-| **Best at** | Inspecting and steering a live investigation | Fast operation, automation, remote shells |
-| **Intent** | Explicit **Ask** and **Run** modes | Interactive prompts and focused commands |
-| **Progress** | Structured streaming timeline | Live Markdown and compact run summaries |
-| **Continuity** | Reload target sessions and graph-backed results | Resume a persisted target workspace |
-| **Browser** | Visible capture status, page count, and close control | Managed lifecycle with human-action observation |
-
-### Ask without acting
-
-**Ask** reads the active case and answers from persisted context. It does not turn a question into an assessment.
-
-### Run with observable progress
-
-**Run** starts an execution turn. Reasoning, tools, findings, completion, cancellation, budget exhaustion, and errors render as distinct events.
-
-### Reload without losing
-
-Target sessions live under `output/<target>/`. Chat history and graph-backed findings return after a page reload. Browser and engine resources initialize only when needed.
-
----
-
-## Modern Web Application Coverage
-
-Modern apps hide behavior behind client-side routing, authenticated APIs, transient UI state, and multi-step workflows. Ultimatrix observes the application **while it runs** instead of relying on a static crawl.
-
-| Behavior | Coverage | What Ultimatrix does |
-|---|---|---|
-| SPAs and client-side routing | **Built in** | Real browser, follows navigation, mines loaded JS for endpoints |
-| `fetch` and XHR APIs | **Built in** | Captures request/response bodies, headers, cookies, parameters, timing |
-| Dynamic UI feedback | **Built in** | Diffs accessibility tree after actions — dialogs, modals, toasts, errors |
-| Form, OAuth, SAML | **Built in** | Detects auth surfaces, records flows, extracts browser auth |
-| Multi-role apps | **Context required** | Builds role/permission state, tests BOLA, IDOR, tenant isolation |
-| Business workflows | **Built in** | Records ordered actions, models invariants, probes sequence bypasses |
-| GraphQL APIs | **Built in** | Schema discovery, introspection, global-ID swapping, field auth |
-| Race conditions | **Built in** | Bounded concurrent requests against state-changing endpoints |
-| CAPTCHA / anti-bot | **Human assisted** | Detects challenge providers, pauses for human completion |
-| WebSockets | **Partial** | Methodology present; first-class frame capture is not yet dedicated |
-
----
-
-## Capabilities at a Glance
-
-<table>
-  <tr>
-    <td align="center" width="20%"><strong>74</strong><br>security skills</td>
-    <td align="center" width="20%"><strong>9</strong><br>tool adapters</td>
-    <td align="center" width="20%"><strong>60+</strong><br>registered tools</td>
-    <td align="center" width="20%"><strong>24 + 20</strong><br>graph types</td>
-    <td align="center" width="20%"><strong>2,577</strong><br>tests</td>
-  </tr>
-</table>
-
----
-
-## Inside the Engine
-
-```text
-                          target + goal
-                               │
-                     ┌─────────▼─────────┐
-                     │  session runner   │
-                     │ scope + budget    │
-                     └─────────┬─────────┘
-                               │
-             ┌─────────────────┼─────────────────┐
-             │                 │                 │
-       ┌─────▼─────┐     ┌────▼────┐     ┌─────▼─────┐
-       │  OODA     │     │ legacy  │     │ council   │
-       │  solver   │     │ super.  │     │  debate   │
-       └─────┬─────┘     └────┬────┘     └─────┬─────┘
-             │                │                 │
-   ┌─────────▼─────────────────────────────────────────┐
-   │         skills  browser  HTTP  tools  campaigns   │
-   └─────────┬─────────────────────────────────────────┘
-             │
-   ┌─────────▼──────────┐       ┌─────────────────────┐
-   │   evidence gate    │──────▶│  graph + findings   │
-   └────────────────────┘       └─────────────────────┘
-```
-
-### Three engines, one runner
-
-| Engine | How it works | When to use |
-|---|---|---|
-| **OODA Solver** | REASON → EXPLORE → CONCLUDE, with intelligence layers observing passively | `solve`, `interact` (default) |
-| **Council** | 4 LLM members debate what to test, structured typed outputs | On-demand parallel analysis |
-| **Legacy Supervisor** | Phased Observe → Learn → Attack loop | `scan`, `assess` |
-
-### Intelligence layers (running in the background)
-
-| Layer | What it does |
-|---|---|
-| **Evidence Gate** | Cross-checks LLM claims against typed ledger — hallucinations get rejected |
-| **Reflexion Engine** | Classifies failures, escalates strategy, extracts experience |
-| **Anti-Loop** | Detects stale/dead-end paths, blocks repeated work |
-| **Coverage Campaigns** | Builds endpoint × param × role matrix, dedupes into bounded-execution slices |
-| **Outcome Feedback** | Finding acceptance → technique weight adjustments → better future decisions |
-| **Cross-Engagement Memory** | Privacy-preserving pattern memory across sessions |
-
-### The knowledge graph
-
-The graph is the case. It connects every observation to its source:
-
-```text
-  Page ──HAS_ACTION──▶ Action ──HAS_INPUT──▶ Input
-   │                                          │
-   │                                    FOUND_ON
-   │                                          │
-   │                                          ▼
-   └──RENDERED_ON──▶ Endpoint ◀──TARGETS──── Finding
-                          │                     │
-                    REQUIRES_AUTH          CHAINED_FROM
-                          │                     │
-                          ▼                     ▼
-                       AuthFlow            Attack Path
-```
-
-**24 node types** (Page, Endpoint, Finding, AuthFlow, Hypothesis, ExploitProof, ...) and **20 edge types** — every observation links back to evidence.
-
----
-
-## Tool Surface
-
-### What the brain can call
-
-| Category | Tools | Risk |
-|---|---|---|
-| **Read** | `queryGraph`, `getGraphSchema`, `getTargetSummary`, `listSkills`, `searchSkills`, `getToolResult` | `read` — always available |
-| **Network** | `httpRequest`, `followRedirects`, `crawlTarget`, `runRecon`, `requestAsActor` | `network` — auto-approved |
-| **Mutate** | `writeFinding`, `runPrimitive`, `updateGraph`, `saveSession`, `manageSkills` | `mutate` — requires grant |
-| **Delegate** | `spawnWorker`, `runCampaign`, `runAdvancedPlaybook`, `runTaskGraph` | `delegate` — requires grant |
-
-### Session & auth tools
-
-| Tool | What it does |
-|---|---|
-| `requestAsActor` | Replay a captured request under a different actor's auth context |
-| `listActors` | List available session actors (stored auth credentials) |
-| `storeSession` | Save session cookies/token for a role |
-| `getCapturedHeaders` | Retrieve auth headers for a URL + role |
-| `extractSessionCookie` | Parse Set-Cookie headers |
-
-### Security-tool adapters
-
-| Tool | Coverage | Binary required? |
-|---|---|---|
-| `nuclei` | Known CVEs, exposures, misconfigurations | Yes |
-| `sqlmap` | SQL injection detection + exploitation | Yes |
-| `ffuf` | Hidden endpoints, directories, fuzzing | Yes |
-| `nmap` | Ports, services, versions | Yes |
-| `jwt_tool` | JWT inspection + manipulation | Yes |
-| `arjun` | Hidden HTTP parameters | Yes |
-| `corsy` | CORS misconfigurations | Yes |
-| `subfinder` | Passive subdomains | Yes |
-| `gitleaks` | Secrets in source/assets | Yes |
-
-Adapters are scope-checked. If a binary is absent, the adapter returns `skip` with an install hint — it never manufactures output.
-
-```bash
-npx ultimatrix tools    # See what's available locally
-```
-
----
-
-## Runtime Architecture
-
-### Core stack
-
-| Layer | Technology | Role |
-|---|---|---|
-| Runtime | TypeScript, Node.js 22 | CLI, SDK, engines, tooling |
-| Web | Next.js 15, React 19, Zustand | Workspace UI, streaming timeline |
-| Agent runtime | Mastra | Agents, model execution, tool contracts |
-| Browser | Playwright, Stagehand | Navigation, interaction, capture, auth |
-| Validation | Zod 4 | Config, tool input, graph boundaries |
-| Persistence | Graph store, libSQL, JSON, NDJSON | Knowledge, sessions, forensic events |
-| Visualization | D3 | Knowledge-graph views |
-| Packaging | tsup | ESM, CommonJS, declarations, CLI |
-| Testing | Vitest | 2,577 tests, zero failures |
-
-### Evidence pipeline
-
-```
-  Tool output
-       │
-       ▼
-  ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-  │ EvidenceLedger│────▶│ EvidenceGate │────▶│  Findings   │
-  │ (structured) │     │ (anti-halluc)│     │ (confirmed) │
-  └──────────────┘     └──────────────┘     └─────────────┘
-       │                                          │
-       ▼                                          ▼
-  ForensicLog                              KnowledgeGraph
-  (NDJSON audit)                           (persisted case)
-```
-
-Every tool call flows through the evidence pipeline. Claims are cross-checked against observed facts. Unverified claims get rejected — not passed through as findings.
-
----
-
-## One Configuration Model
-
-| File | Contains | Rule |
-|---|---|---|
-| `ultimatrix.yaml` | Engine, model, browser, solver, memory, budgets | Behavior only |
-| `providers.yaml` | API keys and provider authentication | **Never commit** |
-
-```bash
-npx ultimatrix providers list
-npx ultimatrix providers set nvidia
-npx ultimatrix config path
-```
-
-Provider updates use masked prompts. A blank key preserves the existing secret. Keys are never accepted as command arguments.
-
----
+Keep credentials outside source control. Use `providers.yaml` or the setup wizard; do not pass API keys on the command line.
 
 ## SDK
 
@@ -340,78 +357,22 @@ try {
 }
 ```
 
-Use the SDK for CI and custom orchestration. Use the CLI for direct operation. Use the Web workspace when visibility and steering matter most.
+## Builder's shelf
 
----
-
-## What Skills Bring
-
-Skills are not just prompts — they're structured knowledge documents with declared tool dependencies, execution procedures, and coverage verification:
-
-```yaml
-name: authorization
-category: specialized
-toolRefs: [httpRequest, runPrimitive, requestAsActor, ...]
-primitives: [authBypass, idorSwapper, authzMatrix, tenantIsolation]
-contract:
-  capabilities: [network.request, response.compare, session.actor-context]
-  procedure:
-    - id: baseline
-      goal: Capture authorized owner behavior for each endpoint
-    - id: alternate-actor
-      goal: Replay under a different actor's auth context
-    - id: compare
-      goal: Compare status, body, headers, timing
-    - id: reproduce
-      goal: Confirm exploitability with a material difference
-```
-
-When the brain loads a skill, it gets:
-1. **Methodology** — what to test and in what order
-2. **Tool prescriptions** — only the tools relevant to this domain
-3. **Contract** — which capabilities are required and what "done" looks like
-4. **Coverage tracking** — which stages have been executed and which are still pending
-
-**74 skills across 18 domains:** injection, web attacks, auth security, recon, crypto, API security, cloud security, LLM security, supply chain, reporting, offensive security, privilege escalation, post-exploitation, social engineering, network attacks, mobile security, IoT security, and methodology.
-
----
-
-## Where This Can Go
-
-The opportunity is not to make an AI scanner produce more text. It is to make security investigation:
-
-- **continuous** — every run begins with what the last run learned
-- **reviewable** — evidence and actions are visible beside conclusions
-- **reproducible** — browser flows, tests, and findings can be revisited
-- **controllable** — scope, budgets, approvals, and humans remain first-class
-
-Ultimatrix has the core pieces: persistent cases, observable execution, typed evidence, multiple engines, browser capture, and one configuration model across every interface. The work ahead is making those pieces increasingly dependable as a research environment.
-
----
-
-## Documentation
-
-| Document | Use it for |
+| Read this | When you need it |
 |---|---|
-| **[User Guide](docs/USER-GUIDE.md)** | Installation, workflows, providers, persistence, reports |
-| **[Architecture](docs/ARCHITECTURE.md)** | Components, data flow, engine design, implementation |
-| `npx ultimatrix --help` | Current CLI reference |
-
----
-
-## Development
+| [User Guide](docs/USER-GUIDE.md) | Install, providers, workflows, persistence, and reports |
+| [Architecture](docs/ARCHITECTURE.md) | Engine boundaries, graph, skills, tools, memory, and web routes |
+| [Skill Packs](docs/SKILL-PACKS.md) | Author or import validated methodology |
+| `npx ultimatrix --help` | Current CLI surface |
 
 ```bash
-npm test                    # 2,577 tests — zero failures
-npm run typecheck           # TypeScript strict mode
-npm run build:cli           # tsup: ESM + CJS + DTS
-npm run build:web           # Next.js production build
-npm run lint                # ESLint (src/)
-npm run test:evals          # Architecture evaluation cases
+npm test                 # full Vitest suite
+npm run test:evals       # architecture boundary evaluations
+npm run typecheck        # strict TypeScript checks
+npm run build:cli        # CLI bundle
+npm run build:web        # Next.js workspace
 ```
 
----
-
-<p align="center">
-  <sub>Built for researchers who want their tools to remember, not just scan.</sub>
-</p>
+<p align="center"><sub>Built for researchers who want their tools to remember, show their work, and earn confidence.</sub></p>
+<p align="center"><strong>Authorized testing only.</strong></p>

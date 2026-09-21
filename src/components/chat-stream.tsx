@@ -157,7 +157,10 @@ export function ChatStream() {
     let answerBuffer = ''
     let thinkingBuffer = ''
     let liveAnswerId: string | null = null // live preview message shown during streaming
-    let liveThinkingId: string | null = null
+    // Reasoning is an audit detail, not the primary activity feed. Keep the
+    // provider's token stream in memory and publish one collapsed trace when
+    // the turn completes. Rendering every token as a chat card made the web
+    // UI look like a broken transcript and obscured tools/evidence.
     const streamStatusId = nextId()
     let aborted = false
     const startTime = Date.now()
@@ -182,28 +185,10 @@ export function ChatStream() {
           const msg = parsed
           switch (msg.kind) {
             case 'reasoning':
-              // F30 FIX: When showReasoning is disabled, skip rendering thinking cards entirely.
-              if (!showReasoning) break
               thinkingBuffer = appendDelta(thinkingBuffer, msg.text)
-              if (!thinkingBuffer.trim()) break
-              if (!liveThinkingId) {
-                liveThinkingId = nextId()
-                addMessage({
-                  id: liveThinkingId,
-                  type: 'thinking',
-                  content: thinkingBuffer,
-                  collapsed: false,
-                  timestamp: Date.now(),
-                } as any)
-              } else {
-                updateMessage(liveThinkingId, {
-                  content: thinkingBuffer,
-                  timestamp: Date.now(),
-                } as any)
-              }
               updateMessage(streamStatusId, {
                 status: 'running',
-                label: 'Thinking',
+                label: 'Reasoning · choosing next action',
               } as any)
               break
             case 'answer':
@@ -305,22 +290,15 @@ export function ChatStream() {
               // B4: Done event — live preview will be replaced by canonical answer
               if (msg.answer?.reasoning) {
                 thinkingBuffer = msg.answer.reasoning
-                if (liveThinkingId) {
-                  updateMessage(liveThinkingId, {
-                    content: thinkingBuffer,
-                    collapsed: true,
-                    timestamp: Date.now(),
-                  } as any)
-                } else {
-                  liveThinkingId = nextId()
-                  addMessage({
-                    id: liveThinkingId,
-                    type: 'thinking',
-                    content: thinkingBuffer,
-                    collapsed: true,
-                    timestamp: Date.now(),
-                  } as any)
-                }
+              }
+              if (showReasoning && thinkingBuffer.trim()) {
+                addMessage({
+                  id: nextId(),
+                  type: 'thinking',
+                  content: thinkingBuffer,
+                  collapsed: true,
+                  timestamp: Date.now(),
+                } as any)
               }
               if (msg.answer?.content) {
                 answerBuffer = msg.answer.content
@@ -950,7 +928,7 @@ function MessageBubble({
       <div className="mx-4 my-1 rounded-md border border-violet-900/40 bg-violet-950/10 px-3 py-2 text-xs text-violet-200/80 sm:ml-8">
         <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-violet-300/70">
           <Sparkles size={12} />
-          Thinking
+          Decision trace
         </div>
         <div className={m.collapsed ? 'line-clamp-3 whitespace-pre-wrap text-violet-200/60' : 'whitespace-pre-wrap'}>
           {m.content}

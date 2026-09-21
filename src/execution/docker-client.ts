@@ -43,6 +43,7 @@ export async function createContainer(opts: {
   memoryLimit?: string
   cpuQuota?: number
   readOnlyRoot?: boolean
+  capabilities?: string[]
 }): Promise<string> {
   const args = ['create', '--name', opts.name]
 
@@ -50,6 +51,9 @@ export async function createContainer(opts: {
   if (opts.memoryLimit) args.push('--memory', opts.memoryLimit)
   if (opts.cpuQuota) args.push('--cpus', String(opts.cpuQuota))
   if (opts.readOnlyRoot) args.push('--read-only')
+  // Network scanners need raw sockets even as the unprivileged sandbox user.
+  // Grant only explicit capabilities; never use Docker's --privileged mode.
+  for (const capability of opts.capabilities ?? []) args.push('--cap-add', capability)
 
   // Keep container running
   args.push('--entrypoint', '/bin/sh', opts.image, '-c', 'sleep infinity')
@@ -106,6 +110,8 @@ export async function execInContainer(
   if (opts.workdir || command.workdir) {
     execArgs.push('-w', opts.workdir ?? command.workdir!)
   }
+
+  if (command.user) execArgs.push('-u', command.user)
 
   if (command.env || opts.env) {
     const env = { ...opts.env, ...command.env }

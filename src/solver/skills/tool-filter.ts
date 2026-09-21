@@ -8,6 +8,7 @@ import { initSkillIndex } from './loader'
  */
 const CORE_TOOLS = [
   'listSkills',
+  'discoverSkillsForTarget',
   'loadSkillBody',
   'askUser',
   'manageSkills',
@@ -70,6 +71,7 @@ const EXECUTION_TOOLS = [
   'assessCandidateReportability',
   'buildResearchMap',
   'planResearchExperiments',
+  'executePlannedExperiment',
   'compareResearchResponses',
   'evaluateResearchExperiment',
   'detectReactions',

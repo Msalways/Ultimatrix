@@ -123,6 +123,10 @@ export function buildGoalPrompt(
     if (intelligenceContext.reflexionBlock) {
       intelParts.push('### Failure History', intelligenceContext.reflexionBlock)
     }
+    // G6: Wire reflection override — force strategy change when repeated failures
+    if (intelligenceContext.reflectionOverride) {
+      intelParts.push('### Strategy Override', intelligenceContext.reflectionOverride)
+    }
     if (intelligenceContext.antiLoopStale) {
       intelParts.push('### Loop Detection', '- Stale: true — agent has been repeating the same approach. Switch strategy.')
     }

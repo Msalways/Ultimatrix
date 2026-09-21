@@ -64,7 +64,7 @@ describe('ChatBox — terminal owner for interact', () => {
     box.streamAssistant({ kind: 'done', answer: { steps: 3, toolCalls: 1, status: 'done' } })
     box.endAssistant()
     const text = join(out)
-    expect(text).toContain('reasoning (1 lines)')
+    expect(text).toContain('decision trace (1 lines)')
     expect(text).toContain('IDOR confirmed')
     expect(text).toContain('HTTP 200 OK')
     expect(text).toContain('── done · 3 steps · 1 tools ──')
@@ -131,5 +131,83 @@ describe('ChatBox — terminal owner for interact', () => {
     expect(text).not.toContain('response_complete')
     expect(text).not.toContain('system events')
     expect(text).not.toContain('steps')
+  })
+
+  it('buffers answers in non-TTY mode so final markdown is rendered once', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'answer', text: 'No deliverable response was produced.' })
+    // Piped output must not receive a raw streaming copy before finalization.
+    expect(join(out)).toBe('')
+    box.endAssistant()
+    const text = join(out)
+    expect(text.match(/No deliverable response was produced\./g)?.length).toBe(1)
+    expect(text).not.toContain('<p>')
+  })
+
+  it('renders a structured stream failure instead of hiding it behind no response', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({
+      kind: 'event',
+      event: 'turn.failed',
+      label: 'Model service unavailable: Internal server error',
+      status: 'error',
+    })
+    box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [], completed: false, status: 'model_failed', steps: 0, toolCalls: 0 } })
+    box.endAssistant()
+    const text = join(out)
+    expect(text).toContain('Model service unavailable: Internal server error')
+    expect(text).toContain('(no response)')
+  })
+
+  it('keeps tool rows append-only while an answer is streaming', () => {
+    const out: string[] = []
+    const box = new ChatBox({ isTTY: true, write: (s: string) => { out.push(s) } })
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'answer', text: 'partial answer' })
+    box.streamAssistant({ kind: 'tool', name: 'httpRequest', args: { method: 'GET', url: 'https://x' } })
+    const text = out.join('')
+    expect(text).not.toContain('\r')
+    expect(text).toContain('httpRequest')
+    box.endAssistant()
+  })
+
+  it('buffers token-level reasoning instead of painting one terminal row per token', () => {
+    const out: string[] = []
+    const box = new ChatBox({ isTTY: true, showReasoning: true, write: (s: string) => { out.push(s) } })
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'reasoning', text: 'Inter' })
+    box.streamAssistant({ kind: 'reasoning', text: 'pret' })
+    expect(out.join('')).not.toContain('Inter')
+    expect(out.join('')).not.toContain('pret')
+    box.endAssistant()
+    expect(out.join('')).toContain('decision trace (')
+  })
+
+  it('streams coalesced brain updates separately from runtime events', () => {
+    const out: string[] = []
+    const box = new ChatBox({ isTTY: true, showReasoning: true, liveReasoning: true, write: (s: string) => { out.push(s) } })
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'reasoning', text: 'I observed the captured API surface and will compare anonymous responses before attempting any state-changing test.' })
+    box.streamAssistant({ kind: 'event', event: 'observation.started', label: 'observing target surface', status: 'running' })
+    const text = out.join('')
+    expect(text).toContain('brain')
+    expect(text).toContain('runtime')
+    expect(text).toContain('observed the captured API surface')
+    box.endAssistant()
+  })
+
+  it('shows structured activity while keeping model scratch text out of the live card', () => {
+    const out: string[] = []
+    const box = new ChatBox({ isTTY: true, write: (s: string) => { out.push(s) } })
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'phase', phase: 'observe', step: 0 })
+    box.streamAssistant({ kind: 'event', event: 'recon.started', label: 'mapping links and forms', status: 'running' })
+    box.streamAssistant({ kind: 'reasoning', text: 'private scratch' })
+    const text = out.join('')
+    expect(text).toContain('observing target surface')
+    expect(text).toContain('mapping links and forms')
+    expect(text).not.toContain('private scratch')
   })
 })

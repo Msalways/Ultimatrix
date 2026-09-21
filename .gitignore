@@ -78,3 +78,11 @@ test-worker.ts
 # Temporary output files
 test-output.txt
 tsc-errors.txt
+
+# Local investigation scratch space (never publish)
+.sandbox-node22/
+diag-*/
+juice-shop-current-check/
+juice-shop-iter5/
+juice-shop-pattern-run*/
+juice-shop-results/

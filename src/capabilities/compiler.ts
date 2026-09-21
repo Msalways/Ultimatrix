@@ -26,11 +26,45 @@ import { initSkillIndex } from '../solver/skills/loader'
  * satisfy them. Multiple tools can satisfy the same capability.
  */
 const CAPABILITY_TOOL_MAP: Record<string, string[]> = {
-  'network.request': ['httpRequest', 'followRedirects', 'multipartUpload'],
-  'response.compare': ['compareResponses', 'measureTiming'],
-  'session.actor-context': ['getCapturedHeaders', 'storeSession', 'useSession', 'extractSessionCookie'],
+  'network.request': [
+    'httpRequest',
+    'followRedirects',
+    'multipartUpload',
+    'requestAsActor',
+    'replayCapturedRequest',
+    'executePlannedExperiment',
+  ],
+  // Both legacy observation tools and the typed research differential seam
+  // satisfy the same semantic contract. Keeping this mapping semantic (not
+  // tied to one tool generation) lets knowledge-base skills compile against
+  // the research planner without weakening coverage validation.
+  'response.compare': [
+    'compareResponses',
+    'measureTiming',
+    'compareResearchResponses',
+    'evaluateResearchExperiment',
+  ],
+  'session.actor-context': [
+    'getCapturedHeaders',
+    'storeSession',
+    'useSession',
+    'extractSessionCookie',
+    'extractBrowserAuth',
+    'getAuthFlows',
+    'listActors',
+    'useCredential',
+  ],
   'primitive.execute': ['runPrimitive'],
-  'evidence.capture': ['recordEvidence', 'linkEvidenceToClaim'],
+  // HTTP/replay execution auto-captures request/response evidence even when
+  // manual evidence attachment is disabled by worker policy.
+  'evidence.capture': [
+    'recordEvidence',
+    'linkEvidenceToClaim',
+    'httpRequest',
+    'replayCapturedRequest',
+    'requestAsActor',
+    'executePlannedExperiment',
+  ],
   'finding.write': ['writeFinding'],
   'graph.query': ['queryGraph', 'getGraphSchema', 'getEndpointsWithParams'],
   'graph.update': ['updateGraph'],

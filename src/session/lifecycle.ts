@@ -9,6 +9,7 @@
 import type { UltimatrixConfig } from '../config'
 import { loadConfig } from '../config'
 import { log } from '../utils/logger'
+import { fullModelId } from '../models/routing'
 import { getGlobalWorkspace } from '../workspace'
 import { getOrCreateBrowser, closeBrowser, getActivePage } from '../browser/manager'
 import { startDialogWatcher, stopDialogWatcher } from '../browser/dialog-watcher'
@@ -19,6 +20,7 @@ import { createMemoryStore, createMemory } from '../workers/registry'
 import { userInputEmitter, uiInputEmitter, setReadlineInterface, setConsoleInputResolver, setInteractionMode, uiGoalEmitter } from '../tools/interaction-tools'
 import { detectChains } from '../intelligence/chaining'
 import type { FindingNode } from '../graph/schema'
+import { getGlobalGraphStore } from '../graph/store'
 import { runSpiderRuntime, stableTargetId, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
 import { spiderEventLine } from '../spider/render'
 import { createInterface } from 'node:readline/promises'
@@ -66,6 +68,7 @@ type HarCaptureSession = {
 import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import { ModelSelector } from '../models/selector'
 import type { CoreServices } from '../core/types'
+import type { ChatBox } from '../output/chatbox'
 
 
 // â”€â”€â”€ Phase type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -421,7 +424,14 @@ export class SessionLifecycle {
           const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 })
           const status = response?.status() || 'unknown'
           const title = await page.title().catch(() => '')
-          log.info(`Loaded ${target} â€” status: ${status}, title: "${title}"`)
+          log.info(`Loaded ${target} â€" status: ${status}, title: "${title}"`)
+
+          // Minimal graph seeding — extract initial endpoints from page HTML
+          // so the brain starts with signal, not an empty graph. Non-blocking.
+          try {
+            const html = await page.content().catch(() => '')
+            await this.seedInitialEndpoints(target, response?.status() || 0, html)
+          } catch { /* seeding is best-effort */ }
         } catch (err) {
           log.warn(`Initial navigation failed: ${err instanceof Error ? err.message : String(err)}`)
           log.info('Spider will attempt navigation via browser tools.')
@@ -470,6 +480,14 @@ export class SessionLifecycle {
       } catch (err) {
         log.dim('[evolution] Engagement memory failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
       }
+      // G4: Persist technique weights across sessions
+      try {
+        const { saveTechniqueWeights } = await import('../intelligence/reflexion-store')
+        await saveTechniqueWeights()
+        log.dim('[evolution] Technique weights persisted for next session')
+      } catch (err) {
+        log.dim('[evolution] Weight persistence failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
+      }
       try {
         const { synthesizeDraftSkills } = await import('../intelligence/draft-skills')
         const store = getGlobalWorkspace().getGraphStore()
@@ -483,10 +501,61 @@ export class SessionLifecycle {
       } catch (err) {
         log.dim('[evolution] Draft synthesis failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
       }
+      // Shared knowledge is target-independent, so its revision proposals live
+      // in the global memory directory rather than beside a target's drafts.
+      // Proposals are immutable review artifacts; canonical skills are not
+      // rewritten here. Promotion remains an explicit manageSkills action.
+      try {
+        const { synthesizeSharedSkillRevisions } = await import('../intelligence/skill-revisions')
+        const revisions = await synthesizeSharedSkillRevisions()
+        for (const revision of revisions.created) {
+          log.warn(`[evolution] Shared skill revision proposed: ${revision.path} (unvalidated — review and promote explicitly)`)
+        }
+      } catch (err) {
+        log.dim('[evolution] Shared skill revision synthesis failed (non-fatal): ' + (err instanceof Error ? err.message : String(err)))
+      }
     })
 
     this.phase = 'browser'
     log.info(`OAST server started on port ${oastPort}`)
+  }
+
+  private async seedInitialEndpoints(targetUrl: string, status: number, html: string): Promise<void> {
+    const graph = getGlobalGraphStore()
+
+    graph.upsertPage(targetUrl, { status })
+
+    const linkPattern = /(?:href|src)\s*=\s*["']([^"']+)["']/gi
+    const seen = new Set<string>()
+    const extracted: string[] = []
+
+    let match: RegExpExecArray | null
+    while ((match = linkPattern.exec(html)) !== null) {
+      const raw = match[1]
+      if (!raw || raw.startsWith('#') || raw.startsWith('javascript:') || raw.startsWith('mailto:')) continue
+
+      let absolute: string
+      try {
+        absolute = new URL(raw, targetUrl).href
+      } catch { continue }
+
+      try {
+        const targetHost = new URL(targetUrl).hostname
+        const linkHost = new URL(absolute).hostname
+        if (linkHost !== targetHost) continue
+      } catch { continue }
+
+      if (seen.has(absolute)) continue
+      seen.add(absolute)
+      extracted.push(absolute)
+      if (extracted.length >= 5) break
+    }
+
+    for (const url of extracted) {
+      graph.addEndpoint({ url, method: 'GET', source: 'seed' })
+    }
+
+    log.dim(`Graph seeded: 1 page + ${extracted.length} endpoints from initial HTML`)
   }
 
   private async validateBrowser(_browser: any): Promise<void> {
@@ -804,7 +873,7 @@ export class SessionLifecycle {
         .filter(t => tierMap[t as keyof typeof tierMap])
         .map(t => {
           const cfg = tierMap[t as keyof typeof tierMap]!
-          return `  ${t}: ${cfg.provider}/${cfg.model}`
+          return `  ${t}: ${fullModelId(cfg.provider, cfg.model)}`
         })
         .join('\n')
       if (tierLines) log.info(`Model tiers:\n${tierLines}`)
@@ -815,12 +884,12 @@ export class SessionLifecycle {
 
   // â”€â”€ Phase 5: REPL loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async runREPL(onInput: (line: string) => Promise<void | boolean>): Promise<void> {
-    if (this.runtime) return this.runtime.run(() => this.runREPLOwned(onInput))
-    return this.runREPLOwned(onInput)
+  async runREPL(onInput: (line: string) => Promise<void | boolean>, chatbox?: ChatBox | null): Promise<void> {
+    if (this.runtime) return this.runtime.run(() => this.runREPLOwned(onInput, chatbox))
+    return this.runREPLOwned(onInput, chatbox)
   }
 
-  private async runREPLOwned(onInput: (line: string) => Promise<void | boolean>): Promise<void> {
+  private async runREPLOwned(onInput: (line: string) => Promise<void | boolean>, providedChatbox?: ChatBox | null): Promise<void> {
     if (this.phase !== 'resources' && this.phase !== 'engine') {
       throw new Error(`Invalid lifecycle phase: expected resources or engine, got ${this.phase}`)
     }
@@ -846,9 +915,14 @@ export class SessionLifecycle {
       }
 
       // Banner
-      const cb = new ChatBox({
+      // The renderer and the REPL must share one ChatBox instance. Creating a
+      // second box here used to split sink ownership: the banner belonged to
+      // one box while streamed answers belonged to another, so readline was
+      // never paused during redraws and logs could appear in the wrong card.
+      const cb = providedChatbox ?? new ChatBox({
         isTTY: Boolean(process.stdout?.isTTY),
         showReasoning: config.interaction?.showReasoning !== false,
+        liveReasoning: config.interaction?.liveReasoning !== false,
         showSystemEvents: config.interaction?.showSystemEvents === true && process.env.ULTIMATRIX_DEBUG_EVENTS === '1',
         pause: rl ? () => rl.pause() : undefined,
         resume: rl ? () => rl.resume() : undefined,

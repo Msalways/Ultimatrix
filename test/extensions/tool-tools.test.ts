@@ -36,6 +36,15 @@ describe('extension discovery tools', () => {
     expect(connected).toEqual(['github'])
   })
 
+  it('returns connector discovery failures as structured data', async () => {
+    const { listTools, connected } = setup()
+    const res: any = await (listTools.execute as any)({ connector: 'plugin:missing' })
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('CONNECTOR_UNAVAILABLE')
+    expect(res.error).toContain('Connector not found')
+    expect(connected).toEqual([])
+  })
+
   it('loads one exact extension tool into the native active toolset', async () => {
     const { loadTool, registry } = setup()
     expect(await (loadTool.execute as any)({ id: 'mcp__github__search' })).toEqual(expect.objectContaining({ ok: true }))

@@ -25,6 +25,24 @@ type CaptureSession = {
   handle: CdpCaptureHandle | HarCapture
 }
 
+export type ObservationState =
+  | { status: 'completed'; result: { requests: number; url: string } }
+  | { status: 'failed'; error: string }
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export interface LazyWorkerServices {
   workerPool: WorkerPool
   taskCoordinator: TaskCoordinator
@@ -60,6 +78,11 @@ export class LazySolverServices {
   private onSpiderEvent?: (event: SpiderRuntimeEvent) => void
   private onSpiderRuntime?: (runtime: SpiderRuntime) => void
   private lastCrawlState?: SpiderRuntimeState
+  private researchBootstrapAttempted = false
+  // Observation is engagement-scoped, not model-turn-scoped. Once the
+  // browser provider has failed, a model fallback must consume that fact
+  // instead of launching the same 45s startup attempt again.
+  private lastObservationState?: ObservationState
 
   constructor(private readonly options: LazySolverServicesOptions) {}
 
@@ -112,11 +135,19 @@ export class LazySolverServices {
         if (stagehand?.context?.conn) {
           const handle = attachHarCaptureViaCdp(stagehand, { captureResponseBody: true, captureRequestBody: true })
           if (handle.attached) {
-            capture = { handle, stop: async () => {
-              const entries = await handle.stop()
-              return entries.length ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2) : null
-            } }
-            this.options.workflow?.setCaptureSource('cdp')
+            try {
+              await handle.ready
+              capture = { handle, stop: async () => {
+                const entries = await handle.stop()
+                return entries.length ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2) : null
+              } }
+              this.options.workflow?.setCaptureSource('cdp')
+            } catch {
+              // Stagehand deployments can expose a connection without the
+              // Network CDP domain. Keep observation live via the generic
+              // Playwright capture browser instead of losing the HAR.
+              capture = await this.startFallbackCapture()
+            }
           }
           else capture = await this.startFallbackCapture()
         } else {
@@ -135,7 +166,10 @@ export class LazySolverServices {
   }
 
   private async startFallbackCapture(): Promise<CaptureSession> {
-    const handle = await startHarCapture(this.options.target, ['localhost', '127.0.0.1'])
+    // Never exclude the engagement target. Local Juice Shop/lab targets are
+    // valid in-scope traffic, and excluding localhost made the fallback HAR
+    // appear empty even when navigation succeeded.
+    const handle = await startHarCapture(this.options.target, [])
     this.options.workflow?.setCaptureSource('anonymous-fallback')
     return { handle, stop: handle.stop }
   }
@@ -169,6 +203,59 @@ export class LazySolverServices {
       this.crawlPromise = undefined
     })
     return this.crawlPromise
+  }
+
+  /**
+   * Deterministic baseline observation. This is intentionally separate from
+   * the adaptive spider: a target page and its first-party traffic must be
+   * captured even when the spider model stops, times out, or finds no links.
+   */
+  async observe(): Promise<{ requests: number; url: string }> {
+    const { target, runtime } = this.options
+    if (!runtime) throw new Error('Observation requires a target-scoped runtime')
+    if (this.lastObservationState?.status === 'completed') return this.lastObservationState.result
+    if (this.lastObservationState?.status === 'failed') {
+      throw new Error(this.lastObservationState.error)
+    }
+    const observationTimeoutMs = Math.min(
+      45_000,
+      Math.max(10_000, Math.floor((this.options.config.solver?.maxDurationMs ?? 300_000) * 0.2)),
+    )
+    let capture: CaptureSession | undefined
+    let page: any
+    try {
+      await withTimeout(this.ensureBrowser(), observationTimeoutMs, 'Browser startup')
+      capture = await withTimeout(this.ensureCapture(), observationTimeoutMs, 'Network capture setup')
+      const sessionId = runtime.browserSession?.sessionId
+      page = sessionId ? await runtime.browser.getActivePage(sessionId) as any : undefined
+      if (!page || typeof page.goto !== 'function') {
+        await capture.stop()
+        this.captureValue = undefined
+        capture = undefined
+        throw new Error('Browser provider did not expose a navigable page')
+      }
+      await withTimeout(
+        page.goto(target, { waitUntil: 'domcontentloaded', timeout: observationTimeoutMs }),
+        observationTimeoutMs,
+        'Target navigation',
+      )
+      if (typeof page.waitForTimeout === 'function') await page.waitForTimeout(1000)
+      const requests = await this.persistCapture(capture)
+      if (requests === 0) throw new Error('Baseline observation captured zero network requests')
+      const result = { requests, url: String(page.url?.() ?? target) }
+      this.lastObservationState = { status: 'completed', result }
+      return result
+    } catch (error) {
+      // Preserve any partial HAR even when navigation/provider startup fails;
+      // the next model fallback must reuse this evidence rather than retrying
+      // the browser and discarding the partial capture.
+      if (capture) {
+        try { await this.persistCapture(capture) } catch { /* preserve original failure */ }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      this.lastObservationState = { status: 'failed', error: message }
+      throw error
+    }
   }
 
   private async crawlOnce(): Promise<SpiderRuntimeState> {
@@ -212,12 +299,17 @@ export class LazySolverServices {
     return result.state
   }
 
-  private async persistCapture(capture: CaptureSession): Promise<void> {
+  private lastCaptureRequests = 0
+
+  private async persistCapture(capture: CaptureSession): Promise<number> {
     const runtime = this.options.runtime
-    if (!runtime) return
+    if (!runtime) return 0
     const har = await capture.stop()
     this.captureValue = undefined
-    if (!har) return
+    if (!har) { this.lastCaptureRequests = 0; return 0 }
+    try {
+      this.lastCaptureRequests = JSON.parse(har)?.log?.entries?.length ?? 0
+    } catch { this.lastCaptureRequests = 0 }
     const safe = redactHarJson(har)
     const directory = resolve(runtime.workspace.getTargetDir(this.options.target), 'captures')
     await mkdir(directory, { recursive: true })
@@ -232,6 +324,7 @@ export class LazySolverServices {
     } catch {
       /* discovery is best-effort */
     }
+    return this.lastCaptureRequests
   }
 
   async ensureWorkers(): Promise<LazyWorkerServices> {
@@ -293,6 +386,20 @@ export class LazySolverServices {
 
   get crawlState(): SpiderRuntimeState | undefined {
     return this.lastCrawlState
+  }
+
+  get observationState(): ObservationState | undefined {
+    return this.lastObservationState
+  }
+
+  /** Deterministic research setup is engagement-scoped and must not rerun on
+   * provider fallback turns. */
+  get researchBootstrapState(): 'pending' | 'completed' {
+    return this.researchBootstrapAttempted ? 'completed' : 'pending'
+  }
+
+  markResearchBootstrapAttempted(): void {
+    this.researchBootstrapAttempted = true
   }
 
   async close(): Promise<void> {

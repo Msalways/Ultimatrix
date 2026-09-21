@@ -25,9 +25,9 @@ export interface CompressionOptions {
   model?: string
 }
 
-const DEFAULT_MAX_RESPONSE_SIZE = 50_000
+const DEFAULT_MAX_RESPONSE_SIZE = 12_000
 const DEFAULT_MODEL = 'gpt-4o'
-const MIN_SIZE_TO_COMPRESS = 1_000
+const MIN_SIZE_TO_COMPRESS = 500
 /** Per-response budget as fraction of context window (10%). */
 const RESPONSE_BUDGET_FRACTION = 0.10
 

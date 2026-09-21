@@ -1,7 +1,7 @@
 import { loadConfig, saveProjectConfig } from '../config'
 import { log } from '../utils/logger'
 import { resolveModel } from '../models/factory'
-import { splitModelId, type ModelRole } from '../models/routing'
+import { fullModelId, splitModelId, type ModelRole } from '../models/routing'
 import { resolveEffectiveConfig } from '../models/effective-config'
 import type { ModelModuleRole, ModelTierName } from '../config'
 
@@ -54,7 +54,7 @@ export async function modelsCommand(args: string[]): Promise<void> {
       if (modelIds.length === 0) {
         log.info('No models configured.')
         log.dim('Set modelCapabilities in ultimatrix.yaml or run "ultimatrix init" to configure.')
-        log.dim(`Default model: ${config.provider}/${config.model}`)
+        log.dim(`Default model: ${fullModelId(config.provider, config.model)}`)
         return
       }
 
@@ -62,7 +62,7 @@ export async function modelsCommand(args: string[]): Promise<void> {
       const tierByModel = new Map<string, string>()
       for (const [tier, tierCfg] of Object.entries(tiers)) {
         if (tierCfg) {
-          const fullId = `${tierCfg.provider}/${tierCfg.model}`
+          const fullId = fullModelId(tierCfg.provider, tierCfg.model)
           tierByModel.set(fullId, tier)
         }
       }
@@ -72,20 +72,21 @@ export async function modelsCommand(args: string[]): Promise<void> {
         const cap = caps[id]
         const tier = tierByModel.get(id)
         const tierLabel = tier ? ` [${tier}]` : ''
-        const defaultLabel = id === `${config.provider}/${config.model}` || id === config.model ? ' (default)' : ''
+        const defaultLabel = id === fullModelId(config.provider, config.model) || id === config.model ? ' (default)' : ''
 
         if (cap) {
           log.info(`  ${id}${tierLabel}${defaultLabel}`)
           log.info(`    Context: ${cap.contextWindow.toLocaleString()} tokens`)
           log.info(`    Max output: ${cap.maxOutputTokens.toLocaleString()} tokens`)
           log.info(`    Streaming: ${cap.supportsStreaming ? 'yes' : 'no'}`)
-          log.info(`    Strengths: ${cap.strengths.join(', ') || 'none listed'}`)
+          const strengths = Array.isArray(cap.strengths) ? cap.strengths : []
+          log.info(`    Strengths: ${strengths.join(', ') || 'none listed'}`)
         } else {
           log.info(`  ${id}${tierLabel}${defaultLabel} (no capabilities configured)`)
         }
       }
 
-      log.info(`\nDefault model: ${config.provider}/${config.model}`)
+      log.info(`\nDefault model: ${fullModelId(config.provider, config.model)}`)
       break
     }
 
@@ -129,7 +130,7 @@ export async function modelsCommand(args: string[]): Promise<void> {
         [tier]: { provider: split.provider, model: split.model },
       }
       saveProjectConfig(config)
-      log.success(`Set ${tier} tier to ${split.provider}/${split.model}`)
+      log.success(`Set ${tier} tier to ${fullModelId(split.provider, split.model)}`)
       break
     }
 
@@ -176,7 +177,7 @@ export async function modelsCommand(args: string[]): Promise<void> {
       }
 
       saveProjectConfig(config)
-      log.success(`Advanced override: routed ${role} to ${route.provider}/${route.model}`)
+      log.success(`Advanced override: routed ${role} to ${fullModelId(route.provider, route.model)}`)
       log.dim('Prefer tier/module routing unless this module really needs a raw model.')
       break
     }
@@ -191,7 +192,7 @@ export async function modelsCommand(args: string[]): Promise<void> {
       if (!contextWindow && !maxOutputTokens) throw new Error('Set at least --context or --max-output')
 
       const split = splitModelId(id, config.provider)
-      const modelId = `${split.provider}/${split.model}`
+      const modelId = fullModelId(split.provider, split.model)
       const current = config.modelCapabilities?.[modelId] ?? config.modelCapabilities?.[split.model]
       const next = {
         contextWindow: contextWindow ?? current?.contextWindow ?? 8192,

@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile)
 
 /** Cached platform detection result */
 let cachedPlatform: ExecutionPlatform | undefined
+let platformDiagnostic: string | undefined
 
 /**
  * Detect the execution platform by checking Docker availability and type.
@@ -30,11 +31,14 @@ export async function detectPlatform(): Promise<ExecutionPlatform> {
   if (cachedPlatform) return cachedPlatform
 
   try {
-    const { stdout } = await execFileAsync('docker', ['info', '--format', '{{.OperatingSystem}}'], {
+    const { stdout, stderr } = await execFileAsync('docker', ['info', '--format', '{{.OperatingSystem}}'], {
       timeout: 5000,
     })
 
     const osInfo = stdout.trim().toLowerCase()
+    if (!osInfo || /access is denied|error during connect|cannot connect/i.test(stderr ?? '')) {
+      throw new Error(stderr || 'Docker returned no daemon information')
+    }
 
     // Docker Desktop on Windows/macOS
     if (osInfo.includes('windows') || osInfo.includes('macos') || osInfo.includes('docker desktop')) {
@@ -47,8 +51,14 @@ export async function detectPlatform(): Promise<ExecutionPlatform> {
     return cachedPlatform
   } catch {
     cachedPlatform = 'no-docker'
+    platformDiagnostic = 'Docker daemon is not accessible. On Windows, verify Docker Desktop is running and the current user belongs to the docker-users group; restart the terminal after changing group membership.'
     return cachedPlatform
   }
+}
+
+/** Explain why Docker detection failed without exposing command output/secrets. */
+export function getPlatformDiagnostic(): string | undefined {
+  return platformDiagnostic
 }
 
 /**
@@ -56,10 +66,10 @@ export async function detectPlatform(): Promise<ExecutionPlatform> {
  */
 export async function checkDockerAvailable(): Promise<boolean> {
   try {
-    await execFileAsync('docker', ['version', '--format', '{{.Server.Version}}'], {
+    const { stdout, stderr } = await execFileAsync('docker', ['version', '--format', '{{.Server.Version}}'], {
       timeout: 5000,
     })
-    return true
+    return Boolean(stdout.trim()) && !/access is denied|error during connect|cannot connect/i.test(stderr ?? '')
   } catch {
     return false
   }
@@ -108,4 +118,5 @@ export function getDefaultConfig(platform: ExecutionPlatform): SandboxConfig {
  */
 export function resetPlatformCache(): void {
   cachedPlatform = undefined
+  platformDiagnostic = undefined
 }

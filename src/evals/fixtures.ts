@@ -13,6 +13,7 @@ import { EngagementBoundary, SpiderRuntime } from '../spider/runtime'
 import { WorkflowStore } from '../workflow/store'
 import { resolveModelRef } from '../models/routing'
 import { resolveBrowserProvider } from '../browser/provider'
+import { deriveStagehandModel } from '../browser/manager'
 import { checkProof } from '../intelligence/proof-rules'
 import type { EvidenceItem } from '../intelligence/evidence-ledger'
 import { createSpawnWorkerTool } from '../manager/tools/spawn-worker'
@@ -228,6 +229,7 @@ export const architectureEvals: ArchitectureEvalSuite = {
         resumeSameProvider: 'ok',
         resumeMismatchedProvider: 'rejected',
         camofoxResolves: 'camofox',
+        stagehandAdapter: 'openai/nvidia/nemotron-3-super-120b-a12b',
       },
       execute: async () => {
         const dir = mkdtempSync(join(tmpdir(), 'ultimatrix-eval-browser-'))
@@ -255,8 +257,15 @@ export const architectureEvals: ArchitectureEvalSuite = {
 
           const camofoxProvider = resolveBrowserProvider(evalConfig({ browser: { provider: 'camofox' } } as never))
           const camofoxResolves = camofoxProvider.name
+          const stagehandAdapter = deriveStagehandModel({
+            ...evalConfig(),
+            provider: 'nvidia',
+            model: 'nvidia/nemotron-3-super-120b-a12b',
+            creds: { nvidia: { apiKey: 'eval-key', baseUrl: 'https://integrate.api.nvidia.com/v1' } },
+            modelTiers: { fast: { provider: 'nvidia', model: 'nvidia/nemotron-3-super-120b-a12b' } },
+          } as never).modelName
 
-          return { events: [], state: { resumeSameProvider, resumeMismatchedProvider, camofoxResolves } }
+          return { events: [], state: { resumeSameProvider, resumeMismatchedProvider, camofoxResolves, stagehandAdapter } }
         } finally {
           rmSync(dir, { recursive: true, force: true })
         }

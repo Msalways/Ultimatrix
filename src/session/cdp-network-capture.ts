@@ -14,6 +14,8 @@ export interface CdpCaptureOptions {
 
 export interface CdpCaptureHandle {
   attached: boolean
+  /** Resolves after the CDP Network domain is enabled. */
+  ready?: Promise<void>
   /** Stop capturing and return any completed HAR entries collected so far. */
   stop: () => Promise<HarEntry[]>
   /** Completed entries collected so far without stopping. */
@@ -31,17 +33,24 @@ const DEFAULT_MAX_BODY = 1024 * 1024 // 1MB
  * events) and forwards raw params to the single HAR-entry builder owned by
  * `har-parser.ts`. No HAR-assembly logic lives here.
  *
- * Stagehand v3 is CDP-native; `stagehand.context.conn` is the raw CDP
- * connection. Playwright `recordHar`/`page.route` are unavailable inside the
- * live session, so CDP `Network.*` is the platform-native capture surface.
+ * Stagehand v3 is CDP-native. Playwright `recordHar`/`page.route` are not
+ * available on its internal Page wrapper, so CDP `Network.*` is the native
+ * capture surface; it must be attached to the active page target session.
  */
 export function attachHarCaptureViaCdp(
   stagehand: Stagehand,
   opts: CdpCaptureOptions = {},
 ): CdpCaptureHandle {
-  const conn: any = (stagehand as any)?.context?.conn
+  // Stagehand v3 multiplexes browser-level and target-level CDP traffic.
+  // Network.* events are emitted by the active page's target session, not by
+  // the root context connection. Subscribing to context.conn therefore looks
+  // attached but observes zero requests (or rejects Network.enable). Keep the
+  // root connection only as a compatibility fallback for older Stagehand.
+  const page: any = (stagehand as any)?.context?.activePage?.()
+  const conn: any = page?.mainSession ?? (stagehand as any)?.context?.conn
   const noop: CdpCaptureHandle = {
     attached: false,
+    ready: Promise.resolve(),
     stop: async () => [],
     entries: () => [],
     requestCount: () => 0,
@@ -141,10 +150,13 @@ export function attachHarCaptureViaCdp(
   })
   on('Network.loadingFailed', (p: any) => builder.onLoadingFailed(p))
 
-  conn.send('Network.enable', {}).catch(() => {})
+  // The caller must await this before navigation; otherwise the document
+  // request can race the subscription and produce an empty HAR.
+  const ready = conn.send('Network.enable', {}).then(() => undefined)
 
   return {
     attached: true,
+    ready,
     entries: () => builder.entries(),
     requestCount: () => observed,
     stop: async () => {

@@ -38,6 +38,23 @@ function createMockStagehand() {
 describe('attachHarCaptureViaCdp (live CDP capture)', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('prefers the active page target session over the root context connection', () => {
+    const { stagehand, conn, sent } = createMockStagehand()
+    const targetHandlers: Record<string, Function> = {}
+    const target = {
+      on: vi.fn((event: string, handler: Function) => { targetHandlers[event] = handler }),
+      off: vi.fn(),
+      send: vi.fn((method: string) => { sent.push({ method, target: true }); return Promise.resolve({}) }),
+    }
+    stagehand.context.activePage = () => ({ mainSession: target })
+
+    attachHarCaptureViaCdp(stagehand, {})
+
+    expect(target.on).toHaveBeenCalledWith('Network.requestWillBeSent', expect.any(Function))
+    expect(conn.on).not.toHaveBeenCalled()
+    expect(target.send).toHaveBeenCalledWith('Network.enable', {})
+  })
+
   it('attaches to the live CDP connection and enables Network', () => {
     const { stagehand, conn, sent } = createMockStagehand()
     

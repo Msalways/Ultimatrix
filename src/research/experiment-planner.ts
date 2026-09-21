@@ -7,11 +7,41 @@ function getEndpoint(store: GraphStore, id: string): EndpointNode | undefined {
   return store.getNode(id) as EndpointNode | undefined
 }
 
+/** Prefer requests that can exercise application logic over static assets. */
+function isDynamicEndpoint(endpoint: EndpointNode): boolean {
+  const props = endpoint.properties
+  const method = String(props.method ?? 'GET').toUpperCase()
+  const contentType = String(props.contentType ?? '').toLowerCase()
+  const params = Array.isArray(props.params) ? props.params.length : 0
+  const hasSchema = Boolean((props as any).bodySchema)
+  // Plain-text POSTs without parameters/schema are commonly transport
+  // handshakes (websocket/socket polling), not application workflows.
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return !(contentType.includes('text/plain') && params === 0 && !hasSchema)
+  if (contentType && !contentType.includes('json') && !contentType.includes('form') && !contentType.includes('text')) return false
+  try {
+    const path = new URL(props.url).pathname.toLowerCase()
+    return !/\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|webp|pdf|zip)$/.test(path)
+  } catch {
+    return true
+  }
+}
+
+function endpointPriority(endpoint: EndpointNode): number {
+  const props = endpoint.properties
+  const method = String(props.method ?? 'GET').toUpperCase()
+  let pathDepth = 0
+  try { pathDepth = new URL(props.url).pathname.split('/').filter(Boolean).length } catch { /* keep zero */ }
+  const params = Array.isArray(props.params) ? props.params.length : 0
+  const responseSize = Number((props as any).responseSize ?? 0)
+  return (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ? 100 : 0) + params * 10 + pathDepth + Math.min(responseSize / 1000, 10)
+}
+
 export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesis[]): ResearchExperiment[] {
   const experiments: ResearchExperiment[] = []
 
   for (const hypothesis of hypotheses) {
-    const primary = hypothesis.targetEndpoints.map(id => getEndpoint(store, id)).find(Boolean)
+    const candidates = hypothesis.targetEndpoints.map(id => getEndpoint(store, id)).filter((endpoint): endpoint is EndpointNode => Boolean(endpoint))
+    const primary = candidates.filter(isDynamicEndpoint).sort((a, b) => endpointPriority(b) - endpointPriority(a))[0] ?? candidates[0]
     const props = primary?.properties
     const baselineRequest: ReplayableRequest | undefined = props
       ? {

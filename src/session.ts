@@ -6,6 +6,7 @@ import { solve } from './solver/solver'
 import type { SolverStreamMessage } from './solver/solver'
 import { getGlobalWorkspace } from './workspace'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
+import { fullModelId } from './models/routing'
 import { askUserConfirm } from './tools/interaction-tools'
 import type {IntelligenceContext} from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
@@ -30,6 +31,9 @@ function buildCouncilIntelligenceContext(resources: SessionResources): Intellige
     if (reflexion.getAttemptCount() > 0) {
       const block = reflexion.toPromptBlock()
       if (block) ctx.reflexionBlock = block
+      // G6: Wire toReflectionPrompt() — force strategy change override
+      const override = reflexion.toReflectionPrompt()
+      if (override) ctx.reflectionOverride = override
       ctx.escalationLevel = reflexion.getEscalationLevel()
       ctx.consecutiveFailures = reflexion.getConsecutiveFailures()
     }
@@ -149,7 +153,7 @@ export interface SolverRenderer {
 export function createSolverRenderer(
   _host: SolverRendererHost = {},
   ctx: SolverRenderContext = {},
-  opts: { plain?: boolean; interaction?: { showReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null } = {},
+  opts: { plain?: boolean; interaction?: { showReasoning?: boolean; liveReasoning?: boolean; showSystemEvents?: boolean }; chatbox?: ChatBox | null } = {},
 ): SolverRenderer {
   const model: RenderModel = createRenderModel()
   model.engine = ctx.engine
@@ -211,6 +215,10 @@ export function createSolverRenderer(
         case 'tool-result':
           log.dim(`  ${msg.ok ? 'ok' : 'failed'} ${msg.name}`)
           break
+        case 'event':
+          if (msg.status === 'error') log.error(msg.label)
+          else if (msg.status === 'warn') log.warn(msg.label)
+          break
         case 'done':
           if (!wroteAnswer && msg.answer.content) {
             process.stdout.write(renderMarkdownPlain(msg.answer.content))
@@ -236,6 +244,7 @@ export function createSolverRenderer(
     const cb = new ChatBox({
       isTTY: true,
       showReasoning: opts.interaction?.showReasoning !== false,
+      liveReasoning: opts.interaction?.liveReasoning !== false,
       showSystemEvents: opts.interaction?.showSystemEvents ?? true,
       width: process.stdout?.columns,
     })
@@ -328,9 +337,12 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
 
   const chatbox = !_opts.plain && resources.config.interaction?.chat !== false
     ? new ChatBox({
-        isTTY: process.stdout.isTTY,
-        showReasoning: resources.config.interaction?.showReasoning !== false,
-        showSystemEvents: resources.config.interaction?.showSystemEvents === true && process.env.ULTIMATRIX_DEBUG_EVENTS === '1',
+      isTTY: process.stdout.isTTY,
+      showReasoning: resources.config.interaction?.showReasoning !== false,
+      liveReasoning: resources.config.interaction?.liveReasoning !== false,
+      showSystemEvents: resources.config.interaction?.showSystemEvents === true && process.env.ULTIMATRIX_DEBUG_EVENTS === '1',
+        pause: resources.readline ? () => resources.readline?.pause() : undefined,
+        resume: resources.readline ? () => resources.readline?.resume() : undefined,
       })
     : null
 
@@ -355,7 +367,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       const lines = [
         `Target: ${resources.target || 'not set'}`,
         `Engine: ${resources.config.engine}`,
-        `Model: ${resources.config.provider}/${resources.config.model}`,
+        `Model: ${fullModelId(resources.config.provider, resources.config.model)}`,
         `Graph: ${summary?.totalEndpoints ?? 0} endpoints | ${summary?.totalFindings ?? 0} findings | ${summary?.totalTests ?? 0} tests`,
       ]
       for (const statusLine of lines) log.info(statusLine)
@@ -375,7 +387,9 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
     // Phase D / spec 05 — evolution visibility: what the system learned.
     if (line.trim() === '/learned') {
       const { getEvolutionSummary } = await import('./intelligence/evolution')
+      const { getSkillKnowledgeStore } = await import('./intelligence/skill-knowledge')
       const evo = getEvolutionSummary()
+      const sharedKnowledge = await getSkillKnowledgeStore().list().catch(() => [])
       const lines: string[] = []
       if (evo.techniques.length === 0) {
         lines.push('Nothing learned yet this session — confirmed findings and failed attempts feed the loop.')
@@ -384,7 +398,14 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         for (const t of evo.techniques) lines.push(`  ${t.techniqueId}: +${t.confirmed} / -${t.failed}`)
         if (evo.promoted.length > 0) lines.push(`Weight promoted: ${evo.promoted.join(', ')}`)
         if (evo.demoted.length > 0) lines.push(`Weight demoted: ${evo.demoted.join(', ')}`)
-        lines.push('Cross-session memory updates on engagement close; draft skills land in skills-drafts/.')
+        lines.push('Cross-session memory updates on engagement close; target drafts land in skills-drafts/ and shared revision proposals in global/skill-revisions/.')
+      }
+      if (sharedKnowledge.length > 0) {
+        const confirmed = sharedKnowledge.reduce((sum, record) => sum + record.confirmed, 0)
+        const failed = sharedKnowledge.reduce((sum, record) => sum + record.failed, 0)
+        lines.push(`Shared skill knowledge: ${sharedKnowledge.length} technique pattern(s), ${confirmed} confirmed / ${failed} failed outcomes. Used to rank future methodology skills.`)
+      } else {
+        lines.push('Shared skill knowledge is empty; confirmed outcomes will accumulate through the policy-gated learning store.')
       }
       if (sink) sink.printReport(lines.join('\n'))
       else for (const l of lines) log.info(l)
@@ -593,7 +614,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       // The runner's CouncilStrategy and SingleAgentStrategy are dead code stubs.
       const renderMsg = createSolverRenderer({}, {
         engine: config.engine,
-        provider: `${config.provider}/${config.model}`,
+        provider: fullModelId(config.provider, config.model),
         target,
         prompt: line,
       }, {
@@ -605,6 +626,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       lifecycle.markTurnActive()
       let result: Awaited<ReturnType<typeof solve>> | null = null
       let aborted = false
+      let turnError: unknown = null
       try {
         result = await solve(resources.solverBrain!, {
           origin: target || 'conversation',
@@ -615,6 +637,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
           evidence: resources.sessionEvidence,
           loopDetector: resources.coreServices.loopDetector,
           reflexion: resources.coreServices.reflexion,
+          lazyServices: resources.lazyServices,
           config: {
             maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
             maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
@@ -648,17 +671,35 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         if (lifecycle.isTurnAborted || err?.message === 'Solver interrupted') {
           aborted = true
         } else {
-          throw err
+          // Keep the renderer lifecycle balanced even when model/provider
+          // startup or streaming fails. Previously this left the ChatBox
+          // active with its log sink installed, corrupting the next prompt.
+          turnError = err
         }
       } finally {
         lifecycle.markTurnComplete()
       }
 
+      if (turnError) {
+        const message = turnError instanceof Error ? turnError.message : String(turnError)
+        renderMsg({
+          kind: 'event',
+          event: 'turn.failed',
+          label: `Turn failed before completion: ${message}`,
+          status: 'error',
+        })
+      }
       renderMsg.final()
       if (!aborted) {
         if (result && (result.toolCalls > 0 || result.error)) {
-          logSolveSummary(result)
-          log.info(`Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0}`)
+          // ChatBox owns the turn's answer, failure state, and footer. Logging
+          // the generic solver summary here duplicated fallback answers (for
+          // example "No deliverable response") after the card had completed.
+          // Plain/non-chat renderers still need the summary in the log.
+          if (!chatbox) {
+            logSolveSummary(result)
+            log.info(`Facts: ${result.facts ?? 0} | Intents: ${result.intents ?? 0}`)
+          }
         }
 
         const quotaTracker = getGlobalQuotaTracker()
@@ -674,6 +715,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         }
       }
       renderMsg.flush()
+      if (turnError) throw turnError
     } else {
       // @deprecated Legacy supervisor path — kept for backward compatibility with web UI
       const result = await resources.supervisor!.stream(line, {
@@ -694,7 +736,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       getGlobalWorkspace().getGraphStore()?.save(),
       getGlobalWorkspace().getOastStore()?.save(),
     ])
-  })
+  }, chatbox)
 
   // Native terminal: stdin is owned by readline throughout; no alternate screen
   // or logger sink to tear down. (The termcn/Ink TUI, if re-enabled, would own

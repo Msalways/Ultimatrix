@@ -30,6 +30,37 @@ export class PassiveObserver {
     this.pages.set(page, true)
 
     const cleaners: Array<() => void> = []
+    // Stagehand v3 intentionally exposes only the `console` event on its
+    // Playwright-shaped Page wrapper. Its internal NetworkManager is the
+    // provider-neutral passive seam, however, and is already fed by the CDP
+    // sessions used for navigation. Prefer it before trying Playwright
+    // request/response events so observation is not silently lost on Stagehand.
+    const stagehandNetwork = (page as any)?.networkManager
+    let stagehandNetworkAttached = false
+    if (stagehandNetwork && typeof stagehandNetwork.addObserver === 'function') {
+      try {
+        const dispose = stagehandNetwork.addObserver({
+          onRequestStarted: (info: any) => {
+            const url = String(info?.url ?? '')
+            if (!url) return
+            const key = `GET:${url}:${Date.now()}`
+            this.requests.set(key, {
+              url,
+              method: 'GET',
+              headers: {},
+              timestamp: Date.now(),
+            })
+          },
+          onRequestFinished: () => {},
+          onRequestFailed: () => {},
+        })
+        if (typeof dispose === 'function') cleaners.push(dispose)
+        stagehandNetworkAttached = true
+        log.dim(`[passive-observer] attached Stagehand NetworkManager observer`)
+      } catch (error) {
+        log.dim(`[passive-observer] Stagehand network observer unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     const onRequest = (request: any) => {
       const url = request.url()
       const key = `${request.method()}:${url}:${Date.now()}`
@@ -63,8 +94,13 @@ export class PassiveObserver {
       })
     }
 
-    if (this.tryAttach(page, 'request', onRequest)) cleaners.push(() => this.tryDetach(page, 'request', onRequest))
-    if (this.tryAttach(page, 'response', onResponse)) cleaners.push(() => this.tryDetach(page, 'response', onResponse))
+    // Stagehand pages reject Playwright request/response events. Do not probe
+    // those events when its NetworkManager observer is active; probing creates
+    // noisy false failures and obscures real capture errors.
+    if (!stagehandNetworkAttached) {
+      if (this.tryAttach(page, 'request', onRequest)) cleaners.push(() => this.tryDetach(page, 'request', onRequest))
+      if (this.tryAttach(page, 'response', onResponse)) cleaners.push(() => this.tryDetach(page, 'response', onResponse))
+    }
     this.cleanup.set(page, cleaners)
 
     log.dim(`Passive observer attached to page`)

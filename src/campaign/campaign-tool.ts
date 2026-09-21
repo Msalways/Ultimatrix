@@ -18,6 +18,7 @@ import { z } from 'zod'
 import { DEFAULTS, type UltimatrixConfig, type BudgetPolicy } from '../config'
 import { getGlobalGraphStore } from '../graph/store'
 import { executeCampaign } from './executor'
+import { recordTechniqueConfirmed, recordTechniqueFailed } from '../intelligence/evolution'
 import { createPrimitiveRunner } from './runner'
 import { listPrimitiveMetadata } from '../primitives'
 import { EvidenceGate } from '../intelligence/evidence-gate'
@@ -111,6 +112,11 @@ export function createCampaignTool(config: UltimatrixConfig = defaultCampaignCon
                 result.primitiveId,
                 { accepted: true },
               )
+              // G11: Wire evolution — record confirmed technique for weight updates
+              recordTechniqueConfirmed(result.primitiveId)
+            } else {
+              // G11: Record failed technique for weight dampening
+              recordTechniqueFailed(result.primitiveId)
             }
           }
         },

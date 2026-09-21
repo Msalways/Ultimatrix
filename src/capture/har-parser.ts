@@ -304,6 +304,50 @@ export function maskSecret(value: string): string {
   return `${v.slice(0, 4)}${'*'.repeat(Math.min(12, v.length - 4))}`
 }
 
+function isUsableBodySecret(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  if (value.trim().length < 8) return false
+  // Human-readable labels/help text are not credentials. Token/session/CSRF
+  // values must be compact value-shaped strings; passwords still allow spaces
+  // but must contain non-word entropy beyond a field label.
+  if (/\s/.test(value) && !/[!@#$%^&*()_+=\-]/.test(value)) return false
+  return !/^(?:token|password|session|secret|example|placeholder|undefined|null|redacted|test|true|false|your[-_])/i.test(normalized)
+}
+
+function isUsableHeaderSecret(type: string, headerName: string, value: string): boolean {
+  const name = headerName.toLowerCase()
+  if (type === 'jwt') return /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.?[A-Za-z0-9_\-./+=]*/.test(value)
+  if (!/(authorization|cookie|set-cookie|x[-_]?(auth|csrf|xsrf)|token|session|sid)/i.test(name)) return false
+  if (/^(?:authorization|proxy-authorization)$/i.test(name)) return /^(?:bearer|basic)\s+\S+/i.test(value.trim())
+  return isUsableBodySecret(value)
+}
+
+function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Array<{ name: string; value: string }> {
+  const out: Array<{ name: string; value: string }> = []
+  // JWTs are intrinsically value-shaped and may appear outside JSON.
+  if (type === 'jwt') {
+    const jwtPattern = new RegExp(patterns[0].source, patterns[0].flags.includes('g') ? patterns[0].flags : `${patterns[0].flags}g`)
+    for (const match of body.matchAll(jwtPattern)) {
+      const value = match[0]
+      if (isUsableBodySecret(value)) out.push({ name: type, value })
+    }
+    return out
+  }
+  // For JavaScript/JSON bodies, require a key-to-value assignment. A bare
+  // keyword in a bundle is documentation or code, not a leaked credential.
+  const keyPattern = type === 'api_key' ? 'api[_-]?key|apikey|access[_-]?key'
+    : type === 'token' ? 'token|bearer|authorization'
+      : type === 'password' ? 'password|passwd|pwd|secret'
+        : type === 'session' ? 'session|sid|jsessionid'
+          : 'csrf|xsrf|_token'
+  const assignment = new RegExp(`(?:["']?(${keyPattern})["']?)\\s*(?::|=)\\s*["']([^"']+)["']`, 'ig')
+  for (const match of body.matchAll(assignment)) {
+    const value = match[2]
+    if (isUsableBodySecret(value)) out.push({ name: match[1], value })
+  }
+  return out
+}
+
 export function getSecrets(entries: HarEntry[]): Secret[] {
   const secrets: Secret[] = []
   const secretPatterns = [
@@ -321,7 +365,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check headers
     for (const header of entry.request.headers) {
       for (const { type, patterns } of secretPatterns) {
-        if (patterns.some(p => p.test(header.name) || p.test(header.value))) {
+        if ((patterns.some(p => p.test(header.name)) || (type === 'jwt' && patterns.some(p => p.test(header.value)))) && isUsableHeaderSecret(type, header.name, header.value)) {
           secrets.push({
             type,
             location: 'header',
@@ -338,7 +382,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check response headers
     for (const header of entry.response.headers) {
       for (const { type, patterns } of secretPatterns) {
-        if (patterns.some(p => p.test(header.name) || p.test(header.value))) {
+        if ((patterns.some(p => p.test(header.name)) || (type === 'jwt' && patterns.some(p => p.test(header.value)))) && isUsableHeaderSecret(type, header.name, header.value)) {
           secrets.push({
             type,
             location: 'header',
@@ -355,7 +399,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check cookies
     for (const cookie of entry.response.cookies) {
       for (const { type, patterns } of secretPatterns) {
-        if (patterns.some(p => p.test(cookie.name))) {
+        if (patterns.some(p => p.test(cookie.name)) && isUsableBodySecret(cookie.value)) {
           secrets.push({
             type,
             location: 'cookie',
@@ -372,15 +416,14 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check response body
     if (entry.response.content.text) {
       for (const { type, patterns } of secretPatterns) {
-        const matches = entry.response.content.text.match(patterns[0])
-        if (matches) {
+        for (const match of bodySecretMatches(entry.response.content.text, type, patterns)) {
           secrets.push({
             type,
             location: 'body',
             entryIndex: i,
-            name: type,
-            value: matches[0],
-            maskedValue: maskSecret(matches[0]),
+            name: match.name,
+            value: match.value,
+            maskedValue: maskSecret(match.value),
             description: `Potential ${type} found in response body`,
           })
         }

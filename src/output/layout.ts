@@ -8,7 +8,7 @@
  *
  * Per-turn card layout (top → bottom, all in the live scrollback):
  *   ──────── goal: <line> ───────────────   header (dim)
- *   ⟢ thinking (violet, live)                  live reasoning (dim violet, in-place redraw)
+ *   · reasoning (collapsed)                    structured activity and tool rows
  *     ▸ httpRequest  POST /api/login           permanent tool rows
  *     ✓ writeFinding  HIGH sqli
  *   # answer markdown …                         trailing LIVE region (in-place redraw)
@@ -52,8 +52,10 @@ const LIVE_CAP = 60
 export interface ChatOptions extends TerminalPaintOptions {
   /** Width hint (defaults to process.stdout.columns). */
   width?: number
-  /** Show the model's reasoning (live violet + collapsed block). Default: true. */
+  /** Show the final decision trace (collapsed by default). */
   showReasoning?: boolean
+  /** Paint provider token fragments live. Disabled unless explicitly opted in. */
+  liveReasoning?: boolean
 }
 
 function widthOf(opts: ChatOptions): number {
@@ -159,7 +161,7 @@ export class ChatStream {
    * redraw happens only in `final()`.
    */
   private renderThinking(model: RenderModel): void {
-    if (this.opts.showReasoning === false) return
+    if (this.opts.showReasoning === false || this.opts.liveReasoning !== true) return
     if (!model.reasoning.trim()) return
     const tail = model.reasoning.slice(this.paintedReasoningLen)
     this.paintedReasoningLen = model.reasoning.length
@@ -278,7 +280,7 @@ export class ChatStream {
           .join('\n')
         this.write(body + '\n')
       } else {
-        const head = `${this.c(ESC.cyan)}▸ reasoning (${lines} lines) — type /r to expand${this.c(ESC.reset)}`
+        const head = `${this.c(ESC.cyan)}▸ decision trace (${lines} lines) — type /r to expand${this.c(ESC.reset)}`
         this.write(head + '\n')
       }
     }

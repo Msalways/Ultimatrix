@@ -67,6 +67,8 @@ export interface ToolAdapter {
   description: string
   /** True when the binary is installed and on PATH. */
   isAvailable(): Promise<boolean>
+  /** Parse stdout produced by a sandbox execution of this adapter. */
+  parseOutput?(stdout: string, opts?: AdapterOpts): AdapterFinding[]
   /** Execute the binary against the target; returns typed ToolResult. */
   run(opts: AdapterOpts): Promise<ToolResult>
 }

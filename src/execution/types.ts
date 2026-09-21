@@ -62,6 +62,8 @@ export interface SandboxStatus {
   containerRunning: boolean
   containerId?: string
   imageAvailable?: boolean
+  /** Actionable daemon/configuration diagnostic when Docker cannot be reached. */
+  diagnostic?: string
 }
 
 /** Result of executing a command in the sandbox */
@@ -83,6 +85,8 @@ export interface SandboxCommand {
   workdir?: string
   /** Environment variables */
   env?: Record<string, string>
+  /** Optional execution user for tools that require raw-socket privileges. */
+  user?: string
   /** Timeout override */
   timeoutMs?: number
 }

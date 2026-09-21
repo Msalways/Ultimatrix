@@ -296,9 +296,10 @@ export function renderMarkdown(text: string, opts: TerminalPaintOptions = {}): s
     return renderTokens(marked.lexer(trimmed), tty).replace(/\n+$/, '\n')
   }
 
-  // Non-TTY: plain text via marked's default renderer.
-  const raw = marked.parse(trimmed) as string
-  return raw.replace(/\n+$/, '\n')
+  // Non-TTY: use the same token renderer without ANSI. `marked.parse()`
+  // returns HTML, which is not a terminal representation and leaked `<p>`
+  // tags into piped interact output.
+  return renderTokens(marked.lexer(trimmed), false).replace(/\n+$/, '\n')
 }
 
 /** Simple word-wrap respecting width (no ANSI-aware measurement). */

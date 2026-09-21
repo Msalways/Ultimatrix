@@ -91,6 +91,7 @@ export class Blackboard {
   private static readonly MAX_FACTS = 50
   private static readonly MAX_INTENTS = 20
   private static readonly MAX_PLAN_ITEMS = 15
+  private static readonly MAX_TOOLCALLS = 100
 
   constructor(data?: Partial<{ origin: string; goal: string; facts: BoardFact[]; intents: BoardIntent[]; plan: PlanTask[] }>) {
     if (data) {
@@ -377,6 +378,9 @@ export class Blackboard {
       status,
       note: note.slice(0, 120),
     })
+    if (this.toolCalls.length > Blackboard.MAX_TOOLCALLS) {
+      this.toolCalls = this.toolCalls.slice(-Blackboard.MAX_TOOLCALLS)
+    }
   }
 
   hasCalled(tool: string, keyArgs: string): boolean {

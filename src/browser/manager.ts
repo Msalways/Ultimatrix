@@ -34,14 +34,22 @@ const STAGEHAND_FAST_MODEL = 'llama-3.1-8b-instant'
 const STAGEHAND_NATIVE_PROVIDERS = new Set([
   'openai', 'anthropic', 'groq', 'google', 'cerebras', 'xai', 'azure',
   'togetherai', 'together', 'mistral', 'deepseek', 'perplexity', 'ollama',
-  'vertex', 'bedrock', 'openrouter',
+  'vertex', 'bedrock',
 ])
 
 function stagehandProvider(raw: string): string {
+  // Stagehand's model loader accepts native adapters plus the OpenAI
+  // compatible adapter. Providers with an OpenAI-compatible base URL (the
+  // configured tier supplies that URL) must use the latter; do not infer a
+  // provider-specific Stagehand adapter from the model name.
   return STAGEHAND_NATIVE_PROVIDERS.has(raw) ? raw : 'openai'
 }
 
-function deriveStagehandModel(config: UltimatrixConfig) {
+/** Resolve the model identifier Stagehand's AI SDK can actually load.
+ * Providers with OpenAI-compatible endpoints (for example NVIDIA) must use
+ * the OpenAI adapter while retaining their configured model id and base URL.
+ */
+export function deriveStagehandModel(config: UltimatrixConfig) {
   if (config.provider === STAGEHAND_FAST_PROVIDER) {
     const creds = config.creds?.[STAGEHAND_FAST_PROVIDER] as { apiKey?: string; baseUrl?: string } | undefined
     const apiKey = creds?.apiKey || process.env[PROVIDER_INFO[STAGEHAND_FAST_PROVIDER]?.envVar] || ''

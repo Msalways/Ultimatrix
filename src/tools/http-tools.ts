@@ -4,10 +4,14 @@ import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
 import {getCompressionService} from '../compression/headroom-service'
 import {isUrlInScope} from '../safety/scope-guard'
+import { getScopeConfig as getScopeConfigSafe } from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { getGlobalGraphStore } from '../graph/store'
+import { upsertCandidate } from '../research/candidate-store'
+import { stableId } from '../research/utils'
 
 const globalLoopDetector = new LoopDetector()
 
@@ -41,6 +45,16 @@ async function waitForHostSlot(url: string): Promise<void> {
   hostLastRequest.set(key, Date.now())
 }
 
+function inferUnauthenticatedAccessSignal(url: string, status: number, headers: Record<string, string>): string | undefined {
+  if (status < 200 || status >= 300) return undefined
+  let pathname = ''
+  try { pathname = new URL(url).pathname.toLowerCase() } catch { return undefined }
+  if (!/(^|\/)(admin|manage|management|config|configuration|internal|private|debug|actuator|metrics)(\/|$)/.test(pathname)) return undefined
+  const hasAuth = Object.keys(headers).some(key => /^(authorization|cookie|x-auth-token|x-csrf-token)$/i.test(key))
+  if (hasAuth) return undefined
+  return 'In-scope privileged-looking resource returned a successful response without an authentication header.'
+}
+
 // --- 429 exponential backoff ---
 const MAX_429_RETRIES = 3
 const BACKOFF_BASE_MS = 1000
@@ -66,6 +80,12 @@ async function fetchWithBackoff(url: string, opts: RequestInit, maxRetries = MAX
 const robotsCache = new Map<string, Set<string>>()
 
 async function isAllowedByRobots(url: string): Promise<boolean> {
+  // Authorized pentest engagements skip robots.txt — those disallowed paths are
+  // often exactly where vulnerabilities live. The scope-guard already enforces
+  // authorization; robots.txt compliance is for crawlers, not pentesters.
+  const scopeCfg = getScopeConfigSafe()
+  if (scopeCfg?.authorizedPentest) return true
+
   try {
     const parsed = new URL(url)
     const origin = parsed.origin
@@ -178,6 +198,28 @@ export const httpRequest = createTool({
         label: `${method} ${url} → ${raw.status}`,
         observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
       })
+      const accessSignal = inferUnauthenticatedAccessSignal(url, raw.status, mergedHeaders)
+      if (accessSignal) {
+        const store = getGlobalGraphStore()
+        upsertCandidate(store, {
+          id: stableId('candidate', ['unauthenticated-access', url]),
+          title: 'Potential unauthenticated access to a privileged resource',
+          signalType: 'unauthenticated-privileged-resource',
+          endpoint: url,
+          evidence: [`${method} ${url} returned HTTP ${raw.status}.`, accessSignal],
+          experimentIds: [],
+          confidence: 0.55,
+          nextVerificationSteps: [
+            'Repeat from a clean session with cookies and authorization headers removed.',
+            'Inspect the response for sensitive or privileged fields.',
+            'Confirm the resource is intended to require authorization before reporting.',
+          ],
+          blockers: ['Requires independent authorization expectation and sensitive-field verification.'],
+          status: 'needs-more-evidence',
+          severity: 'medium',
+        })
+        await store.save()
+      }
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
       getForensicLog()?.log({
         type: 'http-request',
@@ -194,6 +236,7 @@ export const httpRequest = createTool({
           url,
           headers: resHeaders,
           body: responseBody,
+          ...(accessSignal ? { securitySignals: [accessSignal] } : {}),
           durationMs: performance.now() - start,
         },
       }
@@ -321,16 +364,16 @@ export const followRedirects = createTool({
             observed: { method: 'GET', url: currentUrl, status: raw.status, responseHeaders: resHeaders, hops },
           })
           log.info(`followRedirects ${url} → ${raw.status} (${hops} hops)`, { url, status: raw.status, hops, durationMs: performance.now() - start, bodySize: body.length })
-          return {
-            ok: true,
-            value: {
-              status: raw.status,
-              url: currentUrl,
-              headers: resHeaders,
-              body,
-              durationMs: performance.now() - start,
-            },
-          }
+      return {
+        ok: true,
+        value: {
+          status: raw.status,
+          url,
+          headers: resHeaders,
+          body,
+          durationMs: performance.now() - start,
+        },
+      }
         }
         currentUrl = new URL(location, currentUrl).toString()
         const redirectCheck = isUrlInScope(currentUrl)

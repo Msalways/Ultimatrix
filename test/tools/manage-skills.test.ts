@@ -31,17 +31,21 @@ Host: target.example
 
 let tempDir: string
 let rootDir: string
+let revisionDir: string
 let skillsMod: typeof SkillManageModule | null = null
 
 beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'ultimatrix-manage-skills-'))
   rootDir = join(tempDir, 'skills-user')
+  revisionDir = join(tempDir, 'skill-revisions')
   skillsMod = await import('../../src/tools/skill-manage-tools')
   skillsMod.setImportedSkillsRoot(rootDir)
+  skillsMod.setSkillRevisionRoot(revisionDir)
 }, 60000)
 
 afterEach(() => {
   skillsMod?.setImportedSkillsRoot(null)
+  skillsMod?.setSkillRevisionRoot(null)
   rmSync(tempDir, { recursive: true, force: true })
   vi.restoreAllMocks()
 })
@@ -107,5 +111,26 @@ description: "no payloads"
   it('remove fails cleanly for unknown ids', async () => {
     const res = await (skillsMod!.manageSkills as any).execute({ action: 'remove', id: 'user/does-not-exist' })
     expect(res.ok).toBe(false)
+  })
+
+  it('promotes only marked revisions and preserves the previous imported body', async () => {
+    const proposal = VALID.replace('roundtrip-skill', 'promoted-skill')
+      .replace('## Probe', '<!-- UNVALIDATED REVISION PROPOSAL test -->\n\n## Probe')
+    const proposalPath = join(revisionDir, 'authorization', 'revision-test.md')
+    mkdirSync(join(revisionDir, 'authorization'), { recursive: true })
+    writeFileSync(proposalPath, proposal)
+
+    const first = await (skillsMod!.manageSkills as any).execute({ action: 'promoteRevision', path: proposalPath })
+    expect(first.ok).toBe(true)
+
+    const changed = proposal.replace('revision-test', 'revision-test-2')
+    writeFileSync(proposalPath, changed)
+    const second = await (skillsMod!.manageSkills as any).execute({ action: 'promoteRevision', path: proposalPath })
+    expect(second.ok).toBe(true)
+
+    const { existsSync } = await import('fs')
+    expect(existsSync(join(rootDir, 'promoted-skill', 'revisions'))).toBe(true)
+    const loader = await import('../../src/solver/skills/loader')
+    expect(loader.initSkillIndex().get('user/promoted-skill')).toBeDefined()
   })
 })

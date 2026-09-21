@@ -8,6 +8,8 @@ import { arjunAdapter } from './arjun'
 import { corsyAdapter } from './corsy'
 import { subfinderAdapter } from './subfinder'
 import { gitleaksAdapter } from './gitleaks'
+import { hydraAdapter } from './hydra'
+import { johnAdapter } from './john'
 
 export type { ToolAdapter } from './types'
 
@@ -22,6 +24,8 @@ export const ALL_ADAPTERS: ToolAdapter[] = [
   corsyAdapter,
   subfinderAdapter,
   gitleaksAdapter,
+  hydraAdapter,
+  johnAdapter,
 ]
 
 export function getAdapter(id: string): ToolAdapter | undefined {

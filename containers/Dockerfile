@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap masscan \
     # Web app testing
     nuclei sqlmap nikto \
-    # Directory fuzzing
-    gobuster \
+    # Directory fuzzing / recon
+    gobuster ffuf subfinder \
     # Password attacks
     hydra john \
     # DNS/Recon
@@ -31,17 +31,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Go tools (nuclei, ffuf, subfinder, httpx, amass)
-RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest 2>/dev/null || true \
-    && go install github.com/ffuf/ffuf/v2@latest 2>/dev/null || true \
-    && go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 2>/dev/null || true \
-    && go install github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null || true
+# Optional Go tooling is bounded and never blocks image startup. The core
+# scanners above come from Kali packages; this layer only adds httpx when the
+# package mirror is reachable.
+RUN timeout 180s go install github.com/projectdiscovery/httpx/cmd/httpx@latest || true
 
 # Python tools (sqlmap is from apt, but ensure pip works)
 RUN pip3 install --break-system-packages sqlmap 2>/dev/null || true
 
 # Non-root user for execution
 RUN useradd -m -s /bin/bash sandbox
+ENV PATH="/root/go/bin:/home/sandbox/go/bin:${PATH}"
 USER sandbox
 WORKDIR /home/sandbox
 

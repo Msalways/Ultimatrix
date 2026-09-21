@@ -474,6 +474,20 @@ export async function promoteFindingCandidate(input: PromoteFindingInput): Promi
     if (args.type) recordTechniqueConfirmed(args.type)
   }).catch(() => { /* evolution never breaks the finding path */ })
 
+  // G8: Record per-payload effectiveness when a finding has a payload.
+  // This feeds the payload history so the brain can see what's historically
+  // effective on similar targets.
+  if (args.payload && args.type) {
+    import('../intelligence/outcome-feedback').then(({ getOutcomeFeedbackStore }) => {
+      getOutcomeFeedbackStore().recordPayloadOutcome({
+        payload: args.payload!,
+        vulnType: args.type!,
+        source: 'llm',
+        worked: true,
+      })
+    }).catch(() => { /* payload tracking never breaks the finding path */ })
+  }
+
   const finding = {
     id: findingNode.id,
     type: args.type,

@@ -309,6 +309,7 @@ export interface DebateCycleResult {
  */
 export interface IntelligenceContext {
   reflexionBlock?: string
+  reflectionOverride?: string
   antiLoopStale?: boolean
   blockedTargets?: string[]
   attackPathHistory?: string[]

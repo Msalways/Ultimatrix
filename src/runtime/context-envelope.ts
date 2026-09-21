@@ -33,6 +33,10 @@ export interface RuntimeEnvelopeInput {
   capturedRequests?: { total: number }
   /** Step budget: current step count, max steps, elapsed time, max duration. */
   budget?: { steps: number; maxSteps: number; elapsedMs: number; maxDurationMs: number }
+  /** G10: Techniques validated by prior client feedback (remediation held on retest). */
+  validatedTechniques?: string[]
+  /** G10: Technique weight overrides from prior sessions. */
+  techniqueWeights?: Array<{ techniqueId: string; weight: number; confidence: number }>
 }
 
 export function runtimeEnvelopeTokenBudget(contextWindow: number): number {
@@ -98,6 +102,13 @@ export function buildRuntimeEnvelope(input: RuntimeEnvelopeInput): string {
       remainingSec: Math.round((input.budget.maxDurationMs - input.budget.elapsedMs) / 1000),
       percentUsed: Math.round((input.budget.steps / input.budget.maxSteps) * 100),
     } : null,
+    // G10: Battle-tested technique data from prior sessions
+    validatedTechniques: input.validatedTechniques?.length
+      ? input.validatedTechniques
+      : null,
+    techniqueWeights: input.techniqueWeights?.length
+      ? input.techniqueWeights
+      : null,
   }
 
   const budget = runtimeEnvelopeTokenBudget(input.contextWindow)

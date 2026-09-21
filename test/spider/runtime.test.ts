@@ -98,8 +98,48 @@ describe('SpiderRuntime', () => {
     })
     resumed.enqueue('https://example.com/a', 1)
 
-    expect(resumed.snapshot().frontier.filter((item) => item.url === 'https://example.com/a')).toHaveLength(1)
+    expect(resumed.snapshot().frontier.filter((item) => item.url === 'https://example.com/a')).toHaveLength(0)
     expect(resumed.snapshot().visitedUrls).toContain('https://example.com/a')
+  })
+
+  it('removes a queued URL when grounding records it as visited', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-grounding', target: 'https://example.com', config: config() })
+    runtime.enqueue('https://example.com')
+    expect(runtime.snapshot().frontier).toHaveLength(1)
+
+    runtime.recordPage('https://example.com')
+
+    expect(runtime.snapshot().frontier).toHaveLength(0)
+    expect(runtime.countActionable(2)).toBe(0)
+  })
+
+  it('deduplicates a target redirect that only changes the hash', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-redirect', target: 'http://localhost:3000', config: config() })
+    runtime.enqueue('http://localhost:3000')
+    runtime.recordPage('http://localhost:3000/#/')
+
+    expect(runtime.snapshot().frontier).toHaveLength(0)
+    runtime.enqueue('http://localhost:3000/#/')
+    expect(runtime.snapshot().frontier).toHaveLength(0)
+  })
+
+  it('keeps meaningful hash-router routes distinct', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-hash-routes', target: 'http://localhost:3000', config: config() })
+
+    runtime.enqueue('http://localhost:3000/#/login')
+    runtime.enqueue('http://localhost:3000/#/admin')
+
+    expect(runtime.snapshot().frontier.map((item) => item.url)).toEqual([
+      'http://localhost:3000/#/login',
+      'http://localhost:3000/#/admin',
+    ])
+  })
+
+  it('does not collapse meaningful hash routes during enqueue', () => {
+    const runtime = new SpiderRuntime({ workflowId: 'wf-hash-routes-2', target: 'http://localhost:3000', config: config() })
+    runtime.enqueue('http://localhost:3000/#/login')
+    runtime.recordPage('http://localhost:3000/#/admin')
+    expect(runtime.snapshot().frontier.map((item) => item.url)).toEqual(['http://localhost:3000/#/login'])
   })
 
   it('stops after stale rounds reach the threshold', () => {

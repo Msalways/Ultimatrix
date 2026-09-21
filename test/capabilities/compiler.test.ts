@@ -37,7 +37,7 @@ describe('compileCapabilities', () => {
   it('compiles authorization skill with correct tool count', () => {
     const result = compileCapabilities({ skillIds: ['authorization'] })
     expect(result.tools.length).toBeGreaterThan(0)
-    expect(result.tools.length).toBeLessThan(20)
+    expect(result.tools.length).toBeLessThan(30)
     expect(result.skill.id).toBe('authorization')
   })
 
@@ -258,6 +258,23 @@ describe('Skill Contract (Phase B)', () => {
     expect(result.coverageValidation).toBeDefined()
     expect(result.coverageValidation!.complete).toBe(true)
     expect(result.coverageValidation!.uncovered).toHaveLength(0)
+  })
+
+  it('compiles the bug-bounty scenario knowledge skill with complete research coverage', () => {
+    const result = compileCapabilities({ skillIds: ['bug-bounty-scenarios'] })
+
+    expect(result.contract).toBeDefined()
+    expect(result.tools).toEqual(expect.arrayContaining([
+      'buildResearchMap',
+      'planResearchExperiments',
+      'executePlannedExperiment',
+      'compareResearchResponses',
+      'evaluateResearchExperiment',
+      'recordFindingCandidate',
+      'writeFinding',
+    ]))
+    expect(result.coverageValidation?.complete).toBe(true)
+    expect(result.coverageValidation?.uncovered).toEqual([])
   })
 
   it('coverageValidation maps capabilities to correct tools', () => {

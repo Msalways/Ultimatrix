@@ -412,8 +412,66 @@ export interface PriorPatterns {
 }
 
 /**
+ * G2/G3: Extract effective sequences and failure patterns from the graph.
+ * Effective sequences are ordered technique IDs from Attack nodes connected
+ * by CHAINED_FROM edges. Failure patterns are failure categories from
+ * Reflexion nodes.
+ */
+function extractFailedPatterns(store: GraphStore): string[] {
+  const reflexionNodes = store.queryNodes(NodeType.REFLEXION) as unknown as Array<{
+    properties: { failureCategory?: string; vulnType?: string }
+  }>
+  const patterns = new Map<string, number>()
+  for (const node of reflexionNodes) {
+    const category = (node.properties as Record<string, unknown>).failureCategory
+    if (category && typeof category === 'string' && category.length > 0) {
+      // failureCategory is comma-separated constraint strings; use as structural pattern
+      for (const token of category.split(',').map(s => s.trim()).filter(Boolean)) {
+        patterns.set(token, (patterns.get(token) || 0) + 1)
+      }
+    }
+  }
+  return [...patterns.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([pattern]) => pattern)
+}
+
+function extractEffectiveSequences(store: GraphStore): string[][] {
+  const attackNodes = store.queryNodes(NodeType.ATTACK) as unknown as Array<{
+    id: string
+    properties: { technique?: string }
+  }>
+  if (attackNodes.length === 0) return []
+
+  // Build technique→node map for sequence detection via CHAINED_FROM edges
+  const attacks = attackNodes.filter(n => (n.properties as Record<string, unknown>).technique)
+  if (attacks.length <= 1) return []
+
+  // Extract technique sequences from findings: group findings by endpoint,
+  // order by timestamp to build an effective technique sequence
+  const findingNodes = store.queryNodes(NodeType.FINDING) as unknown as Array<{
+    properties: { technique?: string; endpoint?: string }
+  }>
+  const byEndpoint = new Map<string, string[]>()
+  for (const f of findingNodes) {
+    const props = f.properties as Record<string, unknown>
+    const technique = props.technique
+    const endpoint = props.endpoint
+    if (technique && typeof technique === 'string' && endpoint && typeof endpoint === 'string') {
+      const seq = byEndpoint.get(endpoint) || []
+      if (!seq.includes(technique)) seq.push(technique)
+      byEndpoint.set(endpoint, seq)
+    }
+  }
+
+  // Sequences with 2+ techniques are meaningful
+  return [...byEndpoint.values()].filter(seq => seq.length >= 2)
+}
+
+/**
  * Lightweight hook: build an anonymized EngagementSummary from a per-target
- * GraphStore and record it. ONLY structural features are extracted â€” raw URLs
+ * GraphStore and record it. ONLY structural features are extracted — raw URLs
  * never leave this function. The `targetOrigin` is used as a scoping token and
  * is never persisted.
  *
@@ -472,8 +530,8 @@ export async function finalizeEngagementMemory(
     targetOrigin,
     techniques: observations,
     findings: summaryFindings,
-    failedPatterns: [],
-    effectiveSequences: [],
+    failedPatterns: extractFailedPatterns(resolved),
+    effectiveSequences: extractEffectiveSequences(resolved),
   }
 
   const mem = new CrossEngagementMemory()

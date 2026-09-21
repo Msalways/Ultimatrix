@@ -41,6 +41,7 @@ function parseNuclei(stdout: string): AdapterFinding[] {
 
 export const nucleiAdapter: ToolAdapter = {
   id: 'nuclei',
+  parseOutput: parseNuclei,
   description:
     'Template-based vulnerability scanner. Runs the local nuclei binary against the target to check for known CVEs, misconfigurations, and exposed services. Requires nuclei installed on PATH.',
   async isAvailable() {

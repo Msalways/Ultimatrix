@@ -10,8 +10,16 @@ function skip(tool: string, target: string, reason: string): ToolResult {
   return { tool, target, status: 'skip', output: reason, findings: [], duration: 0 }
 }
 
+function parseSubfinder(stdout: string): AdapterFinding[] {
+  return stdout.split('\n').flatMap(line => {
+    const sub = line.trim()
+    return sub && sub.includes('.') ? [{ url: `https://${sub}`, severity: 'info' as const, detail: `Subdomain: ${sub}`, raw: sub }] : []
+  })
+}
+
 export const subfinderAdapter: ToolAdapter = {
   id: 'subfinder',
+  parseOutput: parseSubfinder,
   description:
     'Passive subdomain enumeration. Runs the local subfinder binary to discover subdomains of a target domain from public sources. Requires subfinder installed on PATH.',
   async isAvailable() {

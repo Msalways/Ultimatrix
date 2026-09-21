@@ -72,3 +72,36 @@ describe('evaluateResearchExperiment tool', () => {
     expect(result).toMatchObject({ ok: true, value: { outcome: { status: 'inconclusive' } } })
   })
 })
+
+describe('automatic experiment mutations', () => {
+  it('changes a structured identifier for IDOR experiments', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    expect(automaticMutation('idor', { url: 'https://target.test/api/orders/41' })).toEqual({
+      url: 'https://target.test/api/orders/42',
+    })
+  })
+
+  it('adds a structural JSON probe for mass-assignment experiments', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    const mutation = automaticMutation('mass_assignment', {
+      url: 'https://target.test/api/profile',
+      body: '{"name":"user"}',
+    })
+    expect(JSON.parse(mutation.body!)).toMatchObject({ name: 'user', __sentinel_probe: true })
+  })
+})
+
+describe('planned experiment approval boundary', () => {
+  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
+    const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+    const { setInteractionMode } = await import('../../src/tools/interaction-tools')
+    experiment.properties = {
+      status: 'planned',
+      baselineRequest: { method: 'POST', url: 'https://target.test/api/profile' },
+    }
+    setInteractionMode('ask')
+    const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+    expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' })
+    setInteractionMode(undefined)
+  })
+})

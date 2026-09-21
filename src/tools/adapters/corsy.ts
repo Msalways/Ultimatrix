@@ -25,6 +25,7 @@ function parseCorsy(stdout: string): AdapterFinding[] {
 
 export const corsyAdapter: ToolAdapter = {
   id: 'corsy',
+  parseOutput: parseCorsy,
   description:
     'CORS misconfiguration scanner. Runs the local corsy binary to detect exploitable cross-origin resource sharing on a target URL. Requires corsy installed on PATH.',
   async isAvailable() {

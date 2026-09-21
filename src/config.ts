@@ -36,6 +36,8 @@ function atomicWrite(filePath: string, content: string): void {
 export interface ApiKeyCreds {
   apiKey: string
   baseUrl?: string
+  /** Optional provider-local default model used for generic failover. */
+  model?: string
 }
 
 export interface AzureCreds {
@@ -208,6 +210,12 @@ export interface InteractionConfig {
    */
   showReasoning?: boolean
   /**
+   * Stream coalesced model decision updates while a turn is running. This is
+   * distinct from deterministic runtime events and defaults to true in the
+   * terminal buddy view.
+   */
+  liveReasoning?: boolean
+  /**
    * Show the dim "system events" block (tooling/quota/summary lines) below the
    * answer card. Default: true.
    */
@@ -233,7 +241,7 @@ export interface SpiderConfig {
 
 export interface ExternalToolsConfig {
   enabled?: boolean
-  tools?: Partial<Record<'nmap' | 'arjun' | 'sqlmap' | 'nuclei' | 'ffuf' | 'jwttool' | 'corsy' | 'subfinder' | 'gitleaks', boolean>>
+  tools?: Partial<Record<'nmap' | 'arjun' | 'sqlmap' | 'nuclei' | 'ffuf' | 'jwttool' | 'corsy' | 'subfinder' | 'gitleaks' | 'hydra' | 'john', boolean>>
 }
 
 export interface AntiLoopConfig {
@@ -284,6 +292,9 @@ export interface ScopeConfig {
   /** Action categories permitted against in-scope targets. Absent/empty = legacy
    *  allow-all, EXCEPT `external_tool` which always requires explicit opt-in. */
   allowedCategories?: AuthorizationCategory[]
+  /** When true, robots.txt compliance is skipped for authorized pentest engagements.
+   *  Robots.txt blocks paths that are often exactly where vulnerabilities live. */
+  authorizedPentest?: boolean
   /** Enforcement mode: 'hard' blocks out-of-scope requests, 'warn' logs but allows. */
   enforcement: 'hard' | 'warn'
 }
@@ -486,6 +497,7 @@ export const DEFAULTS = {
   },
   interaction: {
     showReasoning: true,
+    liveReasoning: true,
     showSystemEvents: true,
     chat: true,
   },
@@ -1562,7 +1574,8 @@ function normalizeCredentials(raw: unknown): ProviderCredentials {
     } else {
       const apiKey = String(e.apiKey ?? e.api_key ?? e.key ?? '')
       const baseUrl = String(e.baseUrl ?? e.base_url ?? e.endpoint ?? '')
-      if (apiKey || baseUrl) creds[provider] = { apiKey, ...(baseUrl ? { baseUrl } : {}) }
+      const model = typeof e.model === 'string' && e.model.trim() ? e.model.trim() : undefined
+      if (apiKey || baseUrl) creds[provider] = { apiKey, ...(baseUrl ? { baseUrl } : {}), ...(model ? { model } : {}) }
     }
   }
 

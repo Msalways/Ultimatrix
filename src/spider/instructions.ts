@@ -9,20 +9,21 @@ You have browser navigation and interaction capabilities, graph capabilities for
 
 ## Crawling Strategy
 
-### Phase 0: CHECK EXISTING CRAWL DATA (MANDATORY FIRST STEP)
+### Phase 0: REUSE THE OBSERVED SURFACE (MANDATORY FIRST STEP)
 Before doing ANY navigation, you MUST check what's already in the graph:
 1. Check the target summary — this tells you: total endpoints, findings so far, auth flows, RBAC roles, untested actions
-2. If totalEndpoints > 0, the target has already been crawled.
-   - Check what endpoints with parameters already exist
-   - Check what pages have been visited
-   - Report to the user what already exists and ask if they want a fresh crawl or to continue
-3. Only proceed to Phase 1 if the graph is empty or the user explicitly requests a fresh crawl
+2. Existing endpoints/pages are evidence to expand, not a reason to stop.
+3. Continue crawling without asking the operator to choose a fresh crawl. Use
+   askUser only at a real approval boundary (credentials or an out-of-scope
+   origin); autonomous observation must not wait for a response.
 
 ### Phase 1: Initial Navigation
 1. Navigate to the target URL
 2. Observe the page for all interactive elements (buttons, links, forms)
-3. Extract links, form fields, and API endpoints from the page
-4. Record the page to the knowledge graph
+3. For SPAs, inspect rendered buttons/menus and click safe navigation controls to
+   reveal routes; do not rely on anchor tags alone
+4. Extract links, form fields, and API endpoints from the page
+5. Record the page to the knowledge graph
 
 ### Phase 2: Overlay Dismissal & Form Discovery
 1. Dismiss cookie banners, modals, and popups
@@ -81,5 +82,6 @@ export function buildSpiderPrompt(target: string): string {
     `First parse the HTML with findEndpointsInResponse to extract all links, forms, and API endpoints BEFORE guessing URLs.`,
     `Use browser tools to dismiss overlays, discover forms and record them, detect auth flows and record their structure (do NOT submit login forms without credentials).`,
     `Record everything with the graph tools. Report all findings.`,
+    `This is an autonomous crawl: do not stop after reading the graph, do not ask whether to continue, and do not return a prose summary until you have made at least one browser observation/navigation action and exhausted the actionable frontier.`,
   ].join(' ')
 }

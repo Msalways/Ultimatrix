@@ -270,7 +270,7 @@ describe('solve', () => {
       goal: 'Find vulnerabilities and extract shell access',
     })
     expect(result.completed).toBe(false)
-    expect(result.reason).toBe('stale')
+    expect(result.reason).toBe('model_failed')
   })  itEngagement('content does not leak through onPhase events (solver stream only)', async () => {
     const agent = createReasoningMockAgent(
       ['I found SQL injection in /api/users. Evidence: error-based response.'],
@@ -482,6 +482,41 @@ describe('solve', () => {
     expect(agent.getTurnToolset).toHaveBeenCalled()
     expect(result.toolCalls).toBe(0)
     expect(result.text).toContain('Hi')
+  })
+  itEngagement('returns an explicit status when the provider emits reasoning but no answer', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'reasoning-delta', payload: { text: 'I inspected the available context.' } }
+        })(),
+        toolCalls: [],
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve('I inspected the available context.'),
+      }),
+    }
+    const messages: any[] = []
+    const result = await solve(agent as any, { origin: 'https://example.com', goal: 'inspect', onMessage: m => messages.push(m) })
+    expect(result.text).toBe('The model ended without producing a deliverable response.')
+    expect(messages.find(m => m.kind === 'done')?.answer.content).toBe(result.text)
+  })
+  itEngagement('returns an explicit status after tool-only execution', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'tool-call', payload: { toolName: 'queryGraph', args: {} } }
+          yield { type: 'tool-result', payload: { toolName: 'queryGraph', result: { ok: true, value: [] } } }
+        })(),
+        toolCalls: [],
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+      }),
+    }
+    const result = await solve(agent as any, { origin: 'https://example.com', goal: 'inspect' })
+    expect(result.text).toBe('Assessment stopped after 1 tool call; no new verified findings were produced.')
   })
   itEngagement('validates context against active next-step tools and rechecks after activation', async () => {
     const registry = new DynamicToolRegistry()
@@ -706,6 +741,21 @@ describe('solve', () => {
       ok: false,
       result: 'connection reset',
     })
+  })
+  itEngagement('recovers from one unavailable tool selection', async () => {
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'tool-error', payload: { toolName: 'staleConnectorTool', error: 'Tool "staleConnectorTool" not found. Available tools: queryGraph' } }
+          yield { type: 'text-delta', payload: { text: 'I will continue with the registered graph tools.' } }
+        })(),
+        text: Promise.resolve('I will continue with the registered graph tools.'),
+      }),
+    }
+    const result = await solve(agent as any, { origin: 'https://example.com', goal: 'Find vulnerabilities' })
+    expect(result.reason).toBe('response_complete')
   })
   itEngagement('preserves typed tool failures in the stream', async () => {
     const agent = {

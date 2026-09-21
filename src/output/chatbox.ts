@@ -30,6 +30,8 @@ import { ESC } from '../ui/theme'
 
 export interface ChatBoxOptions extends TerminalPaintOptions {
   showReasoning?: boolean
+  /** Paint reasoning deltas live; disabled by default because providers emit token fragments. */
+  liveReasoning?: boolean
   showSystemEvents?: boolean
   width?: number
   pause?: () => void
@@ -52,6 +54,7 @@ export class ChatBox implements ActivitySink {
   private resume?: () => void
   private tty: boolean
   private showReasoning: boolean
+  private liveReasoning: boolean
   private showSystemEvents: boolean
 
   // Assistant turn state
@@ -59,15 +62,17 @@ export class ChatBox implements ActivitySink {
   private model: RenderModel = createRenderModel()
   private paintedReasoningLen = 0
   private paintedAnswerLen = 0
-  private liveAnswerRows = 0
+  /** Every append-only row emitted during the active turn. */
+  private liveRowsWritten = 0
+  private liveReasoningBuffer = ''
+  private lastPaintedActivityKey = ''
   private reasoningExpanded = false
   private finalized = false
 
-  // Tool rows — permanent, tracked by id + actual line count
+  // Tool rows — permanent, tracked by id
   private toolRows = new Map<number, string>()
-  private toolLinesWritten = 0
 
-  // Activity (spider/progress) state — single-line spinner
+  // Activity (spider/progress) state — append-only progress rows
   private activityActive = false
   private activityRows = 0
 
@@ -82,6 +87,7 @@ export class ChatBox implements ActivitySink {
     this.resume = opts.resume
     this.tty = opts.isTTY ?? (typeof process !== 'undefined' ? Boolean(process.stdout?.isTTY) : false)
     this.showReasoning = opts.showReasoning ?? true
+    this.liveReasoning = opts.liveReasoning ?? false
     this.showSystemEvents = opts.showSystemEvents ?? true
   }
 
@@ -123,11 +129,12 @@ export class ChatBox implements ActivitySink {
     this.model = createRenderModel()
     this.paintedReasoningLen = 0
     this.paintedAnswerLen = 0
-    this.liveAnswerRows = 0
+    this.liveRowsWritten = 0
+    this.liveReasoningBuffer = ''
+    this.lastPaintedActivityKey = ''
     this.reasoningExpanded = false
     this.finalized = false
     this.toolRows.clear()
-    this.toolLinesWritten = 0
   }
 
   streamAssistant(msg: SolverStreamMessage): void {
@@ -138,9 +145,9 @@ export class ChatBox implements ActivitySink {
 
   /**
    * Append-only streaming. Each zone is independent:
-   * - Reasoning: accumulated silently in model.reasoning (never written to screen)
+   * - Reasoning: accumulated in model.reasoning and optionally coalesced into brain updates
    * - Tools: append new/changed rows, permanent via toolRows Map
-   * - Answer: append markdown delta, tracked by paintedAnswerLen + liveAnswerRows
+   * - Answer: append markdown delta, rendered once at finalization
    *
    * On endAssistant(), the entire live region is erased and re-rendered
    * in content-forward order (answer → tools → collapsed reasoning).
@@ -148,19 +155,38 @@ export class ChatBox implements ActivitySink {
   private paintAssistantLive(): void {
     const model = this.model
 
-    // ── Reasoning: accumulate silently, don't write to screen ──
-    // F31 FIX: When showReasoning is enabled, stream reasoning live.
+    // ── Reasoning: buffer provider fragments, then paint useful brain updates ──
     if (model.reasoning.length > this.paintedReasoningLen) {
       const newReasoning = model.reasoning.slice(this.paintedReasoningLen)
       this.paintedReasoningLen = model.reasoning.length
-      if (this.showReasoning && newReasoning.trim()) {
-        const rendered = renderMarkdown(newReasoning, { ...this.opts, isTTY: this.tty })
-        const lines = rendered.split('\n').filter(l => l.trim())
-        if (lines.length > 0) {
-          const preview = lines.slice(0, 2).join('\n')
-          this.write(`${this.c(ESC.dim)}│  ${preview}${lines.length > 2 ? '\n│  ...' : ''}${this.c(ESC.reset)}\n`)
-          this.liveAnswerRows += lines.length
+      if (this.liveReasoning && this.showReasoning && this.tty && newReasoning.trim()) {
+        this.liveReasoningBuffer += newReasoning
+        const compact = this.liveReasoningBuffer.replace(/\s+/g, ' ').trim()
+        // Provider reasoning arrives as token fragments. Paint only a useful
+        // sentence-sized update, never a token-by-token scratchpad.
+        if (compact.length >= 80 || /[.!?](?:\s|$)/.test(compact)) {
+          const update = compact.slice(0, 180) + (compact.length > 180 ? '…' : '')
+          this.write(`${this.c(ESC.dim)}· brain · ${update}${this.c(ESC.reset)}\n`)
+          this.liveRowsWritten += 1
+          this.liveReasoningBuffer = ''
         }
+      }
+    }
+
+    // Paint structured progress, not model scratch text. These rows are
+    // append-only and therefore cannot corrupt the live answer cursor.
+    const latestEvent = model.events[model.events.length - 1]
+    const activityKey = latestEvent
+      ? `event:${latestEvent.id}`
+      : model.phase
+        ? `phase:${model.phase}:${model.step}`
+        : ''
+    if (activityKey && activityKey !== this.lastPaintedActivityKey) {
+      this.lastPaintedActivityKey = activityKey
+      const label = latestEvent?.label ?? phaseLabel(model.phase, model.step)
+      if (label) {
+        this.write(`${this.c(ESC.dim)}· runtime · ${label}${this.c(ESC.reset)}\n`)
+        this.liveRowsWritten += 1
       }
     }
 
@@ -183,35 +209,25 @@ export class ChatBox implements ActivitySink {
         this.toolRows.set(t.id, line)
         if (this.tty) {
           this.write(line + '\n')
-          this.toolLinesWritten++
+          this.liveRowsWritten++
         }
       } else if (prev !== line) {
         this.toolRows.set(t.id, line)
         if (this.tty) {
           this.write(line + '\n')
-          this.toolLinesWritten++
+          this.liveRowsWritten++
         }
       }
     }
 
-    // ── Answer: append delta only ──
-    // F34/F35 FIX: Buffer raw answer text during streaming. Only render markdown
-    // on finalization to avoid partial/incomplete markdown rendering and
-    // inaccurate row accounting from chunk-based visual row counting.
+    // ── Answer: buffer until finalization ──
+    // Partial markdown is not a stable live surface. Structured brain/runtime
+    // rows and tool calls stream above; the deliverable answer renders once.
     const answer = visibleAssistantText(model.answer)
     if (answer.trim()) {
       const tail = answer.slice(this.paintedAnswerLen)
       if (tail) {
         this.paintedAnswerLen = answer.length
-        if (this.tty) {
-          // TTY: show dim streaming indicator (no markdown rendering yet)
-          const preview = tail.replace(/\n+/g, ' ').slice(0, 80)
-          this.write(`${this.c(ESC.dim)}│  ${preview}${tail.length > 80 ? '...' : ''}${this.c(ESC.reset)}\r`)
-          this.liveAnswerRows = 1
-        } else {
-          // Non-TTY: write raw text (finalization renders full markdown)
-          this.write(tail)
-        }
       }
     }
   }
@@ -235,13 +251,13 @@ export class ChatBox implements ActivitySink {
     const hasReasoning = m.reasoning.trim().length > 0
 
     // Erase live streaming region (tools + answer) and re-render cleanly.
-    const totalLiveRows = this.toolLinesWritten + this.liveAnswerRows
+    const totalLiveRows = this.liveRowsWritten
     if (totalLiveRows > 0 && this.tty) {
       this.pause?.()
       this.write(ESC.up(totalLiveRows) + ESC.clearDown)
     }
-    this.liveAnswerRows = 0
-    this.toolLinesWritten = 0
+    this.liveRowsWritten = 0
+    this.lastPaintedActivityKey = ''
 
     // ── Re-render answer first — content-forward design ──
     // INVARIANT: reasoning implies answer. An LLM cannot produce reasoning
@@ -288,7 +304,7 @@ export class ChatBox implements ActivitySink {
           .join('\n')
         this.write(body + '\n')
       } else {
-        this.write(this.c(ESC.dim) + `reasoning (${lines} lines) — /r to expand` + this.c(ESC.reset) + '\n')
+        this.write(this.c(ESC.dim) + `decision trace (${lines} lines) — /r to expand` + this.c(ESC.reset) + '\n')
       }
     }
 
@@ -306,6 +322,12 @@ export class ChatBox implements ActivitySink {
         const where = f.endpoint ? `  ${this.c(ESC.dim)}@ ${f.endpoint}${this.c(ESC.reset)}` : ''
         this.write(`  ${glyph} ${sevCol}${f.severity.toUpperCase()}${this.c(ESC.reset)} ${f.technique}${where}\n`)
       }
+    }
+
+    // ── Explicit failure — never leave the user with only “no answer” ──
+    const failure = m.events.find((event) => event.status === 'error')
+    if (failure) {
+      this.write(`${this.c(ESC.red)}!${this.c(ESC.reset)} ${failure.label}\n`)
     }
 
     // ── Footer — minimal status line (only for working turns) ──
@@ -363,16 +385,9 @@ export class ChatBox implements ActivitySink {
 
   updateActivity(text: string): void {
     if (!this.activityActive) return
-    if (!this.tty) {
-      this.write(`${this.c(ESC.dim)}│  ⠿ ${text}${this.c(ESC.reset)}\n`)
-      return
-    }
-    if (this.activityRows > 0) {
-      this.write(`\x1b[${this.activityRows}A\x1b[J`)
-    }
     const line = `${this.c(ESC.dim)}│  ⠿ ${text}${this.c(ESC.reset)}`
     this.write(line + '\n')
-    this.activityRows = 1
+    this.activityRows++
   }
 
   endActivity(status: ActivityStatus = 'ok', detail?: string): void {
@@ -383,9 +398,6 @@ export class ChatBox implements ActivitySink {
     const text = detail
       ? `${this.c(ESC.dim)}└─${this.c(ESC.reset)} ${glyph} ${detail}${this.c(ESC.reset)}`
       : `${glyph}${this.c(ESC.reset)}`
-    if (this.tty && this.activityRows > 0) {
-      this.write(`\x1b[${this.activityRows}A\x1b[J`)
-    }
     this.write(text + '\n')
     this.activityActive = false
     this.activityRows = 0
@@ -623,4 +635,20 @@ function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000)
   if (s < 60) return `${s}s`
   return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+function phaseLabel(phase: RenderModel['phase'], step: number): string {
+  if (!phase) return ''
+  const labels: Record<string, string> = {
+    observe: 'observing target surface',
+    learn: 'building research map',
+    attack: 'testing selected hypothesis',
+    record: 'recording evidence',
+    reason: 'choosing next action',
+    complete: 'turn complete',
+    stale: 'stopped: no new information',
+    interrupt: 'interrupted',
+  }
+  const label = labels[phase] ?? phase
+  return step > 0 && phase !== 'complete' ? `${label} · step ${step}` : label
 }

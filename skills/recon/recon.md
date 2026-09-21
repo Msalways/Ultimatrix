@@ -7,6 +7,10 @@ toolRefs: [httpRequest, runRecon, frameworkFingerprint, findEndpointsInResponse,
 triggers: ["find all endpoints", "map the attack surface", "reconnaissance", "discovery", "enumerate", "fingerprint technology", "find api endpoints", "passive scanning", "attack surface mapping", "endpoint discovery"]
 mitreAttack: ["T1595", "T1592"]
 owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
+strategy:
+  seedPaths: ["/openapi.json", "/api/openapi.json", "/swagger.json", "/swagger/v1/swagger.json", "/v1/openapi.json", "/docs", "/api-docs"]
+  versionPrefixes: ["/v1", "/v2", "/v3", "/api/v1", "/api/v2"]
+  relevanceSignals: ["admin", "internal", "debug", "manage", "secret", "config", "console", "backdoor", "private", "test"]
 ---
 
 # Reconnaissance

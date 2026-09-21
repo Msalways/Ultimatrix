@@ -10,6 +10,8 @@ import type { UltimatrixConfig } from '../config'
 import { computeLastMessages } from '../config'
 import { log } from '../utils/logger'
 import { ContextWindowRegistry } from '../models/context-window-registry'
+import { fullModelId } from '../models/routing'
+import { resolveModel } from '../models/factory'
 
 const stores = new Map<string, LibSQLStore>()
 const vectors = new Map<string, LibSQLVector>()
@@ -41,7 +43,7 @@ function createVectorStore(dbPath?: string): LibSQLVector | null {
 
 function resolveEmbedder(config: UltimatrixConfig): string | undefined {
   if (!config.memory.embedder?.provider || !config.memory.embedder?.model) return undefined
-  return `${config.memory.embedder.provider}/${config.memory.embedder.model}`
+  return fullModelId(config.memory.embedder.provider, config.memory.embedder.model)
 }
 
 export async function createMemory(
@@ -72,10 +74,16 @@ export async function createMemory(
 
   const vector = wantsVector && embedderId ? createVectorStore(dbPath) : undefined
 
-  const contextWindow = new ContextWindowRegistry(config).getContextWindow(config.model) || 128_000
+  const contextWindow = new ContextWindowRegistry(config).getContextWindow(fullModelId(config.provider, config.model)) || 128_000
+  // Pass the resolved model object to Mastra memory. Supplying a provider/model
+  // string makes Mastra's internal router strip the provider namespace before
+  // the NVIDIA-compatible request reaches the wire.
+  const observationModel = options.mainAgent
+    ? resolveModel(config, { role: 'brain' })
+    : fullModelId(config.provider, config.model)
   const observationalMemory = options.mainAgent ? {
     enabled: true,
-    model: `${config.provider}/${config.model}`,
+    model: observationModel,
     scope: 'thread' as const,
     observation: {
       messageTokens: Math.floor(contextWindow * 0.25),

@@ -24,6 +24,7 @@ function parseArjun(stdout: string): AdapterFinding[] {
 
 export const arjunAdapter: ToolAdapter = {
   id: 'arjun',
+  parseOutput: parseArjun,
   description:
     'Hidden HTTP parameter discovery. Runs the local arjun binary to find unlinked GET/POST parameters on an endpoint. Requires arjun installed on PATH.',
   async isAvailable() {

@@ -160,6 +160,15 @@ describe('HAR Parser', () => {
       expect(jwt!.maskedValue).not.toBe(jwt!.value)
       expect(jwt!.maskedValue).not.toContain('eyJhbGci')
     })
+
+    it('ignores bare bundle keywords and keeps assigned body secrets', () => {
+      const archive = structuredClone(validHar)
+      archive.log.entries[0].response.content.text = 'const token = "placeholder"; const apiKey = "real-secret-value-123";'
+      const bodySecrets = getSecrets(getEntries(archive)).filter(secret => secret.location === 'body')
+      expect(bodySecrets).toHaveLength(1)
+      expect(bodySecrets[0].name).toBe('apiKey')
+      expect(bodySecrets[0].value).toBe('real-secret-value-123')
+    })
   })
 
   describe('getDataFlows', () => {

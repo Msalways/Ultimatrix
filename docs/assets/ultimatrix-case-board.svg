@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Ultimatrix case loop</title>
+  <desc id="desc">A security research case moves from target observation through graph orientation, skill-guided experiments, evidence proof, and remembered outcomes, with the human and buddy sharing control.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1114"/>
+      <stop offset="1" stop-color="#111b20"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2be08a"/>
+      <stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#36c9e6" stroke-opacity=".07"/>
+    </pattern>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#2be08a"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#36c9e6"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="520" rx="24" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="518" rx="23" fill="url(#grid)" stroke="#2be08a" stroke-opacity=".28"/>
+
+  <text x="42" y="48" fill="#2be08a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" letter-spacing="3">ULTIMATRIX // CASE BOARD 01</text>
+  <text x="42" y="83" fill="#e7f7f0" font-family="Inter, ui-sans-serif, sans-serif" font-size="25" font-weight="700">A target is a URL. The work is a case.</text>
+  <text x="42" y="110" fill="#8fa9ad" font-family="Inter, ui-sans-serif, sans-serif" font-size="14">You and the research brain move evidence around the board together.</text>
+
+  <rect x="915" y="34" width="240" height="54" rx="12" fill="#0d2525" stroke="#2be08a" stroke-opacity=".6"/>
+  <circle cx="941" cy="61" r="8" fill="#2be08a" filter="url(#glow)"/>
+  <text x="960" y="58" fill="#e7f7f0" font-family="ui-monospace, monospace" font-size="13">YOU &lt;-&gt; BUDDY</text>
+  <text x="960" y="76" fill="#7faaa3" font-family="ui-monospace, monospace" font-size="11">ask / steer / approve / resume</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="42" y="158" width="186" height="194" rx="14" fill="#101d22" stroke="#36c9e6" stroke-opacity=".65"/>
+    <text x="62" y="188" fill="#36c9e6" font-size="12" letter-spacing="2">01 / OBSERVE</text>
+    <text x="62" y="222" fill="#e7f7f0" font-size="17" font-weight="700">TARGET</text>
+    <text x="62" y="250" fill="#9bb4b7" font-size="12">browser + HTTP</text>
+    <text x="62" y="270" fill="#9bb4b7" font-size="12">HAR + DOM + JS</text>
+    <text x="62" y="290" fill="#9bb4b7" font-size="12">actors + workflows</text>
+    <circle cx="80" cy="322" r="4" fill="#36c9e6"/><circle cx="102" cy="322" r="4" fill="#36c9e6" opacity=".65"/><circle cx="124" cy="322" r="4" fill="#36c9e6" opacity=".35"/>
+
+    <rect x="270" y="158" width="186" height="194" rx="14" fill="#101d22" stroke="#36c9e6" stroke-opacity=".65"/>
+    <text x="290" y="188" fill="#36c9e6" font-size="12" letter-spacing="2">02 / ORIENT</text>
+    <text x="290" y="222" fill="#e7f7f0" font-size="17" font-weight="700">CASE GRAPH</text>
+    <text x="290" y="250" fill="#9bb4b7" font-size="12">facts + routes</text>
+    <text x="290" y="270" fill="#9bb4b7" font-size="12">auth + roles</text>
+    <text x="290" y="290" fill="#9bb4b7" font-size="12">hypotheses + gaps</text>
+    <path d="M296 324h32m16 0h32m16 0h32" stroke="#36c9e6" stroke-width="2"/><circle cx="296" cy="324" r="4" fill="#36c9e6"/><circle cx="344" cy="324" r="4" fill="#36c9e6"/><circle cx="392" cy="324" r="4" fill="#36c9e6"/>
+
+    <rect x="498" y="158" width="186" height="194" rx="14" fill="#13221e" stroke="#2be08a" stroke-opacity=".8"/>
+    <text x="518" y="188" fill="#2be08a" font-size="12" letter-spacing="2">03 / TEST</text>
+    <text x="518" y="222" fill="#e7f7f0" font-size="17" font-weight="700">EXPERIMENT</text>
+    <text x="518" y="250" fill="#a7c7b4" font-size="12">skill + primitive</text>
+    <text x="518" y="270" fill="#a7c7b4" font-size="12">baseline + mutation</text>
+    <text x="518" y="290" fill="#a7c7b4" font-size="12">compare + replay</text>
+    <path d="M520 324h120" stroke="#2be08a" stroke-width="2"/><path d="M520 324l30-15 30 15 30-15 30 15" fill="none" stroke="#2be08a" stroke-width="2"/>
+
+    <rect x="726" y="158" width="186" height="194" rx="14" fill="#241e16" stroke="#ffb020" stroke-opacity=".85"/>
+    <text x="746" y="188" fill="#ffb020" font-size="12" letter-spacing="2">04 / PROVE</text>
+    <text x="746" y="222" fill="#fff3d2" font-size="17" font-weight="700">EVIDENCE</text>
+    <text x="746" y="250" fill="#d7c39b" font-size="12">response facts</text>
+    <text x="746" y="270" fill="#d7c39b" font-size="12">actor difference</text>
+    <text x="746" y="290" fill="#d7c39b" font-size="12">reproduction floor</text>
+    <path d="M750 322h116" stroke="#ffb020" stroke-width="2"/><path d="M750 322l22-18 24 11 28-30 26 37" fill="none" stroke="#ffb020" stroke-width="2"/>
+
+    <rect x="954" y="158" width="204" height="194" rx="14" fill="#101d22" stroke="#2be08a" stroke-opacity=".65"/>
+    <text x="974" y="188" fill="#2be08a" font-size="12" letter-spacing="2">05 / REMEMBER</text>
+    <text x="974" y="222" fill="#e7f7f0" font-size="17" font-weight="700">NEXT MOVE</text>
+    <text x="974" y="250" fill="#9bb4b7" font-size="12">finding or lead</text>
+    <text x="974" y="270" fill="#9bb4b7" font-size="12">failure / reflexion</text>
+    <text x="974" y="290" fill="#9bb4b7" font-size="12">resume next turn</text>
+    <circle cx="980" cy="324" r="4" fill="#2be08a"/><circle cx="1004" cy="324" r="4" fill="#2be08a" opacity=".65"/><circle cx="1028" cy="324" r="4" fill="#2be08a" opacity=".35"/>
+  </g>
+
+  <path d="M230 255h34" stroke="#36c9e6" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+  <path d="M458 255h34" stroke="#36c9e6" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+  <path d="M686 255h34" stroke="#2be08a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <path d="M914 255h34" stroke="#ffb020" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <path d="M1055 365 C1055 440 145 440 145 365" fill="none" stroke="#2be08a" stroke-opacity=".65" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="490" y="469" fill="#7faaa3" font-family="ui-monospace, monospace" font-size="12" text-anchor="middle" letter-spacing="1">A case is useful because every result changes the next question.</text>
+</svg>

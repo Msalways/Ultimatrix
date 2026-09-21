@@ -19,10 +19,10 @@ import { addDiscovery } from '../tools/user-discovery'
 import { detectChainsTool, verifyChainsTool } from '../tools/detect-chains-tool'
 import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import {readReportTool} from '../tools/report-tools'
-import { loadSkillReference, searchSkillTool, loadSkillBodyTool } from '../tools/skill-tools'
+import { loadSkillReference, searchSkillTool, loadSkillBodyTool, discoverSkillsForTarget } from '../tools/skill-tools'
 import { encodeDecode } from '../tools/encode-decode'
 import { saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow } from '../tools/flow-tools'
-import { buildResearchMap, planResearchExperiments, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
+import { buildResearchMap, planResearchExperiments, executePlannedExperiment, compareResearchResponses, evaluateResearchExperiment, recordFindingCandidate, assessCandidateReportability, getResearchStatus } from '../tools/research-tools'
 import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
@@ -132,6 +132,7 @@ export type ToolRegistry = {
   loadSkillReference: typeof loadSkillReference
   searchSkills: typeof searchSkillTool
   loadSkillBody: typeof loadSkillBodyTool
+  discoverSkillsForTarget: typeof discoverSkillsForTarget
   
   // Encode/Decode
   encodeDecode: typeof encodeDecode
@@ -151,6 +152,7 @@ export type ToolRegistry = {
   // Research Tools (v9 bug-bounty brain)
   buildResearchMap: typeof buildResearchMap
   planResearchExperiments: typeof planResearchExperiments
+  executePlannedExperiment: typeof executePlannedExperiment
   compareResearchResponses: typeof compareResearchResponses
   evaluateResearchExperiment: typeof evaluateResearchExperiment
   recordFindingCandidate: typeof recordFindingCandidate
@@ -281,6 +283,7 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     loadSkillReference,
     searchSkills: searchSkillTool,
     loadSkillBody: loadSkillBodyTool,
+    discoverSkillsForTarget,
     
     // Encode/Decode
     encodeDecode,
@@ -300,6 +303,7 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     // Research Tools (v9 bug-bounty brain)
     buildResearchMap,
     planResearchExperiments,
+    executePlannedExperiment,
     compareResearchResponses,
     evaluateResearchExperiment,
     recordFindingCandidate,
@@ -401,6 +405,7 @@ export const TOOL_IDS = [
   'listSkills',
   'searchSkills',
   'loadSkillBody',
+  'discoverSkillsForTarget',
   'encodeDecode',
   'saveSession',
   'restoreSession',
@@ -412,6 +417,7 @@ export const TOOL_IDS = [
   'getRecentChanges',
   'buildResearchMap',
   'planResearchExperiments',
+  'executePlannedExperiment',
   'compareResearchResponses',
   'evaluateResearchExperiment',
   'recordFindingCandidate',
@@ -437,6 +443,10 @@ export const TOOL_IDS = [
   'corsy',
   'subfinder',
   'gitleaks',
+  'hydra',
+  'john',
+  'useCredential',
+  'extractBrowserAuth',
   'webSearch',
   'requestAsActor',
   'listActors',
@@ -1662,7 +1672,7 @@ export {
   runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe,
   askUser,
   getOastUrlTool, checkOastCallbacks, clearOastCallbacks,
-  loadSkillReference, searchSkillTool, encodeDecode,
+  loadSkillReference, searchSkillTool, discoverSkillsForTarget, encodeDecode,
   saveSession, restoreSession, observeHumanActions, saveLearnedFlow, reproduceFlow,
   detectReactions, getDialogEvidence, getRecentChanges,
   runPrimitiveTool,

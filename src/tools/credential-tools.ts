@@ -1,7 +1,8 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getConfig } from '../config'
-import { getActivePage } from '../browser/manager'
+import { getActivePage, getActiveBrowserContext } from '../browser/manager'
+import { getGlobalSessionManager } from '../http/session-manager'
 import { maskSecret } from '../capture/har-parser'
 import { log } from '../utils/logger'
 
@@ -76,12 +77,13 @@ export const useCredential = createTool({
       await page.act(`Type "${cred.email}" into the email or username field`)
       await page.act(`Type "${cred.password}" into the password field`)
       await page.act('Click the login or sign in button')
+      const sessionName = await registerBrowserActor(role, page)
       log.info(`[useCredential] Logged in as role "${role}" (${cred.email})`)
       return {
         ok: true,
         email: cred.email,
         maskedPassword: maskSecret(cred.password),
-        message: `Submitted login for role "${role}" (${cred.email}). Verify the resulting page/session state.`,
+        message: `Submitted login for role "${role}" (${cred.email}).${sessionName ? ` Stored actor session ${sessionName}.` : ' Browser state could not be exported; save the session after verification.'}`,
       }
     } catch (err) {
       return {
@@ -92,3 +94,41 @@ export const useCredential = createTool({
     }
   },
 })
+
+/** Register the browser's post-login cookies/token in the shared actor store. */
+async function registerBrowserActor(role: string, page: any): Promise<string | undefined> {
+  try {
+    const currentUrl = typeof page.url === 'function' ? String(page.url()) : ''
+    const origin = new URL(currentUrl).origin
+    const context = typeof getActiveBrowserContext === 'function' ? getActiveBrowserContext() : null
+    if (!context || typeof context.cookies !== 'function') return undefined
+
+    const sessionName = `${role}:${origin}`
+    const manager = getGlobalSessionManager()
+    const session = manager.getSession(sessionName) ?? manager.createSession(sessionName, origin)
+    const cookies = await context.cookies()
+    for (const cookie of cookies ?? []) {
+      if (cookie?.name && cookie?.value !== undefined) session.cookies[String(cookie.name)] = String(cookie.value)
+    }
+
+    if (typeof page.evaluate === 'function') {
+      const storage = await page.evaluate(() => {
+        const values: Record<string, string> = {}
+        for (const source of [window.localStorage, window.sessionStorage]) {
+          for (let i = 0; i < source.length; i++) {
+            const key = source.key(i)
+            if (key) values[key] = source.getItem(key) ?? ''
+          }
+        }
+        return values
+      })
+      const tokenEntry = Object.entries(storage ?? {}).find(([key, value]) =>
+        value.length >= 8 && (/(?:auth|token|session)/i.test(key) || /^eyJ[A-Za-z0-9_-]+\./.test(value)),
+      )
+      if (tokenEntry) manager.setToken(sessionName, tokenEntry[1])
+    }
+    return sessionName
+  } catch {
+    return undefined
+  }
+}

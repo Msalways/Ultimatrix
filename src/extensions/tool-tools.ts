@@ -11,7 +11,18 @@ export function createExtensionTools(registry: DynamicToolRegistry) {
       connector: z.string().optional().describe('Exact connector id, such as mcp:github or plugin:protocol-surface.'),
     }),
     execute: async ({ prefix, connector }) => {
-      if (connector) await registry.discover(connector)
+      // Connector discovery is an optional capability probe. A missing or
+      // offline connector must be reported as data so the agent can continue
+      // with registered local tools; throwing here turns normal discovery
+      // misses into a fatal tool-error and encourages retry loops.
+      let discoveryError: string | undefined
+      if (connector) {
+        try {
+          await registry.discover(connector)
+        } catch (error) {
+          discoveryError = error instanceof Error ? error.message : String(error)
+        }
+      }
       const known = await registry.list()
       const filtered = prefix ? known.filter((tool) => tool.id.startsWith(prefix)) : known
       const summarize = (tool: typeof filtered[number]) => ({
@@ -28,7 +39,14 @@ export function createExtensionTools(registry: DynamicToolRegistry) {
         mcp: filtered.filter((tool) => tool.source === 'mcp').map((tool) => ({ ...summarize(tool), server: tool.server })),
         plugin: filtered.filter((tool) => tool.source === 'plugin').map(summarize),
       }
-      return { content: { type: 'text', text: JSON.stringify({ tools, connectors: registry.listConnectors() }, null, 2) }, tools, connectors: registry.listConnectors() }
+      const result = {
+        ok: !discoveryError,
+        ...(discoveryError ? { error: discoveryError, code: 'CONNECTOR_UNAVAILABLE', connector } : {}),
+        content: { type: 'text', text: JSON.stringify({ tools, connectors: registry.listConnectors(), ...(discoveryError ? { error: discoveryError, code: 'CONNECTOR_UNAVAILABLE' } : {}) }, null, 2) },
+        tools,
+        connectors: registry.listConnectors(),
+      }
+      return result
     },
   })
 

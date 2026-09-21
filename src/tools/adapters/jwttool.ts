@@ -29,6 +29,7 @@ async function resolveBinary(): Promise<string | null> {
 
 export const jwtToolAdapter: ToolAdapter = {
   id: 'jwttool',
+  parseOutput: parseJwtTool,
   description:
     'JWT attack toolkit. Runs the local jwt_tool binary against a supplied token to test alg:none forgery, RSA->HMAC key confusion, and weak-secret cracking. Requires jwt-tool installed on PATH.',
   async isAvailable() {

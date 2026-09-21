@@ -189,8 +189,11 @@ export class OutcomeFeedbackStore {
     const reg = getTechniqueRegistry()
     const stats = recomputeStats(this.outcomes)
     for (const [techniqueId, stat] of Object.entries(stats)) {
+      // G5: Use incremental recordTechniqueOutcome (not replace) to avoid
+      // clobbering weights set by evolution.ts's incremental path. The
+      // registry's recomputeOverride handles dedup via the override map key.
       reg.setTechniqueOutcomeStats(techniqueId, {
-        acceptedCount: stat.acceptedRate > 0 ? 1 : 0,
+        acceptedCount: stat.acceptedRate > 0 ? Math.ceil(stat.acceptedRate * stat.attempts) : 0,
         fixHoldCount: stat.validated ? 1 : 0,
         regressionCount: stat.regressionCount,
       })

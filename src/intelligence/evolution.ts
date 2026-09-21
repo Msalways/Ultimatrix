@@ -12,6 +12,7 @@
  */
 
 import { getTechniqueRegistry } from '../skills/technique-registry'
+import { getSkillKnowledgeStore } from './skill-knowledge'
 
 export interface EvolutionCounters {
   confirmed: number
@@ -50,6 +51,9 @@ export function recordTechniqueConfirmed(techniqueId: string): void {
   } catch {
     /* evolution must never break the finding path */
   }
+  void getSkillKnowledgeStore().record({ techniqueId, outcome: 'confirmed' }).catch(() => {
+    /* common knowledge is best-effort and must never break a finding path */
+  })
 }
 
 /**
@@ -69,6 +73,9 @@ export function recordTechniqueFailed(techniqueId: string): void {
   } catch {
     /* never break the failure path */
   }
+  void getSkillKnowledgeStore().record({ techniqueId, outcome: 'failed' }).catch(() => {
+    /* common knowledge is best-effort and must never break an attack path */
+  })
 }
 
 /** Typed session summary for briefing / /learned visibility. */

@@ -31,7 +31,7 @@ describe('external-tool adapters', () => {
   })
 
   it('every adapter is well-formed', () => {
-    expect(ALL_ADAPTERS.length).toBe(9)
+    expect(ALL_ADAPTERS.length).toBe(11)
     for (const a of ALL_ADAPTERS) {
       expect(typeof a.id).toBe('string')
       expect(typeof a.description).toBe('string')

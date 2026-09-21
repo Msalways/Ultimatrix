@@ -3,7 +3,7 @@ name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, requestAsActor, listActors]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, requestAsActor, listActors, useCredential, extractBrowserAuth, hydra]
 primitives: [authBypass, idorSwapper, authzMatrix, tenantIsolation]
 triggers: ["authorization testing", "access control", "broken access control", "idor", "privilege escalation", "session management", "authorization flaws", "access control testing", "privilege testing", "security testing"]
 contextBoosts: [auth]
@@ -49,6 +49,12 @@ verification:
 output:
   schema: AuthorizationConclusion
 ---
+
+## Runtime tool selection
+
+- Use `useCredential` only with an explicitly configured authorized test role, then capture the resulting state with `extractBrowserAuth`.
+- Use `hydra` only for an explicitly approved online credential audit with caller-supplied service and wordlists; never invent brute-force defaults.
+- Prefer request replay and actor comparison before online guessing.
 
 # Authorization Testing
 

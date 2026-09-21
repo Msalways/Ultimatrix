@@ -26,7 +26,6 @@ import {
   reachabilityKey,
 } from '../identity/reachability'
 import type { AuthFlowType } from '../types/shared'
-import { z } from 'zod'
 
 export type ScopeClassification = 'allowed' | 'proposed' | 'denied'
 /**
@@ -282,8 +281,10 @@ export class SpiderRuntime {
 
   enqueue(url: string, depth = 0, sourcePage?: string, triggeringAction?: string, identity: IdentityContext = this.state.currentIdentity): ScopeClassification {
     const { scope, reason } = this.boundary.classifyUrl(url)
-    const alreadyQueued = this.state.frontier.some((item) => item.url === url)
-    if (!alreadyQueued && !this.seenPages.has(url)) {
+    const canonical = canonicalCrawlUrl(url)
+    const alreadyQueued = this.state.frontier.some((item) => canonicalCrawlUrl(item.url) === canonical)
+    const alreadyVisited = [...this.seenPages].some((seen) => canonicalCrawlUrl(seen) === canonical)
+    if (!alreadyQueued && !alreadyVisited) {
       this.state.frontier.push({ url, depth, scope, sourcePage, triggeringAction, identity })
     }
     if (scope === 'proposed') {
@@ -317,7 +318,14 @@ export class SpiderRuntime {
   recordPage(url: string, status = 0, links = 0, forms = 0): void {
     const { scope } = this.boundary.classifyUrl(url)
     const identity = this.state.currentIdentity
-    if (!this.seenPages.has(url)) {
+    // A URL is queued before navigation so the driver has work to dequeue.
+    // Once navigation grounds that URL, remove every matching frontier item;
+    // otherwise the landing page remains perpetually actionable and a resumed
+    // crawl can revisit/re-report the same page indefinitely.
+    const canonical = canonicalCrawlUrl(url)
+    this.state.frontier = this.state.frontier.filter((item) => canonicalCrawlUrl(item.url) !== canonical)
+    const alreadyVisited = [...this.seenPages].some((seen) => canonicalCrawlUrl(seen) === canonical)
+    if (!alreadyVisited) {
       this.seenPages.add(url)
       this.state.visitedUrls.push(url)
       this.state.pagesSeen++
@@ -577,9 +585,21 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     allowAny: options.allowAny,
     approvedOrigins: options.approvedOrigins,
   })
+  // Rehydrate the typed spider state from the engagement graph before the
+  // model sees the target. HAR/passive discovery may have found endpoints in
+  // an earlier phase even when the spider checkpoint is empty; keeping those
+  // surfaces only in graph memory makes the agent rediscover them repeatedly.
+  hydrateRuntimeFromGraph(runtime, graphStore, target)
   options.onRuntime?.(runtime)
   const startedAt = Date.now()
   const deadline = startedAt + maxDurationMs
+  const deadlineController = new AbortController()
+  const deadlineTimer = setTimeout(() => deadlineController.abort(), maxDurationMs)
+  if (typeof deadlineTimer === 'object' && 'unref' in deadlineTimer) deadlineTimer.unref()
+  if (options.signal) {
+    if (options.signal.aborted) deadlineController.abort()
+    else options.signal.addEventListener('abort', () => deadlineController.abort(), { once: true })
+  }
   const finalize = createSpiderFinalizer(runtime, options, startedAt)
 
   runtime.start()
@@ -605,7 +625,7 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
       spiderAgent.stream(streamPrompt, {
         memory: memory ? { thread: `${threadId}-spider`, resource: `${resourceId}-spider` } : undefined,
         maxSteps: config.spider?.maxSteps ?? config.agent.maxSteps,
-        structuredOutput: { schema: z.any() },
+        abortSignal: deadlineController.signal,
       }),
       new Promise<never>((_, reject) => {
         const timer = setTimeout(() => reject(new Error(`Spider stream init timed out after ${maxDurationMs}ms`)), maxDurationMs)
@@ -657,6 +677,34 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
       if (stopReason) break
     }
 
+    // A model is allowed to end a stream, but it is not allowed to turn an
+    // unfinished frontier into a successful crawl. Give it one bounded,
+    // explicit continuation turn before recording agent_stopped. This keeps
+    // autonomy while preserving the honest terminal reason when the retry also
+    // declines to act.
+    if (stopReason === 'agent_stopped' && runtime.countActionable(maxDepth) > 0 && Date.now() < deadline) {
+      stopReason = undefined
+      const continuation = await spiderAgent.stream(
+        `${streamPrompt} Continue from the current checkpoint. The crawl is incomplete: actionable frontier items remain. Perform browser actions and graph recording now; do not return a summary until the frontier is exhausted or a genuine approval blocker is reached.`,
+        {
+          memory: memory ? { thread: `${threadId}-spider`, resource: `${resourceId}-spider` } : undefined,
+          maxSteps: config.spider?.maxSteps ?? config.agent.maxSteps,
+          abortSignal: deadlineController.signal,
+        },
+      )
+      const continuationStream = (continuation as any).fullStream ?? textStreamAsChunks((continuation as any).textStream)
+      for await (const chunk of continuationStream) {
+        if (options.signal?.aborted || Date.now() > deadline) break
+        stopReason = consumeSpiderChunk(chunk, runtime, options)
+        if (chunk?.type === 'tool-result') {
+          const nextCounts = collectGraphState(graphStore)
+          ingestGraphDiff(runtime, counts, nextCounts)
+          counts = nextCounts
+        }
+        if (stopReason) break
+      }
+    }
+
     const finalCounts = collectGraphState(graphStore)
     ingestGraphDiff(runtime, counts, finalCounts)
 
@@ -674,9 +722,14 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
     return finalize(stopReason)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    if (deadlineController.signal.aborted || Date.now() >= deadline) {
+      return finalize(options.signal?.aborted ? 'aborted' : 'max_duration')
+    }
     log.error(message)
     emitSpiderError(target, message)
     return finalize('error', message)
+  } finally {
+    clearTimeout(deadlineTimer)
   }
 }
 
@@ -795,10 +848,24 @@ async function safePageTitle(page: any): Promise<string | undefined> {
 
 async function readLinks(page: any, baseUrl: string): Promise<string[]> {
   try {
-    const hrefs: string[] = typeof page?.$$eval === 'function'
-      ? await page.$$eval('a[href]', (els: Element[]) => els.map((el) => (el as HTMLAnchorElement).href || el.getAttribute('href') || ''))
-      : []
-    return [...new Set(hrefs.map((href: string) => {
+    if (typeof page?.$$eval !== 'function') return []
+    const hrefs: string[] = await page.$$eval('a[href]', (els: Element[]) =>
+      els.map((el) => (el as HTMLAnchorElement).href || el.getAttribute('href') || ''),
+    )
+    // Framework routers often render route targets without a real anchor.
+    // Read only URL-shaped attributes here; arbitrary button labels remain
+    // Stagehand's semantic-action responsibility and are not guessed.
+    const routerHrefs: string[] = await page.$$eval(
+      '[routerlink],[routerLink],[data-route],[data-href]',
+      (els: Element[]) => els.flatMap((el) => [
+        el.getAttribute('routerlink'),
+        el.getAttribute('routerLink'),
+        el.getAttribute('data-route'),
+        el.getAttribute('data-href'),
+      ].filter((value): value is string => Boolean(value))),
+    )
+    const allHrefs = [...hrefs, ...routerHrefs]
+    return [...new Set(allHrefs.map((href: string) => {
       try { return new URL(href, baseUrl).toString() } catch { return '' }
     }).filter(Boolean))]
   } catch {
@@ -890,6 +957,29 @@ function collectGraphState(graphStore: SpiderRunOptions['graphStore']) {
   return { pages, endpoints, forms, authFlows }
 }
 
+function hydrateRuntimeFromGraph(
+  runtime: SpiderRuntime,
+  graphStore: SpiderRunOptions['graphStore'],
+  target: string,
+): void {
+  let origin: string
+  try { origin = new URL(target).origin } catch { return }
+  const state = collectGraphState(graphStore)
+  for (const node of state.pages.values()) {
+    const url = String(node.properties.url ?? '')
+    if (!url.startsWith(origin)) continue
+    runtime.recordPage(url, Number(node.properties.status ?? 0))
+  }
+  for (const node of state.endpoints.values()) {
+    const url = String(node.properties.url ?? '')
+    if (!url.startsWith(origin)) continue
+    const params = Array.isArray(node.properties.params)
+      ? (node.properties.params as Array<{ name?: string }>).map((p) => String(p.name ?? '')).filter(Boolean)
+      : []
+    runtime.recordEndpoint(String(node.properties.method ?? 'GET'), url, params)
+  }
+}
+
 function ingestGraphDiff(runtime: SpiderRuntime, before: ReturnType<typeof collectGraphState>, after: ReturnType<typeof collectGraphState>): void {
   for (const [url, node] of after.pages) {
     if (before.pages.has(url)) continue
@@ -930,4 +1020,22 @@ function summarizeToolResult(result: unknown): string {
 
 export function stableTargetId(target: string): string {
   return target.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'target'
+}
+
+/** Normalize browser redirects/fragments for crawl identity and deduplication. */
+function canonicalCrawlUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    // A bare hash (or the SPA root hash) is only a redirect artifact. Keep
+    // meaningful hash-router paths distinct so /#/login and /#/admin are
+    // independently crawlable.
+    if (url.hash === '#' || url.hash === '#/') url.hash = ''
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '')
+    return url.toString()
+  } catch {
+    const normalized = value.replace(/\/+$/, '')
+    return normalized === '#' || normalized.endsWith('/#') || normalized.endsWith('#/')
+      ? normalized.replace(/#\/?$/, '')
+      : normalized
+  }
 }

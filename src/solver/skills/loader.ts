@@ -65,6 +65,12 @@ export interface SkillContract {
   output: SkillOutput
 }
 
+export interface SkillStrategy {
+  seedPaths?: string[]
+  versionPrefixes?: string[]
+  relevanceSignals?: string[]
+}
+
 /** Lightweight metadata loaded at init (frontmatter only). */
 export interface SkillMeta {
   id: string
@@ -86,6 +92,7 @@ export interface SkillMeta {
    *  requires/procedure/verification/output in YAML frontmatter. Undefined for
    *  legacy skills that rely on toolRefs + primitives only. */
   contract?: SkillContract
+  strategy?: SkillStrategy
 }
 
 /** Full skill with instructions body (loaded on demand). */
@@ -143,6 +150,13 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
     const primitives = Array.isArray(meta.primitives) ? meta.primitives.filter((p): p is string => typeof p === 'string') : []
     const triggers = Array.isArray(meta.triggers) ? meta.triggers.filter((t): t is string => typeof t === 'string') : []
     const contextBoosts = Array.isArray(meta.contextBoosts) ? meta.contextBoosts.filter((b): b is string => typeof b === 'string') : []
+    const rawStrategy = meta.strategy && typeof meta.strategy === 'object' && !Array.isArray(meta.strategy)
+      ? meta.strategy as Record<string, unknown> : undefined
+    const strategy: SkillStrategy | undefined = rawStrategy ? {
+      ...(Array.isArray(rawStrategy.seedPaths) ? { seedPaths: rawStrategy.seedPaths.filter((v): v is string => typeof v === 'string') } : {}),
+      ...(Array.isArray(rawStrategy.versionPrefixes) ? { versionPrefixes: rawStrategy.versionPrefixes.filter((v): v is string => typeof v === 'string') } : {}),
+      ...(Array.isArray(rawStrategy.relevanceSignals) ? { relevanceSignals: rawStrategy.relevanceSignals.filter((v): v is string => typeof v === 'string') } : {}),
+    } : undefined
 
     const rawTier = typeof meta.tier === 'string' ? meta.tier.toLowerCase() : 'balanced'
     const tier: SkillTier = (['fast', 'balanced', 'powerful'] as string[]).includes(rawTier) ? rawTier as SkillTier : 'balanced'
@@ -228,6 +242,7 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
       toolRefs, primitives, triggers, contextBoosts, toolChains, compositionRules,
       mitreAttack, owaspRefs,
       ...(contract ? { contract } : {}),
+      ...(strategy ? { strategy } : {}),
     }
   } catch {
     return null
@@ -364,6 +379,22 @@ function resolveSkillPath(id: string): string | null {
   return idToPath.get(id) ?? null
 }
 
+/**
+ * Read the canonical markdown for a skill without reconstructing its
+ * frontmatter.  Revision synthesis uses this seam so generated proposals
+ * preserve the exact live registry contract instead of silently dropping
+ * toolRefs, primitives, or composition metadata.
+ */
+export function readSkillMarkdown(id: string): string | null {
+  const filePath = resolveSkillPath(id)
+  if (!filePath) return null
+  try {
+    return readFileSync(filePath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
 function scanSkillDir(dir: string, namespace: string | null): void {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return
   try {
@@ -372,7 +403,10 @@ function scanSkillDir(dir: string, namespace: string | null): void {
       const filePath = join(dir, file)
       const baseId = basename(file, '.md')
       const id = namespace ? `${namespace}/${baseId}` : baseId
-      const meta = parseSkillMeta(filePath, namespace ?? dir)
+      // Domains are logical registry namespaces, never absolute filesystem
+      // paths. Keeping the basename here makes discovery output portable and
+      // prevents local workspace paths from becoming skill metadata.
+      const meta = parseSkillMeta(filePath, namespace ?? basename(dir))
       if (meta) {
         meta.id = id
         idToPath.set(id, filePath)
@@ -396,7 +430,7 @@ function scanSkillDir(dir: string, namespace: string | null): void {
       void skllFile
       const skillFile = join(entryPath, 'SKILL.md')
       if (!existsSync(skillFile)) continue
-      const meta = parseSkillMeta(skillFile, namespace ?? dir)
+      const meta = parseSkillMeta(skillFile, namespace ?? basename(dir))
       if (meta) {
         meta.id = namespace ? `${namespace}/${entry}` : entry
         idToPath.set(meta.id, skillFile)

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { validateSkillFile } from '../../src/solver/skills/validate'
 
 const TEST_SKILLS_DIR = join(process.cwd(), 'test', 'fixtures', 'skill-contract-test')
 
@@ -37,7 +38,19 @@ describe('Skill Contract (Phase A)', () => {
       const skills = getAllSkills()
       expect(skills.length).toBeGreaterThan(0)
       // Most skills don't have contracts yet — only authorization does (Phase B pilot)
-      const nonContractSkills = skills.filter(s => s.id !== 'authorization')
+      const contractedIds = new Set([
+        'authorization',
+        'bug-bounty-scenarios',
+        'bug-bounty-research',
+        'api-authorization-matrix',
+        'account-takeover-chains',
+        'cache-boundary-testing',
+        'graphql-authorization',
+        'webhook-ssrf',
+        'web-message-boundaries',
+        'http-desync',
+      ])
+      const nonContractSkills = skills.filter(s => !contractedIds.has(s.id))
       for (const skill of nonContractSkills) {
         expect(skill.contract).toBeUndefined()
       }
@@ -184,10 +197,19 @@ describe('Skill Contract (Phase A)', () => {
     })
   })
 
-  describe('all 74 skills still parse cleanly', () => {
+  describe('bundled and knowledge-base skills parse cleanly', () => {
     it('no regression on existing skill index', () => {
       const skills = getAllSkills()
-      expect(skills.length).toBe(74)
+      // The bundled corpus remains intact while the bug-bounty knowledge
+      // namespace contributes scenario skills to the same live registry.
+      expect(skills.length).toBeGreaterThanOrEqual(74)
+      expect(skills.map(skill => skill.id)).toEqual(expect.arrayContaining([
+        'bug-bounty-scenarios',
+        'bug-bounty-research',
+        'api-authorization-matrix',
+        'account-takeover-chains',
+      ]))
+      expect(skills.find(skill => skill.id === 'bug-bounty-scenarios')?.domain).toBe('bug-bounty')
       for (const skill of skills) {
         expect(typeof skill.id).toBe('string')
         expect(typeof skill.name).toBe('string')
@@ -196,6 +218,14 @@ describe('Skill Contract (Phase A)', () => {
         expect(Array.isArray(skill.toolRefs)).toBe(true)
         expect(Array.isArray(skill.primitives)).toBe(true)
         expect(Array.isArray(skill.triggers)).toBe(true)
+      }
+    })
+
+    it('knowledge-base skills pass the fail-closed import gate', () => {
+      const root = join(process.cwd(), 'skills', 'bug-bounty')
+      for (const file of readdirSync(root).filter(name => name.endsWith('.md'))) {
+        const result = validateSkillFile(join(root, file), file)
+        expect(result.valid, `${file}: ${result.errors.join('; ')}`).toBe(true)
       }
     })
   })

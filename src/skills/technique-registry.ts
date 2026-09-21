@@ -181,6 +181,11 @@ export class TechniqueRegistry {
     return this._runtimeOverrides.get(techniqueId)
   }
 
+  /** Get all current runtime overrides (for persistence). */
+  getAllRuntimeOverrides(): Map<string, TechniqueRuntimeOverride> {
+    return new Map(this._runtimeOverrides)
+  }
+
   /** Effectiveness weight multiplier (1.0 = static base, untouched). */
   getTechniqueWeight(techniqueId: string): number {
     const o = this._runtimeOverrides.get(techniqueId)

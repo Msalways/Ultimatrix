@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('../../src/safety/scope-guard', () => ({
   isUrlInScope: vi.fn().mockReturnValue({ allowed: true }),
+  getScopeConfig: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock('../../src/tools/report-tools', () => ({
