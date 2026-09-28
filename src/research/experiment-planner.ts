@@ -93,6 +93,40 @@ export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesi
         tools: ['observeHumanActions', 'getCapturedHeaders', 'httpRequest', 'compareResearchResponses', 'recordFindingCandidate'],
         status: 'planned',
       })
+    } else if (hypothesis.kind === 'reflected_injection') {
+      const echoed = Array.isArray(hypothesis.targetParams) && hypothesis.targetParams.length > 0
+        ? hypothesis.targetParams.join(', ')
+        : 'observed query parameters'
+      experiments.push({
+        id: stableId('experiment', [hypothesis.id, 'marker-reflection-probe']),
+        hypothesisId: hypothesis.id,
+        title: 'Send a unique marker and check whether it is echoed back',
+        setup: ['Capture a baseline request carrying a benign value', 'Replay with a unique marker in the echoed parameters'],
+        baselineRequest,
+        mutation: `Replace ${echoed} with a unique marker value and replay. The marker must not appear in the baseline response.`,
+        expectedSecureBehavior: 'Server encodes, strips, or rejects the marker; it never appears verbatim in the response.',
+        insecureSignal: 'The unique marker is echoed verbatim into the response body.',
+        requiredActors: ['anonymous'],
+        tools: ['httpRequest', 'replayCapturedRequest', 'compareResearchResponses', 'recordFindingCandidate'],
+        status: 'planned',
+      })
+    } else if (hypothesis.kind === 'open_redirect') {
+      const destinations = Array.isArray(hypothesis.targetParams) && hypothesis.targetParams.length > 0
+        ? hypothesis.targetParams.join(', ')
+        : 'observed query parameters'
+      experiments.push({
+        id: stableId('experiment', [hypothesis.id, 'marker-redirect-probe']),
+        hypothesisId: hypothesis.id,
+        title: 'Swap the redirect destination for a unique marker URL and inspect Location',
+        setup: ['Capture a baseline redirect request carrying a benign destination', 'Replay with a unique marker URL in the echoed parameters'],
+        baselineRequest,
+        mutation: `Replace ${destinations} with a unique marker URL and replay without following redirects. The marker host must never appear in the baseline Location.`,
+        expectedSecureBehavior: 'Server validates the destination against an allowlist or rejects it; the marker URL never appears in Location.',
+        insecureSignal: 'The 3xx Location header echoes the marker URL verbatim.',
+        requiredActors: ['anonymous'],
+        tools: ['httpRequest', 'replayCapturedRequest', 'compareResearchResponses', 'recordFindingCandidate'],
+        status: 'planned',
+      })
     } else {
       experiments.push({
         id: stableId('experiment', [hypothesis.id, 'differential-check']),

@@ -1,4 +1,5 @@
 import type { EvidenceItem } from '../intelligence/evidence-ledger'
+import { isBountyProfile } from '../safety/bounty-policy'
 import type { EvidenceOracle, ExperimentOutcome, ProofAssertion } from './types'
 import { randomUUID } from 'node:crypto'
 
@@ -6,6 +7,19 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   const middle = Math.floor(sorted.length / 2)
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+}
+
+/**
+ * Whether a unique challenge marker appears anywhere in the recorded
+ * response — body or headers. Header matching is case-insensitive on names
+ * (transports vary) and covers redirect targets: a marker URL landing in
+ * `Location` is the redirect analogue of a body echo. The marker is a
+ * unique nonce, so any fresh appearance is unsanitized reflection.
+ */
+function responseContains(item: EvidenceItem, marker: string): boolean {
+  if (typeof item.data === 'string' && item.data.includes(marker)) return true
+  const headers = item.observed?.responseHeaders ?? {}
+  return Object.values(headers).some(value => typeof value === 'string' && value.includes(marker))
 }
 
 export function evaluateExperimentOracle(
@@ -26,7 +40,7 @@ export function evaluateExperimentOracle(
     case 'unique-marker': {
       const baseline = byId.get(oracle.baselineEvidenceId)!
       const mutation = byId.get(oracle.mutationEvidenceId)!
-      proven = oracle.marker.length > 0 && !baseline.data.includes(oracle.marker) && mutation.data.includes(oracle.marker)
+      proven = oracle.marker.length > 0 && !responseContains(baseline, oracle.marker) && responseContains(mutation, oracle.marker)
       break
     }
     case 'cross-identity': {
@@ -34,7 +48,7 @@ export function evaluateExperimentOracle(
       const attacker = byId.get(oracle.attackerEvidenceId)!
       proven = oracle.marker.length > 0 && oracle.victimActorRef !== oracle.attackerActorRef &&
         victim.session === oracle.victimActorRef && attacker.session === oracle.attackerActorRef &&
-        victim.data.includes(oracle.marker) && attacker.data.includes(oracle.marker)
+        responseContains(victim, oracle.marker) && responseContains(attacker, oracle.marker)
       break
     }
     case 'state-transition': {
@@ -88,6 +102,19 @@ export function evaluateIndependentRetest(
   const refs = getOracleEvidenceRefs(retestOracle)
   if (refs.some(ref => initialProof.evidenceRefs.includes(ref))) {
     return { status: 'inconclusive', reason: 'Retest must use independent evidence', evidenceRefs: refs }
+  }
+  const byId = new Map(evidence.map(item => [item.id, item]))
+  const initialItems = initialProof.evidenceRefs.map(id => byId.get(id)).filter((item): item is EvidenceItem => !!item)
+  const retestItems = refs.map(id => byId.get(id)).filter((item): item is EvidenceItem => !!item)
+  const initialExecutions = new Set(initialItems.map(item => item.observed?.executionId).filter((id): id is string => !!id))
+  if (retestItems.some(item => item.observed?.executionId && initialExecutions.has(item.observed.executionId))) {
+    return { status: 'inconclusive', reason: 'Retest reused an initial execution', evidenceRefs: refs }
+  }
+  if (isBountyProfile()) {
+    const initialContexts = new Set(initialItems.map(item => item.observed?.browserContextId).filter((id): id is string => !!id))
+    if (retestItems.some(item => !item.observed?.executionId || (item.observed.browserContextId && initialContexts.has(item.observed.browserContextId)))) {
+      return { status: 'inconclusive', reason: 'Bounty retest requires a fresh execution and browser context', evidenceRefs: refs }
+    }
   }
   const challengeReused =
     initialOracle.type === 'unique-marker' && retestOracle.type === 'unique-marker' && initialOracle.marker === retestOracle.marker ||

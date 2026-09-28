@@ -31,29 +31,77 @@ function hasJsonPath(value: unknown, path: string): boolean {
   return true
 }
 
+/** Case-insensitive header lookup (transports vary in case preservation). */
+function responseHeader(headers: Record<string, string> | undefined, name: string): string | undefined {
+  if (!headers) return undefined
+  const wanted = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) return value
+  }
+  return undefined
+}
+
+/**
+ * Normalize the mutated body modulo the declared input change before shape
+ * comparison: query values that differ between the baseline and mutated
+ * request URLs are the challenge surface, so the mutated value is mapped
+ * back to the baseline value. A true echo then reads as "same page"
+ * regardless of body size, while an unrelated page that happens to contain
+ * the marker still reads as different. When the URLs carry no differing
+ * query values this is the identity transform.
+ */
+function normalizeMutatedParams(baselineUrl?: string, mutatedUrl?: string, body?: string): string {
+  try {
+    if (!baselineUrl || !mutatedUrl || !body) return body ?? ''
+    const baselineQuery = new URL(baselineUrl).searchParams
+    const mutatedQuery = new URL(mutatedUrl).searchParams
+    let out = body
+    for (const name of new Set([...baselineQuery.keys(), ...mutatedQuery.keys()])) {
+      const before = baselineQuery.get(name) ?? ''
+      const after = mutatedQuery.get(name) ?? ''
+      if (before && after && before !== after) out = out.split(after).join(before)
+    }
+    return out
+  } catch {
+    return body ?? ''
+  }
+}
+
 export function compareResearchResponses(baseline: ResponseLike, mutated: ResponseLike, assertion: DifferentialAssertion = {}): DifferentialResult {
   const sameStatus = baseline.status === mutated.status
   const statusDelta = `${baseline.status} -> ${mutated.status}`
-  const bodySimilarity = similarity(baseline.body, mutated.body)
+  const bodySimilarity = similarity(baseline.body, normalizeMutatedParams(baseline.url, mutated.url, mutated.body))
   let parsed: unknown
   try { parsed = JSON.parse(mutated.body ?? '') } catch { parsed = undefined }
   const matchedMarkers = (assertion.markers ?? []).filter(marker => marker.length > 0 && (mutated.body ?? '').includes(marker))
   const matchedFields = (assertion.jsonFields ?? []).filter(path => hasJsonPath(parsed, path))
-  const leaked = [...matchedMarkers.map(marker => `marker:${marker}`), ...matchedFields]
+  // Declared markers are also matched against the redirect target: a marker
+  // URL landing verbatim in Location is the redirect analogue of a body
+  // echo. Only fresh appearances count — a marker already present in the
+  // baseline Location is not evidence of anything the mutation caused.
+  const baselineLocation = responseHeader(baseline.headers, 'location') ?? ''
+  const mutatedLocation = responseHeader(mutated.headers, 'location') ?? ''
+  const locationMarkers = (assertion.markers ?? []).filter(marker =>
+    marker.length > 0 && mutatedLocation.includes(marker) && !baselineLocation.includes(marker))
+  const leaked = [...matchedMarkers.map(marker => `marker:${marker}`), ...matchedFields, ...locationMarkers.map(marker => `location:${marker}`)]
   const baselineDenied = [401, 403, 404].includes(baseline.status)
   const mutatedAllowed = mutated.status >= 200 && mutated.status < 300
   const authorizationMismatch = baselineDenied && mutatedAllowed && leaked.length > 0
+  const locationEcho = sameStatus && locationMarkers.length > 0
 
   const interesting =
     authorizationMismatch ||
+    locationEcho ||
     (mutatedAllowed && leaked.length > 0 && bodySimilarity > 0.2)
 
   const reason = interesting
     ? authorizationMismatch
       ? `Authorization boundary shifted (${statusDelta}) and the mutated response was allowed.`
-      : leaked.length > 0
-        ? `Mutated response satisfies declared observables: ${leaked.join(', ')}.`
-        : `Mutated response satisfies the declared differential.`
+      : locationEcho
+        ? `Redirect target reflects declared marker: ${locationMarkers.map(m => `location:${m}`).join(', ')}.`
+        : leaked.length > 0
+          ? `Mutated response satisfies declared observables: ${leaked.join(', ')}.`
+          : `Mutated response satisfies the declared differential.`
     : `No strong differential signal (${statusDelta}, similarity=${bodySimilarity.toFixed(2)}).`
 
   return {

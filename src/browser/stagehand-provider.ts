@@ -9,6 +9,7 @@
  */
 
 import type { StagehandBrowser } from '@mastra/stagehand'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { BrowserProvider, BrowserProviderName, BrowserSession, BrowserStartInput } from './provider'
@@ -23,6 +24,7 @@ import { exportStateFromStagehand } from './state-bridge'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { getGlobalWorkspace } from '../workspace'
 import type { ArtifactRecord } from '../security/artifacts'
+import { encryptOperationalJson } from '../security/secret-vault'
 
 export class StagehandProvider implements BrowserProvider {
   readonly name: BrowserProviderName = 'stagehand'
@@ -48,7 +50,7 @@ export class StagehandProvider implements BrowserProvider {
    * metadata only.
    */
   async exportStorage(sessionId: string): Promise<ArtifactRecord> {
-    const browser: StagehandBrowser | null = getActiveBrowser()
+    const browser: StagehandBrowser | null = getActiveBrowser() as StagehandBrowser | null
     const stagehand = (browser as any)?.requireStagehand?.()
     if (!stagehand?.context) {
       throw new Error('Stagehand is not available to export browser storage')
@@ -58,13 +60,16 @@ export class StagehandProvider implements BrowserProvider {
     const dir = resolve(getGlobalWorkspace().getGlobalMemoryDir(), 'sessions')
     await mkdir(dir, { recursive: true })
     const filePath = resolve(dir, `${sessionId}.json`)
-    await writeFile(filePath, JSON.stringify({ cookies: state.cookies, localStorage: state.localStorage }, null, 2), 'utf8')
+    const bountyMode = isBountyProfile()
+    const payload = { cookies: state.cookies, localStorage: state.localStorage, sessionStorage: state.sessionStorage }
+    const fileContents = bountyMode ? encryptOperationalJson(payload) : JSON.stringify(payload, null, 2)
+    await writeFile(filePath, fileContents, 'utf8')
 
     return getGlobalArtifactRegistry().create('session', {
-      initialStatus: 'redacted',
+      initialStatus: bountyMode ? 'encrypted' : 'redacted',
       provenance: [
         { source: 'browser', detail: 'cookies + localStorage', ref: 'exportStorage' },
-        { source: 'redaction', detail: 'operational store retained; metadata redacted' },
+        { source: bountyMode ? 'encryption' : 'redaction', detail: bountyMode ? 'operational secret key required for restore' : 'operational store retained; metadata redacted' },
       ],
       metadata: {
         sessionId,

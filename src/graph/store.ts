@@ -19,6 +19,9 @@ import {
   RBACRoleNode,
   AttackNode,
   TestNode,
+  DispositionNode,
+  deriveLifecycle,
+  type DerivedLifecycle,
   FactNode,
   IntentNode,
   ReflexionNode,
@@ -29,6 +32,7 @@ import {
   ThreatModelNode,
   ReachabilityNode,
   AnyNodeData,
+  hasReplayableAuthMaterial,
 } from './schema'
 import type { ReachabilityRecord } from '../identity/types'
 import { attributeGraphRef } from '../runtime/task-attribution'
@@ -449,7 +453,7 @@ export class GraphStore {
           headerCount: headerKeys.length,
         }
       }),
-      totalFindings: 0, // Not actual total - use findingsBySeverity for display
+      totalFindings: findings.length,
       findingsBySeverity: limitedFindingsBySeverity,
       totalTests: tests.length,
       authFlows: authFlows.length,
@@ -467,6 +471,140 @@ export class GraphStore {
     return (this.queryNodes(NodeType.ENDPOINT) as EndpointNode[]).filter(
       e => e.properties.params && e.properties.params.length > 0
     )
+  }
+
+  /**
+   * Append a disposition about a claim. Deliberately append-only: dispositions
+   * are never rewritten, so the history of who said what, and why, stays intact
+   * for audit and for the operator to read back.
+   */
+  addDisposition(data: Partial<DispositionNode['properties']> & { claimRef: string }): DispositionNode {
+    if (this.useLibSQL && this.libSQLStore) {
+      return this.libSQLStore.addDisposition(data)
+    }
+
+    // The id must be unique, not merely time-ordered. `Date.now()` alone was
+    // caught silently overwriting: two rulings on the same claim from the same
+    // origin inside one millisecond — exactly what a fan-out across findings,
+    // or a model retrying a call, produces — collapsed into a single record. A
+    // log that can lose writes is not a log. The suffix only breaks ties; the
+    // timestamp is still there and still orders the history.
+    const stamp = Date.now()
+    let id = `disposition:${data.claimRef}:${data.origin ?? 'agent'}:${stamp}`
+    for (let tie = 1; this.nodes.has(id); tie++) {
+      id = `disposition:${data.claimRef}:${data.origin ?? 'agent'}:${stamp}-${tie}`
+    }
+
+    const node: DispositionNode = {
+      id,
+      type: NodeType.DISPOSITION,
+      label: `Disposition: ${data.value ?? 'proposed'} (${data.origin ?? 'agent'}) on ${data.claimKind ?? 'finding'} ${data.claimRef}`,
+      properties: {
+        claimRef: data.claimRef,
+        claimKind: data.claimKind ?? 'finding',
+        origin: data.origin ?? 'agent',
+        value: data.value ?? 'proposed',
+        reason: data.reason ?? '',
+        ...(data.effectiveness ? { effectiveness: data.effectiveness } : {}),
+        ...(data.respondsTo ? { respondsTo: data.respondsTo } : {}),
+        ...(data.claimLabel ? { claimLabel: data.claimLabel } : {}),
+      },
+      createdAt: stamp,
+      updatedAt: stamp,
+    }
+    this.nodes.set(id, node as AnyNodeData)
+    return node
+  }
+
+  /** All dispositions for a claim, oldest first. */
+  getDispositions(claimRef?: string): DispositionNode[] {
+    const all = this.queryNodes(NodeType.DISPOSITION) as DispositionNode[]
+    const filtered = claimRef ? all.filter((d) => d.properties.claimRef === claimRef) : all
+    return filtered.sort((a, b) => a.createdAt - b.createdAt)
+  }
+
+  /**
+   * Findings recorded against a given endpoint.
+   *
+   * The endpoint is the anchor for operator rulings because it is the one
+   * identifier a model can reproduce exactly — it appears verbatim in tool
+   * output and in the transcript. Verified live: when the model was asked to
+   * supply a claim key it invented an ad-hoc slug instead, the ruling persisted,
+   * and nothing was suppressed. Anchoring on the URL removes the model from a
+   * mechanical step it cannot be trusted with.
+   */
+  findingsForEndpoint(endpoint: string): FindingNode[] {
+    return (this.queryNodes(NodeType.FINDING) as FindingNode[])
+      .filter(f => f.properties.endpoint === endpoint)
+  }
+
+  /**
+   * Resolve a claim reference to the finding it rules on.
+   *
+   * Two keys legitimately name the same finding: the graph node id
+   * (`finding:<endpoint>:<technique>`) and the logical claim key
+   * (`<type>:<endpoint>:<param>`) that `writeFinding` puts in
+   * `properties.findingId`. Callers hold whichever one they happened to see, so
+   * both must resolve — guessing one would silently break the link and let a
+   * killed finding come back. Resolution is by exact typed field, never fuzzy.
+   */
+  resolveFindingByClaim(claimRef: string): FindingNode | undefined {
+    const direct = this.getNode(claimRef)
+    if (direct && direct.type === NodeType.FINDING) return direct as FindingNode
+    const match = (this.queryNodes(NodeType.FINDING) as FindingNode[])
+      .find(f => f.properties.findingId === claimRef)
+    return match
+  }
+
+  /**
+   * The lifecycle a claim's ruling history implies, given a baseline.
+   *
+   * Deliberately independent of whether a finding node exists: `writeFinding`
+   * must consult prior rulings *before* creating the node, otherwise a
+   * re-derived claim is born fresh and the operator's ruling is discarded.
+   * This is the single place derivation is computed; callers ask, they do not
+   * reimplement it.
+   */
+  derivePriorLifecycle(claimRef: string, baseline: DerivedLifecycle['status'] = 'candidate'): DerivedLifecycle {
+    const finding = this.resolveFindingByClaim(claimRef)
+    // Gather the log under every key that can name this claim. Reading only the
+    // ref the caller passed would silently apply nothing whenever it differs
+    // from the key the ruling was filed under.
+    const keys = new Set<string>([claimRef])
+    if (finding) {
+      keys.add(finding.id)
+      const logical = finding.properties.findingId
+      if (typeof logical === 'string' && logical) keys.add(logical)
+    }
+    const log = this.queryNodes(NodeType.DISPOSITION) as DispositionNode[]
+    return deriveLifecycle(
+      log.filter(d => keys.has(d.properties.claimRef)).map((d) => ({
+        origin: d.properties.origin,
+        value: d.properties.value,
+        reason: d.properties.reason,
+        createdAt: d.createdAt,
+      })),
+      baseline,
+    )
+  }
+
+  /**
+   * Project a finding's lifecycle from its disposition log, writing the result
+   * back onto the finding so every existing consumer keeps working. The stored
+   * `lifecycleStatus` is the baseline for graphs with no disposition history,
+   * which is what makes this an addition rather than a migration.
+   */
+  applyDispositions(claimRef: string): DerivedLifecycle | undefined {
+    const finding = this.resolveFindingByClaim(claimRef)
+    if (!finding) return undefined
+    const props = finding.properties as Record<string, unknown>
+    const baseline = (typeof props.lifecycleStatus === 'string' ? props.lifecycleStatus : 'candidate') as DerivedLifecycle['status']
+    const derived = this.derivePriorLifecycle(claimRef, baseline)
+    if (derived.status !== baseline) props.lifecycleStatus = derived.status
+    if (derived.lastReason) props.verificationNote = derived.lastReason
+    if (derived.expected) props.expectedBehaviour = true
+    finding.updatedAt = Date.now()
+    return { ...derived, attached: true }
   }
 
   addFinding(data: Partial<FindingNode['properties']>): FindingNode {
@@ -494,6 +632,7 @@ export class GraphStore {
         confidence: 0,
         lifecycleStatus: 'candidate',
         evidenceLevel: 'L1',
+        confirmed: false,
         findingId: `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}`,
         ...data,
       },
@@ -521,7 +660,7 @@ export class GraphStore {
         method: 'GET',
         url: '',
         reproSteps: [],
-        replayable: true,
+        replayable: false,
         status: 'proposed',
         ...data,
       },
@@ -574,8 +713,12 @@ export class GraphStore {
       properties: {
         flowType: 'login',
         steps: [],
-        reusable: true,
         ...data,
+        // Reusability is earned by captured session material, never
+        // defaulted or claimed empty: an explicitly-true flag without
+        // cookies, storage, credential hash, or actionable steps is
+        // coerced here so no write path can mint phantom reusable logins.
+        reusable: data.reusable === true && hasReplayableAuthMaterial(data),
       },
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -876,7 +1019,18 @@ export class GraphStore {
   /** First-class accessor for the exploit-proof(s) linked to a finding. */
   getExploitProof(findingId: string): ExploitProofNode[] {
     const all = (this.queryNodes(NodeType.EXPLOIT_PROOF) as ExploitProofNode[] | undefined) ?? []
-    return all.filter((p) => p.properties.findingId === findingId)
+    const direct = all.filter((p) => p.properties.findingId === findingId)
+    if (direct.length > 0) return direct
+    // Compatibility fallback for older proofs written with the graph-node id:
+    // resolve through the canonical PROVES edge instead of guessing ids.
+    const node = this.getNode(findingId)
+    if (!node) return []
+    const proofIds = new Set(
+      this.queryEdges({ type: EdgeType.PROVES })
+        .filter((edge) => edge.toId === node.id)
+        .map((edge) => edge.fromId),
+    )
+    return all.filter((proof) => proofIds.has(proof.id))
   }
 
   deleteNode(id: string): boolean {

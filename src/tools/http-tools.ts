@@ -1,17 +1,21 @@
-﻿import { createTool } from '@mastra/core/tools'
+import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { log } from '../utils/logger'
 import { getForensicLog } from './report-tools'
 import {getCompressionService} from '../compression/headroom-service'
-import {isUrlInScope} from '../safety/scope-guard'
+import {isUrlInScope, enforceHttpMethod} from '../safety/scope-guard'
 import { getScopeConfig as getScopeConfigSafe } from '../safety/scope-guard'
 import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
+import { redactHeadersStrict, redactString } from '../security/secret-vault'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { getGlobalGraphStore } from '../graph/store'
 import { upsertCandidate } from '../research/candidate-store'
 import { stableId } from '../research/utils'
+import { randomUUID } from 'node:crypto'
 
 const globalLoopDetector = new LoopDetector()
 
@@ -28,21 +32,8 @@ function checkBlocked(url: string): { ok: false; error: string } | null {
 }
 
 // --- Target-aware rate limiting ---
-const HOST_DELAY_MS = 200
-const hostLastRequest = new Map<string, number>()
-
-function hostKey(url: string): string {
-  try { return new URL(url).host } catch { return url }
-}
-
-async function waitForHostSlot(url: string): Promise<void> {
-  const key = hostKey(url)
-  const last = hostLastRequest.get(key) ?? 0
-  const elapsed = Date.now() - last
-  if (elapsed < HOST_DELAY_MS) {
-    await new Promise(r => setTimeout(r, HOST_DELAY_MS - elapsed))
-  }
-  hostLastRequest.set(key, Date.now())
+async function waitForHostSlot(url: string): Promise<() => void> {
+  return getTargetTransportGovernor().acquire(url)
 }
 
 function inferUnauthenticatedAccessSignal(url: string, status: number, headers: Record<string, string>): string | undefined {
@@ -61,17 +52,24 @@ const BACKOFF_BASE_MS = 1000
 
 async function fetchWithBackoff(url: string, opts: RequestInit, maxRetries = MAX_429_RETRIES): Promise<Response> {
   let lastErr: Error | undefined
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, opts)
+  const method = String(opts.method ?? 'GET').toUpperCase()
+  const retryLimit = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? maxRetries : 0
+  for (let attempt = 0; attempt <= retryLimit; attempt++) {
+    const release = await waitForHostSlot(url)
+    let res: Response
+    try {
+      res = await fetch(url, opts)
+    } finally {
+      release()
+    }
     if (res.status !== 429) return res
     const retryAfter = res.headers.get('retry-after')
     const backoffMs = retryAfter
       ? Math.min(Number(retryAfter) * 1000, 30_000)
       : Math.min(BACKOFF_BASE_MS * Math.pow(2, attempt), 30_000)
-    log.warn(`429 from ${url}, backoff ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`)
+    log.warn(`429 from ${url}, backoff ${backoffMs}ms (attempt ${attempt + 1}/${retryLimit})`)
     await new Promise(r => setTimeout(r, backoffMs))
     lastErr = new Error(`429 Too Many Requests after ${attempt + 1} retries`)
-    hostLastRequest.set(hostKey(url), Date.now())
   }
   throw lastErr ?? new Error('429 Too Many Requests')
 }
@@ -95,7 +93,13 @@ async function isAllowedByRobots(url: string): Promise<boolean> {
     // Fetch and cache robots.txt (only once per origin)
     robotsCache.set(origin, new Set())
     try {
-      const res = await fetch(`${origin}/robots.txt`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      const release = await waitForHostSlot(`${origin}/robots.txt`)
+      let res: Response
+      try {
+        res = await fetch(`${origin}/robots.txt`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      } finally {
+        release()
+      }
       if (res.ok) {
         const text = await res.text()
         const disallowed = parseRobotsDisallows(text)
@@ -146,7 +150,9 @@ export const httpRequest = createTool({
   ),
   execute: async ({  method, url, headers, body, timeoutMs, sessionRef  }) => {
     const start = performance.now()
+    const executionId = randomUUID()
     try {
+      enforceHttpMethod(method)
       const scopeCheck = isUrlInScope(url)
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
@@ -156,14 +162,12 @@ export const httpRequest = createTool({
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
-      await waitForHostSlot(url)
-
       // Phase 4: Auto-merge session headers when sessionRef is provided.
       // Session headers go underneath; explicit headers override them.
       let mergedHeaders: Record<string, string> = { ...(headers ?? {}) }
       if (sessionRef) {
         const sessionManager = getGlobalSessionManager()
-        const sessionHeaders = sessionManager.getAllHeaders(sessionRef)
+        const sessionHeaders = sessionManager.getAllHeaders(sessionRef, url)
         // Session headers are the base; explicit headers win
         mergedHeaders = { ...sessionHeaders, ...mergedHeaders }
       }
@@ -191,12 +195,13 @@ export const httpRequest = createTool({
         status: raw.status,
         responseHeaders: resHeaders,
         responseBody,
+        executionId,
       })
       recordStructuredEvidence({
         type: 'raw_response',
         data: responseBody,
         label: `${method} ${url} → ${raw.status}`,
-        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, executionId, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
       })
       const accessSignal = inferUnauthenticatedAccessSignal(url, raw.status, mergedHeaders)
       if (accessSignal) {
@@ -221,11 +226,17 @@ export const httpRequest = createTool({
         await store.save()
       }
       log.info(`httpRequest ${method} ${url} → ${raw.status}`, { method, url, status: raw.status, durationMs: performance.now() - start, bodySize: responseBody.length, compressed: compressionResult.wasCompressed, truncated: compressionResult.wasTruncated })
+      const bountyMode = isBountyProfile()
       getForensicLog()?.log({
         type: 'http-request',
         agent: 'worker',
         tool: 'httpRequest',
-        args: { method, url, headers: mergedHeaders, body: body?.substring(0, 1000) },
+        args: {
+          method,
+          url,
+          headers: bountyMode ? (redactHeadersStrict(mergedHeaders) ?? {}) : mergedHeaders,
+          ...(body !== undefined ? { body: bountyMode ? redactString(body.substring(0, 1000)) : body.substring(0, 1000) } : {}),
+        },
         result: { status: raw.status, headers: resHeaders, bodyLength: responseBody.length },
         duration: Math.round(performance.now() - start),
       })
@@ -269,6 +280,7 @@ export const multipartUpload = createTool({
   execute: async ({  url, filename, contentType, content, headers  }) => {
     const start = performance.now()
     try {
+      enforceHttpMethod('POST')
       const scopeCheck = isUrlInScope(url)
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
@@ -276,7 +288,6 @@ export const multipartUpload = createTool({
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
-      await waitForHostSlot(url)
       const formData = new FormData()
       const blob = new Blob([content], { type: contentType })
       formData.append('file', blob, filename)
@@ -333,6 +344,7 @@ export const followRedirects = createTool({
     let currentUrl = url
     let hops = 0
     try {
+      enforceHttpMethod('GET')
       const initialCheck = isUrlInScope(url)
       if (!initialCheck.allowed) {
         return { ok: false, error: `Scope violation: ${initialCheck.reason}` }
@@ -341,7 +353,6 @@ export const followRedirects = createTool({
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
       while (hops < (maxHops ?? 5)) {
-        await waitForHostSlot(currentUrl)
         const fetchOpts: RequestInit = {
           method: 'GET',
           headers: headers ?? {},
@@ -412,6 +423,7 @@ export const omitHeader = createTool({
   execute: async ({  url, method, headers, headerToOmit, body  }) => {
     const start = performance.now()
     try {
+      enforceHttpMethod(method)
       const scopeCheck = isUrlInScope(url)
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
@@ -419,7 +431,6 @@ export const omitHeader = createTool({
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
-      await waitForHostSlot(url)
       const stripped = { ...headers }
       delete stripped[headerToOmit]
       const fetchOpts: RequestInit = {

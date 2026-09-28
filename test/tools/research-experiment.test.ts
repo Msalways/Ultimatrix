@@ -8,8 +8,13 @@ const experiment = {
   properties: { status: 'running' },
   updatedAt: 0,
 }
+const idorHypothesis = {
+  id: 'hypothesis:idor-1',
+  type: 'Hypothesis',
+  properties: { kind: 'idor', status: 'open' },
+}
 const store = {
-  getNode: vi.fn(() => experiment),
+  getNode: vi.fn((id: string) => id === idorHypothesis.id ? idorHypothesis : experiment),
   save: vi.fn().mockResolvedValue(undefined),
 }
 
@@ -89,10 +94,15 @@ describe('automatic experiment mutations', () => {
     })
     expect(JSON.parse(mutation.body!)).toMatchObject({ name: 'user', __sentinel_probe: true })
   })
+
+  it('swaps the destination param for a reserved-host marker URL on open_redirect', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    const mutation = automaticMutation('open_redirect', { url: 'https://target.test/r?url=BASELINEVALUE' }, ['url'])
+    expect(mutation.url).toMatch(/^https:\/\/target\.test\/r\?url=https%3A%2F%2Fmarker-[0-9a-f]{12}\.example\.com%2F$/)
+  })
 })
 
-describe('planned experiment approval boundary', () => {
-  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
+describe('planned experiment approval boundary', () => {  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
     const { executePlannedExperiment } = await import('../../src/tools/research-tools')
     const { setInteractionMode } = await import('../../src/tools/interaction-tools')
     experiment.properties = {
@@ -103,5 +113,75 @@ describe('planned experiment approval boundary', () => {
     const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
     expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' })
     setInteractionMode(undefined)
+  })
+})
+
+describe('two-actor gate for cross-user experiments', () => {
+  async function withCleanSessions<T>(fn: () => Promise<T>): Promise<T> {
+    const { getGlobalSessionManager } = await import('../../src/http/session-manager')
+    const sm = getGlobalSessionManager()
+    const prior = sm.listSessions()
+    const backup = prior.map(name => ({ name, session: sm.exportSession(name)! }))
+    for (const name of prior) sm.removeSession(name)
+    try {
+      return await fn()
+    } finally {
+      for (const name of sm.listSessions()) sm.removeSession(name)
+      for (const { session } of backup) sm.importSession({ ...session })
+    }
+  }
+
+  function planIdorExperiment() {
+    experiment.properties = {
+      status: 'planned',
+      hypothesisId: idorHypothesis.id,
+      baselineRequest: { method: 'GET', url: 'https://target.test/api/orders/41' },
+    }
+  }
+
+  it('fails closed with ACTORS_REQUIRED when fewer than two sessions exist', async () => {
+    await withCleanSessions(async () => {
+      const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+      planIdorExperiment()
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+      expect(result).toMatchObject({ ok: false, code: 'ACTORS_REQUIRED' })
+      expect(String((result as any).error)).toMatch(/two authenticated actors/i)
+      expect(experiment.properties.status).toBe('blocked')
+    })
+  })
+
+  it('passes the gate for information_disclosure (anonymous comparison is valid)', async () => {
+    await withCleanSessions(async () => {
+      const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+      const disclosureHyp = { id: 'hypothesis:disc-1', type: 'Hypothesis', properties: { kind: 'information_disclosure', status: 'open' } }
+      const realGetNode = store.getNode
+      ;(store as any).getNode = vi.fn((id: string) => id === disclosureHyp.id ? disclosureHyp : experiment)
+      try {
+        experiment.properties = {
+          status: 'planned',
+          hypothesisId: disclosureHyp.id,
+          baselineRequest: { method: 'GET', url: 'https://target.test/api/profile' },
+        }
+        const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+        // Past the actor gate: fails later at capture matching, never ACTORS_REQUIRED.
+        expect((result as any).code).not.toBe('ACTORS_REQUIRED')
+        expect(result).toMatchObject({ ok: false })
+      } finally {
+        ;(store as any).getNode = realGetNode
+      }
+    })
+  })
+
+  it('passes the gate when two actors exist', async () => {
+    await withCleanSessions(async () => {
+      const { getGlobalSessionManager } = await import('../../src/http/session-manager')
+      const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+      const sm = getGlobalSessionManager()
+      sm.createSession('actor-a', 'https://target.test')
+      sm.createSession('actor-b', 'https://target.test')
+      planIdorExperiment()
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+      expect((result as any).code).not.toBe('ACTORS_REQUIRED')
+    })
   })
 })

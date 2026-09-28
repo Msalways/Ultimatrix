@@ -3,7 +3,7 @@ name: authorization
 description: "Authorization testing for broken access control, IDOR, privilege escalation, and session management"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, requestAsActor, listActors, useCredential, extractBrowserAuth, hydra]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, findEndpointsInResponse, followRedirects, compareResponses, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, requestAsActor, listActors, useCredential, acquireActors, extractBrowserAuth, hydra]
 primitives: [authBypass, idorSwapper, authzMatrix, tenantIsolation]
 triggers: ["authorization testing", "access control", "broken access control", "idor", "privilege escalation", "session management", "authorization flaws", "access control testing", "privilege testing", "security testing"]
 contextBoosts: [auth]

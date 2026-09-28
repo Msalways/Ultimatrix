@@ -22,6 +22,7 @@ import { attributeEvidence } from '../runtime/task-attribution'
 
 export type EvidenceItemType =
   | 'text'
+  | 'browser_effect'
   | 'screenshot'
   | 'har_entry'
   | 'raw_request'
@@ -43,6 +44,13 @@ export interface ObservedFacts {
   hops?: number
   omittedHeader?: string
   correlationToken?: string
+  /** Stable identifier for one independent target/browser execution. */
+  executionId?: string
+  /** Canonical capture id when evidence originated from runtime capture. */
+  captureId?: string
+  /** Actor/session fingerprint used for cross-identity provenance. */
+  actorFingerprint?: string
+  browserContextId?: string
   state?: Record<string, string>
   browserEffects?: Record<string, string>
 }
@@ -99,10 +107,19 @@ function normalizeUrl(input?: string): string | undefined {
 }
 
 export function urlMatchesEndpoint(claimEndpoint: string, itemUrl?: string): boolean {
-  const cn = normalizeUrl(claimEndpoint)
-  const itemNorm = normalizeUrl(itemUrl)
-  if (!cn || !itemNorm) return false
-  return cn === itemNorm || cn.includes(itemNorm) || itemNorm.includes(cn)
+  if (!itemUrl) return false
+  try {
+    const claim = new URL(claimEndpoint)
+    const item = new URL(itemUrl)
+    // Path identity is exact. A claim that omits a query may be supported by
+    // a captured query variant, but an explicit query is part of the identity.
+    if (claim.origin !== item.origin || claim.pathname.replace(/\/+$/, '') !== item.pathname.replace(/\/+$/, '')) return false
+    return claim.search === '' || claim.search === item.search
+  } catch {
+    const cn = normalizeUrl(claimEndpoint)
+    const itemNorm = normalizeUrl(itemUrl)
+    return !!cn && !!itemNorm && cn === itemNorm
+  }
 }
 
 /**

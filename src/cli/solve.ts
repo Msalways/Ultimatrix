@@ -17,76 +17,7 @@ import { log } from '../utils/logger'
 import { sanitizeDurableContext } from '../runtime/context-envelope'
 import { createSolverBrain } from '../solver/brain-tools'
 import { resolveModelRef } from '../models/routing'
-
-function isRecoverableModelFailure(result: SolveResult): boolean {
-  if (result.reason !== 'model_failed') return false
-  const message = `${result.error ?? ''}`.toLowerCase()
-  // Route on provider-neutral transport/model failures. Do not key this on
-  // vendor names: any configured adapter may return these conditions.
-  const status = message.match(/\b(400|404|408|409|429|500|502|503|504)\b/)?.[1]
-  return Boolean(status)
-    || message.includes('service_unavailable')
-    || message.includes('temporarily overloaded')
-    || message.includes('rate limit')
-    || message.includes('quota')
-    || message.includes('cannot connect')
-    || message.includes('connection refused')
-    || message.includes('network')
-    || message.includes('stream startup timed out')
-    || message.includes('progress stalled')
-    || message.includes('provider returned error')
-    || message.includes('model not found')
-    || message.includes('unsupported model')
-}
-
-export function nextConfiguredModel(config: any, current: any, attempted: Set<string>): { provider: string; model: string } | undefined {
-  const normalize = (provider: unknown, rawModel: unknown) => {
-    const value = String(rawModel ?? '').trim()
-    if (!value) return undefined
-    const configuredProvider = String(provider ?? '').trim()
-    // Provider model IDs (notably OpenRouter's `org/model`) legitimately
-    // contain a slash. Only split a slash when it is the configured provider
-    // prefix; otherwise preserve the model ID verbatim.
-    const hasProviderPrefix = configuredProvider && value.startsWith(`${configuredProvider}/`)
-    const resolvedProvider = configuredProvider || (value.includes('/') ? value.slice(0, value.indexOf('/')) : String(config.provider))
-    const model = hasProviderPrefix ? value.slice(configuredProvider.length + 1) : value
-    return { provider: resolvedProvider, model, key: `${resolvedProvider}/${model}` }
-  }
-  const candidates: Array<{ provider: string; model: string; key: string }> = []
-  const add = (provider: unknown, model: unknown) => {
-    const candidate = normalize(provider, model)
-    if (candidate && !candidates.some(existing => existing.key === candidate.key)) candidates.push(candidate)
-  }
-  const addTier = (tier: unknown) => {
-    const value = config.modelTiers?.[String(tier)]
-    if (typeof value === 'string') add(config.provider, value)
-    else if (value && typeof value === 'object') add(value.provider, value.model)
-  }
-
-  // Tier routing is the live authority. Put the brain's configured tier first
-  // so configured role routing is a real failover rather than an ignored setting.
-  addTier(config.modelRoleTiers?.brain ?? 'fast')
-  add(config.modelRoles?.brain?.provider, config.modelRoles?.brain?.model)
-  addTier('fast')
-  addTier('balanced')
-  addTier('powerful')
-  for (const role of Object.values(config.modelRoles ?? {})) {
-    if (role && typeof role === 'object' && 'provider' in role) add((role as any).provider, (role as any).model)
-  }
-  for (const key of Object.keys(config.modelCapabilities ?? {})) add(config.provider, key)
-  // Provider credential files may declare a provider-local default model. This
-  // is a generic failover source; it does not assume vendor names or model
-  // prefixes and only considers credentials already loaded by config.
-  for (const [provider, credentials] of Object.entries(config.creds ?? {})) {
-    if (credentials && typeof credentials === 'object' && 'model' in credentials) {
-      add(provider, (credentials as { model?: unknown }).model)
-    }
-  }
-
-  const currentProvider = current?.provider ?? config.provider
-  const currentModel = normalize(currentProvider, current?.model ?? config.model)?.key
-  return candidates.find(candidate => candidate.key !== currentModel && !attempted.has(candidate.key))
-}
+import { isRecoverableModelFailure, modelKey, nextConfiguredModel } from '../solver/model-fallback'
 
 export interface SolveCommandResult {
   workflowRef: string
@@ -98,17 +29,21 @@ export async function solveCommand(
   target: string,
   outputDir: string,
   approvedOrigins: string[] = [],
-  options: { quiet?: boolean } = {},
+  options: { quiet?: boolean; bounty?: boolean } = {},
 ): Promise<SolveCommandResult> {
   const config = loadConfig()
+  if (options.bounty && !config.bounty?.enabled) {
+    config.bounty = { enabled: true, ...(config.scope?.allowedCategories ? { allowedCategories: config.scope.allowedCategories } : {}) }
+  }
   config.target = target
   const runtime = await createEngagementRuntime(config, target, { outputDir })
   let targetDirForFailure: string | undefined
 
   try {
     return await runtime.run(async () => {
-      setScopeConfig(config.scope ?? deriveScopeFromTarget(target))
+      setScopeConfig(runtime.services.scopeConfig ?? config.scope ?? deriveScopeFromTarget(target))
       setExternalToolsConfig(config.externalTools ?? null)
+      const runtimeConfig = runtime.config
       if (!options.quiet) showDisclaimer(target)
 
       const targetDir = runtime.workspace.getTargetDir(target)
@@ -116,7 +51,7 @@ export async function solveCommand(
       if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
       const dbPath = resolve(targetDir, 'ultimatrix.db')
       const memoryStore = await createMemoryStore(dbPath)
-      const memory = await createMemory(config, memoryStore, dbPath, { mainAgent: true })
+      const memory = await createMemory(runtimeConfig, memoryStore, dbPath, { mainAgent: true })
       const identity = {
         threadId: `ultimatrix-solve-${runtime.workflow.state.workflowId}`,
         resourceId: 'ultimatrix',
@@ -124,7 +59,7 @@ export async function solveCommand(
         target,
       }
       const engine = await createEngineServices({
-        config,
+        config: runtimeConfig,
         memory,
         target,
         identity,
@@ -134,11 +69,19 @@ export async function solveCommand(
       })
 
       const goal = `Perform an authorized, evidence-backed security assessment of ${target}. Select and activate only the capabilities needed, and persist concrete evidence for any finding.`
-      const maxRounds = config.solver?.maxRounds ?? DEFAULTS.solver.maxRounds
+      const maxRounds = runtimeConfig.solver?.maxRounds ?? DEFAULTS.solver.maxRounds
       let result: SolveResult | undefined
       let solverBrain = engine.solverBrain
-      const initialRoute = resolveModelRef(config, { role: 'brain' })
-      const initialModel = `${initialRoute.provider}/${initialRoute.model}`
+      // Turn-level findings baseline (see session.ts): rounds after the
+      // first must not report newFindings 0 for findings earlier rounds
+      // recorded.
+      let turnStartFindings: number | undefined
+      try {
+        const summary = runtime.graph.getTargetSummary()
+        if (typeof summary?.totalFindings === 'number') turnStartFindings = summary.totalFindings
+      } catch { /* graph unavailable — per-round snapshots still apply */ }
+      const initialRoute = resolveModelRef(runtimeConfig, { role: 'brain' })
+      const initialModel = modelKey(initialRoute.provider, initialRoute.model)
       const attemptedModels = new Set<string>([initialModel])
       for (let round = 1; round <= maxRounds; round++) {
         const renderer = options.quiet ? undefined : createSolverRenderer({}, {}, { plain: true })
@@ -146,7 +89,7 @@ export async function solveCommand(
           origin: target,
           goal,
           interactionMode: 'run',
-          model: config.model,
+          model: runtimeConfig.model,
           memory: { thread: identity.threadId, resource: identity.resourceId },
           blackboard: engine.sessionBlackboard,
           evidence: engine.sessionEvidence,
@@ -155,27 +98,29 @@ export async function solveCommand(
           ultimatrixConfig: config,
           workflow: runtime.workflow,
           lazyServices: engine.lazyServices,
+          turnStartFindings,
           config: {
-            maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
-            maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
-            staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
-            maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+            maxToolCalls: runtimeConfig.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
+            maxDurationMs: runtimeConfig.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
+            staleThreshold: runtimeConfig.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
+            maxParallel: runtimeConfig.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+            progressTimeoutMs: runtimeConfig.solver?.progressTimeoutMs,
           },
           onMessage: renderer,
         })
         renderer?.final?.()
         if (isRecoverableModelFailure(result)) {
-          const currentRoute = resolveModelRef(config, { role: 'brain' })
+          const currentRoute = resolveModelRef(runtimeConfig, { role: 'brain' })
           const current = { provider: currentRoute.provider, model: currentRoute.model }
           const fallback = nextConfiguredModel(config, current, attemptedModels)
           if (fallback) {
-            attemptedModels.add(`${fallback.provider}/${fallback.model}`)
+            attemptedModels.add(modelKey(fallback.provider, fallback.model))
             engine.modelSelector?.recordFailure(current.provider, current.model)
             const fallbackConfig = {
-              ...config,
+              ...runtimeConfig,
               provider: fallback.provider,
               model: fallback.model,
-              modelRoles: { ...(config.modelRoles ?? {}), brain: { provider: fallback.provider, model: fallback.model } },
+              modelRoles: { ...(runtimeConfig.modelRoles ?? {}), brain: { provider: fallback.provider, model: fallback.model } },
             }
             solverBrain = createSolverBrain(fallbackConfig, {
               skillRegistry: engine.skillRegistry!,
@@ -184,7 +129,7 @@ export async function solveCommand(
               extensionRegistry: engine.extensionRegistry!,
               lazyServices: engine.lazyServices,
             })
-            log.warn(`[model-fallback] Primary model unavailable; continuing with ${fallback.provider}/${fallback.model}`)
+            log.warn(`[model-fallback] Primary model unavailable; continuing with ${modelKey(fallback.provider, fallback.model)}`)
             continue
           }
         }
@@ -198,7 +143,7 @@ export async function solveCommand(
       if (!result) throw new Error('Solver produced no result')
       if (!options.quiet) logSolveSummary(result)
 
-      const verifier = config.verifier ?? DEFAULTS.verifier
+      const verifier = runtimeConfig.verifier ?? DEFAULTS.verifier
       if (verifier.enabled) await verifyPendingFindings({ maxPerRound: verifier.maxPerRound, timeoutMs: verifier.timeoutMs })
 
       const reportDir = resolve(targetDir, 'reports')

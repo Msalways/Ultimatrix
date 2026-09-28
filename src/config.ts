@@ -187,6 +187,18 @@ export interface AuthorizationConfig {
   timestamp: string
 }
 
+/**
+ * Optional live-bounty policy. When enabled, runtime construction fails closed
+ * unless authorization, a hard scope allowlist, explicit action categories,
+ * and hard budget enforcement are all present. The default remains disabled
+ * for backwards-compatible local/lab use.
+ */
+export interface BountyConfig {
+  enabled: boolean
+  /** Categories the operator explicitly authorizes for this engagement. */
+  allowedCategories?: AuthorizationCategory[]
+}
+
 export interface SolverConfig {
   maxToolCalls?: number
   /** @deprecated maxTokens is not enforced. Use maxToolCalls to control turn budget. */
@@ -194,6 +206,11 @@ export interface SolverConfig {
   maxDurationMs?: number
   maxParallel?: number
   maxRounds?: number
+  /**
+   * Inter-chunk stream watchdog budget in ms. Positive values are honored
+   * (floored at 15s); 0/undefined auto-scales with `maxDurationMs`.
+   */
+  progressTimeoutMs?: number
   /** Max escalation primitives the active chain planner may execute per turn (0 = disabled). */
   maxActiveChainSteps?: number
 }
@@ -285,6 +302,12 @@ export interface ScopeConfig {
   /** Domains allowed for outbound requests. Supports exact match and wildcard (*.example.com).
    *  Optional — when omitted (or empty) the tool is free-for-all (no domain restriction). */
   allowedDomains?: string[]
+  /** Exact origins (scheme + host + port) for live engagements. */
+  allowedOrigins?: string[]
+  /** Allowed effective ports. Empty = protocol defaults only. */
+  allowedPorts?: number[]
+  /** Explicitly allow loopback/private/link-local IP literals (local labs only). */
+  allowPrivateAddresses?: boolean
   /** URL path prefixes allowed (e.g., ['/api', '/admin']). Empty = all paths. */
   allowedPaths?: string[]
   /** Protocols allowed. Default: ['https']. */
@@ -466,6 +489,9 @@ export const DEFAULTS = {
     enabled: false,
     tools: {},
   },
+  bounty: {
+    enabled: false,
+  },
   engine: 'multi-model' as EngineType,
   depth: 2,
   timeout: 60_000,
@@ -533,6 +559,7 @@ export interface UltimatrixConfig {
   agent: AgentConfig
   rateLimit: RateLimitConfig
   authorization?: AuthorizationConfig
+  bounty?: BountyConfig
   scope?: ScopeConfig
   engine?: EngineType
   solver?: SolverConfig
@@ -840,6 +867,29 @@ export class ConfigError extends Error {
   }
 }
 
+/**
+ * Normalize an authorization timestamp to a canonical ISO-8601 string.
+ *
+ * YAML does not hand us a string for a bare timestamp: `timestamp:
+ * 2026-09-26T09:15:00.000Z` is parsed by js-yaml into a `Date` instance. A
+ * naive `typeof x === 'string'` check therefore REJECTS every real timestamp a
+ * bounty operator would actually write, while accepting the empty-string stub —
+ * exactly backwards. Accept both shapes and emit a canonical string.
+ */
+function normalizeAuthTimestamp(value: unknown): { ok: boolean; iso?: string } {
+  if (value instanceof Date) {
+    const t = value.getTime()
+    return Number.isNaN(t) ? { ok: false } : { ok: true, iso: value.toISOString() }
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return { ok: false }
+    const parsed = Date.parse(trimmed)
+    return Number.isNaN(parsed) ? { ok: false } : { ok: true, iso: new Date(parsed).toISOString() }
+  }
+  return { ok: false }
+}
+
 // ─── Validation ─────────────────────────────────────────────────────
 
 export interface ConfigValidationOptions {
@@ -992,10 +1042,34 @@ export function validateConfig(
     if (scopeRaw.enforcement !== undefined && scopeRaw.enforcement !== 'hard' && scopeRaw.enforcement !== 'warn') {
       errors.push(`scope.enforcement must be "hard" or "warn", got "${scopeRaw.enforcement}"`)
     }
+    if (scopeRaw.allowedOrigins !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedOrigins)) {
+        errors.push('scope.allowedOrigins must be an array of absolute origins')
+      } else {
+        for (const origin of scopeRaw.allowedOrigins) {
+          try {
+            const parsed = new URL(String(origin))
+            if (!['http:', 'https:'].includes(parsed.protocol) || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+              errors.push(`scope.allowedOrigins contains invalid origin: ${JSON.stringify(origin)}`)
+            }
+          } catch {
+            errors.push(`scope.allowedOrigins contains invalid origin: ${JSON.stringify(origin)}`)
+          }
+        }
+      }
+    }
+    if (scopeRaw.allowedPorts !== undefined) {
+      if (!Array.isArray(scopeRaw.allowedPorts) || scopeRaw.allowedPorts.some((port) => typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) {
+        errors.push('scope.allowedPorts must be an array of ports between 1 and 65535')
+      }
+    }
     if (scopeRaw.allowedProtocols !== undefined) {
       if (!Array.isArray(scopeRaw.allowedProtocols)) {
         errors.push('scope.allowedProtocols must be an array of protocol strings')
       }
+    }
+    if (scopeRaw.allowPrivateAddresses !== undefined && typeof scopeRaw.allowPrivateAddresses !== 'boolean') {
+      errors.push('scope.allowPrivateAddresses must be a boolean')
     }
     if (scopeRaw.allowedPaths !== undefined) {
       if (!Array.isArray(scopeRaw.allowedPaths)) {
@@ -1019,6 +1093,80 @@ export function validateConfig(
     }
   }
 
+  // Validate the authorization record. This block is the sole basis for the
+  // live-bounty preflight and for the operator-facing authorization context.
+  //
+  // Type-level malformation is always a hard error. A *semantically empty*
+  // placeholder (empty target / unparseable timestamp) is only fatal when the
+  // bounty profile is enabled; otherwise it is tolerated but the record is
+  // normalized to `confirmed: false` so a stub can never be believed as consent.
+  const bountyEnabled = (raw.bounty as Record<string, unknown> | undefined)?.enabled === true
+  const authRaw = raw.authorization as Record<string, unknown> | undefined
+  let authorizationConfirmed = false
+  let authorizationTimestamp: string | undefined
+  if (authRaw) {
+    if (typeof authRaw.confirmed !== 'boolean') {
+      errors.push('authorization.confirmed must be a boolean')
+    }
+    const validMethods = new Set<string>(['bounty', 'pentest-contract', 'written-permission', 'self-owned', 'lab'])
+    if (typeof authRaw.method !== 'string' || !validMethods.has(authRaw.method)) {
+      errors.push('authorization.method must be one of: ' + [...validMethods].join(', '))
+    }
+    if (typeof authRaw.target !== 'string') {
+      errors.push('authorization.target must be a string')
+    } else if (!authRaw.target.trim()) {
+      if (bountyEnabled) errors.push('authorization.target must not be empty when bounty.enabled is true')
+    } else {
+      try {
+        const parsed = new URL(authRaw.target)
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+          errors.push('authorization.target must be an http(s) URL')
+        }
+      } catch {
+        errors.push('authorization.target must be an absolute URL')
+      }
+    }
+    const ts = normalizeAuthTimestamp(authRaw.timestamp)
+    if (!ts.ok) {
+      if (authRaw.timestamp !== undefined && authRaw.timestamp !== null && typeof authRaw.timestamp !== 'string' && !(authRaw.timestamp instanceof Date)) {
+        errors.push('authorization.timestamp must be an ISO-8601 timestamp string or date')
+      } else if (bountyEnabled) {
+        errors.push('authorization.timestamp must be a parseable ISO-8601 timestamp when bounty.enabled is true')
+      }
+    } else {
+      authorizationTimestamp = ts.iso
+    }
+    // Trust only a complete, well-formed record.
+    const complete = typeof authRaw.confirmed === 'boolean'
+      && typeof authRaw.method === 'string' && validMethods.has(authRaw.method)
+      && typeof authRaw.target === 'string' && authRaw.target.trim() !== ''
+      && ts.ok
+    authorizationConfirmed = authRaw.confirmed === true && complete
+  }
+
+  // Validate optional live-bounty policy.
+  const bountyRaw = raw.bounty as Record<string, unknown> | undefined
+  if (bountyRaw) {
+    if (bountyRaw.enabled !== undefined && typeof bountyRaw.enabled !== 'boolean') {
+      errors.push('bounty.enabled must be a boolean')
+    }
+    if (bountyRaw.allowedCategories !== undefined) {
+      if (!Array.isArray(bountyRaw.allowedCategories)) {
+        errors.push('bounty.allowedCategories must be an array of authorization category strings')
+      } else {
+        const validCategories = new Set<AuthorizationCategory>([
+          'read', 'search', 'create', 'modify', 'send',
+          'delete', 'share', 'execute', 'browser_action', 'external_tool',
+        ])
+        for (const category of bountyRaw.allowedCategories) {
+          if (typeof category !== 'string' || !validCategories.has(category as AuthorizationCategory)) {
+            errors.push(`bounty.allowedCategories contains invalid entry: ${JSON.stringify(category)}`)
+          }
+        }
+      }
+    }
+  }
+
   // Validate engine
   const engine = raw.engine as EngineType | undefined
   if (engine !== undefined && engine !== 'legacy' && engine !== 'solver' && engine !== 'multi-model' && engine !== 'council') {
@@ -1035,7 +1183,7 @@ export function validateConfig(
   // Validate solver config
   const solverRaw = raw.solver as Record<string, unknown> | undefined
   if (solverRaw) {
-    for (const key of ['maxToolCalls', 'maxTokens', 'maxDurationMs', 'maxParallel', 'maxRounds'] as const) {
+    for (const key of ['maxToolCalls', 'maxTokens', 'maxDurationMs', 'maxParallel', 'maxRounds', 'progressTimeoutMs'] as const) {
       const val = solverRaw[key]
       if (val !== undefined && (typeof val !== 'number' || !Number.isFinite(val) || val < 1)) {
         errors.push(`solver.${key} must be a positive number, got ${JSON.stringify(val)}`)
@@ -1421,6 +1569,7 @@ const provider = browserRawForValidation.provider
         ...(solverRaw.maxDurationMs != null ? { maxDurationMs: Number(solverRaw.maxDurationMs) } : {}),
         ...(solverRaw.maxParallel != null ? { maxParallel: Number(solverRaw.maxParallel) } : {}),
         ...(solverRaw.maxRounds != null ? { maxRounds: Number(solverRaw.maxRounds) } : {}),
+        ...(solverRaw.progressTimeoutMs != null ? { progressTimeoutMs: Number(solverRaw.progressTimeoutMs) } : {}),
         ...(solverRaw.maxActiveChainSteps != null ? { maxActiveChainSteps: Number(solverRaw.maxActiveChainSteps) } : {}),
       },
     } : {}),
@@ -1481,7 +1630,21 @@ const provider = browserRawForValidation.provider
         ...(verifierRaw.timeoutMs != null ? { timeoutMs: Number(verifierRaw.timeoutMs) } : {}),
       },
     } : DEFAULTS.verifier ? { verifier: DEFAULTS.verifier } : {}),
-    ...(raw.authorization ? { authorization: raw.authorization as AuthorizationConfig } : {}),
+    ...(raw.authorization ? {
+      authorization: {
+        ...(raw.authorization as AuthorizationConfig),
+        // Never propagate an unverified `confirmed: true`.
+        confirmed: authorizationConfirmed,
+        // Canonical ISO string; YAML may have handed us a Date.
+        ...(authorizationTimestamp ? { timestamp: authorizationTimestamp } : {}),
+      },
+    } : {}),
+    ...(raw.bounty ? {
+      bounty: {
+        enabled: Boolean(bountyRaw?.enabled),
+        ...(Array.isArray(bountyRaw?.allowedCategories) ? { allowedCategories: bountyRaw.allowedCategories as AuthorizationCategory[] } : {}),
+      },
+    } : {}),
     ...(raw.scope ? { scope: raw.scope as ScopeConfig } : {}),
     ...(raw.campaign ? { campaign: raw.campaign as CampaignConfig } : {}),
     ...(raw.compression ? { compression: raw.compression as CompressionConfig } : {}),
@@ -1797,6 +1960,9 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   if (config.scope) {
     output.scope = {
       allowedDomains: config.scope.allowedDomains,
+      ...(config.scope.allowedOrigins && config.scope.allowedOrigins.length > 0 ? { allowedOrigins: config.scope.allowedOrigins } : {}),
+      ...(config.scope.allowedPorts && config.scope.allowedPorts.length > 0 ? { allowedPorts: config.scope.allowedPorts } : {}),
+      ...(config.scope.allowPrivateAddresses !== undefined ? { allowPrivateAddresses: config.scope.allowPrivateAddresses } : {}),
       enforcement: config.scope.enforcement,
       ...(config.scope.allowedPaths && config.scope.allowedPaths.length > 0 ? { allowedPaths: config.scope.allowedPaths } : {}),
       ...(config.scope.allowedProtocols && config.scope.allowedProtocols.length > 0 ? { allowedProtocols: config.scope.allowedProtocols } : {}),
@@ -1840,6 +2006,14 @@ export function saveProjectConfig(config: UltimatrixConfig): void {
   // Write authorization if set
   if (config.authorization) {
     output.authorization = config.authorization
+  }
+
+  // Write live-bounty policy if enabled
+  if (config.bounty?.enabled) {
+    output.bounty = {
+      enabled: true,
+      ...(config.bounty.allowedCategories ? { allowedCategories: config.bounty.allowedCategories } : {}),
+    }
   }
 
   // Write solver if set

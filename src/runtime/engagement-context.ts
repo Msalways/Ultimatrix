@@ -22,6 +22,7 @@ import type { ToolEventEmitter } from '../lib/tool-events'
 import type { ProviderAwareLimiter } from '../models/provider-limiter'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { ObservedFacts } from '../intelligence/evidence-ledger'
+import type { TargetTransportGovernor } from './target-governor'
 
 let _testFallback: EngagementServices | null = null
 
@@ -34,6 +35,8 @@ export function __getTestFallback(): EngagementServices | null {
 }
 
 export interface BufferedFindingEvidence {
+  /** Stable ledger id when the evidence was recorded through the runtime. */
+  id?: string
   type: string
   data: string
   label: string
@@ -71,10 +74,22 @@ export interface EngagementServices {
   quota: QuotaTracker
   toolEvents: ToolEventEmitter
   providerLimiters: Map<string, ProviderAwareLimiter>
+  /** Shared wire-level target limiter; absent only in legacy-shaped test doubles. */
+  targetGovernor?: TargetTransportGovernor
   findingState: FindingRuntimeState
   scopeConfig: ScopeConfig | null
   externalTools: ExternalToolsConfig | null
   allowAny: boolean
+  /**
+   * Live bounty profile is active for this engagement.
+   *
+   * Engagement-owned rather than read from `getConfig()`: the runtime receives
+   * an effective config that a CLI flag (e.g. `--bounty`) may have mutated after
+   * validation, and the module-level config cache never sees that mutation.
+   * Gates reading the process-global config would silently stand down while the
+   * engagement still enforced the profile. Absent only in legacy test doubles.
+   */
+  bountyEnabled?: boolean
 }
 
 const storage = new AsyncLocalStorage<EngagementServices>()

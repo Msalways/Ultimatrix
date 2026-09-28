@@ -4,9 +4,11 @@ import { NodeType } from './graph/schema'
 import { SessionLifecycle, type SessionResources } from './session/lifecycle'
 import { solve } from './solver/solver'
 import type { SolverStreamMessage } from './solver/solver'
+import { createSolverBrain } from './solver/brain-tools'
+import { MAX_MODEL_ATTEMPTS, isRecoverableModelFailure, modelKey, nextConfiguredModel } from './solver/model-fallback'
 import { getGlobalWorkspace } from './workspace'
 import { getGlobalQuotaTracker } from './models/quota-tracker'
-import { fullModelId } from './models/routing'
+import { fullModelId, resolveModelRef } from './models/routing'
 import { askUserConfirm } from './tools/interaction-tools'
 import type {IntelligenceContext} from './council/types'
 import { deserializeDebateMemory, serializeDebateMemory } from './council/debate-memory'
@@ -420,6 +422,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         '  /report [id]     â€” write a Markdown report (whole engagement, or one finding by id)',
         '  /brief           — engagement briefing (state, gaps, suggested moves)',
         '  /learned         — what the system learned this session (technique outcomes, weight shifts)',
+        '  /rulings         — what you and I have ruled on, with reasons',
         '  /reasoning (/r)  â€” show the last turn\'s reasoning',
         '  /status          â€” show target, engine, model, and graph counts',
         '  /clear           â€” clear the terminal view',
@@ -431,6 +434,50 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       else {
         for (const h of helpText.split('\n')) log.info(h)
       }
+      return
+    }
+
+    // Ruling history — the operator's own knowledge, readable back. This exists
+    // because a correction that lives only in scrollback is not knowledge; it
+    // is a message that scrolls away.
+    if (line.trim() === '/rulings') {
+      const store = getGlobalGraphStore()
+      const lines: string[] = []
+      const items = store && typeof store.getDispositions === 'function' ? store.getDispositions() : []
+      if (items.length === 0) {
+        lines.push('No rulings yet. Tell me how the application actually behaves and I will record it — I will not re-derive it next session.')
+      } else {
+        // Split bound from unbound. Verified live: a run where early attempts
+        // recorded rulings that matched no finding left six orphan rows that
+        // buried the one ruling actually suppressing a finding. The operator
+        // cannot tell signal from noise unless the view says which is which.
+        const bound: typeof items = []
+        const loose: typeof items = []
+        for (const d of items) {
+          const attached = typeof (store as { resolveFindingByClaim?: unknown }).resolveFindingByClaim === 'function'
+            ? Boolean((store as unknown as { resolveFindingByClaim(r: string): unknown }).resolveFindingByClaim(d.properties.claimRef))
+            : true
+          ;(attached ? bound : loose).push(d)
+        }
+        const render = (d: (typeof items)[number]) => {
+          const p = d.properties
+          const who = p.origin === 'human' ? 'you' : 'I'
+          const value = p.value === 'expected' ? 'expected/normal' : p.value
+          return `  [${value}] ${p.claimLabel || p.claimRef} — ${who}: ${p.reason || '(no reason given)'}`
+        }
+        if (bound.length > 0) {
+          lines.push(`Attached to a finding (${bound.length}) — these are suppressing real findings:`)
+          for (const d of bound) lines.push(render(d))
+        }
+        if (loose.length > 0) {
+          lines.push(`Standing notes, not bound to a finding (${loose.length}) — recorded knowledge, suppressing nothing:`)
+          for (const d of loose) lines.push(render(d))
+        }
+        lines.push('Say "that is normal" or "that is not a bug" and I will record it against the finding.')
+      }
+      if (sink) sink.printReport(lines.join('\n'))
+      else for (const l of lines) log.info(l)
+      sink?.flushSystem()
       return
     }
 
@@ -627,54 +674,125 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
       let result: Awaited<ReturnType<typeof solve>> | null = null
       let aborted = false
       let turnError: unknown = null
+      // Turn survivability: a recoverable model failure (stream stall,
+      // overload, rate limit) retries on the next configured tier instead of
+      // abandoning the turn. The shared blackboard/evidence/loop state carries
+      // over, so the retry continues the same investigation. Bounded to
+      // MAX_MODEL_ATTEMPTS so a dead provider cannot loop forever.
+      const attemptedModels = new Set<string>()
       try {
-        result = await solve(resources.solverBrain!, {
-          origin: target || 'conversation',
-          goal: line,
-          model: config.model,
-          memory: { thread: threadId, resource: resourceId },
-          blackboard: resources.coreServices.blackboard,
-          evidence: resources.sessionEvidence,
-          loopDetector: resources.coreServices.loopDetector,
-          reflexion: resources.coreServices.reflexion,
-          lazyServices: resources.lazyServices,
-          config: {
-            maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
-            maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
-            staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
-            maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
-          },
-          signal: lifecycle.abortController.signal,
-          onToolComplete: (_toolName: string, _result?: unknown) => {
-            getGlobalWorkspace().getGraphStore()?.scheduleSave()
-          },
-          onMessage: renderMsg,
-          onPhase: (event) => {
-            resources.forensicLog.log({
-              type: 'solver-phase',
-              agent: 'solver-brain',
-              args: {
-                phase: event.phase,
-                step: event.step,
-                toolName: event.toolName,
-                toolArgs: event.toolArgs,
-                reason: event.reason,
-                activity: event.activity,
+        const seedRoute = resolveModelRef(config, { role: 'brain' })
+        attemptedModels.add(modelKey(seedRoute.provider, seedRoute.model))
+      } catch { /* routing unavailable — fallback walk still applies */ }
+      let brain = resources.solverBrain!
+      // Turn-level findings baseline (taken once, before attempt 1) so a
+      // retry's done card cannot report newFindings 0 for findings its own
+      // failed attempt recorded. Best-effort: absence preserves behavior.
+      let turnStartFindings: number | undefined
+      try {
+        const summary = getGlobalWorkspace().getGraphStore()?.getTargetSummary()
+        if (typeof summary?.totalFindings === 'number') turnStartFindings = summary.totalFindings
+      } catch { /* graph unavailable — per-attempt snapshots still apply */ }
+      try {
+        for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt++) {
+          try {
+            result = await solve(brain, {
+              origin: target || 'conversation',
+              goal: line,
+              model: config.model,
+              memory: { thread: threadId, resource: resourceId },
+              blackboard: resources.coreServices.blackboard,
+              evidence: resources.sessionEvidence,
+              loopDetector: resources.coreServices.loopDetector,
+              reflexion: resources.coreServices.reflexion,
+              lazyServices: resources.lazyServices,
+              turnStartFindings,
+              config: {
+                maxToolCalls: config.solver?.maxToolCalls ?? DEFAULTS.solver.maxToolCalls,
+                maxDurationMs: config.solver?.maxDurationMs ?? DEFAULTS.solver.maxDurationMs,
+                staleThreshold: config.antiLoop?.staleThreshold ?? DEFAULTS.antiLoop.staleThreshold,
+                maxParallel: config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel,
+                progressTimeoutMs: config.solver?.progressTimeoutMs,
               },
+              signal: lifecycle.abortController.signal,
+              onToolComplete: (_toolName: string, _result?: unknown) => {
+                getGlobalWorkspace().getGraphStore()?.scheduleSave()
+              },
+              onMessage: renderMsg,
+              onPhase: (event) => {
+                resources.forensicLog.log({
+                  type: 'solver-phase',
+                  agent: 'solver-brain',
+                  args: {
+                    phase: event.phase,
+                    step: event.step,
+                    toolName: event.toolName,
+                    toolArgs: event.toolArgs,
+                    reason: event.reason,
+                    activity: event.activity,
+                  },
+                })
+              },
+              workflow: resources.workflow,
+              ultimatrixConfig: config,
             })
-          },
-          workflow: resources.workflow,
-          ultimatrixConfig: config,
-        })
-      } catch (err: any) {
-        // Soft-abort: solver was interrupted by Ctrl+C — show message, skip summary
-        if (lifecycle.isTurnAborted || err?.message === 'Solver interrupted') {
-          aborted = true
-        } else {
-          // Keep the renderer lifecycle balanced even when model/provider
-          // startup or streaming fails. Previously this left the ChatBox
-          // active with its log sink installed, corrupting the next prompt.
-          turnError = err
+          } catch (err: any) {
+            // Soft-abort: solver was interrupted by Ctrl+C — show message, skip summary
+            if (lifecycle.isTurnAborted || err?.message === 'Solver interrupted') {
+              aborted = true
+            } else {
+              // Keep the renderer lifecycle balanced even when model/provider
+              // startup or streaming fails. Previously this left the ChatBox
+              // active with its log sink installed, corrupting the next prompt.
+              turnError = err
+            }
+            break
+          }
+          if (
+            result &&
+            result.reason === 'model_failed' &&
+            isRecoverableModelFailure(result) &&
+            attempt < MAX_MODEL_ATTEMPTS &&
+            resources.skillRegistry && resources.memory && resources.modelSelector &&
+            resources.extensionRegistry && resources.lazyServices
+          ) {
+            const currentRoute = resolveModelRef(config, { role: 'brain' })
+            const current = { provider: currentRoute.provider, model: currentRoute.model }
+            // Budget gate: never retry onto a provider the quota tracker
+            // already flagged exhausted/cooling-down. Every call still passes
+            // the per-call quota/rate-limit gates; this just avoids a doomed
+            // turn when the whole provider is tapped out.
+            const quotaGate = (provider: string): boolean => {
+              try {
+                return getGlobalQuotaTracker().isExhausted(provider)
+              } catch {
+                return false
+              }
+            }
+            const fallback = nextConfiguredModel(config, current, attemptedModels, quotaGate)
+            if (!fallback) break
+            attemptedModels.add(modelKey(fallback.provider, fallback.model))
+            resources.modelSelector?.recordFailure(current.provider, current.model)
+            const fallbackConfig = {
+              ...config,
+              provider: fallback.provider,
+              model: fallback.model,
+              modelRoles: { ...(config.modelRoles ?? {}), brain: { provider: fallback.provider, model: fallback.model } },
+            }
+            brain = createSolverBrain(fallbackConfig, {
+              skillRegistry: resources.skillRegistry,
+              memory: resources.memory,
+              modelSelector: resources.modelSelector,
+              extensionRegistry: resources.extensionRegistry,
+              lazyServices: resources.lazyServices,
+            })
+            resources.solverBrain = brain
+            const label = `[model-fallback] ${modelKey(current.provider, current.model)} failed (${result.error ?? result.reason}); retrying turn with ${modelKey(fallback.provider, fallback.model)}`
+            log.warn(label)
+            renderMsg({ kind: 'event', event: 'model.fallback', label, status: 'warn' })
+            continue
+          }
+          break
         }
       } finally {
         lifecycle.markTurnComplete()

@@ -10,7 +10,8 @@ import {
   emitSpiderStart,
   emitScopeProposed,
 } from '../events/emitter'
-import { deriveScopeFromTarget, isUrlInScope, isCategoryAuthorized, approveScopeOrigin } from '../safety/scope-guard'
+import { deriveScopeFromTarget, isUrlInScope, isCategoryAuthorized, approveScopeOrigin, enforceAction } from '../safety/scope-guard'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
 import { redactUrl } from '../security/secret-vault'
@@ -739,10 +740,17 @@ async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptio
   let status = 0
 
   if (page?.goto) {
-    const response = await page.goto(options.target, {
-      waitUntil: 'domcontentloaded',
-      timeout: options.config.timeout ?? DEFAULTS.timeout,
-    })
+    enforceAction('browser_action', { toolId: 'spider.groundLandingPage' })
+    const release = await getTargetTransportGovernor().acquire(options.target)
+    let response: any
+    try {
+      response = await page.goto(options.target, {
+        waitUntil: 'domcontentloaded',
+        timeout: options.config.timeout ?? DEFAULTS.timeout,
+      })
+    } finally {
+      release()
+    }
     finalUrl = typeof page.url === 'function' ? page.url() : options.target
     status = typeof response?.status === 'function' ? response.status() : 0
   } else {
@@ -751,6 +759,7 @@ async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptio
     if (typeof navigate?.execute !== 'function') {
       throw new Error('Target grounding failed: browser has no page.goto or stagehand_navigate tool')
     }
+    enforceAction('browser_action', { toolId: 'spider.groundLandingPage' })
     const result = await navigate.execute({ url: options.target }, { page })
     if (result?.success === false) throw new Error(String(result.error ?? 'stagehand_navigate failed'))
     finalUrl = String(result?.url ?? options.target)

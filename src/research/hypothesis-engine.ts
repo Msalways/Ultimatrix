@@ -1,7 +1,18 @@
 import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
+import type { CapturedRequest } from '../capture/captured-request-store'
 import type { ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
-import { looksLikeId, stableId } from './utils'
+import { looksLikeId, MIN_REFLECTION_VALUE_LENGTH, isTransportOrAssetUrl, stableId } from './utils'
+
+/** Case-insensitive response-header lookup (fetch lowercases; HAR preserves case). */
+function responseHeader(headers: Record<string, string> | undefined, name: string): string | undefined {
+  if (!headers) return undefined
+  const wanted = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) return value
+  }
+  return undefined
+}
 
 function endpointById(store: GraphStore): Map<string, EndpointNode> {
   return new Map((store.queryNodes(NodeType.ENDPOINT) as EndpointNode[]).map(e => [e.id, e]))
@@ -43,18 +54,7 @@ function hasAuthSignal(endpoint: EndpointNode): boolean {
 }
 
 function isMetadataEndpoint(endpoint: EndpointNode): boolean {
-  try {
-    const pathname = new URL(endpoint.properties.url).pathname.toLowerCase()
-    // Transport handshakes are not application workflows, regardless of
-    // method. They otherwise dominate discovery because browsers emit many
-    // polling requests for them.
-    if (/(?:^|\/)(?:socket\.io|sockjs)(?:\/|$)/.test(pathname)) return true
-    if (String(endpoint.properties.method).toUpperCase() !== 'GET') return false
-    const last = pathname.split('/').filter(Boolean).pop() ?? ''
-    return /(?:^|[-_])(?:health|healthz|ready|readiness|liveness|version|configuration|config|docs?|swagger|openapi|status)$/.test(last)
-  } catch {
-    return false
-  }
+  return isTransportOrAssetUrl(endpoint.properties.url, endpoint.properties.method)
 }
 
 /** Keep hypothesis generation focused on application behavior, not assets or
@@ -96,6 +96,7 @@ export function generateHypotheses(
   store: GraphStore,
   workflows: ResearchWorkflow[],
   entities: ResearchEntity[],
+  captured: CapturedRequest[] = [],
 ): ResearchHypothesis[] {
   const endpoints = endpointById(store)
   const hypotheses: ResearchHypothesis[] = []
@@ -239,10 +240,254 @@ export function generateHypotheses(
     }
   }
 
+  // Reflection-driven hypotheses close the injection gap: an endpoint can
+  // be actionable from observed traffic alone, with no entity, workflow,
+  // auth, or mutation signal. Captured echo evidence feeds the planner the
+  // same way extracted structure does.
+  hypotheses.push(...reflectionHypotheses(store, captured))
+
+  // Location-echo hypotheses close the redirect gap the same way: a
+  // request-supplied value observed verbatim in a 3xx Location header is
+  // structural evidence of an unvalidated redirect sink.
+  hypotheses.push(...redirectHypotheses(store, captured))
+
   const seen = new Set<string>()
-  return hypotheses.filter(h => {
+  const deduped = hypotheses.filter(h => {
     if (seen.has(h.id)) return false
     seen.add(h.id)
     return true
   }).sort((a, b) => b.confidence - a.confidence)
+  return deduped
+}
+
+/**
+ * Bound a ranked hypothesis list to `max` entries WITHOUT starving whole
+ * attack classes. A flat top-N slice lets one prolific speculative kind
+ * (e.g. dozens of workflow_bypass at identical confidence) evict the only
+ * capture-backed hypothesis in the queue — exactly the evidence that
+ * deserves testing first. Round-robin across kinds (kinds ordered by their
+ * top confidence, highest-confidence first within each kind) so every
+ * represented class survives the cap.
+ */
+export function selectHypotheses(
+  ranked: ResearchHypothesis[],
+  max: number,
+): ResearchHypothesis[] {
+  const limit = Math.max(0, Math.floor(max))
+  if (ranked.length <= limit) return [...ranked]
+  if (limit === 0) return []
+  const byKind = new Map<string, ResearchHypothesis[]>()
+  for (const h of ranked) {
+    const group = byKind.get(h.kind)
+    if (group) group.push(h)
+    else byKind.set(h.kind, [h])
+  }
+  const kinds = [...byKind.keys()].sort((a, b) => {
+    const topA = byKind.get(a)?.[0]?.confidence ?? 0
+    const topB = byKind.get(b)?.[0]?.confidence ?? 0
+    if (topB !== topA) return topB - topA
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+  const out: ResearchHypothesis[] = []
+  let progress = true
+  while (out.length < limit && progress) {
+    progress = false
+    for (const kind of kinds) {
+      if (out.length >= limit) break
+      const group = byKind.get(kind)
+      const next = group?.shift()
+      if (next) {
+        out.push(next)
+        progress = true
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * A request-supplied query value echoed verbatim into the response body is
+ * structural evidence of reflection — the definition of a reflected-
+ * injection sink. The signal is value containment (shape), never a keyword
+ * or payload-pattern match: any sufficiently long value counts, including
+ * benign probes. Short values are ignored as coincidental collisions.
+ */
+function endpointKey(url: string): string | undefined {
+  try {
+    const parsed = new URL(url)
+    const path = parsed.pathname.replace(/\/+$/, '') || '/'
+    return `${parsed.origin}${path}`
+  } catch {
+    return undefined
+  }
+}
+
+export function findReflectedParams(
+  captured: CapturedRequest[],
+  maxEntries = 300,
+  maxBodyChars = 100_000,
+): Array<{ entry: CapturedRequest; params: string[] }> {
+  const out: Array<{ entry: CapturedRequest; params: string[] }> = []
+  for (const entry of captured.slice(0, maxEntries)) {
+    if (!entry?.url || typeof entry.responseBody !== 'string' || entry.responseBody.length === 0) continue
+    let query: URLSearchParams
+    try {
+      query = new URL(entry.url).searchParams
+    } catch {
+      continue
+    }
+    const names = [...query.keys()]
+    if (names.length === 0) continue
+    const body = entry.responseBody.slice(0, maxBodyChars)
+    const echoed = names.filter(name => {
+      const value = query.get(name) ?? ''
+      return value.length >= MIN_REFLECTION_VALUE_LENGTH && body.includes(value)
+    })
+    if (echoed.length > 0) out.push({ entry, params: [...new Set(echoed)].sort() })
+  }
+  return out
+}
+
+export function reflectionHypotheses(
+  store: GraphStore,
+  captured: CapturedRequest[],
+): ResearchHypothesis[] {
+  const endpoints = endpointById(store)
+  const byKey = new Map<string, EndpointNode>()
+  for (const endpoint of endpoints.values()) {
+    const key = endpointKey(endpoint.properties.url)
+    if (key) byKey.set(key, endpoint)
+  }
+  const hypotheses: ResearchHypothesis[] = []
+  const seenUnmapped = new Set<string>()
+  for (const { entry, params } of findReflectedParams(captured)) {
+    const key = endpointKey(entry.url)
+    const endpoint = key ? byKey.get(key) : undefined
+    if (endpoint && isHighValueEndpoint(endpoint)) {
+      hypotheses.push({
+        id: stableId('hypothesis', ['reflected-injection', endpoint.id, params.join(',')]),
+        title: 'Query parameters echoed into responses may allow reflected injection',
+        kind: 'reflected_injection',
+        reason: 'A request-supplied query value was observed verbatim in the response body. Send a unique marker and check whether it is echoed back unencoded.',
+        targetEndpoints: [endpoint.id],
+        targetParams: params,
+        relatedWorkflowIds: [],
+        relatedEntityIds: [],
+        requiredSetup: ['Single anonymous request with a unique marker'],
+        risk: 'high',
+        confidence: 0.55,
+        status: 'open',
+      })
+      continue
+    }
+    // Unmapped echo: the capture is real evidence even though the graph has
+    // not indexed the route yet. Emit without a target endpoint so the
+    // planner still yields an entryId-driven experiment; the researcher
+    // supplies the captured request id at execution time. Deduplicated per
+    // route so spider noise cannot flood the queue.
+    if (key && !seenUnmapped.has(key) && !endpoint) {
+      seenUnmapped.add(key)
+      hypotheses.push({
+        id: stableId('hypothesis', ['reflected-injection-unmapped', key, params.join(',')]),
+        title: 'Unmapped route echoes query parameters into responses',
+        kind: 'reflected_injection',
+        reason: 'A request-supplied query value was observed verbatim in the response body on a route the graph has not indexed. Persist the endpoint or execute via the captured request id.',
+        targetEndpoints: [],
+        targetParams: params,
+        relatedWorkflowIds: [],
+        relatedEntityIds: [],
+        requiredSetup: ['Captured request id for the echoing request', 'Single anonymous request with a unique marker'],
+        risk: 'medium',
+        confidence: 0.45,
+        status: 'open',
+      })
+    }
+  }
+  return hypotheses
+}
+
+/**
+ * A request-supplied query value echoed verbatim into a 3xx Location
+ * header is structural evidence of an unvalidated redirect sink — the
+ * redirect analogue of a reflected-injection echo. Shape-based (value
+ * containment), never param-name matching: any sufficiently long value
+ * counts. Short values are ignored as coincidental collisions.
+ */
+export function findLocationEchoes(
+  captured: CapturedRequest[],
+  maxEntries = 300,
+): Array<{ entry: CapturedRequest; params: string[] }> {
+  const out: Array<{ entry: CapturedRequest; params: string[] }> = []
+  for (const entry of captured.slice(0, maxEntries)) {
+    if (!entry?.url) continue
+    const location = responseHeader(entry.responseHeaders, 'location')
+    if (!location) continue
+    let query: URLSearchParams
+    try {
+      query = new URL(entry.url).searchParams
+    } catch {
+      continue
+    }
+    const names = [...query.keys()]
+    if (names.length === 0) continue
+    const echoed = names.filter(name => {
+      const value = query.get(name) ?? ''
+      return value.length >= MIN_REFLECTION_VALUE_LENGTH && location.includes(value)
+    })
+    if (echoed.length > 0) out.push({ entry, params: [...new Set(echoed)].sort() })
+  }
+  return out
+}
+
+export function redirectHypotheses(
+  store: GraphStore,
+  captured: CapturedRequest[],
+): ResearchHypothesis[] {
+  const endpoints = endpointById(store)
+  const byKey = new Map<string, EndpointNode>()
+  for (const endpoint of endpoints.values()) {
+    const key = endpointKey(endpoint.properties.url)
+    if (key) byKey.set(key, endpoint)
+  }
+  const hypotheses: ResearchHypothesis[] = []
+  const seenUnmapped = new Set<string>()
+  for (const { entry, params } of findLocationEchoes(captured)) {
+    const key = endpointKey(entry.url)
+    const endpoint = key ? byKey.get(key) : undefined
+    if (endpoint && isHighValueEndpoint(endpoint)) {
+      hypotheses.push({
+        id: stableId('hypothesis', ['open-redirect', endpoint.id, params.join(',')]),
+        title: 'Redirect destination from query parameters may be unvalidated',
+        kind: 'open_redirect',
+        reason: 'A request-supplied query value was observed verbatim in the 3xx Location header. Swap it for a unique marker URL and check whether Location echoes it.',
+        targetEndpoints: [endpoint.id],
+        targetParams: params,
+        relatedWorkflowIds: [],
+        relatedEntityIds: [],
+        requiredSetup: ['Single anonymous request with a unique marker URL'],
+        risk: 'high',
+        confidence: 0.55,
+        status: 'open',
+      })
+      continue
+    }
+    if (key && !seenUnmapped.has(key) && !endpoint) {
+      seenUnmapped.add(key)
+      hypotheses.push({
+        id: stableId('hypothesis', ['open-redirect-unmapped', key, params.join(',')]),
+        title: 'Unmapped route reflects query parameters into redirect targets',
+        kind: 'open_redirect',
+        reason: 'A request-supplied query value was observed verbatim in the 3xx Location header on a route the graph has not indexed. Persist the endpoint or execute via the captured request id.',
+        targetEndpoints: [],
+        targetParams: params,
+        relatedWorkflowIds: [],
+        relatedEntityIds: [],
+        requiredSetup: ['Captured request id for the echoing request', 'Single anonymous request with a unique marker URL'],
+        risk: 'medium',
+        confidence: 0.45,
+        status: 'open',
+      })
+    }
+  }
+  return hypotheses
 }

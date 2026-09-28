@@ -24,7 +24,7 @@ export function buildCiAssessmentResult(
   return {
     schemaVersion: CI_RESULT_SCHEMA_VERSION,
     workflowRef,
-    status: 'complete',
+    status: caseFile.incompleteCandidates.length > 0 ? 'incomplete' : 'complete',
     verifiedFindings: caseFile.findings.map(finding => ({
       id: finding.id,
       severity: finding.severity,

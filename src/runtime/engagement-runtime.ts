@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { UltimatrixConfig } from '../config'
+import { DEFAULTS } from '../config'
 import { WorkspaceManager } from '../workspace'
 import { GraphStore } from '../graph/store'
 import { OastStore } from '../oast/store'
@@ -14,7 +15,9 @@ import { ForensicLog } from '../logging/forensic-log'
 import { EngagementBoundary } from '../spider/runtime'
 import { resolveBrowserProvider, type BrowserProvider, type BrowserSession } from '../browser/provider'
 import { deriveScopeFromTarget } from '../safety/scope-guard'
+import { enforceBountyPolicy } from '../safety/bounty-policy'
 import { runWithEngagementServices, type EngagementServices } from './engagement-context'
+import { TargetTransportGovernor } from './target-governor'
 import { HumanObserver } from '../capture/human-observer'
 import { ReactionObserver } from '../browser/reaction-observer'
 import { DialogWatcher } from '../browser/dialog-watcher'
@@ -26,6 +29,7 @@ import { TypedEventEmitter } from '../events/emitter'
 import { SessionManager } from '../http/session-manager'
 import { QuotaTracker } from '../models/quota-tracker'
 import { ToolEventEmitter } from '../lib/tool-events'
+import { attachBrowserTransportPolicy, type BrowserPolicyCleanup } from '../browser/transport-policy'
 
 export type WorkflowOutcome =
   | { status: 'completed' }
@@ -45,6 +49,7 @@ export class EngagementRuntime {
   readonly browser: BrowserProvider
   browserSession?: BrowserSession
   private browserStart?: Promise<BrowserSession>
+  private browserPolicyCleanup?: BrowserPolicyCleanup
   private closed = false
 
   constructor(
@@ -102,6 +107,13 @@ export class EngagementRuntime {
         throw error
       }
       this.browserSession = session
+      try {
+        this.browserPolicyCleanup = await attachBrowserTransportPolicy(session.browser, this.config)
+      } catch (error) {
+        this.browserSession = undefined
+        await this.browser.close(session.sessionId).catch(() => {})
+        throw error
+      }
       this.workflow.setBrowserProvider(session.provider)
       this.workflow.setBrowserSessionId(session.sessionId)
       await this.saveCheckpoint('browser-started')
@@ -148,6 +160,10 @@ export class EngagementRuntime {
     if (this.closed) return
     try {
       await this.run(async () => {
+        if (this.browserPolicyCleanup) {
+          await this.browserPolicyCleanup()
+          this.browserPolicyCleanup = undefined
+        }
         if (this.browserSession) await this.browser.close(this.browserSession.sessionId)
         this.services.events.removeAllListeners()
         this.services.toolEvents.removeAllListeners()
@@ -163,7 +179,19 @@ export async function createEngagementRuntime(
   target: string,
   options: EngagementRuntimeOptions = {},
 ): Promise<EngagementRuntime> {
-  const browser = options.browserProvider ?? resolveBrowserProvider(config)
+  const bountyPolicy = enforceBountyPolicy(config, target, { allowAny: options.allowAny })
+  // The boundary and every runtime service must consume the same normalized
+  // policy. Passing the raw config here would silently discard bounty
+  // categories even though the preflight validator accepted them.
+  const effectiveConfig = bountyPolicy
+    ? {
+        ...config,
+        scope: bountyPolicy.scope,
+        solver: { ...(config.solver ?? {}), maxParallel: 1, maxActiveChainSteps: 1 },
+        campaign: { ...(config.campaign ?? {}), maxConcurrency: 1 },
+      }
+    : config
+  const browser = options.browserProvider ?? resolveBrowserProvider(effectiveConfig)
   const workspace = new WorkspaceManager(options.outputDir)
   await workspace.ensureTarget(target)
   const targetDir = workspace.getTargetDir(target)
@@ -206,16 +234,23 @@ export async function createEngagementRuntime(
     browserManager: createBrowserManagerState(),
     passiveObserver: new PassiveObserver(),
     botHandler: new BotDetectionHandler(),
-    oastConfig: config.oast ?? null,
+    oastConfig: effectiveConfig.oast ?? null,
     events: new TypedEventEmitter(),
     httpSessions: new SessionManager(),
     quota: new QuotaTracker(),
     toolEvents: new ToolEventEmitter(),
     providerLimiters: new Map(),
+    targetGovernor: new TargetTransportGovernor({
+      requestsPerMinute: effectiveConfig.rateLimit?.requestsPerMinute ?? DEFAULTS.rateLimit.requestsPerMinute,
+      maxConcurrent: effectiveConfig.rateLimit?.maxConcurrent ?? DEFAULTS.rateLimit.maxConcurrent,
+    }),
     findingState: { evidenceBuffer: new Map(), evidenceGate: null },
-    scopeConfig: config.scope ?? deriveScopeFromTarget(target),
-    externalTools: config.externalTools ?? null,
+    scopeConfig: effectiveConfig.scope ?? deriveScopeFromTarget(target),
+    externalTools: effectiveConfig.externalTools ?? null,
     allowAny,
+    // Publish the resolved profile to the engagement container so every tool
+    // gate agrees with the policy the runtime actually enforced.
+    bountyEnabled: effectiveConfig.bounty?.enabled === true,
   }
-  return new EngagementRuntime(config, target, workflow, services, browser, allowAny)
+  return new EngagementRuntime(effectiveConfig, target, workflow, services, browser, allowAny)
 }

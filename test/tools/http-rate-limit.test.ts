@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('../../src/safety/scope-guard', () => ({
   isUrlInScope: vi.fn().mockReturnValue({ allowed: true }),
   getScopeConfig: vi.fn().mockReturnValue(null),
+  enforceAction: vi.fn(),
+  enforceHttpMethod: vi.fn(),
 }))
 
 vi.mock('../../src/tools/report-tools', () => ({
@@ -98,18 +100,27 @@ describe('Per-host delay enforcement', () => {
   })
 
   it('does NOT delay requests to different hosts', async () => {
-    const host1 = uniqueHost('diffa')
-    const host2 = uniqueHost('diffb')
-    mockFetch.mockResolvedValue(makeOkResponse())
+    // Skip robots.txt so a single call issues exactly one wire request to the
+    // new origin; otherwise the intra-origin pacing floor between robots.txt
+    // and the target would mask the cross-host behaviour under test.
+    const { getScopeConfig } = await import('../../src/safety/scope-guard')
+    ;(getScopeConfig as any).mockReturnValue({ authorizedPentest: true })
+    try {
+      const host1 = uniqueHost('diffa')
+      const host2 = uniqueHost('diffb')
+      mockFetch.mockResolvedValue(makeOkResponse())
 
-    const r1 = await httpRequest.execute({ method: 'GET', url: `https://${host1}/x`, timeoutMs: 5000 } as any)
-    expect(r1.ok).toBe(true)
+      const r1 = await httpRequest.execute({ method: 'GET', url: `https://${host1}/x`, timeoutMs: 5000 } as any)
+      expect(r1.ok).toBe(true)
 
-    const start = Date.now()
-    const r2 = await httpRequest.execute({ method: 'GET', url: `https://${host2}/x`, timeoutMs: 5000 } as any)
-    const elapsed = Date.now() - start
-    expect(r2.ok).toBe(true)
-    expect(elapsed).toBeLessThan(150)
+      const start = Date.now()
+      const r2 = await httpRequest.execute({ method: 'GET', url: `https://${host2}/x`, timeoutMs: 5000 } as any)
+      const elapsed = Date.now() - start
+      expect(r2.ok).toBe(true)
+      expect(elapsed).toBeLessThan(150)
+    } finally {
+      ;(getScopeConfig as any).mockReturnValue(null)
+    }
   })
 })
 

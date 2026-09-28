@@ -106,7 +106,7 @@ export function createCampaignTool(config: UltimatrixConfig = defaultCampaignCon
         onSliceComplete: async (outcome) => {
           const fbStore = getOutcomeFeedbackStore()
           for (const result of outcome.results) {
-            if (result.confirmed) {
+            if (result.confirmed && outcome.persistedPrimitiveIds?.includes(result.primitiveId)) {
               fbStore.recordOutcome(
                 `finding:${outcome.slice.endpoint.url}:${result.primitiveId}`,
                 result.primitiveId,

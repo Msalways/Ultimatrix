@@ -18,6 +18,7 @@ import type { FindingClaim } from '../intelligence/evidence-ledger'
 import { traceRender } from '../capture/render-tracer'
 import { PayloadStore } from '../payloads/store'
 import { join } from 'path'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'fs'
 import { PROJECT_ROOT } from '../lib/project-root'
 
@@ -62,6 +63,8 @@ export interface TechniqueContext {
   roles?: string[]
   sessionHeaders?: Record<string, string>
   altSessionHeaders?: Record<string, string>
+  sessionRef?: string
+  altSessionRef?: string
   objectId?: string
   altObjectId?: string
   state?: Record<string, unknown>
@@ -153,6 +156,8 @@ export interface AttackStep {
   }
   /** Human-readable signal expected when the primitive succeeds. */
   expectedSignal?: string
+  /** Session/actor provenance for typed cross-identity evidence. */
+  actor?: string
   metadata?: Record<string, unknown>
 }
 
@@ -206,6 +211,13 @@ export interface PrimitiveResult {
     request: string
     response: string
     impact: string
+    /** Structured replay material derived from the proven request/response. */
+    method?: string
+    headers?: Record<string, string>
+    body?: string
+    expectedVulnerableResponse?: string
+    actor?: string
+    altActor?: string
   }
   /**
    * W2 — reusable session artifact. When a primitive confirms an auth/seated
@@ -405,6 +417,7 @@ export async function runPrimitive(
   const concurrent = steps.some(s => s.metadata?.concurrent === true)
 
     const runOne = async (step: AttackStep): Promise<StepExecutionResult> => {
+    const executionId = randomUUID()
     const res = await executor(step)
     const payloadSource = String(step.metadata?.payloadSource ?? 'static')
     evidenceGate.recordToolOutput(
@@ -415,7 +428,8 @@ export async function runPrimitive(
       type: 'raw_request',
       data: step.request.body ?? '',
       label: `${step.request.method} ${step.request.url}`,
-      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '', payloadSource },
+      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '', payloadSource, executionId },
+      ...(step.actor ? { session: step.actor } : {}),
     })
     if (res.status !== undefined) {
       evidenceGate.recordToolOutput(
@@ -434,7 +448,9 @@ export async function runPrimitive(
           responseBody: res.body ?? '',
           responseTimeMs: res.durationMs,
           payloadSource,
+          executionId,
         },
+        ...(step.actor ? { session: step.actor } : {}),
       })
     }
     if (res.error) {

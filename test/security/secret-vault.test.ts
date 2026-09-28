@@ -8,6 +8,8 @@ import {
   redactString,
   redactUrl,
   redactValue,
+  encryptOperationalJson,
+  decryptOperationalJson,
 } from '../../src/security/secret-vault'
 
 describe('secret vault redaction', () => {
@@ -37,6 +39,20 @@ describe('secret vault redaction', () => {
     expect(redacted).not.toContain(jwt)
     expect(redacted).not.toContain('secret123')
     expect(redacted).toContain('****')
+  })
+
+  it('encrypts and decrypts operational session material without plaintext', () => {
+    const previous = process.env.ULTIMATRIX_SECRET_KEY
+    process.env.ULTIMATRIX_SECRET_KEY = 'unit-test-secret-key'
+    try {
+      const payload = { cookies: [{ name: 'sid', value: 'super-secret-cookie' }] }
+      const encoded = encryptOperationalJson(payload)
+      expect(encoded).not.toContain('super-secret-cookie')
+      expect(decryptOperationalJson(encoded)).toEqual(payload)
+    } finally {
+      if (previous === undefined) delete process.env.ULTIMATRIX_SECRET_KEY
+      else process.env.ULTIMATRIX_SECRET_KEY = previous
+    }
   })
 
   describe('normalized API', () => {

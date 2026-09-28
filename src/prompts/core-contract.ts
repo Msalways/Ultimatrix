@@ -6,6 +6,9 @@ import { resolve, dirname } from 'node:path'
  * anti-hallucination rules, workflow guidance, and output format.
  *
  * Loaded from instructions/core-contract.md at runtime.
+ * Line endings are normalized because section extraction matches on `\n`
+ * and the file checks out as CRLF on Windows (without this, the evidence
+ * discipline silently extracts as empty and the brain runs unguarded).
  * The Evidence & Integrity and Assumption Verification sections are extracted
  * separately so the solver brain composes the SAME discipline (single source,
  * no copy-drift) without inheriting worker-specific workflow/output rules.
@@ -27,7 +30,7 @@ function findContractPath(): string {
   return srcPath // best guess
 }
 
-const contractMd = readFileSync(findContractPath(), 'utf-8')
+const contractMd = readFileSync(findContractPath(), 'utf-8').replace(/\r\n/g, '\n')
 
 /**
  * Extract a ### section from the markdown by heading text.

@@ -18,10 +18,17 @@ const fakeStore: any = {
 vi.mock('../../src/graph/store', () => ({
   getGlobalGraphStore: () => fakeStore,
 }))
-vi.mock('../../src/graph/schema', () => ({
-  NodeType: { FINDING: 'finding', CANDIDATE_FINDING: 'CandidateFinding', EXPERIMENT: 'Experiment' },
-  validateNodeProperties: vi.fn(() => ({ valid: true, errors: [] })),
-}))
+// Partial mock: keep the real module and override only what this test needs to
+// control. A full replacement silently deletes every other export, so this file
+// broke twice in one session as `graph/schema` gained new helpers — a test that
+// fails when an unrelated module gains an export is testing the mock, not the code.
+vi.mock('../../src/graph/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/graph/schema')>()
+  return {
+    ...actual,
+    validateNodeProperties: vi.fn(() => ({ valid: true, errors: [] })),
+  }
+})
 vi.mock('../../src/workspace', () => ({
   getGlobalWorkspace: () => ({ getCurrentTarget: () => null, getTargetDir: () => '/tmp' }),
 }))

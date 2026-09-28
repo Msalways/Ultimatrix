@@ -18,9 +18,11 @@ import {
   RenderedElementNode,
   CouncilDebateNode,
   ExploitProofNode,
+  DispositionNode,
   ThreatModelNode,
   ReachabilityNode,
   AnyNodeData,
+  hasReplayableAuthMaterial,
 } from './schema'
 import type { ReachabilityRecord } from '../identity/types'
 import { log } from '../utils/logger'
@@ -385,6 +387,7 @@ export class LibSQLGraphStore {
         confidence: 0,
         lifecycleStatus: 'candidate',
         evidenceLevel: 'L1',
+        confirmed: false,
         findingId: `finding:${data.endpoint || 'unknown'}:${data.technique || 'unknown'}`,
         ...data,
       },
@@ -392,6 +395,33 @@ export class LibSQLGraphStore {
       updatedAt: Date.now(),
     }
     
+    this.insertNode(node)
+    return node
+  }
+
+  /**
+   * Append-only counterpart to GraphStore.addDisposition. Human and agent
+   * dispositions share this path so the two can never diverge in persistence.
+   */
+  addDisposition(data: Partial<DispositionNode['properties']> & { claimRef: string }): DispositionNode {
+    const id = `disposition:${data.claimRef}:${data.origin ?? 'agent'}:${Date.now()}`
+    const node: DispositionNode = {
+      id,
+      type: NodeType.DISPOSITION,
+      label: `Disposition: ${data.value ?? 'proposed'} (${data.origin ?? 'agent'}) on ${data.claimKind ?? 'finding'} ${data.claimRef}`,
+      properties: {
+        claimRef: data.claimRef,
+        claimKind: data.claimKind ?? 'finding',
+        origin: data.origin ?? 'agent',
+        value: data.value ?? 'proposed',
+        reason: data.reason ?? '',
+        ...(data.effectiveness ? { effectiveness: data.effectiveness } : {}),
+        ...(data.respondsTo ? { respondsTo: data.respondsTo } : {}),
+        ...(data.claimLabel ? { claimLabel: data.claimLabel } : {}),
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
     this.insertNode(node)
     return node
   }
@@ -408,7 +438,7 @@ export class LibSQLGraphStore {
         method: 'GET',
         url: '',
         reproSteps: [],
-        replayable: true,
+        replayable: false,
         status: 'proposed',
         ...data,
       },
@@ -448,8 +478,8 @@ export class LibSQLGraphStore {
       properties: {
         flowType: 'login',
         steps: [],
-        reusable: true,
         ...data,
+        reusable: data.reusable === true && hasReplayableAuthMaterial(data),
       },
       createdAt: Date.now(),
       updatedAt: Date.now(),

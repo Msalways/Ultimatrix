@@ -1,3 +1,5 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+
 const SECRET_NAME = /(authorization|bearer|token|secret|password|passwd|pwd|api[_-]?key|apikey|session|sid|csrf|xsrf|cookie)/i
 
 export { SECRET_NAME }
@@ -30,6 +32,16 @@ export function redactHeaders(headers: Record<string, string> | undefined): Reco
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {
     out[name] = SECRET_NAME.test(name) ? redactValue(value) : redactString(value)
+  }
+  return out
+}
+
+/** Bounty/model-facing variant: never reveal even a secret prefix. */
+export function redactHeadersStrict(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers) return headers
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers)) {
+    out[name] = SECRET_NAME.test(name) ? '<redacted>' : redactString(value)
   }
   return out
 }
@@ -89,4 +101,43 @@ export function redactUrl(value: string): string {
   } catch {
     return value.replace(JWT_VALUE, (match) => redactValue(match))
   }
+}
+
+function operationalKey(): Buffer {
+  const configured = process.env.ULTIMATRIX_SECRET_KEY?.trim()
+  if (!configured) {
+    throw new Error('ULTIMATRIX_SECRET_KEY is required to persist live bounty session material')
+  }
+  return createHash('sha256').update(configured).digest()
+}
+
+export function isOperationalVaultConfigured(): boolean {
+  return Boolean(process.env.ULTIMATRIX_SECRET_KEY?.trim())
+}
+
+/** Encrypt operational secret material for durable storage. */
+export function encryptOperationalJson(value: unknown): string {
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', operationalKey(), iv)
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()])
+  return JSON.stringify({
+    format: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+  })
+}
+
+export function decryptOperationalJson<T>(payload: string): T {
+  const parsed = JSON.parse(payload) as { format?: string; iv?: string; tag?: string; ciphertext?: string }
+  if (parsed.format !== 'aes-256-gcm' || !parsed.iv || !parsed.tag || !parsed.ciphertext) {
+    throw new Error('Unsupported operational vault payload')
+  }
+  const decipher = createDecipheriv('aes-256-gcm', operationalKey(), Buffer.from(parsed.iv, 'base64'))
+  decipher.setAuthTag(Buffer.from(parsed.tag, 'base64'))
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(parsed.ciphertext, 'base64')),
+    decipher.final(),
+  ]).toString('utf8')
+  return JSON.parse(plaintext) as T
 }

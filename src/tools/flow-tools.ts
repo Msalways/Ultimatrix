@@ -1,13 +1,15 @@
-﻿import { createTool } from '@mastra/core/tools'
+import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type AuthFlowNode, type ActionNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { getGlobalObserver } from '../capture/human-observer'
+import { getGlobalSessionManager } from '../http/session-manager'
 import { getActiveBrowser, getActiveBrowserContext, getActivePage } from '../browser/manager'
 import { log } from '../utils/logger'
 import { createHash } from 'node:crypto'
-import { isUrlInScope } from '../safety/scope-guard'
+import { isUrlInScope, enforceAction } from '../safety/scope-guard'
 import { redactString } from '../security/secret-vault'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 
@@ -96,14 +98,37 @@ export const saveSession = createTool({
       } catch {}
     }
 
+    // Keep the browser session and the HTTP actor session on the same seam.
+    // A graph-only AuthFlow is not enough for authorization primitives, which
+    // resolve credentials through SessionManager.
+    const sessionManager = getGlobalSessionManager()
+    const actorSession = sessionManager.getSession(name) ?? sessionManager.createSession(name, target || 'unknown')
+    for (const cookie of cookies) {
+      if (cookie?.name && cookie?.value !== undefined) {
+        sessionManager.setCookie(name, String(cookie.name), String(cookie.value), {
+          domain: cookie.domain,
+          path: cookie.path,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          expires: cookie.expires,
+        })
+      }
+    }
+
+    const bountyMode = isBountyProfile()
     const authFlow = store.addAuthFlow({
       flowType: 'login',
-      steps: flowSteps || [],
-      reusable: true,
+      steps: bountyMode
+        ? (flowSteps || []).map((step) => ({ action: step.action, url: step.url, selector: step.selector }))
+        : (flowSteps || []),
+      // An empty capture is recorded but NOT reusable: zero cookies and
+      // zero storage is the shape of "no session", and a reusable flag on
+      // it would later authenticate pivots against nothing.
+      reusable: cookies.length > 0 || Object.keys(localStorage).length > 0,
       credentialHash: hashCredential(JSON.stringify(cookies)),
       name,
       description: description || `Session: ${name}`,
-      cookies: Array.isArray(cookies) ? cookies.map((c: any) => ({
+      cookies: bountyMode ? [] : (Array.isArray(cookies) ? cookies.map((c: any) => ({
         name: c.name,
         value: c.value,
         domain: c.domain,
@@ -112,8 +137,8 @@ export const saveSession = createTool({
         secure: c.secure,
         sameSite: c.sameSite,
         expires: c.expires,
-      })) : [],
-      localStorage,
+      })) : []),
+      localStorage: bountyMode ? {} : localStorage,
       target: target || '',
       savedAt: new Date().toISOString(),
     })
@@ -142,6 +167,7 @@ export const saveSession = createTool({
         name,
         cookieCount: Array.isArray(cookies) ? cookies.length : 0,
         localStorageKeys: Object.keys(localStorage).length,
+        actorSession: actorSession.name,
       },
     }
   },
@@ -380,6 +406,11 @@ export const reproduceFlow = createTool({
 
     const page = getActivePage()
     if (!page) return { ok: false, error: 'No browser page available' }
+    try {
+      enforceAction('browser_action', { toolId: 'reproduceFlow' })
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
 
     if (flow.properties.flowType === 'login' && flow.properties.cookies) {
       const browser = getActiveBrowser()

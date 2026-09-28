@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools'
+﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
 import { loadSkill } from '../../solver/skills/loader'
@@ -6,7 +6,7 @@ import type { UltimatrixConfig } from '../../config'
 
 export function createExecuteDirectTool(_config: UltimatrixConfig, _skillRegistry: SkillRegistry) {
   return createTool({
-    id: 'execute-direct',
+    id: 'executeDirect',
     description: 'Execute a simple task directly without spawning a worker. Use for quick checks: HTTP requests, status checks, header inspection, simple reconnaissance.',
     inputSchema: z.object({
       task: z.string().describe('Natural language task to execute directly (e.g. "check HTTP headers on /api/health")'),

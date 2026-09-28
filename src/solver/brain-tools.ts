@@ -1,4 +1,4 @@
-import type { MastraMemory } from '@mastra/core/memory'
+﻿import type { MastraMemory } from '@mastra/core/memory'
 import { Agent } from '@mastra/core/agent'
 import { createTool } from '@mastra/core/tools'
 import { TokenLimiterProcessor } from '@mastra/core/processors'
@@ -9,11 +9,15 @@ import { ContextWindowRegistry } from '../models/context-window-registry'
 import { planAdaptiveContext, compressBrainInstructions, filterToolsToBudget } from '../models/adaptive-context'
 import { createSanitizedInputSchema } from '../models/schema-sanitizer'
 import { getBrainInstructions } from './brain-instructions'
+import { getGlobalModelRegistry } from '../models/registry'
 import { buildToolPack } from '../core/toolpack'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from './skills/registry'
 import type { StandardSchemaWithJSON } from '@mastra/schema-compat/schema'
 import { getActivePage } from '../browser/manager'
+import { isUrlInScope } from '../safety/scope-guard'
+import { recordBrowserEffectEvidence } from '../tools/control-tools'
+import { randomUUID } from 'node:crypto'
 import { getToolResultStore } from '../graph/tool-result-store'
 import { getGlobalGraphStore } from '../graph/store'
 import { createExtensionTools } from '../extensions/tool-tools'
@@ -31,6 +35,8 @@ export interface SolverBrainOptions {
   modelSelector?: import('../models/selector').ModelSelector
   extensionRegistry: DynamicToolRegistry
   lazyServices?: LazySolverServices
+  /** Solver-owned reflexion; never read from a legacy/global singleton. */
+  reflexion?: import('../intelligence/reflexion').ReflexionEngine
 }
 
 export interface MethodologyState {
@@ -64,7 +70,41 @@ const BROWSER_DESCRIPTORS: Record<string, string> = {
 }
 
 const WORKER_CAPABILITIES = new Set(['spawnWorker', 'spawnSwarm', 'runTaskGraph', 'executeDirect', 'runAdvancedPlaybook'])
-const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'useCredential', 'extractBrowserAuth', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
+
+/**
+ * Tools whose output the current model cannot consume. The screenshot tool
+ * returns a multimodal image part (`toModelOutput` in the browser provider);
+ * offering it to a text-only endpoint hard-fails the next request with a
+ * provider 500. Fail closed: without an explicit vision grant the tool is
+ * withheld and the brain is told to use text inspection instead.
+ */
+const VISION_DEPENDENT_TOOLS = new Set(['stagehand_screenshot'])
+
+export function resolveBrainVisionSupport(
+  config: UltimatrixConfig,
+  provider: string,
+  model: string,
+  modelId?: string,
+): boolean {
+  const caps = config.modelCapabilities ?? {}
+  for (const key of [modelId, model, `${provider}/${model}`, modelId ? `${provider}/${modelId}` : undefined]) {
+    if (typeof key === 'string' && key && caps[key]?.supportsVision !== undefined) {
+      return caps[key].supportsVision === true
+    }
+  }
+  try {
+    const registry = getGlobalModelRegistry()
+    if (modelId && registry.supportsCapability(provider, modelId, 'vision')) return true
+    if (model && model !== modelId && registry.supportsCapability(provider, model, 'vision')) return true
+  } catch { /* registry unavailable — fail closed */ }
+  return false
+}
+
+export function filterToolsByVisionSupport<T extends Record<string, any>>(tools: T, hasVision: boolean): T {
+  if (hasVision) return tools
+  if (!Object.keys(tools).some((id) => VISION_DEPENDENT_TOOLS.has(id))) return tools
+  return Object.fromEntries(Object.entries(tools).filter(([id]) => !VISION_DEPENDENT_TOOLS.has(id))) as T
+}const BROWSER_DEPENDENT = new Set(['detectAuthFlows', 'testSessionValid', 'saveSession', 'restoreSession', 'useCredential', 'extractBrowserAuth', 'detectReactions', 'getDialogEvidence', 'getRecentChanges'])
 const CAPTURE_DEPENDENT = new Set(['observeHumanActions'])
 const OAST_DEPENDENT = new Set(['getOastUrlTool', 'checkOastCallbacks'])
 
@@ -72,7 +112,7 @@ const OAST_DEPENDENT = new Set(['getOastUrlTool', 'checkOastCallbacks'])
 // first model turn: asking a model to discover basic graph/network state via a
 // second tool-loading protocol makes the assessment dependent on perfect tool
 // choreography and was observed to produce repeated "tool not found" loops.
-const BOOTSTRAP_TOOL_IDS = new Set([
+export const BOOTSTRAP_TOOL_IDS = new Set([
   'getTargetSummary',
   'queryGraph',
   'getGraphSchema',
@@ -106,6 +146,24 @@ const BOOTSTRAP_TOOL_IDS = new Set([
   'discoverSkillsForTarget',
   'loadSkillReference',
   'loadSkillBody',
+  // Rulings. This list, not CORE_TOOLS, is what the brain actually receives on
+  // turn one — verified live, twice. With the disposition tools absent here the
+  // model could still reach them via loadTool, so every structural check passed,
+  // yet on a casual operator correction it never needed a tool, never loaded
+  // one, and merely promised to comply. A mandate that names a tool the agent
+  // does not already carry is not a mandate.
+  'recordDisposition',
+  'getDispositions',
+  // Delegation. brain.md instructs "Spawn workers only for bounded subtasks",
+  // while the same file says "If a capability is not present in the current tool
+  // list, do not invent its name or call it." Those two lines are only
+  // reconcilable if the tool is actually present — and it was not. Verified
+  // live: across 18 real runs on an authorized target, zero workers were ever
+  // spawned, because the brain was told to delegate with a tool it was
+  // simultaneously forbidden to call. Delegate-only-when-bounded is the right
+  // policy; it needs the capability to exist.
+  'spawnWorker',
+  'runTaskGraph',
 ])
 
 const METHODOLOGY_GATE_TOOLS = new Set([
@@ -201,9 +259,27 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     execute: async ({ url }) => {
       const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
-      if (url) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+      const actionId = randomUUID()
+      const correlationToken = `browser:${actionId}`
+      if (url) {
+        const scope = isUrlInScope(url)
+        if (!scope.allowed) return { ok: false, error: `Scope violation: ${scope.reason}` }
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+      }
+      const currentUrl = typeof page.url === 'function' ? page.url() : undefined
+      if (currentUrl && currentUrl !== 'about:blank') {
+        const scope = isUrlInScope(currentUrl)
+        if (!scope.allowed) return { ok: false, error: `Scope violation: ${scope.reason}` }
+      }
       const state = await getGlobalObserver().getAuthDetector().detectAuthState(page as any)
-      return { ok: true, ...state }
+      const evidence = recordBrowserEffectEvidence({
+        data: 'authentication state inspected',
+        label: 'detectAuthFlows',
+        ...(currentUrl ? { url: currentUrl } : {}),
+        effects: { authState: JSON.stringify(state) },
+        correlationToken,
+      })
+      return { ok: true, ...state, browserAction: { actionId, correlationToken, pageUrl: currentUrl, evidenceIds: [evidence.id] } }
     },
   }), provider)
 
@@ -214,16 +290,33 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     execute: async ({ urls }) => {
       const page = getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
+      const actionId = randomUUID()
+      const correlationToken = `browser:${actionId}`
+      const evidenceIds: string[] = []
       const results = []
       for (const url of urls) {
+        const scope = isUrlInScope(url)
+        if (!scope.allowed) {
+          results.push({ url, error: `Scope violation: ${scope.reason}` })
+          continue
+        }
         try {
           const response = await (page as any).goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 })
-          results.push({ url, status: response?.status?.() ?? 0, finalUrl: (page as any).url?.() ?? url })
+          const finalUrl = (page as any).url?.() ?? url
+          const evidence = recordBrowserEffectEvidence({
+            data: `session reach check ${url}`,
+            label: 'testSessionValid',
+            url,
+            effects: { finalUrl, status: String(response?.status?.() ?? 0) },
+            correlationToken,
+          })
+          evidenceIds.push(evidence.id)
+          results.push({ url, status: response?.status?.() ?? 0, finalUrl })
         } catch (error) {
           results.push({ url, error: error instanceof Error ? error.message : String(error) })
         }
       }
-      return { ok: true, results }
+      return { ok: true, results, browserAction: { actionId, correlationToken, pageUrl: (page as any).url?.(), evidenceIds } }
     },
   }), provider)
 
@@ -253,9 +346,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     inputSchema: z.object({}),
     execute: async () => {
       try {
-        const { getEngagementServices } = await import('../runtime/engagement-context')
-        const services = getEngagementServices()
-        const reflexion = services?.reflexion
+        const reflexion = options.reflexion
         if (!reflexion) return { ok: true, value: { patterns: [], message: 'No reflexion engine available' } }
         const patterns = reflexion.analyzeFailurePatterns()
         return {
@@ -321,7 +412,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       readOnly: READ_ONLY.has(id),
     }, async () => {
       if (CAPTURE_DEPENDENT.has(id)) await options.lazyServices?.ensureCapture()
-      else if (BROWSER_DEPENDENT.has(id)) await options.lazyServices?.ensureBrowser()
+      else if (BROWSER_DEPENDENT.has(id)) await options.lazyServices?.ensureCapture()
       if (OAST_DEPENDENT.has(id)) await options.lazyServices?.ensureOast()
       return tool as any
     })
@@ -334,7 +425,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
         description,
         namespace: 'browser',
         source: 'builtin',
-        requirements: ['browser'],
+        requirements: ['browser', 'capture'],
         activity: id === 'stagehand_observe' || id === 'stagehand_extract' || id === 'stagehand_screenshot' ? 'inspect' : 'browser-action',
         readOnly: id === 'stagehand_observe' || id === 'stagehand_extract' || id === 'stagehand_screenshot',
       }, async () => {
@@ -507,6 +598,15 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   }
   const contextWindow = modelContextWindow || 32_000
 
+  // Vision gating: the screenshot tool emits a multimodal image part that a
+  // text-only endpoint rejects with a provider 500, poisoning every later
+  // request in the turn. Withhold it unless the brain model is granted vision
+  // (user modelCapabilities entry, else the live model registry).
+  const brainVision = resolveBrainVisionSupport(config, modelRef.provider, modelRef.model, modelRef.modelId)
+  const visionNote = brainVision
+    ? ''
+    : '\n\nVisual page captures cannot be consumed by the current text-only model: rely on text inspection, never request an image capture.'
+
   // ─── Adaptive Brain: compress instructions to fit model ──
   // F24 FIX: Removed eager loadMethodologySkill(). Methodology is now served
   // on-demand by the skill registry when the brain calls loadSkillBody.
@@ -529,7 +629,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     reservedOutputTokens: modelRef.maxOutputTokens || 2048,
   })
 
-  const brainInstructions = compressBrainInstructions(fullBrainInstructions, adaptivePlan)
+  const brainInstructions = compressBrainInstructions(fullBrainInstructions + visionNote, adaptivePlan)
 
   const currentTools = () => ({
     ...options.extensionRegistry.getActiveToolset(),
@@ -542,7 +642,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   // Without this, prepareStep returns ALL tools every step, undoing the budget
   // and flooding small-context models with 2000+ tokens of schemas.
   const filteredCurrentTools = () => {
-    const all = currentTools()
+    const all = filterToolsByVisionSupport(currentTools(), brainVision)
     // Gated tools remain in the schema for cross-step/provider consistency;
     // their wrappers above enforce the readiness policy at execution time.
     const entries = Object.entries(all)
@@ -557,6 +657,14 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     tools: filteredCurrentTools,
     instructions: brainInstructions,
     inputProcessors: [new TokenLimiterProcessor({ limit: Math.floor(contextWindow * 0.7), trimMode: 'contiguous' })],
+    // No blind transport retries. A terminal condition (bad/expired key, 403,
+    // unsupported model) can never succeed on retry, and Mastra's default of 2
+    // retries delays that verdict by a minute or more of backoff. Rate limiting
+    // already has classified backoff in the provider-aware limiter, and
+    // genuinely recoverable failures are escalated deliberately by the solver's
+    // own tier fallback (isRecoverableModelFailure) — the only layer that can
+    // tell a dead credential from a transient overload.
+    maxRetries: 0,
     defaultOptions: {
       activeTools: Object.keys(filteredCurrentTools()),
       prepareStep: () => ({ tools: filteredCurrentTools(), activeTools: Object.keys(filteredCurrentTools()) }),
@@ -580,3 +688,4 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   ;(agent as any).getTurnToolset = filteredCurrentTools
   return agent
 }
+

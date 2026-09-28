@@ -41,8 +41,10 @@ export const rceClass: TechniquePrimitive = {
     const method = (ctx.endpoint?.method ?? 'GET').toUpperCase()
     const hasParamField =
       !!ctx.param || (ctx.endpoint?.params?.length ?? 0) > 0
-    // GET needs a query param (defaulted to "q"); non-GET can inject via body.
-    if (method === 'GET') return hasParamField || true
+    // GET injects via the query string, so it needs a named sink. (A prior
+    // `|| true` made this gate vacuous and let misrouted escalations fire
+    // RCE volleys at param-less pages.) Non-GET can inject via body.
+    if (method === 'GET') return hasParamField
     return true
   },
    async generate(ctx: TechniqueContext): Promise<AttackStep[]> {

@@ -38,6 +38,7 @@ function printCliHelp(): void {
     '  -t, --target <url>                 Target URL',
     '  -o, --output <dir>                 Output directory',
     '  --approve-origin <url>             Pre-approve a proposed origin (repeatable)',
+    '  --bounty                            Enable the fail-closed authorized bounty profile',
     '  -h, --help                         Show help',
     '  -v, --version                      Show version',
     '',
@@ -168,9 +169,10 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
 
     case 'replay': {
       const outputDir = getOutputDir(args.slice(1))
+      const target = getTarget(args.slice(1), loadConfig) || 'http://localhost'
       log.info('Replaying generated tests...')
 
-      const scanner = new Ultimatrix({ target: 'http://localhost', outputDir })
+      const scanner = new Ultimatrix({ target, outputDir })
       const results = await scanner.replay()
       log.info(`Replay: ${results.passed}/${results.total} passed`)
       await scanner.close()
@@ -287,7 +289,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       if (!target) { log.error('solve requires a target: ultimatrix solve -t <url>'); process.exit(1) }
       // solveCommand owns the authorization banner so the CLI has one
       // lifecycle owner and cannot print the disclaimer twice.
-      await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)))
+      await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)), { bounty: args.slice(1).includes('--bounty') })
       break
     }
 
@@ -305,7 +307,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
       const { buildCiAssessmentResult, ciExitCode } = await import('../ci/result')
       loggerModule.setLogSink(() => {})
       try {
-        const solved = await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)), { quiet: true })
+        const solved = await solveCommand(target, outputDir, getApprovedOrigins(args.slice(1)), { quiet: true, bounty: args.slice(1).includes('--bounty') })
         const result = buildCiAssessmentResult(solved.caseFile, solved.workflowRef, solved.durationMs)
         process.stdout.write(`${JSON.stringify(result)}\n`)
         process.exitCode = ciExitCode(result, failOn)

@@ -104,6 +104,7 @@ export class ChatStream {
     this.opts = opts
     this.write = opts.write ?? ((s: string) => process.stdout.write(s))
     this.tty = opts.isTTY ?? (typeof process !== 'undefined' ? Boolean(process.stdout?.isTTY) : false)
+    this.opts.liveReasoning = opts.liveReasoning ?? (opts.showReasoning !== false)
   }
 
   private c(code: string): string {
@@ -280,7 +281,7 @@ export class ChatStream {
           .join('\n')
         this.write(body + '\n')
       } else {
-        const head = `${this.c(ESC.cyan)}▸ decision trace (${lines} lines) — type /r to expand${this.c(ESC.reset)}`
+        const head = `${this.c(ESC.cyan)}▸ reasoning (${lines} lines) — type /r to expand${this.c(ESC.reset)}`
         this.write(head + '\n')
       }
     }

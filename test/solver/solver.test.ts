@@ -783,4 +783,53 @@ describe('solve', () => {
       ok: false,
     }))
   })
+  itEngagement('counts retry-attempt findings against the turn-level baseline', async () => {
+    // A retry is a new solve() call: its private snapshot already includes
+    // findings the failed attempt recorded. Without the turnStartFindings
+    // floor it reports newFindings 0 and the card cries wolf.
+    const agent = createMockAgent(['Nothing further to add.'])
+    const summary = () => ({ totalFindings: 2, totalEndpoints: 1, totalTests: 0, totalCapturedHeaders: 0, findingsBySeverity: {}, endpoints: [], authFlows: 0, rbacRoles: 0, untestedActions: 0 })
+    const original = h.graphStoreMock.getTargetSummary
+    h.graphStoreMock.getTargetSummary = summary
+    try {
+      const retry = await solve(agent as any, {
+        origin: 'https://example.com',
+        goal: 'Follow up',
+        turnStartFindings: 1,
+      })
+      expect(retry.newFindings).toBe(1)
+      const control = await solve(agent as any, {
+        origin: 'https://example.com',
+        goal: 'Follow up',
+      })
+      expect(control.newFindings).toBe(0)
+    } finally {
+      h.graphStoreMock.getTargetSummary = original
+    }
+  })
+  itEngagement('classifies provider transport death as model_failed even after a browser hiccup', async () => {
+    // Live failure: a failed browser probe poisons terminalFailureReason to
+    // browser_failed, then the provider connection dies — and the turn can
+    // never fail over because the retry gate only accepts model_failed.
+    // Transport death must outrank the earlier tool hiccup.
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: (async function* () {
+          yield { type: 'tool-error', payload: { toolName: 'stagehand_navigate', error: 'navigation failed: page crashed' } }
+          throw new Error('Cannot connect to API: Headers Timeout Error')
+        })(),
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+      }),
+    }
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Probe the target',
+      config: { maxToolCalls: 5 },
+    })
+    expect(result.reason).toBe('model_failed')
+    expect(result.error ?? '').toMatch(/transport failed/i)
+  })
 })

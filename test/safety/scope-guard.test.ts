@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { isUrlInScope, setScopeConfig, getScopeConfig, setAllowAny, deriveScopeFromTarget } from '../../src/safety/scope-guard'
+import { isUrlInScope, setScopeConfig, getScopeConfig, setAllowAny, deriveScopeFromTarget, enforceHttpMethod, enforceAction } from '../../src/safety/scope-guard'
 import type { ScopeConfig } from '../../src/config'
 
 const baseConfig: ScopeConfig = {
@@ -183,5 +183,44 @@ describe('deriveScopeFromTarget', () => {
     // Exact hostname match (not wildcard)
     expect(isUrlInScope('https://sub.example.com/api', scope).allowed).toBe(true)
     expect(isUrlInScope('https://other.example.com/api', scope).allowed).toBe(false)
+  })
+})
+
+describe('action authorization', () => {
+  beforeEach(() => {
+    setAllowAny(false)
+    setScopeConfig({
+      allowedDomains: ['example.com'],
+      enforcement: 'hard',
+      allowedCategories: ['read', 'browser_action'],
+    })
+  })
+
+  it('enforces exact origins, ports, and path segments when configured', () => {
+    setScopeConfig({
+      allowedDomains: ['example.com'],
+      allowedOrigins: ['https://example.com:8443'],
+      allowedPorts: [8443],
+      allowedPaths: ['/admin'],
+      enforcement: 'hard',
+      allowedCategories: ['read'],
+    })
+    expect(isUrlInScope('https://example.com:8443/admin/users').allowed).toBe(true)
+    expect(isUrlInScope('https://example.com:8443/administrator').allowed).toBe(false)
+    expect(isUrlInScope('https://example.com:9443/admin').allowed).toBe(false)
+    expect(isUrlInScope('http://example.com:8443/admin').allowed).toBe(false)
+  })
+
+  it('blocks private IP literals unless explicitly allowed', () => {
+    setScopeConfig({ allowedDomains: ['127.0.0.1'], enforcement: 'hard' })
+    expect(isUrlInScope('http://127.0.0.1:3000/').allowed).toBe(false)
+    setScopeConfig({ allowedDomains: ['127.0.0.1'], enforcement: 'hard', allowPrivateAddresses: true })
+    expect(isUrlInScope('http://127.0.0.1:3000/').allowed).toBe(true)
+  })
+
+  it('maps read and mutating HTTP methods to configured categories', () => {
+    expect(() => enforceHttpMethod('GET')).not.toThrow()
+    expect(() => enforceHttpMethod('POST')).toThrow(/Action not authorized: create/)
+    expect(() => enforceAction('browser_action')).not.toThrow()
   })
 })

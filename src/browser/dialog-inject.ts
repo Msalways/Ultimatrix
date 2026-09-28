@@ -20,12 +20,15 @@ import { getGlobalDialogWatcher, type DialogEvent } from './dialog-watcher'
 import { getGlobalReactionObserver, type ReactionResult } from './reaction-observer'
 import { log } from '../utils/logger'
 import { getGlobalGraphStore } from '../graph/store'
-import { isUrlInScope } from '../safety/scope-guard'
-import { recordStructuredEvidence } from '../tools/control-tools'
+import { isUrlInScope, enforceAction } from '../safety/scope-guard'
+import { recordBrowserEffectEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
 import { wireRenderTrace } from '../capture/render-bridge'
 import { getGlobalObserver } from '../capture/human-observer'
+import { getActivePage } from './manager'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { isCamofoxHandle } from './provider'
+import { randomUUID } from 'node:crypto'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -37,27 +40,44 @@ const STAGEHAND_TOOL_NAMES = [
   'stagehand_close',
 ]
 
-const CAMOUFOX_TOOL_NAMES = [
-  'stagehand_navigate',
-  'stagehand_act',
-  'stagehand_extract',
-  'stagehand_observe',
-  'stagehand_screenshot',
-  'stagehand_tabs',
-  'stagehand_close',
-]
+/**
+ * Resolve the page owned by the wrapped provider. Mastra's tool execution
+ * context carries `agent`, not a browser `page`; relying on context.page made
+ * every page-derived safety/evidence branch silently disappear in normal
+ * solver calls.
+ */
+function resolvePage(browser: any, context: any): any {
+  if (context?.page) return context.page
+  if (isCamofoxHandle(browser)) return browser.page
+  try {
+    const stagehand = browser?.requireStagehand?.()
+    const active = stagehand?.context?.activePage
+    const activePage = typeof active === 'function' ? active() : active
+    return activePage
+      ?? (Array.isArray(stagehand?.context?.pages) ? stagehand.context.pages[0] : undefined)
+      ?? stagehand?.context?.pages?.[0]
+  } catch {
+    // Fall through to the engagement-scoped manager for legacy handles.
+  }
+  try {
+    return getActivePage()
+  } catch {
+    return undefined
+  }
+}
 
-function getToolNamesForBrowser(browser: any): string[] {
-  // Both providers use stagehand_* tool IDs
+function getToolNamesForBrowser(_browser: any): string[] {
+  // Both providers intentionally expose the same stagehand_* vocabulary.
   return STAGEHAND_TOOL_NAMES
 }
 
-function getCloseToolName(browser: any): string {
+function getCloseToolName(_browser: any): string {
   return 'stagehand_close'
 }
 
-function getNavigateToolName(browser: any): string {
-  return isCamofoxHandle(browser) ? 'camofox_navigate' : 'stagehand_navigate'
+function getNavigateToolName(_browser: any): string {
+  // Camoufox deliberately keeps the Stagehand tool ids for provider parity.
+  return 'stagehand_navigate'
 }
 
 function buildDialogEvidence(newDialogs: DialogEvent[]): string {
@@ -108,6 +128,27 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
     wrapped[name] = {
       ...tool,
       execute: async (input: any, context: any) => {
+        const actionId = randomUUID()
+        const correlationToken = `browser:${actionId}`
+        const actor = typeof input?.actor === 'string'
+          ? input.actor
+          : typeof context?.actor === 'string' ? context.actor : undefined
+        const evidenceIds: string[] = []
+        const recordActionEffect = (input: Parameters<typeof recordBrowserEffectEvidence>[0]) =>
+          recordBrowserEffectEvidence({ ...input, executionId: input.executionId ?? actionId, ...(actor ? { session: actor } : {}) })
+        const page = resolvePage(browser, context)
+        const pageUrl = () => {
+          try { return String(page?.url?.() ?? '') } catch { return '' }
+        }
+        if (!page) {
+          return { success: false, error: 'No active browser page available for this provider' }
+        }
+        try {
+          enforceAction('browser_action', { toolId: name })
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
+
         // Scope guard for browser navigation (explicit target URL)
         if (name === navigateToolName && input?.url) {
           const scopeCheck = isUrlInScope(input.url)
@@ -118,10 +159,9 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
 
         // Scope guard for every other browser action: must stay on a scoped page.
         if (name !== navigateToolName) {
-          const page = context?.page
-          const pageUrl = page?.url?.()
-          if (pageUrl && pageUrl !== 'about:blank' && pageUrl !== '') {
-            const pageScope = isUrlInScope(pageUrl)
+          const currentUrl = pageUrl()
+          if (currentUrl && currentUrl !== 'about:blank' && currentUrl !== '') {
+            const pageScope = isUrlInScope(currentUrl)
             if (!pageScope.allowed) {
               return { success: false, error: `Scope violation: ${pageScope.reason}` }
             }
@@ -133,89 +173,122 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         // Capture reaction baseline BEFORE tool execution
         try { await reactionObserver.captureBaseline() } catch {}
 
-        const result = await originalExecute(input, context)
-
-         // Auto-record page after navigation
-         if (name === navigateToolName && result && result.success) {
-           try {
-             const page = context?.page
-             if (page) {
-               const store = getGlobalGraphStore()
-               // Wrap in transaction if store supports it
-                if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
-                  await store.beginTransaction().then(async () => {
-                    try {
-                      if ('mergePage' in store && typeof store.mergePage === 'function') {
-                        store.mergePage(page.url(), {
-                          title: await page.title(),
-                          contentType: 'text/html',
-                          contentLength: 0,
-                          timestamp: Date.now(),
-                          sessionId: context?.sessionId,
-                        })
-                      }
-                      await (store as any).commitTransaction()
-                    } catch (error) {
-                      await (store as any).rollbackTransaction()
-                      throw error
-                    }
-                  })
-                } else {
-                  // GraphStore - no transaction support
-                  if ('mergePage' in store && typeof store.mergePage === 'function') {
-                    store.mergePage(page.url(), {
-                      title: await page.title(),
-                      contentType: 'text/html',
-                      contentLength: 0,
-                      timestamp: Date.now(),
-                      sessionId: context?.sessionId,
-                    })
-                  }
-                }
-               log.dim(`[dialog-inject] Auto-recorded page: ${page.url()}`)
-              // Render-trace every crawled HTML response
-              wireRenderTrace(page)
-              // Structured evidence that this URL was actually visited.
-              recordStructuredEvidence({
-                type: 'text',
-                data: `navigated to ${page.url()}`,
-                label: `navigate ${page.url()}`,
-                observed: { url: page.url() },
-              })
-
-              // Bot detection after navigation
-              const botHandler = getGlobalBotHandler()
-              const challenge = await botHandler.detectChallenge(page)
-              if (challenge.detected) {
-                log.info(`[dialog-inject] Bot challenge detected: ${challenge.vendor} ${challenge.challengeType}`)
-                recordStructuredEvidence({
-                  type: 'text',
-                  data: `Bot challenge: ${challenge.vendor} ${challenge.challengeType} on ${challenge.url}`,
-                  label: `bot-challenge ${challenge.vendor}`,
-                  observed: { url: challenge.url },
-                })
-
-                const resolved = await botHandler.waitForResolution(page, 10_000)
-                if (resolved) {
-                  log.info(`[dialog-inject] Bot challenge resolved automatically`)
-                  recordStructuredEvidence({
-                    type: 'text',
-                    data: `Bot challenge resolved: ${challenge.vendor} ${challenge.challengeType}`,
-                    label: `bot-resolved ${challenge.vendor}`,
-                    observed: { url: challenge.url },
-                  })
-                } else {
-                  log.dim(`[dialog-inject] Bot challenge not resolved — human intervention may be needed`)
-                }
-              }
-            }
-          } catch (error) {
-            log.dim(`[dialog-inject] Auto-page-record failed: ${error}`)
-          }
+        // Pass the provider page into the tool context. Mastra normally gives
+        // tools only `{ agent }`; Stagehand/Camoufox tools themselves still
+        // receive their normal context fields.
+        const toolContext = { ...(context && typeof context === 'object' ? context : {}), page }
+        let result: any
+        const governorUrl = name === navigateToolName && typeof input?.url === 'string' ? input.url : pageUrl()
+        const releaseTargetSlot = await getTargetTransportGovernor().acquire(governorUrl || 'about:blank')
+        try {
+          result = await originalExecute(input, toolContext)
+        } catch (error) {
+          result = { success: false, error: error instanceof Error ? error.message : String(error) }
+        } finally {
+          releaseTargetSlot()
         }
 
+         // Auto-record page after navigation
+         if (name === navigateToolName && result?.success) {
+           let navigationEvidenceRecorded = false
+           try {
+             const currentUrl = pageUrl()
+             if (currentUrl) {
+               const store = getGlobalGraphStore()
+               // Wrap in transaction if store supports it
+               if ('beginTransaction' in store && typeof store.beginTransaction === 'function') {
+                 await store.beginTransaction().then(async () => {
+                   try {
+                     if ('mergePage' in store && typeof store.mergePage === 'function') {
+                       store.mergePage(currentUrl, {
+                         title: typeof page.title === 'function' ? await page.title() : '',
+                         contentType: 'text/html',
+                         contentLength: 0,
+                         timestamp: Date.now(),
+                         sessionId: context?.agent?.threadId ?? context?.sessionId,
+                       })
+                     }
+                     await (store as any).commitTransaction()
+                   } catch (error) {
+                     await (store as any).rollbackTransaction()
+                     throw error
+                   }
+                 })
+               } else if ('mergePage' in store && typeof store.mergePage === 'function') {
+                 // GraphStore - no transaction support
+                 store.mergePage(currentUrl, {
+                   title: typeof page.title === 'function' ? await page.title() : '',
+                   contentType: 'text/html',
+                   contentLength: 0,
+                   timestamp: Date.now(),
+                   sessionId: context?.agent?.threadId ?? context?.sessionId,
+                 })
+               }
+               log.dim(`[dialog-inject] Auto-recorded page: ${currentUrl}`)
+               // Render-trace every browser navigation response.
+               wireRenderTrace(page)
+               // Runtime-produced browser evidence is correlated and typed.
+               const navigationEvidence = recordActionEffect({
+                 data: `navigated to ${currentUrl}`,
+                 label: `navigate ${currentUrl}`,
+                 url: currentUrl,
+                 effects: { pageUrl: currentUrl, navigation: 'true' },
+                 correlationToken,
+               })
+               evidenceIds.push(navigationEvidence.id)
+                navigationEvidenceRecorded = true
+
+               // Bot detection after navigation
+               const botHandler = getGlobalBotHandler()
+               const challenge = await botHandler.detectChallenge(page)
+               if (challenge.detected) {
+                 log.info(`[dialog-inject] Bot challenge detected: ${challenge.vendor} ${challenge.challengeType}`)
+                 const challengeEvidence = recordActionEffect({
+                   data: `Bot challenge: ${challenge.vendor} ${challenge.challengeType} on ${challenge.url}`,
+                   label: `bot-challenge ${challenge.vendor}`,
+                   url: challenge.url,
+                   effects: { botChallenge: challenge.vendor, botChallengeType: challenge.challengeType },
+                   correlationToken,
+                 })
+                 evidenceIds.push(challengeEvidence.id)
+
+                 const resolved = await botHandler.waitForResolution(page, 10_000)
+                 if (resolved) {
+                   log.info(`[dialog-inject] Bot challenge resolved automatically`)
+                   const resolvedEvidence = recordActionEffect({
+                     data: `Bot challenge resolved: ${challenge.vendor} ${challenge.challengeType}`,
+                     label: `bot-resolved ${challenge.vendor}`,
+                     url: challenge.url,
+                     effects: { botChallengeResolved: 'true', botChallenge: challenge.vendor },
+                     correlationToken,
+                   })
+                   evidenceIds.push(resolvedEvidence.id)
+                 } else {
+                   log.dim(`[dialog-inject] Bot challenge not resolved — human intervention may be needed`)
+                 }
+               }
+             }
+           } catch (error) {
+             // Graph persistence is best effort. The typed browser effect is
+             // still required even when the workspace is not initialized.
+             if (!navigationEvidenceRecorded) {
+               const currentUrl = pageUrl()
+               if (currentUrl) {
+                 const navigationEvidence = recordActionEffect({
+                   data: `navigated to ${currentUrl}`,
+                   label: `navigate ${currentUrl}`,
+                   url: currentUrl,
+                   effects: { pageUrl: currentUrl, navigation: 'true' },
+                   correlationToken,
+                 })
+                 evidenceIds.push(navigationEvidence.id)
+               }
+             }
+             log.dim(`[dialog-inject] Auto-page-record failed: ${error}`)
+           }
+         }
+
         // Read intercepted dialogs from JS interceptor
-        const page = context?.page
         let newDialogs: DialogEvent[] = []
         if (page) {
           try {
@@ -254,37 +327,63 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         const dialogEvidence = buildDialogEvidence(newDialogs)
         const reactionEvidence = buildReactionEvidence(reactionResult ?? { reactions: [], hasChanges: false, summary: '', baseline: null, current: null })
 
-        // Log and record structured evidence
+        // Log and record runtime-produced browser effects
         if (newDialogs.length > 0) {
           log.info(`[dialog-inject] ${newDialogs.length} dialog(s) during ${name}: ${newDialogs.map(d => `[${d.type}] "${d.message}"`).join(', ')}`)
           for (const d of newDialogs) {
-            recordStructuredEvidence({
-              type: 'text',
+            const effect = recordActionEffect({
               data: `[${d.type}] ${d.message}`,
               label: `dialog on ${d.url}`,
-              observed: { url: d.url },
+              url: d.url,
+              effects: {
+                nativeDialogType: d.type,
+                nativeDialogMessage: d.message,
+                nativeDialogUrl: d.url,
+              },
+              correlationToken,
             })
+            evidenceIds.push(effect.id)
           }
         }
 
         if (reactionResult?.hasChanges) {
           log.info(`[dialog-inject] UI reaction during ${name}: ${reactionResult.summary}`)
+          const effects: Record<string, string> = {
+            reactionCount: String(reactionResult.reactions.length),
+            reactionSummary: reactionResult.summary,
+          }
+          reactionResult.reactions.forEach((reaction, index) => {
+            effects[`reaction:${index}:type`] = reaction.type
+            effects[`reaction:${index}:content`] = reaction.content
+          })
+          const effect = recordActionEffect({
+            data: reactionResult.summary || 'browser UI state changed',
+            label: `reaction during ${name}`,
+            url: pageUrl(),
+            effects,
+            correlationToken,
+          })
+          evidenceIds.push(effect.id)
         }
 
         // Merge evidence into result
-        if ((dialogEvidence || reactionEvidence) && result && typeof result === 'object') {
+        if (result && typeof result === 'object') {
           return {
             ...result,
+            browserAction: { actionId, correlationToken, pageUrl: pageUrl(), evidenceIds, ...(actor ? { actor } : {}) },
             ...(dialogEvidence ? { dialogEvidence } : {}),
             ...(reactionEvidence ? { reactionEvidence } : {}),
           }
         }
 
-        if (dialogEvidence || reactionEvidence) {
-          return { success: false, dialogEvidence, reactionEvidence, rawResult: result }
+        return {
+          success: false,
+          error: 'Browser tool returned no structured result',
+          rawResult: result,
+          browserAction: { actionId, correlationToken, pageUrl: pageUrl(), evidenceIds, ...(actor ? { actor } : {}) },
+          ...(dialogEvidence ? { dialogEvidence } : {}),
+          ...(reactionEvidence ? { reactionEvidence } : {}),
         }
-
-        return result
       },
     }
   }

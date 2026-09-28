@@ -322,6 +322,38 @@ describe('graph tools', () => {
       expect(mockStore.save).toHaveBeenCalled()
     })
 
+    it('addAuthFlow coerces a material-less reusable claim to non-reusable', async () => {
+      const { addAuthFlow } = await import('../../src/graph/tools')
+      mockStore.addAuthFlow.mockReturnValue({ id: 'auth:2' })
+
+      const result = await callTool(addAuthFlow, {
+        flowType: 'login',
+        steps: ['Navigate to landing page', 'No authentication flow discovered on main site'],
+        reusable: true,
+      })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith(
+        expect.objectContaining({ flowType: 'login', reusable: false })
+      )
+      expect(result.warning).toMatch(/non-reusable/i)
+    })
+
+    it('addAuthFlow keeps reusable when session material is supplied', async () => {
+      const { addAuthFlow } = await import('../../src/graph/tools')
+      mockStore.addAuthFlow.mockReturnValue({ id: 'auth:3' })
+
+      const result = await callTool(addAuthFlow, {
+        flowType: 'login',
+        cookies: [{ name: 's', value: 'v', domain: 'x', path: '/', httpOnly: false, secure: false, sameSite: 'Lax' }],
+        reusable: true,
+      })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith(
+        expect.objectContaining({ reusable: true })
+      )
+      expect(result.warning).toBeUndefined()
+    })
+
     it('addRBACRole records role and saves', async () => {
       const { addRBACRole } = await import('../../src/graph/tools')
       mockStore.addRBACRole.mockReturnValue({ id: 'rbac:admin' })

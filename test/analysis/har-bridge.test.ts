@@ -33,6 +33,7 @@ vi.mock('../../src/oast/server', () => ({
 }))
 
 import { bridgeHARToGraph } from '../../src/analysis/har-bridge'
+import { getCapturedRequestStore } from '../../src/capture/captured-request-store'
 
 function harWithEntries(urls: string[]): string {
   const entries = urls.map((url, i) => ({
@@ -50,6 +51,7 @@ describe('har-bridge origin tagging', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     recorded.length = 0
+    getCapturedRequestStore().clear()
   })
 
   it('tags a localhost DEV TARGET as origin:"target" (no false drop)', async () => {
@@ -100,6 +102,24 @@ describe('har-bridge origin tagging', () => {
     expect(secretFinding).toBeTruthy()
     expect(secretFinding[0].description).not.toContain(jwt)
     expect(secretFinding[0].description).toContain('****')
+  })
+
+  it('keeps raw authenticated headers in the operational replay store while redacting graph output', async () => {
+    const authorization = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxfQ.raw-secret'
+    const har = JSON.stringify({
+      log: {
+        version: '1.2',
+        creator: { name: 't', version: '1' },
+        entries: [{
+          request: { method: 'GET', url: 'http://localhost:3000/api/private', headers: [{ name: 'authorization', value: authorization }], queryString: [], cookies: [] },
+          response: { status: 200, statusText: 'OK', headers: [], content: { mimeType: 'application/json', text: '{}', size: 2 }, cookies: [] },
+          startedDateTime: new Date().toISOString(), time: 1, cache: {}, timings: {},
+        }],
+      },
+    })
+    await bridgeHARToGraph(har, 'http://localhost:3000')
+    const captured = getCapturedRequestStore().list({ limit: 10 }).map((ref) => getCapturedRequestStore().get(ref.id)).find((entry) => entry?.url.includes('/api/private'))
+    expect(captured?.headers.authorization).toBe(authorization)
   })
 
   it('tags secrets found in a self entry as self-traffic', async () => {

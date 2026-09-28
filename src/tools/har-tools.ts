@@ -1,4 +1,5 @@
 import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
@@ -13,6 +14,7 @@ export const getCapturedHeaders = createTool({
     role: z.string().optional().describe('Session role (e.g. "admin", "user"). If provided, looks up role-specific session first.'),
   }),
   execute: async ({ url, role }) => {
+    const bountyMode = isBountyProfile()
 
     // 1. Try role-specific session from SessionManager first
     if (role) {
@@ -20,10 +22,15 @@ export const getCapturedHeaders = createTool({
       const sessionName = `${role}:${url}`
       const session = mgr.getSession(sessionName)
       if (session) {
-        const headers = mgr.getAllHeaders(sessionName)
+        const headers = mgr.getAllHeaders(sessionName, url)
         return {
           ok: true,
-          value: { headers, authType: session.token ? 'bearer' : 'cookie', source: 'session-manager' },
+          value: {
+            headers: bountyMode ? {} : headers,
+            authType: session.token ? 'bearer' : 'cookie',
+            source: 'session-manager',
+            ...(bountyMode ? { sessionName, secretRef: `session:${sessionName}` } : {}),
+          },
         }
       }
 
@@ -33,10 +40,15 @@ export const getCapturedHeaders = createTool({
         const baseUrl = `${urlObj.origin}`
         const baseSession = mgr.getSession(`${role}:${baseUrl}`)
         if (baseSession) {
-          const headers = mgr.getAllHeaders(`${role}:${baseUrl}`)
+          const headers = mgr.getAllHeaders(`${role}:${baseUrl}`, url)
           return {
             ok: true,
-            value: { headers, authType: baseSession.token ? 'bearer' : 'cookie', source: 'session-manager' },
+            value: {
+              headers: bountyMode ? {} : headers,
+              authType: baseSession.token ? 'bearer' : 'cookie',
+              source: 'session-manager',
+              ...(bountyMode ? { sessionName: `${role}:${baseUrl}`, secretRef: `session:${role}:${baseUrl}` } : {}),
+            },
           }
         }
       } catch { /* fall through */ }
@@ -69,9 +81,10 @@ export const getCapturedHeaders = createTool({
       return {
         ok: true,
         value: {
-          headers: match.properties.headers,
+          headers: bountyMode ? {} : match.properties.headers,
           authType: match.properties.authType || null,
           source: 'graph',
+          ...(bountyMode ? { secretRef: `endpoint:${match.id}` } : {}),
         },
       }
     }
@@ -113,7 +126,7 @@ export const storeSession = createTool({
     }
     if (cookies) {
       for (const [k, v] of Object.entries(cookies)) {
-        session.cookies[k] = v
+        mgr.setCookie(sessionName, k, v)
       }
     }
     if (token) {
@@ -129,8 +142,10 @@ export const storeSession = createTool({
       allHeaders['Cookie'] = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
     }
 
-    // Persist to graph (durable)
-    if (Object.keys(allHeaders).length > 0) {
+    // Persist to graph (durable). Live bounty mode keeps raw auth material in
+    // SessionManager only; the graph receives endpoint metadata, never secrets.
+    const bountyMode = isBountyProfile()
+    if (!bountyMode && Object.keys(allHeaders).length > 0) {
       const store = getGlobalGraphStore()
       store.addEndpoint({
         url: baseUrl,
@@ -140,6 +155,17 @@ export const storeSession = createTool({
         authRequired: true,
         authType: token ? 'bearer' : 'cookie',
         tags: [role],
+        source: 'worker-session',
+      })
+    } else if (bountyMode && (token || (cookies && Object.keys(cookies).length > 0))) {
+      getGlobalGraphStore().addEndpoint({
+        url: baseUrl,
+        method: 'GET',
+        params: [],
+        headers: {},
+        authRequired: true,
+        authType: token ? 'bearer' : 'cookie',
+        tags: [role, `session:${sessionName}`],
         source: 'worker-session',
       })
     }

@@ -43,6 +43,7 @@ import type { LazySolverServices } from "../runtime/lazy-services";
 import { buildResearchMap, planResearchExperiments, executePlannedExperiment } from "../tools/research-tools";
 import { useCredential } from "../tools/credential-tools";
 import { discoverSkillsForTarget, loadSkillBodyTool } from "../tools/skill-tools";
+import { resolveProgressTimeoutMs } from "./model-fallback";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -73,7 +74,6 @@ export interface SolverAnswerDelta {
   text: string;
   index: number;
 }
-
 /** Structured final result — the single source of truth the UI binds to. */
 export interface SolverAnswer {
   content: string;
@@ -84,6 +84,13 @@ export interface SolverAnswer {
     technique: string;
     endpoint?: string;
   }>;
+  /**
+   * Findings recorded in the ledger during THIS turn, excluding persisted
+   * findings. The card uses this turn-scoped count (not the graph-wide
+   * findings list) to state whether the turn proved anything — prose
+   * verdicts without a recorded entry here are unproven by construction.
+   */
+  newFindings: number;
   planSummary?: string;
   status: SolveResult["reason"];
   completed: boolean;
@@ -91,8 +98,6 @@ export interface SolverAnswer {
   durationMs: number;
   steps: number;
   toolCalls: number;
-  /** Findings added during this turn, excluding persisted findings. */
-  newFindings: number;
 }
 
 /**
@@ -116,6 +121,13 @@ export interface SolverConfig {
   maxDurationMs?: number;
   staleThreshold?: number;
   maxParallel?: number;
+  /**
+   * Inter-chunk stream watchdog budget in ms. Positive values are honored
+   * (floored at 15s); 0/undefined auto-scales with `maxDurationMs`
+   * (see `resolveProgressTimeoutMs`). Slow reasoning providers legitimately
+   * pause between chunks — this must tolerate that without killing the turn.
+   */
+  progressTimeoutMs?: number;
 }
 
 export type SolverPhase =
@@ -212,6 +224,15 @@ export interface SolveParams {
   priorsPromptBlock?: string;
   /** Target-scoped services used for autonomous observation before reasoning. */
   lazyServices?: LazySolverServices;
+  /**
+   * Turn-level findings baseline for multi-attempt turns. A retry is a new
+   * solve() call, so its private snapshot would already include findings
+   * recorded by the failed attempt — and the turn would report newFindings
+   * 0 despite proving something. The caller takes this once per user turn
+   * (before attempt 1) and passes it to every attempt; the delta floors at
+   * the minimum of both snapshots. Absent = single-attempt behavior.
+   */
+  turnStartFindings?: number;
 }
 
 const SOLVER_DEFAULTS: Required<SolverConfig> = {
@@ -219,6 +240,7 @@ const SOLVER_DEFAULTS: Required<SolverConfig> = {
   maxDurationMs: DEFAULTS.solver.maxDurationMs,
   staleThreshold: DEFAULTS.antiLoop.staleThreshold,
   maxParallel: DEFAULTS.solver.maxParallel,
+  progressTimeoutMs: 0,
 };
 
 function extractVulnType(
@@ -400,6 +422,134 @@ async function stringifyToolSchemas(tools: Record<string, any>): Promise<string>
  * refreshed between model steps. Goal is the user message plus a bounded
  * deterministic runtime index.
  */
+/**
+ * Normalize an error chunk from the model stream into a message worth showing.
+ *
+ * The payload shape varies by provider and by AI SDK version, so this reads the
+ * fields that actually carry information rather than assuming one shape. A
+ * provider 503 arrives as an Error object nested in a plain record; stringifying
+ * it blindly yields "[object Object]" and the operator is told nothing.
+ */
+export function describeStreamError(payload: unknown): string {
+  const seen = new Set<unknown>();
+  const parts: string[] = [];
+  // Values that carry no information. "type: 'error'" is true of every failure
+  // ever reported, so surfacing it just makes the operator read "… | error".
+  const UNINFORMATIVE = new Set(['error', 'unknown', 'undefined', 'null', 'failed', 'failure']);
+  const visit = (value: unknown, depth: number): void => {
+    if (value === null || value === undefined || depth > 4) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (text && !UNINFORMATIVE.has(text.toLowerCase())) parts.push(text);
+      return;
+    }
+    if (typeof value === 'number') {
+      parts.push(String(value));
+      return;
+    }
+    if (value instanceof Error) {
+      if (value.message) visit(value.message, depth + 1);
+      return;
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const key of ['message', 'error', 'type', 'code', 'statusCode', 'reason']) {
+        if (key in record) visit(record[key], depth + 1);
+      }
+    }
+  };
+  visit(payload, 0);
+  const text = [...new Set(parts)].filter(Boolean).join(' | ');
+  return text || 'unknown model stream error';
+}
+
+export interface ModelFailureClassification {
+  /** Terminal reason to record, when the failure invalidates the turn. */
+  reason?: 'model_failed';
+  /** Operator-facing message: what broke, and what to do about it. */
+  message: string;
+}
+
+/**
+ * Turn a model/provider failure into an actionable operator-facing message.
+ *
+ * Shared by the throw path and the stream-error path. These were previously one
+ * inline chain reachable only from `catch`, which is precisely why a provider
+ * 503 delivered as a stream event produced no explanation at all: it never
+ * reached the classifier. One implementation, two entry points, so the two can
+ * never drift into telling the operator different things about the same outage.
+ */
+export function classifyModelFailure(
+  errMsg: string,
+  ctx: { interrupted?: boolean; timedOut?: boolean; timeoutMs?: number; existingReason?: string } = {},
+): ModelFailureClassification {
+  const lowerMsg = errMsg.toLowerCase();
+  if (ctx.interrupted) return { message: 'Solver interrupted by user.' };
+  if (ctx.timedOut) {
+    return { message: `Solver timed out after ${ctx.timeoutMs}ms. Increase solver.maxDurationMs in config.` };
+  }
+  if (
+    lowerMsg.includes('cannot connect') ||
+    lowerMsg.includes('headers timeout') ||
+    lowerMsg.includes('fetch failed') ||
+    lowerMsg.includes('socket hang up') ||
+    lowerMsg.includes('econnrefused') ||
+    lowerMsg.includes('econnreset') ||
+    lowerMsg.includes('network')
+  ) {
+    // Transport death outranks any earlier non-fatal classification (e.g. a
+    // single failed browser probe setting browser_failed): the provider is
+    // unreachable, so the turn is failover-eligible, not dead. The earlier state
+    // stays visible in forensic + the message.
+    return {
+      reason: 'model_failed',
+      message: `Model transport failed: ${errMsg}. Partial research state was preserved; retry or switch model/provider.`,
+    };
+  }
+  if (ctx.existingReason) return { message: `${ctx.existingReason}: ${errMsg}` };
+  if (
+    errMsg.includes('401') || errMsg.includes('403')
+    || lowerMsg.includes('forbidden') || lowerMsg.includes('unauthorized')
+    || lowerMsg.includes('authentication failed') || lowerMsg.includes('invalid api key')
+  ) {
+    // Terminal and specific: the same dead credential fails identically on every
+    // model behind that provider, so escalating the tier ladder cannot help.
+    // Telling the operator "Solver error" here wastes their time guessing; the
+    // credential is the whole problem.
+    return {
+      reason: 'model_failed',
+      message: `Model credential rejected: ${errMsg}. Nothing was changed and retrying will not help — fix the key for this provider (ultimatrix init, or the providers file) and start a new turn.`,
+    };
+  }
+  if (errMsg.includes('429') || lowerMsg.includes('rate limit') || lowerMsg.includes('quota exhausted')) {
+    return {
+      reason: 'model_failed',
+      message: `Model rate limited or quota exhausted: ${errMsg}. Try switching provider/model in config.`,
+    };
+  }
+  if (errMsg.includes('503') || lowerMsg.includes('service_unavailable') || lowerMsg.includes('temporarily overloaded') || lowerMsg.includes('overloaded')) {
+    return {
+      reason: 'model_failed',
+      message: `Model service unavailable: ${errMsg}. Nothing was changed. Retry, or switch provider/model in config.`,
+    };
+  }
+  if (errMsg.includes('Model progress watchdog')) {
+    return {
+      reason: 'model_failed',
+      message: `Model progress stalled: ${errMsg}. Partial research state was preserved; retry or switch model/provider.`,
+    };
+  }
+  if (lowerMsg.includes('timeout')) {
+    return { message: `Solver timed out: ${errMsg}. Increase solver.maxDurationMs in config.` };
+  }
+  return {
+    reason: 'model_failed',
+    message: `Solver error: ${errMsg}`,
+  };
+}
+
 export async function solve(
   agent: Agent,
   params: SolveParams,
@@ -489,6 +639,8 @@ export async function solve(
     markResearchBootstrapAttempted?: () => void;
     crawl?: () => Promise<unknown>;
     crawlState?: unknown;
+    /** Stop a detached crawl (implemented by LazySolverServices). */
+    abortCrawl?: (reason?: string) => void;
   } | undefined;
   const observationWasAttempted = Boolean(lazyServices?.observationState)
   if (lazyServices?.observe && !observationWasAttempted && !lazyServices.crawlState) {
@@ -519,6 +671,11 @@ export async function solve(
           emitMessage({ kind: "event", event: "recon.completed", label: "target surface mapped", status: "ok" });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          // The timed-out race must not leave the spider roaming: abort the
+          // detached run so it stops driving target traffic immediately.
+          // Partial HAR/scripts already captured stay available via the
+          // post-crawl fallback below.
+          try { lazyServices.abortCrawl?.('Recon crawl timeout') } catch { /* abort is best-effort */ }
           board.addFact(`Recon crawl failed: ${message}. Retain baseline HAR and use observed endpoints for fallback.`, "recon-failure");
           emitMessage({ kind: "event", event: "recon.failed", label: "recon unavailable; baseline capture retained", status: "warn" });
           // A timed-out adaptive crawler can still leave useful HAR/script
@@ -559,6 +716,10 @@ export async function solve(
   // authorizes the bounded state-changing experiments selected by the graph.
   const researchBootstrapPending = !lazyServices || lazyServices.researchBootstrapState !== 'completed'
   if (researchBootstrapPending) {
+  const execute = async (tool: any, args: Record<string, unknown>): Promise<any> => {
+    if (!tool || typeof tool.execute !== 'function') return { ok: false, error: 'bootstrap tool unavailable' }
+    return tool.execute(args, {} as never)
+  }
   try {
     // Select and load one canonical methodology skill through the live shared
     // registry. This is the durable setup seam for the generic gate; it is
@@ -586,16 +747,16 @@ export async function solve(
 
     // Surface available authorized test identities without exposing secrets.
     // The model can then locate the login flow and authenticate autonomously.
-    const credentialInventory = await useCredential.execute({ action: 'list' }, {} as never) as any;
+    const credentialInventory = await execute(useCredential, { action: 'list' });
     board.addFact(
       credentialInventory?.ok
         ? `Authorized credential roles available: ${(credentialInventory.roles ?? []).join(', ')}. Locate the login flow, authenticate with an appropriate role, extract browser auth, and save the session before protected testing.`
         : 'No authorized credential roles are configured; continue with anonymous and authorization-boundary testing.',
       'auth-availability',
     );
-    const mapResult = await buildResearchMap.execute({ maxHypotheses: 12 }, {} as never) as any;
+    const mapResult = await execute(buildResearchMap, { maxHypotheses: 12 });
     const planResult = mapResult?.ok
-      ? await planResearchExperiments.execute({ maxExperiments: 6 }, {} as never) as any
+      ? await execute(planResearchExperiments, { maxExperiments: 6 })
       : undefined;
     const planned = planResult?.ok ? (planResult.value?.experiments ?? []) : [];
     // Synchronize deterministic setup with the brain's methodology gate.
@@ -619,7 +780,7 @@ export async function solve(
         name: "executePlannedExperiment",
         args: { experimentId: experiment.id, method },
       });
-      const result = await executePlannedExperiment.execute({ experimentId: experiment.id }, {} as never) as any;
+      const result = await execute(executePlannedExperiment, { experimentId: experiment.id });
       emitMessage({
         kind: "tool-result",
         name: "executePlannedExperiment",
@@ -813,7 +974,7 @@ export async function solve(
       (contextModelId && caps?.[contextModelId]) ||
       (resolvedContextModel?.model && caps?.[resolvedContextModel.model]),
     );
-    log.dim(`[context] ${stage} ${ctxCheck.totalInputTokens}/${capacity} tokens (${ctxCheck.severity})`);
+    log.dim(`[context] ${stage} ${ctxCheck.totalInputTokens}/${capacity} tokens (${ctxCheck.severity}) [sys=${ctxCheck.breakdown.system} tools=${ctxCheck.breakdown.tools} hist=${ctxCheck.breakdown.history} goal=${ctxCheck.breakdown.goal}]`);
     emitMessage({
       kind: "event",
       event: "context.checked",
@@ -903,7 +1064,12 @@ export async function solve(
             expectedOutputTokens,
           });
           enrichedGoal = truncated.enrichedGoal;
-          log.dim(`[context] Goal truncated to ${ctxManager.estimateTokens(enrichedGoal)} tokens (last resort)`);
+          // The truncated history must actually replace the original — using
+          // only the truncated goal while streaming the full recalled history
+          // leaves the overflow in place (observed: 168k/131k with the goal
+          // already capped at 5%).
+          conversationHistory = truncated.conversationHistory;
+          log.dim(`[context] Goal truncated to ${ctxManager.estimateTokens(enrichedGoal)} tokens; history to ${ctxManager.estimateTokens(conversationHistory)} tokens (last resort)`);
         }
       }
     }
@@ -925,6 +1091,8 @@ export async function solve(
   let totalOutputTokens = 0;
   let totalTokens = 0;
   let lastError: string | undefined;
+  /** Typed model/provider failure observed on the stream (which never throws). */
+  let streamError: string | undefined;
   // Unknown tool names can come from stale model context or connector
   // hallucinations. Allow the model to recover from a few of these within the
   // same stream; terminate only when it keeps selecting unavailable tools.
@@ -990,7 +1158,7 @@ export async function solve(
     // auto-approve in 'run' mode. Reset after the stream completes.
     setInteractionMode(params.interactionMode);
 
-    const progressTimeoutMs = Math.max(15_000, Math.min(60_000, Math.floor(cfg.maxDurationMs / 4)))
+    const progressTimeoutMs = resolveProgressTimeoutMs(cfg.maxDurationMs, cfg.progressTimeoutMs)
     const stream = await withPromiseTimeout(agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
@@ -1008,6 +1176,18 @@ export async function solve(
           : `Solver timeout: ${cfg.maxDurationMs}ms exceeded`);
       }
       switch (chunk.type) {
+        case "error":
+          // A model/provider failure arrives as a TYPED stream event, and the
+          // stream then ends normally — it does not throw. Verified live: a 503
+          // from the provider printed "Error in agent stream" to stderr, this
+          // switch had no case for it, the loop ended cleanly, `lastError` stayed
+          // undefined, and the operator got "No deliverable response was
+          // produced." with a `stale` turn and no explanation. The information
+          // was available and typed; it was simply dropped. Captured here and
+          // classified below so a provider outage reads as what it is.
+          streamError = describeStreamError(chunk.payload);
+          break;
+
         case "text-delta":
           fullText += chunk.payload.text;
           // Live answer channel: appendDelta deduplicates cumulative provider
@@ -1252,6 +1432,29 @@ export async function solve(
       }
     }
 
+    // A stream-level model failure is terminal for the turn but arrives without
+    // throwing, so it must be promoted into the same typed failure channel the
+    // throw path uses. Ordering matters: an answer the model already delivered
+    // wins, because a provider hiccup on the final chunk should not erase a real
+    // result. Only a turn with nothing to show reports the failure.
+    if (streamError && !lastError) {
+      const classified = classifyModelFailure(streamError, {
+        interrupted: Boolean(params.signal?.aborted),
+        timedOut: timeoutSignal.aborted,
+        timeoutMs: cfg.maxDurationMs,
+        existingReason: terminalFailureReason,
+      });
+      if (classified.reason) terminalFailureReason = classified.reason;
+      lastError = classified.message;
+      emitMessage({
+        kind: "event",
+        event: "turn.failed",
+        label: lastError,
+        status: "error",
+        data: { source: "stream", reason: terminalFailureReason, message: streamError },
+      });
+    }
+
     // CRITICAL: resolve the SDK-canonical final answer and reasoning. The AI SDK
     // normalizes EVERY provider into two promises:
     //   - stream.text         → the deliverable answer (deduped, provider-clean)
@@ -1313,28 +1516,14 @@ export async function solve(
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    // Provide actionable error messages for common failures
-    if (terminalFailureReason) {
-      lastError = `${terminalFailureReason}: ${errMsg}`;
-    } else if (params.signal?.aborted) {
-      lastError = 'Solver interrupted by user.';
-    } else if (timeoutSignal.aborted) {
-      lastError = `Solver timed out after ${cfg.maxDurationMs}ms. Increase solver.maxDurationMs in config.`;
-    } else if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('Rate limited') || errMsg.includes('Quota exhausted')) {
-      terminalFailureReason = "model_failed";
-      lastError = `Model rate limited or quota exhausted: ${errMsg}. Try switching provider/model in config.`;
-    } else if (errMsg.includes('503') || errMsg.includes('service_unavailable') || errMsg.includes('temporarily overloaded')) {
-      terminalFailureReason = "model_failed";
-      lastError = `Model service unavailable: ${errMsg}. Try switching provider/model or retrying.`;
-    } else if (errMsg.includes('Model progress watchdog')) {
-      terminalFailureReason = "model_failed";
-      lastError = `Model progress stalled: ${errMsg}. Partial research state was preserved; retry or switch model/provider.`;
-    } else if (errMsg.includes('timeout') || errMsg.includes('Solver timeout')) {
-      lastError = `Solver timed out: ${errMsg}. Increase solver.maxDurationMs in config.`;
-    } else {
-      terminalFailureReason = terminalFailureReason ?? "model_failed";
-      lastError = `Solver error: ${errMsg}`;
-    }
+    const classified = classifyModelFailure(errMsg, {
+      interrupted: Boolean(params.signal?.aborted),
+      timedOut: timeoutSignal.aborted,
+      timeoutMs: cfg.maxDurationMs,
+      existingReason: terminalFailureReason,
+    });
+    if (classified.reason) terminalFailureReason = classified.reason;
+    lastError = classified.message;
     // Keep provider/memory failures visible to interactive renderers. The
     // structured done envelope still carries the same status, but a live
     // ChatBox needs an event it can paint before the turn is closed.
@@ -1361,9 +1550,14 @@ export async function solve(
     // F14 FIX: Use immutable turnStartSnapshot (not the rolling graphStateSnapshot
     // which is mutated during tool calls). This ensures newFindings accurately
     // reflects what THIS turn actually discovered.
+    // Multi-attempt turns floor at the caller-supplied baseline (taken before
+    // attempt 1) so a retry cannot hide findings its failed attempt recorded.
+    const baseline = params.turnStartFindings !== undefined
+      ? Math.min(turnStartSnapshot.findings, params.turnStartFindings)
+      : turnStartSnapshot.findings;
     newFindings = Math.max(
       0,
-      currentSummary.totalFindings - turnStartSnapshot.findings,
+      currentSummary.totalFindings - baseline,
     );
   } catch {
     // Graph store not available

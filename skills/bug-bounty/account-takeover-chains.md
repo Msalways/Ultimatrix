@@ -3,7 +3,7 @@ name: account-takeover-chains
 description: "Investigate account-takeover chains across password reset, MFA/OTP, OAuth linking, session lifecycle, and recovery flows using disposable accounts."
 category: specialized
 tier: powerful
-toolRefs: [queryGraph, getAuthFlows, getCapturedHeaders, listCapturedRequests, replayCapturedRequest, requestAsActor, listActors, useCredential, extractBrowserAuth, saveSession, compareResearchResponses, evaluateResearchExperiment, recordEvidence, recordFindingCandidate, writeFinding]
+toolRefs: [queryGraph, getAuthFlows, getCapturedHeaders, listCapturedRequests, replayCapturedRequest, requestAsActor, listActors, useCredential, acquireActors, extractBrowserAuth, saveSession, compareResearchResponses, evaluateResearchExperiment, recordEvidence, recordFindingCandidate, writeFinding]
 triggers: ["account takeover", "ATO", "password reset", "MFA bypass", "OTP leak", "OAuth account linking", "session takeover"]
 contextBoosts: [auth, workflow]
 owaspRefs: ["OWASP A07:2021 Identification and Authentication Failures", "OWASP ASVS V2"]

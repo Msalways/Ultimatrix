@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="public/favicon.svg" width="92" height="92" alt="Ultimatrix logo">
 </p>
 
@@ -12,16 +12,17 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/ultimatrix"><img src="https://img.shields.io/npm/v/ultimatrix?style=flat-square&color=10b981" alt="npm version"></a>
   <img src="https://img.shields.io/badge/Node.js-22.13%2B-10b981?style=flat-square" alt="Node.js 22.13 or newer">
-  <img src="https://img.shields.io/badge/indexed%20skills-82-2563eb?style=flat-square" alt="82 indexed skills">
+  <img src="https://img.shields.io/badge/indexed%20skills-88-2563eb?style=flat-square" alt="88 indexed skills">
   <img src="https://img.shields.io/badge/evidence-gated-2563eb?style=flat-square" alt="Evidence gated findings">
+  <img src="https://img.shields.io/badge/two--sided%20rulings-10b981?style=flat-square" alt="Operator and agent rule on the same claims">
   <img src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square" alt="MIT license">
 </p>
 
 <p align="center">
-  <a href="#start-here"><strong>Start</strong></a> ·
-  <a href="#the-story"><strong>The story</strong></a> ·
-  <a href="#what-it-solves"><strong>Why it exists</strong></a> ·
-  <a href="#how-it-works"><strong>How it works</strong></a> ·
+  <a href="#start-here"><strong>Start</strong></a> Â·
+  <a href="#the-story"><strong>The story</strong></a> Â·
+  <a href="#what-it-solves"><strong>Why it exists</strong></a> Â·
+  <a href="#how-it-works"><strong>How it works</strong></a> Â·
   <a href="docs/USER-GUIDE.md"><strong>Docs</strong></a>
 </p>
 
@@ -177,15 +178,31 @@ The same traversal feeds the user-facing stream as typed messages: `phase`, `eve
 
 ### Human intervention becoming a dead end
 
-**Problem:** login, MFA, CAPTCHA, business context, or a risky action blocks the agent—or the user has to dictate every next request.
+**Problem:** login, MFA, CAPTCHA, business context, or a risky action blocks the agent—or the user has to dictate every next request. And a correction given in passing evaporates, so the same false positive is re-derived next session.
 
 **Response:** `interact` is a mutual research loop. The buddy can ask a focused question, wait for a browser action, observe what the human did, accept a correction, and continue from the same state. `solve` can run within a configured autonomous policy.
 
+What you tell it about the application becomes **structure, not scrollback**. A *disposition* is an append-only ruling on a claim — written in the same shape whether it came from you or from the agent, so neither side gets a private bookkeeping path. Say "that's normal, it's a demo range" and it stops re-raising it; the reason you gave travels with the ruling, survives a restart, and is shown back to the agent so it does not rediscover what you already settled. `/rulings` shows the history; `/brief` shows what is still unruled.
+
+The same log carries disagreement in both directions. If you overrule it, your reason is on record. If it disagrees with you, it can record its own verdict, the claim is marked **contested**, and neither side quietly wins.
+
+### An assistant that agrees with you
+
+**Problem:** an assistant under instruction to be agreeable will invent a ruling you never made, or quietly drop a verdict you never asked it to keep. Both hide the disagreement, and both look like a working system.
+
+**Response:** ruling coverage is stated explicitly rather than inferred. Every turn's runtime index lists what has **not** been ruled on, so the model cannot assume a general ruling exists to cover the gaps. Agreeing in words records nothing, and a turn that ends with nothing delivered says *what broke and what to do about it* instead of going quiet.
+
+### A mandate you cannot act on
+
+**Problem:** the agent is told to use a capability it was never given, and told separately never to call a tool it cannot see. It then obeys both and does nothing, while every structural check passes.
+
+**Response:** the brain's turn-one tool set is asserted in tests against the capabilities the prompt depends on. A tool the instructions name but the agent does not carry is a test failure, not a silent no-op.
+
 ### Tools that fail mysteriously
 
-**Problem:** a missing binary, provider outage, Docker permission, or unavailable browser looks like “the target is secure.”
+**Problem:** a missing binary, provider outage, Docker permission, or unavailable browser looks like “the target is secure.” A provider that 503s mid-turn looks like the tool is thinking.
 
-**Response:** capability checks, model routing/fallback, browser-provider lifecycle, sandbox diagnostics, rate limits, timeouts, and explicit skip/error events keep environmental gaps separate from security conclusions.
+**Response:** capability checks, model routing/fallback, browser-provider lifecycle, sandbox diagnostics, rate limits, timeouts, and explicit skip/error events keep environmental gaps separate from security conclusions. A failed turn states what broke, whether anything was changed, and what to change — a rejected credential, a provider outage, and a transport death each get their own answer. There is no input for which a failure produces an empty message.
 
 ## How it works
 
@@ -218,7 +235,7 @@ DELIVERABLES
 |---|---|
 | [Observation](src/capture/) | Stagehand/Playwright browser control, optional Camoufox, HTTP, HAR/CDP capture, passive DOM/network observation, spidering, JavaScript/shadow discovery |
 | [Case graph](src/graph/) | Pages, rendered elements, endpoints, actors, auth flows, roles, workflows, hypotheses, experiments, findings, reachability, and proof relationships |
-| [Skill registry](src/solver/skills/) | 82 indexed skills across 19 domains; lazy bodies, tool references, primitives, contracts, composition/conflict rules, and import validation |
+| [Skill registry](src/solver/skills/) | 88 indexed skills across 19 domains; lazy bodies, tool references, primitives, contracts, composition/conflict rules, and import validation |
 | [Research brain](src/solver/) | OODA loop, hypothesis generation, experiment planning, reflexion, attack paths, model selection, recovery, and fallback routing |
 | [Execution](src/tools/) | Browser and HTTP tools, captured-request replay, campaigns, task graphs, specialist workers, council delegation, OAST, and Linux/Docker adapters |
 | [Evidence](src/intelligence/) | Typed observations, provenance, differential checks, proof floors, finding lifecycle, exploit proofs, and chain verification |
@@ -227,7 +244,7 @@ DELIVERABLES
 <details>
 <summary><strong>The complete skill map</strong> - what the registry can load today</summary>
 
-The registry currently indexes these 82 skills. They are discoverable metadata first and loaded as methodology only when the case needs them; this list is not a promise that every target exercises every skill.
+The registry currently indexes these 88 skills. They are discoverable metadata first and loaded as methodology only when the case needs them; this list is not a promise that every target exercises every skill.
 
 | Domain | Indexed skills |
 |---|---|
@@ -259,6 +276,7 @@ The registry currently indexes these 82 skills. They are discoverable metadata f
 | HTTP and replay | `httpRequest`, `listCapturedRequests`, `replayCapturedRequest`, `getCapturedHeaders`, `encodeDecode` |
 | Research execution | `runRecon`, `runPrimitive`, `runCampaign`, worker routing, task graphs, council execution |
 | Evidence and findings | `recordEvidence`, `linkEvidenceToClaim`, `recordOutcome`, `recordFindingCandidate`, `writeFinding`, `verifyChains` |
+| Two-sided rulings | `recordDisposition`, `getDispositions` — the operator and the agent rule on the same claims, with reasons |
 | External execution | Nuclei, SQLMap, FFUF, Nmap, Gobuster, Nikto, Masscan, Subfinder, HTTPX, Arjun, Corsy, JWT tooling, Hydra, John, and Gitleaks through capability-gated adapters |
 </details>
 
@@ -376,3 +394,5 @@ npm run build:web        # Next.js workspace
 
 <p align="center"><sub>Built for researchers who want their tools to remember, show their work, and earn confidence.</sub></p>
 <p align="center"><strong>Authorized testing only.</strong></p>
+
+

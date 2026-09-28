@@ -10,9 +10,11 @@
  */
 
 import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { httpRequest } from './http-tools'
+import { redactHeadersStrict } from '../security/secret-vault'
 
 const MUTABLE_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const
 
@@ -154,6 +156,7 @@ export const replayCapturedRequest = createTool({
     }
 
     const v = result.value!
+    const bountyMode = isBountyProfile()
     return {
       ok: true,
       value: {
@@ -163,9 +166,12 @@ export const replayCapturedRequest = createTool({
         ...(captured.status !== undefined
           ? { statusDelta: `${captured.status} → ${v.status}` }
           : {}),
-        requestSent: sent,
+        requestSent: {
+          ...sent,
+          headers: bountyMode ? (redactHeadersStrict(sent.headers) ?? {}) : sent.headers,
+        },
         response: {
-          ...(v.headers ? { headers: v.headers } : {}),
+          ...(v.headers ? { headers: bountyMode ? (redactHeadersStrict(v.headers) ?? {}) : v.headers } : {}),
           ...(v.body !== undefined ? { body: v.body } : {}),
           ...(v.durationMs !== undefined ? { durationMs: v.durationMs } : {}),
         },

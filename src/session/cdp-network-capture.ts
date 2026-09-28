@@ -16,6 +16,8 @@ export interface CdpCaptureHandle {
   attached: boolean
   /** Resolves after the CDP Network domain is enabled. */
   ready?: Promise<void>
+  /** Drain completed entries without detaching the capture subscriber. */
+  flush: () => Promise<HarEntry[]>
   /** Stop capturing and return any completed HAR entries collected so far. */
   stop: () => Promise<HarEntry[]>
   /** Completed entries collected so far without stopping. */
@@ -51,6 +53,7 @@ export function attachHarCaptureViaCdp(
   const noop: CdpCaptureHandle = {
     attached: false,
     ready: Promise.resolve(),
+    flush: async () => [],
     stop: async () => [],
     entries: () => [],
     requestCount: () => 0,
@@ -159,6 +162,10 @@ export function attachHarCaptureViaCdp(
     ready,
     entries: () => builder.entries(),
     requestCount: () => observed,
+    flush: async () => {
+      await Promise.allSettled([...pendingBodies])
+      return builder.takeCompleted()
+    },
     stop: async () => {
       for (const fn of cleanup) fn()
       cleanup.length = 0

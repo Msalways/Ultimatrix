@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools'
+﻿import { createTool } from '@mastra/core/tools'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
@@ -29,7 +29,7 @@ export function createSpawnSwarmTool(
   modelSelector?: ModelSelector,
 ) {
   return createTool({
-    id: 'spawn-swarm',
+    id: 'spawnSwarm',
     description: 'Spawn workers on multiple endpoints. Supports parallel (independent endpoints) or sequential (chaining) execution.',
     inputSchema: z.object({
       tasks: z.array(z.object({
@@ -277,3 +277,4 @@ export function createSpawnSwarmTool(
     },
   })
 }
+

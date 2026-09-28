@@ -1,6 +1,8 @@
-﻿import { createTool } from '@mastra/core/tools'
+import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { redactHeadersStrict } from '../security/secret-vault'
 
 export const extractSessionCookie = createTool({
   id: 'extractSessionCookie',
@@ -24,7 +26,10 @@ export const extractSessionCookie = createTool({
         }
       }
     }
-    return { ok: true, value: { cookies } }
+    const visibleCookies = isBountyProfile()
+      ? Object.fromEntries(Object.entries(cookies).map(([name]) => [name, '<redacted>']))
+      : cookies
+    return { ok: true, value: { cookies: visibleCookies } }
   },
 })
 
@@ -53,12 +58,16 @@ export const extractCsrfToken = createTool({
       allCandidates.push({ name: match[1], value: match[2] })
     }
     const first = allCandidates[0]
+    const bountyMode = isBountyProfile()
+    const visibleCandidates = bountyMode
+      ? allCandidates.map((candidate) => ({ ...candidate, value: '<redacted>' }))
+      : allCandidates
     return {
       ok: allCandidates.length > 0,
       value: {
         tokenName: first?.name,
-        tokenValue: first?.value,
-        allCandidates,
+        tokenValue: bountyMode && first ? '<redacted>' : first?.value,
+        allCandidates: visibleCandidates,
       },
     }
   },
@@ -103,7 +112,7 @@ export const useSession = createTool({
 
     if (cookies) {
       for (const [k, v] of Object.entries(cookies)) {
-        session.cookies[k] = v
+        mgr.setCookie(sessionName, k, v)
       }
     }
     if (token) {
@@ -111,15 +120,18 @@ export const useSession = createTool({
     }
 
     const headers = mgr.getAllHeaders(sessionName)
+    const bountyMode = isBountyProfile()
 
     return {
       ok: true,
       value: {
         role,
         sessionName,
-        cookies: session.cookies,
-        token: session.token,
-        headers,
+        cookies: bountyMode
+          ? Object.fromEntries(Object.keys(session.cookies).map((name) => [name, '<redacted>']))
+          : session.cookies,
+        token: bountyMode && session.token ? '<redacted>' : session.token,
+        headers: bountyMode ? (redactHeadersStrict(headers) ?? {}) : headers,
       },
     }
   },

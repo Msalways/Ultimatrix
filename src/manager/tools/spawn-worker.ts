@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools'
+﻿import { createTool } from '@mastra/core/tools'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { SkillRegistry } from '../../solver/skills/registry'
@@ -18,7 +18,7 @@ export function createSpawnWorkerTool(
   modelSelector?: ModelSelector,
 ) {
   return createTool({
-    id: 'spawn-worker',
+    id: 'spawnWorker',
     description: 'Spawn a specialized worker agent with informed context about a specific endpoint. Always pass endpointId so the worker knows exactly what to test.',
     inputSchema: z.object({
       skillId: z.string().describe('ID of the skill to spawn worker for'),
@@ -181,3 +181,4 @@ export function createSpawnWorkerTool(
     },
   })
 }
+

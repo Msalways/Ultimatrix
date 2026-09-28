@@ -94,6 +94,21 @@ describe('httpRequest sessionRef (Phase 4)', () => {
     manager.removeSession(sessionName)
   })
 
+  it('refuses to send an actor session to a different origin', async () => {
+    const manager = getGlobalSessionManager()
+    const sessionName = 'origin-bound:http://127.0.0.1:1'
+    manager.createSession(sessionName, 'http://127.0.0.1:1')
+    manager.setToken(sessionName, 'must-not-cross-origin')
+    const result: any = await (httpRequest.execute as any)({
+      method: 'GET',
+      url: `http://127.0.0.1:${port}/wrong-origin`,
+      sessionRef: sessionName,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/origin mismatch/i)
+    manager.removeSession(sessionName)
+  })
+
   it('handles missing sessionRef gracefully (no session found)', async () => {
     const url = `http://127.0.0.1:${port}/missing-session`
     const r: any = await (httpRequest.execute as any)({

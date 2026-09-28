@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 vi.mock('../../src/safety/scope-guard', () => ({
   isUrlInScope: vi.fn().mockReturnValue({ allowed: true }),
@@ -12,6 +12,13 @@ vi.mock('node:dns/promises', () => ({
 
 vi.stubGlobal('fetch', vi.fn())
 
+// Imported once, not per test.
+//
+// These were dynamic imports inside `beforeEach`, so 38 tests re-resolved the
+// same four modules — and the hook blew the 30s limit under full-suite load
+// (it passed alone in 12.9s, failed in the parallel run). The re-import bought
+// nothing: `vi.mock` is hoisted, so the mocked module instance is stable for the
+// whole file. Hooks that do real work belong in beforeAll.
 let compileCapabilities: typeof import('../../src/capabilities/compiler').compileCapabilities
 let CapabilityFacade: typeof import('../../src/capabilities/facade').CapabilityFacade
 let getToolCategory: typeof import('../../src/capabilities/registry').getToolCategory
@@ -19,8 +26,7 @@ let isToolAllowedByPolicy: typeof import('../../src/capabilities/registry').isTo
 let classifyToolRisk: typeof import('../../src/capabilities/registry').classifyToolRisk
 let DEFAULT_COMPILER_POLICY: typeof import('../../src/capabilities/types').DEFAULT_COMPILER_POLICY
 
-beforeEach(async () => {
-  vi.clearAllMocks()
+beforeAll(async () => {
   const compiler = await import('../../src/capabilities/compiler')
   const facade = await import('../../src/capabilities/facade')
   const registry = await import('../../src/capabilities/registry')

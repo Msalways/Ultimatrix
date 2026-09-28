@@ -1,4 +1,5 @@
 import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getActivePage } from '../browser/manager'
 
@@ -88,14 +89,24 @@ export const extractBrowserAuth = createTool({
       const filteredLocal = filterObj(localStorageData)
       const filteredSession = filterObj(sessionStorageData)
 
-      const cookieString = cookies.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join('; ')
+      const bountyMode = isBountyProfile()
+      const visibleLocal = bountyMode
+        ? Object.fromEntries(Object.keys(filteredLocal).map((key) => [key, '<redacted>']))
+        : filteredLocal
+      const visibleSession = bountyMode
+        ? Object.fromEntries(Object.keys(filteredSession).map((key) => [key, '<redacted>']))
+        : filteredSession
+      const visibleCookies = bountyMode
+        ? cookies.map((cookie: { value: string }) => ({ ...cookie, value: '<redacted>' }))
+        : cookies
+      const cookieString = visibleCookies.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join('; ')
 
       return {
         ok: true,
         value: {
-          localStorage: filteredLocal,
-          sessionStorage: filteredSession,
-          cookies,
+          localStorage: visibleLocal,
+          sessionStorage: visibleSession,
+          cookies: visibleCookies,
           cookieString,
           url: currentUrl,
         },

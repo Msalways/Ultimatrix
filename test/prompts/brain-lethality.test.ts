@@ -24,7 +24,11 @@ describe('brain instructions — hunting mandate', () => {
 
   it('declares the offensive objective', () => {
     expect(prompt).toMatch(/objective is confirmed, evidenced vulnerability findings/i)
-    expect(prompt).toMatch(/observe, react, or attack/i)
+    // The old "every turn must observe/react/attack" mandate was replaced: it
+    // structurally forbade declining a request, which made the assistant an
+    // executor rather than a peer. Its replacement is asserted in
+    // buddy-mandate.test.ts.
+    expect(prompt).toMatch(/Judgement, not obedience/i)
   })
 
   it('teaches the observe-react-attack loop with consequence inspection', () => {
@@ -47,9 +51,12 @@ describe('brain instructions — hunting mandate', () => {
     expect(prompt).not.toMatch(TOOL_RE)
   })
 
-  it('stays within the word budget (~850 words)', () => {
+  it('stays within the word budget (~1100 words)', () => {
+    // Floor: brain.md (~880) + composed evidence/assumption discipline
+    // (~190). The cap is a tripwire against accidental bloat, not a model
+    // limit — per-model sizing is handled by adaptive compression.
     const words = prompt.split(/\s+/).length
-    expect(words).toBeLessThan(900)
+    expect(words).toBeLessThan(1200)
   })
 })
 

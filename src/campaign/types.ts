@@ -143,6 +143,10 @@ export interface SliceOutcome {
   results: PrimitiveResult[]
   confirmed: number
   budgetExceeded: boolean
+  /** Primitive ids whose confirmations were durably written. */
+  persistedPrimitiveIds?: string[]
+  /** Findings returned by the persistence gate. */
+  findings?: Finding[]
 }
 
 export interface CampaignExecutorOptions {

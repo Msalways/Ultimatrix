@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools'
+﻿import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import type { ModelSelector } from '../../models/selector'
 import type { SkillRegistry } from '../../solver/skills/registry'
@@ -53,7 +53,7 @@ export function createRunTaskGraphTool(
     })),
   })
   return createTool({
-    id: 'run-task-graph',
+    id: 'runTaskGraph',
     description: 'Execute a typed dependency graph of worker tasks. Use dependencies for ordering and acceptance criteria for runtime-verifiable completion. Returns structured replan reasons when work is partial, blocked, or failed.',
     inputSchema: z.object({
       tasks: z.array(taskSchema).max(50).default([]),
@@ -115,3 +115,4 @@ export function createRunTaskGraphTool(
     },
   })
 }
+

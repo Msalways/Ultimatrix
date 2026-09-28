@@ -176,9 +176,18 @@ export class ExploitationTracker {
   private reachableFor(findingId: string): { role?: string; endpoints: string[] } {
     if (!this.store.queryEdges) return { endpoints: [] }
     const edges = (this.store.queryEdges({ type: 'SESSION_REACHES' }) ?? []).filter(
-      (e) => e.properties?.findingId === findingId,
+      (e) => e.properties?.findingId === findingId || e.properties?.fromFindingId === findingId,
     )
-    const endpoints = edges.map((e) => e.toId).filter(Boolean)
+    const endpoints = edges.map((e) => {
+      if (typeof e.properties?.endpointUrl === 'string') return e.properties.endpointUrl
+      try {
+        new URL(e.toId)
+        return e.toId
+      } catch { /* edge target may be a graph node id */ }
+      const endpoint = this.store.getNode(e.toId) as { properties?: { url?: unknown } } | undefined
+      const url = endpoint?.properties?.url
+      return typeof url === 'string' ? url : undefined
+    }).filter((url): url is string => typeof url === 'string')
     const role = edges.map((e) => e.properties?.role).find((r): r is string => typeof r === 'string')
     return { role, endpoints }
   }
@@ -187,7 +196,7 @@ export class ExploitationTracker {
 function computeStage(f: FindingNode, proof?: ExploitProofNode): ExploitStage {
   // Reported is not a lifecycle status in this schema; a finding is "reported"
   // once an exploit-proof with impact exists (the deliverable is produced).
-  if (proof?.properties?.impact) return ExploitStage.ImpactShown
+  if (proof?.properties?.status === 'confirmed' && proof.properties.impact) return ExploitStage.ImpactShown
   if (proof && proof.properties.status === 'confirmed') return ExploitStage.ProofBuilt
   if (f.properties.lifecycleStatus === 'verified') return ExploitStage.Confirmed
   if (f.properties.lifecycleStatus === 'rejected') return ExploitStage.Detected

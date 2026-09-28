@@ -148,6 +148,14 @@ describe('W2 weaponization seam', () => {
     expect(res.dataArtifact?.data).toContain('VICTIM_SECRET')
   })
 
+  it('does not report a primitive confirmation when the commit gate rejects persistence', async () => {
+    registerPrimitive(weaponPrim)
+    writeFinding.mockResolvedValueOnce({ ok: false, error: 'proven experiment required' })
+    const out = await runPrimitiveById('w2-weapon', { target: 'https://t.example/login' }, { commit: true, gate })
+    expect(out.ok).toBe(false)
+    expect(out.reason).toContain('proven experiment required')
+  })
+
   it('runner persists reusable AUTH_FLOW + folds data into proof impact (commit seam, no per-primitive graph calls)', async () => {
     registerPrimitive(weaponPrim)
     const out = await runPrimitiveById('w2-weapon', { target: 'https://t.example/login' }, { commit: true, gate })
@@ -164,5 +172,91 @@ describe('W2 weaponization seam', () => {
     const wf = writeFinding.mock.calls[0][0]
     expect(wf.exploitProof).toBeTruthy()
     expect(wf.exploitProof.impact).toContain('VICTIM_SECRET')
+  })
+})
+
+describe('nested endpoint context survival (loop → primitive)', () => {  it('a nested endpoint object (url/method/params) arrives intact at the primitive', async () => {
+    let seen: TechniqueContext | undefined
+    const probe: TechniquePrimitive = {
+      id: 'w2-ctx-probe',
+      name: 'ctx probe',
+      description: 'captures context',
+      appliesTo: (ctx) => Boolean(ctx.param && ctx.endpoint?.params?.length),
+      generate: async (ctx) => {
+        seen = ctx
+        return []
+      },
+      oracle: async (_r, _g) => ({ confirmed: false, confidence: 0, evidence: [] }),
+    }
+    registerPrimitive(probe)
+    const out = await runPrimitiveById('w2-ctx-probe', {
+      target: 'https://t.example/r',
+      endpoint: { url: 'https://t.example/r', method: 'POST', params: [{ name: 'a' }] },
+      param: 'a',
+    }, { commit: false, gate })
+    expect(out.ok).toBe(true)
+    expect(seen?.endpoint).toMatchObject({ url: 'https://t.example/r', method: 'POST', params: [{ name: 'a' }] })
+    expect(seen?.param).toBe('a')
+  })
+
+  it('flat endpoint keys keep precedence over the nested object', async () => {
+    let seen: TechniqueContext | undefined
+    const probe: TechniquePrimitive = {
+      id: 'w2-ctx-probe2',
+      name: 'ctx probe 2',
+      description: 'captures context',
+      appliesTo: () => true,
+      generate: async (ctx) => {
+        seen = ctx
+        return []
+      },
+      oracle: async (_r, _g) => ({ confirmed: false, confidence: 0, evidence: [] }),
+    }
+    registerPrimitive(probe)
+    await runPrimitiveById('w2-ctx-probe2', {
+      target: 'https://t.example/r',
+      endpointUrl: 'https://t.example/flat',
+      endpointMethod: 'PUT',
+      endpoint: { url: 'https://t.example/nested', method: 'POST', params: [{ name: 'a' }] },
+    }, { commit: false, gate })
+    expect(seen?.endpoint?.url).toBe('https://t.example/flat')
+    expect(seen?.endpoint?.method).toBe('PUT')
+  })
+})
+
+describe('classicInjection payload-class gating (precision fire)', () => {
+  const base = {
+    endpoint: { url: 'https://t.example/r', method: 'GET' },
+    param: 'q',
+    technique: 'xss',
+  } as any
+
+  it('pinned xss fires only its class: no blind/time/canonical-sqli steps', async () => {
+    const { classicInjection } = await import('../../src/primitives/classicInjection')
+    const steps = await classicInjection.generate({ ...base, payloadSet: { category: 'xss/reflected' } })
+    const ids = steps.map(s => s.id)
+    expect(ids.some(id => id.startsWith('xss-'))).toBe(true)
+    expect(ids.filter(id => id.startsWith('sqli-blind') || id === 'sqli-time' || id === 'sqli-multipart')).toEqual([])
+    const bodies = steps.map(s => `${s.request.url} ${s.request.body ?? ''}`.toLowerCase())
+    expect(bodies.some(b => /union|sleep|order by|group by|'\s*or\s*'/i.test(b))).toBe(false)
+  })
+
+  it('pinned sqli fires only its class: no reflection steps', async () => {
+    const { classicInjection } = await import('../../src/primitives/classicInjection')
+    const steps = await classicInjection.generate({ ...base, payloadSet: { category: 'sqli/union-based' } })
+    const ids = steps.map(s => s.id)
+    expect(ids.some(id => id.startsWith('sqli-'))).toBe(true)
+    expect(ids.filter(id => id.startsWith('xss-'))).toEqual([])
+  })
+
+  it('unpinned callers keep the exact historical volley', async () => {
+    const { classicInjection } = await import('../../src/primitives/classicInjection')
+    const steps = await classicInjection.generate(base)
+    const ids = steps.map(s => s.id)
+    expect(ids).toContain('sqli-multipart')
+    expect(ids).toContain('sqli-blind-true')
+    expect(ids).toContain('sqli-time')
+    expect(ids.some(id => id.startsWith('xss-'))).toBe(true)
+    expect(ids.some(id => id.startsWith('waf-sqli-'))).toBe(true)
   })
 })

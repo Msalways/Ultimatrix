@@ -38,6 +38,15 @@ describe('CORE_CONTRACT', () => {
     expect(CORE_CONTRACT).toContain('[!]')
   })
 
+  it('ties CONFIRMED to a recorded finding entry, never to reasoning alone', () => {
+    expect(CORE_CONTRACT).toContain('[CONFIRMED] is reserved for a finding entry actually recorded')
+    expect(CORE_CONTRACT).toContain('[SUSPECTED] at best')
+  })
+
+  it('forbids verdicts without an executed probe', () => {
+    expect(CORE_CONTRACT).toContain('No vulnerability verdict without an executed probe')
+  })
+
   it('contains no Chinese characters', () => {
     const chinese = CORE_CONTRACT.match(/[\u4e00-\u9fff]/g)
     expect(chinese).toBeNull()

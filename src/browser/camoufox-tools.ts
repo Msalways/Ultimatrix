@@ -16,6 +16,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import type { Page, BrowserContext } from 'playwright'
+import { enforceAction, isUrlInScope } from '../safety/scope-guard'
 
 export interface CamoufoxToolContext {
   page: Page
@@ -224,5 +225,22 @@ export function createCamoufoxTools(ctx: CamoufoxToolContext): Record<string, an
     stagehand_close: buildClose(ctx),
   }
   for (const name of ctx.exclude ?? []) delete tools[name]
-  return tools
+  return Object.fromEntries(Object.entries(tools).map(([id, tool]) => [id, {
+    ...tool,
+    execute: async (input: any, context: any) => {
+      try {
+        enforceAction('browser_action', { toolId: id })
+        const candidate = id === 'stagehand_navigate' && typeof input?.url === 'string'
+          ? input.url
+          : ctx.page.url()
+        if (candidate && candidate !== 'about:blank') {
+          const scope = isUrlInScope(candidate)
+          if (!scope.allowed) return { success: false, error: `Scope violation: ${scope.reason}` }
+        }
+        return await tool.execute(input, context)
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  }]))
 }

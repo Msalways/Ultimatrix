@@ -304,7 +304,7 @@ export const credentialReuseEngine = {
       })
     } catch (error) {
       // Log but don't fail
-      log.error('Failed to record credential reuse:', error)
+      log.error('Failed to record credential reuse:', { error: error instanceof Error ? error.message : String(error) })
 }
   }
 };

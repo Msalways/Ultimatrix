@@ -7,6 +7,7 @@ import { recordTestCase } from '../tools/record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from '../tools/observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from '../tools/session-tools'
 import { recordEvidence, linkEvidenceToClaim, writeFinding } from '../tools/control-tools'
+import { recordDisposition, getDispositions } from '../tools/disposition-tools'
 import { readAppModelSection, writeAppModelSection } from '../tools/app-model-tools'
 import { runRecon, graphqlIntrospect, jwtDecode, frameworkFingerprint, cloudMetadataProbe } from '../tools/recon-tools'
 import { askUser } from '../tools/interaction-tools'
@@ -65,6 +66,8 @@ export type ToolRegistry = {
   recordEvidence: typeof recordEvidence
   linkEvidenceToClaim: typeof linkEvidenceToClaim
   writeFinding: typeof writeFinding
+  recordDisposition: typeof recordDisposition
+  getDispositions: typeof getDispositions
   
   // Graph Tools (focused)
   queryGraph: typeof queryGraph
@@ -216,6 +219,8 @@ export function createToolRegistry(logger?: Logger, extensionRegistry = new Dyna
     recordEvidence,
     linkEvidenceToClaim,
     writeFinding,
+    recordDisposition,
+    getDispositions,
     
     // Graph Tools (focused)
     queryGraph,
@@ -359,6 +364,8 @@ export const TOOL_IDS = [
   'recordEvidence',
   'linkEvidenceToClaim',
   'writeFinding',
+  'recordDisposition',
+  'getDispositions',
   'queryGraph',
   'updateGraph',
   'getTestCoverage',
@@ -446,6 +453,7 @@ export const TOOL_IDS = [
   'hydra',
   'john',
   'useCredential',
+  'acquireActors',
   'extractBrowserAuth',
   'webSearch',
   'requestAsActor',
@@ -855,7 +863,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
     description: 'Record an evidence item that will be included in the next writeFinding call',
     category: 'control',
     inputSchema: z.object({
-      type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
+      type: z.enum(['text', 'browser_effect', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
       data: z.string(),
       label: z.string(),
       session: z.string().optional(),
@@ -864,6 +872,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
       ok: z.boolean(),
       value: z.object({
         recorded: z.boolean(),
+        evidenceId: z.string().optional(),
         timestamp: z.number(),
         evidence: z.object({
           type: z.string(),
@@ -880,7 +889,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
     description: 'Preferred name for recordEvidence. Attach additional evidence not captured by tool execution.',
     category: 'control',
     inputSchema: z.object({
-      type: z.enum(['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
+      type: z.enum(['text', 'browser_effect', 'screenshot', 'har_entry', 'raw_request', 'raw_response']),
       data: z.string(),
       label: z.string(),
       session: z.string().optional(),
@@ -889,6 +898,7 @@ export const TOOL_METADATA: Partial<Record<ToolId, {
       ok: z.boolean(),
       value: z.object({
         recorded: z.boolean(),
+        evidenceId: z.string().optional(),
         timestamp: z.number(),
         evidence: z.object({
           type: z.string(),

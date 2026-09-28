@@ -1,11 +1,23 @@
 import { NodeType, type ActionNode, type EndpointNode, type InputNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ResearchWorkflow } from './types'
-import {stableId, uniq} from './utils'
+import {stableId, uniq, isTransportOrAssetUrl} from './utils'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
 function classifyWorkflow(url: string, method?: string, tags?: string[]): { name: string; stateChanges: string[] } {
   return getTechniqueRegistry().classifyWorkflow(url, method, tags)
+}
+
+/** Classify the route, not the request: query strings and fragments are
+ * data (a `?q=https://google.com` value once minted a "google.com"
+ * workflow). Transport/static/metadata URLs are not behavior at all. */
+function routeOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return undefined
+  }
 }
 
 export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
@@ -16,11 +28,23 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
 
   for (const endpoint of endpoints) {
     const props = endpoint.properties
-    const classified = classifyWorkflow(props.url, props.method, props.tags)
+    if (isTransportOrAssetUrl(props.url, props.method)) continue
+    const route = routeOf(props.url) ?? props.url
+    const classified = classifyWorkflow(route, props.method, props.tags)
     const id = stableId('workflow', [classified.name, props.authRequired ? 'auth' : 'anon'])
     const existing = workflows.get(id)
     const inputFields = (props.params || []).map(p => p.name)
     const step = { action: `${props.method} ${props.url}`, url: props.url, endpointId: endpoint.id, method: props.method }
+    // Keyword-claimed state changes are predictions, not observations. Attach
+    // them only with corroborating structure (inputs, mutating method, or
+    // auth signals) — otherwise a substring hit ("session" in
+    // "sessionStorage") launders itself into a bypass hypothesis downstream.
+    const method = String(props.method ?? 'GET').toUpperCase()
+    const headers = props.headers && typeof props.headers === 'object' ? Object.keys(props.headers) : []
+    const corroborated = inputFields.length > 0
+      || ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      || Boolean(props.authRequired)
+      || headers.some(name => /authorization|cookie|token|csrf/i.test(name))
 
     workflows.set(id, {
       id,
@@ -30,7 +54,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
       relatedEndpoints: uniq([...(existing?.relatedEndpoints || []), endpoint.id]),
       requiredAuth: Boolean(existing?.requiredAuth || props.authRequired),
       inputFields: uniq([...(existing?.inputFields || []), ...inputFields]),
-      stateChanges: uniq([...(existing?.stateChanges || []), ...classified.stateChanges]),
+      stateChanges: uniq([...(existing?.stateChanges || []), ...(corroborated ? classified.stateChanges : [])]),
       observedRoles: existing?.observedRoles || [],
       confidence: Math.min(0.95, (existing?.confidence || 0.45) + 0.1),
     })
@@ -38,8 +62,10 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
 
   for (const action of actions) {
     const url = action.properties.url || ''
+    if (url && isTransportOrAssetUrl(url)) continue
     const selector = action.properties.selector || ''
-    const classified = classifyWorkflow(`${url} ${selector} ${action.properties.actionType}`)
+    const route = (url && routeOf(url)) || url
+    const classified = classifyWorkflow(`${route} ${selector} ${action.properties.actionType}`)
     const id = stableId('workflow', [classified.name, 'ui'])
     const relatedInputs = inputs
       .filter(input => input.id.startsWith(`input:${action.id}:`))

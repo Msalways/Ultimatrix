@@ -12,10 +12,10 @@ const caseFile: any = {
 describe('CI result contract', () => {
   it('emits a stable schema and gates only verified severity', () => {
     const result = buildCiAssessmentResult(caseFile, 'workflow-1', 123)
-    expect(result).toMatchObject({ schemaVersion: 1, workflowRef: 'workflow-1', status: 'complete' })
-    expect(ciExitCode(result, 'high')).toBe(1)
-    expect(ciExitCode(result, 'critical')).toBe(0)
-    expect(ciExitCode(result, 'none')).toBe(0)
+    expect(result).toMatchObject({ schemaVersion: 1, workflowRef: 'workflow-1', status: 'incomplete' })
+    expect(ciExitCode(result, 'high')).toBe(2)
+    expect(ciExitCode(result, 'critical')).toBe(2)
+    expect(ciExitCode(result, 'none')).toBe(2)
   })
 
   it('uses exit code 2 for incomplete execution', () => {

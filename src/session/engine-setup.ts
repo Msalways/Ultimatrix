@@ -167,6 +167,7 @@ export async function createEngineServices(ctx: EngineSetupContext): Promise<Eng
       modelSelector,
       extensionRegistry,
       lazyServices,
+      reflexion: sessionReflexion,
     })
     result.solverBrain = solverBrain
     result.skillRegistry = skillRegistry

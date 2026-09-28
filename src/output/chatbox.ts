@@ -290,6 +290,17 @@ export class ChatBox implements ActivitySink {
       this.write(this.c(ESC.dim) + `(no answer — ${reason})` + this.c(ESC.reset) + '\n')
     }
 
+    // ── Honesty guard — typed outcome, never prose sniffing ──
+    // The ledger is the sole source of truth for findings. When a solver
+    // turn ends with an answer but nothing was recorded this turn, say so
+    // structurally: a brain can write "[CONFIRMED]" from memory, but only a
+    // recorded entry proves anything. Fires on the turn-scoped count, so
+    // prior-session findings never suppress it and pure chat (no done)
+    // never triggers it.
+    if (m.done && hasAnswer && (m.done.newFindings ?? 0) === 0) {
+      this.write(this.c(ESC.dim) + 'No findings were recorded this turn — treat vulnerability verdicts above as unproven.' + this.c(ESC.reset) + '\n')
+    }
+
     // ── Re-render tool rows ──
     for (const line of this.toolRows.values()) {
       this.write(line + '\n')
@@ -337,8 +348,7 @@ export class ChatBox implements ActivitySink {
       const findings = m.findings.length
       const status = m.done?.status ?? (m.complete ? 'done' : 'stopped')
       const duration = m.done?.durationMs ? formatDuration(m.done.durationMs) : ''
-      const parts = [status, `${steps} steps`, `${tools} tools`]
-      if (findings > 0) parts.push(`${findings} finding${findings > 1 ? 's' : ''}`)
+      const parts = [status, `${steps} steps`, `${tools} tools`, `${findings} finding${findings === 1 ? '' : 's'}`]
       if (duration) parts.push(duration)
       this.write(this.c(ESC.dim) + `── ${parts.join(' · ')} ──` + this.c(ESC.reset) + '\n')
     }

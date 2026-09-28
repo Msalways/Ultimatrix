@@ -31,21 +31,23 @@ export const authzMatrix: TechniquePrimitive = {
       id: 'authz-baseline',
       description: `Baseline request as primary actor to ${url}`,
       request: { method, url, headers: baseHeaders },
+      actor: ctx.role,
       metadata: { kind: 'baseline' },
     }
 
+    const altRole = (ctx.roles ?? []).find(r => r !== ctx.role) ?? ctx.role ?? 'admin'
     let altHeaders: Record<string, string>
     if (ctx.altSessionHeaders) {
       altHeaders = { ...ctx.altSessionHeaders }
     } else {
-      const altRole = (ctx.roles ?? []).find(r => r !== ctx.role) ?? ctx.role ?? 'admin'
-      altHeaders = { ...baseHeaders, 'X-Role': altRole, Role: altRole }
+      throw new Error('authzMatrix requires a real alternate actor session; role headers are not an authorization test')
     }
 
     const alt: AttackStep = {
       id: 'authz-alt',
       description: `Replayed request as alternate actor to ${url}`,
       request: { method, url, headers: altHeaders },
+      actor: altRole,
       expectedSignal: 'alternate actor receives different/forbidden access',
       metadata: { kind: 'alt' },
     }
@@ -100,6 +102,8 @@ export const authzMatrix: TechniquePrimitive = {
             request: `${alt.step.request.method} ${alt.step.request.url}${alt.step.request.body ? `\n\n${alt.step.request.body}` : ''}`,
             response: `HTTP ${altStatus}\n${(alt.body ?? '').slice(0, 800)}`,
             impact: `Actor reached a resource denied to the baseline role (divergence=${cmp.divergence.toFixed(2)}).`,
+             actor: baseline.step.actor,
+             altActor: alt.step.actor,
           }
         : undefined,
       // W2 — when the escalation yielded privileged data, capture it as

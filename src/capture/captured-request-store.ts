@@ -23,6 +23,8 @@ export interface CapturedRequest {
   responseBody?: string
   source: 'tool' | 'har'
   capturedAt: number
+  /** Stable id for one independent execution (request + response share it). */
+  executionId?: string
 }
 
 export interface CapturedRequestRef {
@@ -58,6 +60,7 @@ export class CapturedRequestStore {
     status?: number
     responseHeaders?: Record<string, string>
     responseBody?: string
+    executionId?: string
   }): CapturedRequest {
     this.seq += 1
     const entry: CapturedRequest = {
@@ -71,6 +74,7 @@ export class CapturedRequestStore {
       ...(input.responseBody !== undefined ? { responseBody: input.responseBody } : {}),
       source: 'tool',
       capturedAt: Date.now(),
+      ...(input.executionId ? { executionId: input.executionId } : {}),
     }
     this.entries.set(entry.id, entry)
     return entry

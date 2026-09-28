@@ -67,7 +67,37 @@ describe('ChatBox — terminal owner for interact', () => {
     expect(text).toContain('decision trace (1 lines)')
     expect(text).toContain('IDOR confirmed')
     expect(text).toContain('HTTP 200 OK')
-    expect(text).toContain('── done · 3 steps · 1 tools ──')
+    expect(text).toContain('── done · 3 steps · 1 tools · 0 findings')
+  })
+
+  it('always shows the recorded-findings count so prose claims stay checkable', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'tool', name: 'httpRequest', args: { method: 'GET', url: 'https://x/' } })
+    box.streamAssistant({ kind: 'answer', text: '[CONFIRMED] XSS on /x.' })
+    box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [], completed: false, status: 'response_complete', durationMs: 1, steps: 1, toolCalls: 1, newFindings: 0 } })
+    box.endAssistant()
+    // No finding was recorded in the ledger: the footer must say so even
+    // though the prose claims CONFIRMED.
+    expect(join(out)).toContain('· 0 findings')
+  })
+
+  it('flags an answer with zero recorded findings as unproven', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'answer', text: '[CONFIRMED] XSS on /x.' })
+    box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [], completed: false, status: 'response_complete', durationMs: 1, steps: 0, toolCalls: 0, newFindings: 0 } })
+    box.endAssistant()
+    expect(join(out)).toContain('No findings were recorded this turn')
+  })
+
+  it('does not flag answers when findings were recorded', () => {
+    const { box, out } = makeBox()
+    box.beginAssistant()
+    box.streamAssistant({ kind: 'answer', text: '[CONFIRMED] XSS on /x.' })
+    box.streamAssistant({ kind: 'done', answer: { content: '', reasoning: '', findings: [{ id: 'f1', severity: 'high', technique: 'xss' }], completed: true, status: 'goal_achieved', durationMs: 1, steps: 2, toolCalls: 2, newFindings: 1 } })
+    box.endAssistant()
+    expect(join(out)).not.toContain('unproven')
   })
 
   it('shows reasoning inline only when showReasoning is true', () => {

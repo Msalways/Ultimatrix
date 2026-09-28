@@ -264,8 +264,7 @@ describe('requestAsActor', () => {
     }
   })
 
-  it('supports URL and method overrides', async () => {
-    capturedStore.__store.set('cap-1', {
+  it('supports URL and method overrides', async () => {    capturedStore.__store.set('cap-1', {
       id: 'cap-1',
       method: 'GET',
       url: 'https://example.com/api/users/123',
@@ -304,6 +303,47 @@ describe('requestAsActor', () => {
       expect(capturedMethod).toBe('DELETE')
     } finally {
       httpRequest.execute = originalExecute
+    }
+  })
+
+  it('tags the replay evidence with its actor for cross-identity oracles', async () => {
+    capturedStore.__store.set('cap-1', {
+      id: 'cap-1',
+      method: 'GET',
+      url: 'https://example.com/api/users/123',
+      headers: {},
+      source: 'tool',
+    })
+
+    const { __sessions } = await import('../../src/http/session-manager') as any
+    __sessions.set('victim:https://example.com', {
+      name: 'victim:https://example.com',
+      baseUrl: 'https://example.com',
+      token: 'victim-tok',
+      cookies: {},
+    })
+
+    const { httpRequest } = await import('../../src/tools/http-tools')
+    const originalExecute = httpRequest.execute
+    httpRequest.execute = vi.fn(async () => ({
+      ok: true, value: { status: 200, headers: {}, body: '{"id":123}', durationMs: 10 },
+    })) as any
+    const { coreEvidenceLedger } = await import('../../src/core/evidence')
+    coreEvidenceLedger.clear()
+
+    try {
+      const result = await requestAsActorTool.execute!({
+        capturedRequestId: 'cap-1',
+        actorId: 'victim:https://example.com',
+      } as any, {} as any)
+      expect(result.ok).toBe(true)
+      const tagged = coreEvidenceLedger.all().filter(i => i.session === 'victim:https://example.com')
+      expect(tagged.length).toBeGreaterThan(0)
+      expect(tagged[0].data).toContain('123')
+    } finally {
+      httpRequest.execute = originalExecute
+      coreEvidenceLedger.clear()
+      __sessions.delete('victim:https://example.com')
     }
   })
 })

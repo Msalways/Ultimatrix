@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { attachHarCaptureViaCdp } from '../../src/session/cdp-network-capture'
+import { attachHarCaptureViaPlaywright } from '../../src/session/playwright-network-capture'
 
 /**
  * `attachHarCaptureToPage` (the old `page.on('response')` approach) was removed:
@@ -116,6 +117,35 @@ describe('attachHarCaptureViaCdp (live CDP capture)', () => {
     expect(entries[0].request.postData?.text).toBe('orderId=1')
     expect(conn.send).toHaveBeenCalledWith('Network.getResponseBody', { requestId: 'r2' })
     expect(conn.send).toHaveBeenCalledWith('Network.getRequestPostData', { requestId: 'r2' })
+  })
+
+  it('detaches Playwright listeners without closing the provider-owned context', async () => {
+    const handlers: Record<string, Function> = {}
+    const context = {
+      on: vi.fn((event: string, handler: Function) => { handlers[event] = handler }),
+      off: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    }
+    const handle = attachHarCaptureViaPlaywright(context as any, {})
+    const request = {
+      url: () => 'https://app.test/actor',
+      method: () => 'GET',
+      headers: () => ({ cookie: 'sid=1' }),
+      postData: () => undefined,
+    }
+    const response = {
+      url: () => request.url(),
+      status: () => 200,
+      headers: () => ({ 'content-type': 'application/json' }),
+      request: () => request,
+      text: async () => '{"ok":true}',
+    }
+    handlers.response(response)
+    const entries = await handle.flush()
+    expect(entries).toHaveLength(1)
+    await handle.stop()
+    expect(context.close).not.toHaveBeenCalled()
+    expect(context.off).toHaveBeenCalledWith('response', expect.any(Function))
   })
 
   it('captures ALL traffic (no domain hard-drop) — origin is decided later at graph ingest', async () => {

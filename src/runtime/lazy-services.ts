@@ -21,6 +21,9 @@ import { wrapStagehandTools } from '../browser/dialog-inject'
 import type { RuntimeIdentity } from './identity'
 
 type CaptureSession = {
+  /** Drain completed entries while leaving the subscriber attached. */
+  flush: () => Promise<string | null>
+  /** Detach the subscriber; the provider/session owns browser shutdown. */
   stop: () => Promise<string | null>
   handle: CdpCaptureHandle | HarCapture
 }
@@ -78,6 +81,10 @@ export class LazySolverServices {
   private onSpiderEvent?: (event: SpiderRuntimeEvent) => void
   private onSpiderRuntime?: (runtime: SpiderRuntime) => void
   private lastCrawlState?: SpiderRuntimeState
+  /** Abort handle for the in-flight crawl. A timed-out race must stop the
+   * spider instead of abandoning it: an un-aborted run keeps driving
+   * browser/HTTP traffic detached from any turn or session. */
+  private crawlController?: AbortController
   private researchBootstrapAttempted = false
   // Observation is engagement-scoped, not model-turn-scoped. Once the
   // browser provider has failed, a model fallback must consume that fact
@@ -120,15 +127,20 @@ export class LazySolverServices {
       const browser = await this.ensureBrowser()
       await this.ensureOast()
       let capture: CaptureSession
+      const serialize = (entries: unknown[]): string | null =>
+        entries.length
+          ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2)
+          : null
       // Phase A â€” provider-dispatched capture (no vendor sniffing).
       const { isCamofoxHandle } = await import('../browser/provider')
       if (isCamofoxHandle(browser)) {
         const { attachHarCaptureViaPlaywright } = await import('../session/playwright-network-capture')
         const handle = attachHarCaptureViaPlaywright(browser.context as any, {})
-        capture = { handle, stop: async () => {
-          const entries = await handle.stop()
-          return entries.length ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2) : null
-        } }
+        capture = {
+          handle,
+          flush: async () => serialize(await handle.flush()),
+          stop: async () => serialize(await handle.stop()),
+        }
         this.options.workflow?.setCaptureSource('cdp') // live in-session capture (playwright transport)
       } else {
         const stagehand = browser?.requireStagehand?.()
@@ -137,10 +149,11 @@ export class LazySolverServices {
           if (handle.attached) {
             try {
               await handle.ready
-              capture = { handle, stop: async () => {
-                const entries = await handle.stop()
-                return entries.length ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2) : null
-              } }
+              capture = {
+                handle,
+                flush: async () => serialize(await handle.flush()),
+                stop: async () => serialize(await handle.stop()),
+              }
               this.options.workflow?.setCaptureSource('cdp')
             } catch {
               // Stagehand deployments can expose a connection without the
@@ -166,12 +179,15 @@ export class LazySolverServices {
   }
 
   private async startFallbackCapture(): Promise<CaptureSession> {
+    if (this.options.config.bounty?.enabled) {
+      throw new Error('Authenticated bounty capture is unavailable; refusing anonymous fallback evidence')
+    }
     // Never exclude the engagement target. Local Juice Shop/lab targets are
     // valid in-scope traffic, and excluding localhost made the fallback HAR
     // appear empty even when navigation succeeded.
     const handle = await startHarCapture(this.options.target, [])
     this.options.workflow?.setCaptureSource('anonymous-fallback')
-    return { handle, stop: handle.stop }
+    return { handle, flush: handle.flush, stop: handle.stop }
   }
 
   private async attachCaptureObservers(): Promise<void> {
@@ -199,10 +215,28 @@ export class LazySolverServices {
 
   async crawl(): Promise<SpiderRuntimeState> {
     if (this.crawlPromise) return this.crawlPromise
-    this.crawlPromise = this.crawlOnce().finally(() => {
-      this.crawlPromise = undefined
-    })
-    return this.crawlPromise
+    const run = this.crawlOnce()
+    this.crawlPromise = run
+    // An abandoned race (turn timeout, session close) settles the detached
+    // run via abortCrawl(); without this no-op catch that settlement
+    // surfaces as an unhandled rejection after every participant moved on.
+    run.catch(() => {})
+    try {
+      return await run
+    } finally {
+      if (this.crawlPromise === run) this.crawlPromise = undefined
+    }
+  }
+
+  /**
+   * Stop the in-flight crawl, if any. Safe to call when no crawl is running
+   * (no-op) and after a crawl already settled (stale controller already
+   * cleared). The next crawl() starts a fresh controller.
+   */
+  abortCrawl(reason = 'Crawl aborted'): void {
+    try {
+      this.crawlController?.abort(new Error(reason))
+    } catch { /* abort must never throw */ }
   }
 
   /**
@@ -262,41 +296,48 @@ export class LazySolverServices {
     const { target, config, workflow, runtime } = this.options
     if (!target || !workflow || !runtime) throw new Error('Crawl capability requires a target and workflow')
     if (this.options.memory && !this.options.identity) throw new Error('Crawl capability requires runtime identity when memory is enabled')
+    const controller = new AbortController()
+    this.crawlController = controller
     const browser = await this.ensureBrowser()
     const capture = await this.ensureCapture()
     const listener = this.onSpiderEvent
-    const result = await runSpiderRuntime({
-      config,
-      target,
-      browser,
-      memory: this.options.memory,
-      threadId: this.options.identity?.threadId,
-      resourceId: this.options.identity?.resourceId,
-      graphStore: runtime.graph,
-      workflowId: workflow.state.workflowId,
-      initialState: workflow.state.spider ? { ...workflow.state.spider } : undefined,
-      onEvent: (event) => {
-        runtime.services.events.emit('spider:event' as any, event)
-        listener?.(event)
-      },
-      allowAny: runtime.services.allowAny,
-      approvedOrigins: this.options.approvedOrigins,
-      onRuntime: this.onSpiderRuntime,
-      onFinalize: async (state, outcome) => {
-        workflow.attachSpider(state)
-        await runtime.saveCheckpoint(`spider:${outcome.status}`)
-        return `${workflow.state.workflowId}:${state.updatedAt}`
-      },
-    })
-    await this.persistCapture(capture)
-    if (result.outcome.status === 'failed') {
-      throw new Error(result.outcome.error)
+    try {
+      const result = await runSpiderRuntime({
+        config,
+        target,
+        browser,
+        memory: this.options.memory,
+        threadId: this.options.identity?.threadId,
+        resourceId: this.options.identity?.resourceId,
+        graphStore: runtime.graph,
+        workflowId: workflow.state.workflowId,
+        initialState: workflow.state.spider ? { ...workflow.state.spider } : undefined,
+        signal: controller.signal,
+        onEvent: (event) => {
+          runtime.services.events.emit('spider:event' as any, event)
+          listener?.(event)
+        },
+        allowAny: runtime.services.allowAny,
+        approvedOrigins: this.options.approvedOrigins,
+        onRuntime: this.onSpiderRuntime,
+        onFinalize: async (state, outcome) => {
+          workflow.attachSpider(state)
+          await runtime.saveCheckpoint(`spider:${outcome.status}`)
+          return `${workflow.state.workflowId}:${state.updatedAt}`
+        },
+      })
+      await this.persistCapture(capture)
+      if (result.outcome.status === 'failed') {
+        throw new Error(result.outcome.error)
+      }
+      if (result.outcome.status === 'aborted') {
+        throw new Error(result.outcome.reason)
+      }
+      this.lastCrawlState = result.state
+      return result.state
+    } finally {
+      if (this.crawlController === controller) this.crawlController = undefined
     }
-    if (result.outcome.status === 'aborted') {
-      throw new Error(result.outcome.reason)
-    }
-    this.lastCrawlState = result.state
-    return result.state
   }
 
   private lastCaptureRequests = 0
@@ -304,8 +345,10 @@ export class LazySolverServices {
   private async persistCapture(capture: CaptureSession): Promise<number> {
     const runtime = this.options.runtime
     if (!runtime) return 0
-    const har = await capture.stop()
-    this.captureValue = undefined
+    // Drain only completed entries. The capture subscriber remains attached so
+    // browser actions after observation/crawl are captured as well.
+    const drain = typeof (capture as CaptureSession).flush === 'function' ? capture.flush : capture.stop
+    const har = await drain()
     if (!har) { this.lastCaptureRequests = 0; return 0 }
     try {
       this.lastCaptureRequests = JSON.parse(har)?.log?.entries?.length ?? 0
@@ -316,7 +359,7 @@ export class LazySolverServices {
     const path = resolve(directory, `${new Date().toISOString().replace(/[:.]/g, '-')}.har`)
     await writeFile(path, safe, 'utf8')
     runtime.artifacts.create('har', { path, initialStatus: 'redacted', provenance: [{ source: 'capture', ref: 'network-capture' }] })
-    await bridgeHARToGraph(safe, this.options.target)
+    await bridgeHARToGraph(har, this.options.target)
     // C4/C5 â€” post-crawl discovery (shadow API + js-miner), non-fatal.
     try {
       const { runPostCrawlDiscovery } = await import('../discovery/post-crawl')
@@ -403,7 +446,19 @@ export class LazySolverServices {
   }
 
   async close(): Promise<void> {
-    if (this.captureValue) try { await this.captureValue.stop() } catch {}
+    // Stop a roaming crawl first: after a turn timeout the spider would
+    // otherwise keep driving target traffic detached from any session.
+    this.abortCrawl('Session closing')
+    if (this.captureValue) {
+      try { await this.persistCapture(this.captureValue) } catch { /* final capture is best effort */ }
+      try {
+        const stop = typeof (this.captureValue as CaptureSession).stop === 'function'
+          ? this.captureValue.stop
+          : this.captureValue.handle.stop
+        const finalHar = await stop()
+        if (typeof finalHar === 'string' && finalHar) await bridgeHARToGraph(finalHar, this.options.target)
+      } catch {}
+    }
     this.captureValue = undefined
     this.options.runtime?.services.humanObserver.detach()
     if (this.capturePage) this.options.runtime?.services.passiveObserver.detach(this.capturePage)

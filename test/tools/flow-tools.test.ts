@@ -141,7 +141,20 @@ describe('flow-tools', () => {
           ]),
           localStorage: { token: 'abc' },
           credentialHash: expect.any(String),
+          reusable: true,
         })
+      )
+    })
+
+    it('marks an empty capture as non-reusable (no session, no reuse)', async () => {
+      mockStagehand.context.cookies.mockResolvedValueOnce([])
+      mockPage.evaluate.mockResolvedValueOnce({})
+      const { saveSession } = await import('../../src/tools/flow-tools')
+      const result = await callTool(saveSession, { name: 'empty-session' })
+
+      expect(result.ok).toBe(true)
+      expect(mockStore.addAuthFlow).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'empty-session', reusable: false })
       )
     })
 

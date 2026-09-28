@@ -44,6 +44,7 @@ export const idorSwapper: TechniquePrimitive = {
       id: 'idor-baseline',
       description: `Access own object ${ctx.objectId} at ${url}`,
       request: { method, url, headers },
+      actor: ctx.role,
       metadata: { kind: 'baseline', objectId: ctx.objectId, altObjectId: ctx.altObjectId },
     }
 
@@ -54,6 +55,7 @@ export const idorSwapper: TechniquePrimitive = {
       id: 'idor-alt',
       description: `Access OTHER user's object ${ctx.altObjectId} at ${swappedUrl}`,
       request: { method, url: swappedUrl, headers, ...(altBody ? { body: altBody } : {}) },
+      actor: ctx.role,
       expectedSignal: 'server returns the other user\'s object data to the actor',
       metadata: { kind: 'alt', objectId: ctx.objectId, altObjectId: ctx.altObjectId },
     }
@@ -116,6 +118,8 @@ export const idorSwapper: TechniquePrimitive = {
             request: `${alt.step.request.method} ${alt.step.request.url}${alt.step.request.body ? `\n\n${alt.step.request.body}` : ''}`,
             response: `HTTP ${altStatus}\n${(alt.body ?? '').slice(0, 800)}`,
             impact: `Actor accessed another user's object data without authorization (divergence=${cmp.divergence.toFixed(2)}).`,
+             actor: baseline.step.actor,
+             altActor: alt.step.actor,
           }
         : undefined,
       dataArtifact,

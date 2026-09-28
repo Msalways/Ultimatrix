@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType } from '../graph/schema'
 import { getEngagementServices } from '../runtime/engagement-context'
+import { getConfig } from '../config'
 import { buildRuntimeEnvelope, type RuntimeAlert } from '../runtime/context-envelope'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
@@ -30,11 +31,15 @@ export const getSessionContext = createTool({
     const services = getEngagementServices()
     const graph = services?.graph ?? getGlobalGraphStore()
 
-    // F6 FIX: Return real target from graph store, not hardcoded empty string.
-    const target = graph?.getTargetSummary()?.targetOrigin ?? ''
+    // Return the engagement-owned target first, then the configured target.
+    const summary = graph?.getTargetSummary?.() as { targetOrigin?: string } | undefined
+    const target = summary?.targetOrigin
+      ?? services?.workspace?.getCurrentTarget?.()
+      ?? getConfig().target
+      ?? ''
 
     // F6 FIX: Return real context window from registry, not hardcoded 128k.
-    const config = services?.config ?? {}
+    const config = getConfig()
     const registry = new ContextWindowRegistry(config as any)
     const modelId = (config as any).model ?? ''
     const contextWindow = registry.getContextWindow(modelId) || 32_000
@@ -50,7 +55,7 @@ export const getSessionContext = createTool({
     const factStrings: string[] = []
     const recentFacts: string[] = []
     try {
-      const blackboard = services?.blackboard
+      const blackboard = (services as { blackboard?: { facts?: Array<{ intent: string; content: string }> } } | undefined)?.blackboard
       if (blackboard?.facts) {
         for (const fact of blackboard.facts) {
           factStrings.push(`${fact.intent}: ${fact.content}`)

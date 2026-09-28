@@ -1,7 +1,7 @@
 import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ResearchEntity } from './types'
-import { inferNameFromUrl, looksLikeId, normalizeName, stableId, uniq, words } from './utils'
+import { inferNameFromUrl, looksLikeId, normalizeName, stableId, uniq, words, isTransportOrAssetUrl } from './utils'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
 function entityFromEndpoint(url: string): { name: string; ids: string[] } {
@@ -23,6 +23,10 @@ export function extractEntities(store: GraphStore): ResearchEntity[] {
 
   for (const endpoint of endpoints) {
     const props = endpoint.properties
+    // A favicon or bundle is not a domain entity ("Favicon.Ico" with
+    // fabricated confidence is worse than no entity — it launders noise
+    // into hypotheses downstream).
+    if (isTransportOrAssetUrl(props.url, props.method)) continue
     const derived = entityFromEndpoint(props.url)
     const paramNames = (props.params || []).map(p => p.name)
     const bodyKeys = props.bodySchema ? Object.keys(props.bodySchema) : []

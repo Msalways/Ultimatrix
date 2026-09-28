@@ -2,7 +2,8 @@
 import { z } from 'zod'
 import {getCompressionService} from '../compression/headroom-service'
 import { getTechniqueRegistry } from '../skills/technique-registry'
-import { isUrlInScope } from '../safety/scope-guard'
+import { isUrlInScope, enforceAction, enforceHttpMethod } from '../safety/scope-guard'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 
 // ── WAF vendor patterns (from registry) ──
 
@@ -111,6 +112,7 @@ export const evaluateRendered = createTool({
       const targetUrl = u.toString()
 
       if (_sharedBrowser) {
+        enforceAction('browser_action', { toolId: 'evaluateRendered' })
         const browser = _sharedBrowser as { goto: (input: { url: string; waitUntil?: string; timeout?: number }) => Promise<unknown>; evaluate: (input: { script: string }) => Promise<{ success: boolean; result: unknown }> }
         try {
           await browser.goto({ url: targetUrl, waitUntil: 'load', timeout: 15000 })
@@ -132,7 +134,7 @@ export const evaluateRendered = createTool({
         }
       }
 
-      const res = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
+      const res = await getTargetTransportGovernor().run(targetUrl, () => fetch(targetUrl, { signal: AbortSignal.timeout(15000) }))
       const body = (await getCompressionService().compressResponse(await res.text())).compressed
       const lower = body.toLowerCase()
       const lowerPayload = ctx.payload.toLowerCase()
@@ -180,12 +182,13 @@ export const measureTiming = createTool({
       if (!baseScopeCheck.allowed) {
         return { ok: false, value: { timingDeltaMs: 0, vulnerable: false, samples } }
       }
+      enforceHttpMethod(ctx.method ?? 'GET')
       for (let i = 0; i < iters; i++) {
         const u = new URL(ctx.url)
         const key = ctx.paramName ?? u.searchParams.keys().next().value ?? 'q'
         u.searchParams.set(key, ctx.payload)
         const t0 = Date.now()
-        await fetch(u.toString(), { method: ctx.method ?? 'GET', redirect: 'manual' })
+        await getTargetTransportGovernor().run(u.toString(), () => fetch(u.toString(), { method: ctx.method ?? 'GET', redirect: 'manual' }))
         samples.push(Date.now() - t0)
       }
       samples.sort((a, b) => a - b)

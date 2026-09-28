@@ -38,12 +38,12 @@ export class SPARouteDiscoverer {
   async injectHistoryWatcher(page: any): Promise<void> {
     await page.evaluate(() => {
       const _orig = history.pushState.bind(history)
-      history.pushState = function (...args: any[]) {
+      history.pushState = function (...args: Parameters<typeof history.pushState>) {
         _orig(...args)
         window.dispatchEvent(new Event('locationchange'))
       }
       const _origReplace = history.replaceState.bind(history)
-      history.replaceState = function (...args: any[]) {
+      history.replaceState = function (...args: Parameters<typeof history.replaceState>) {
         _origReplace(...args)
         window.dispatchEvent(new Event('locationchange'))
       }

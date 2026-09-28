@@ -37,8 +37,19 @@ export function proposeThreatModel(
   for (const e of Array.isArray(edges) ? edges : []) {
     const to = (e as any).toId ?? (e as any).to
     const props = (e as any).properties ?? {}
-    if (props?.fromFindingId === findingId && typeof to === 'string') {
-      if (isUrlInScope(to)) reachable.push(to)
+    const endpointUrl = typeof props?.endpointUrl === 'string'
+      ? props.endpointUrl
+      : (() => {
+          try {
+            new URL(to)
+            return to
+          } catch { /* edge target may be a graph node id */ }
+          const endpoint = store.getNode(to) as { properties?: { url?: unknown } } | undefined
+          const url = endpoint?.properties?.url
+          return typeof url === 'string' ? url : undefined
+        })()
+    if ((props?.fromFindingId === findingId || props?.findingId === findingId) && typeof endpointUrl === 'string') {
+      if (isUrlInScope(endpointUrl)) reachable.push(endpointUrl)
     }
   }
 

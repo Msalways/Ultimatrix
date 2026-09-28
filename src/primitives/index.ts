@@ -13,8 +13,10 @@
  */
 
 import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getEngagementServices } from '../runtime/engagement-context'
+import { enforceAction, enforceHttpMethod } from '../safety/scope-guard'
 import {
   getPrimitive,
   listPrimitives,
@@ -114,15 +116,20 @@ const PRIMITIVE_IDS = listPrimitives().map(p => p.id) as [string, ...string[]]
 function buildContext(input: Record<string, any> = {}): TechniqueContext {
   const ctx: TechniqueContext = {}
   if (input.target) ctx.target = input.target
-  if (input.endpointUrl || input.target) {
+  // Flat endpoint keys (runPrimitive tool shape) take precedence; a nested
+  // endpoint object (programmatic callers like the exploitation loop) fills
+  // the gaps so recorded params survive into the primitive. Neither side
+  // changes behavior for callers that already pass flat keys.
+  const nested = (input.endpoint && typeof input.endpoint === 'object' ? input.endpoint as Record<string, any> : undefined)
+  if (input.endpointUrl || input.target || nested?.url) {
     ctx.endpoint = {
-      url: input.endpointUrl ?? input.target,
-      method: (input.endpointMethod ?? 'GET') as string,
-      params: Array.isArray(input.params) ? input.params : undefined,
-      authRequired: input.authRequired,
-      authType: input.authType,
-      useCase: input.useCase,
-      tags: input.tags,
+      url: input.endpointUrl ?? nested?.url ?? input.target,
+      method: (input.endpointMethod ?? nested?.method ?? 'GET') as string,
+      params: Array.isArray(input.params) ? input.params : Array.isArray(nested?.params) ? nested.params : undefined,
+      authRequired: input.authRequired ?? nested?.authRequired,
+      authType: input.authType ?? nested?.authType,
+      useCase: input.useCase ?? nested?.useCase,
+      tags: input.tags ?? nested?.tags,
     }
   }
   if (input.param) ctx.param = input.param
@@ -130,6 +137,8 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (Array.isArray(input.roles)) ctx.roles = input.roles
   if (input.sessionHeaders) ctx.sessionHeaders = input.sessionHeaders
   if (input.altSessionHeaders) ctx.altSessionHeaders = input.altSessionHeaders
+  if (input.sessionRef) ctx.sessionRef = input.sessionRef
+  if (input.altSessionRef) ctx.altSessionRef = input.altSessionRef
   if (input.objectId) ctx.objectId = input.objectId
   if (input.altObjectId) ctx.altObjectId = input.altObjectId
   if (Array.isArray(input.workflowSteps)) ctx.workflowSteps = input.workflowSteps
@@ -145,12 +154,19 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (input.concurrency !== undefined) ctx.concurrency = input.concurrency
   if (input.maxAttempts !== undefined) ctx.maxAttempts = input.maxAttempts
   if (input.relationSeed) ctx.relationSeed = input.relationSeed
+  if (Array.isArray(input.experimentIds)) ctx.experimentIds = input.experimentIds
   return ctx
 }
 
 // ─── Executor: run a step via the HTTP tool (real tool output) ───────────
 
 async function executeOnce(step: AttackStep): Promise<StepExecutionResult> {
+  try {
+    if (step.metadata?.useRaw) enforceAction('execute', { toolId: step.id })
+    else enforceHttpMethod(step.request.method)
+  } catch (error) {
+    return { step, ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
   // Smuggling/deserialization primitives may request a raw-socket transport
   // (manual framing that fetch cannot express) via step.metadata.useRaw.
   if (step.metadata?.useRaw) {
@@ -236,6 +252,16 @@ export async function runPrimitiveById(
     return { ok: false, available: listPrimitives().map(p => p.id), result: undefined }
   }
   const ctx = buildContext(context)
+  if (isBountyProfile() && (ctx.sessionHeaders || ctx.altSessionHeaders)) {
+    const manager = (await import('../http/session-manager')).getGlobalSessionManager()
+    const endpointUrl = ctx.endpoint?.url ?? ctx.target
+    const refs = [ctx.sessionRef, ctx.altSessionRef].filter((value): value is string => typeof value === 'string')
+    if (refs.length === 0 || refs.some((ref) => {
+      try { manager.assertOrigin(ref, endpointUrl ?? ''); return false } catch { return true }
+    })) {
+      return { ok: false, skipped: true, reason: 'Bounty primitives require origin-bound actor session references, not raw session headers' }
+    }
+  }
   if (!primitive.appliesTo(ctx)) {
     return { ok: true, skipped: true, reason: `primitive "${primitiveId}" not applicable to context`, result: { confirmed: false, confidence: 0, evidence: [] } }
   }
@@ -314,8 +340,26 @@ export async function runPrimitiveById(
         impact: `${proof.impact}\n\n[${result.dataArtifact.kind}] ${result.dataArtifact.label}:\n${result.dataArtifact.data.slice(0, 1500)}`,
       }
     }
+    // Derive replay material from the same structured request/response that
+    // the primitive oracle inspected. Prose-only proofs remain proposed and
+    // cannot be promoted into a replayable case file.
+    if (proof && result.finding?.request) {
+      const responseEvidence = result.evidence.find((item) => item.kind === 'response')
+      const expected = result.finding.evidenceMarkers?.find((value) => value.length > 0)
+        ?? result.finding.response?.body
+        ?? (typeof responseEvidence?.data === 'string' && responseEvidence.data.length > 0 ? responseEvidence.data : undefined)
+      if (result.finding.request.url && expected) {
+        proof = {
+          ...proof,
+          method: result.finding.request.method,
+          ...(result.finding.request.headers ? { headers: result.finding.request.headers } : {}),
+          ...(result.finding.request.body !== undefined ? { body: result.finding.request.body } : {}),
+          expectedVulnerableResponse: expected,
+        }
+      }
+    }
 
-    await (writeFinding as any).execute({
+    const commitResult = await (writeFinding as any).execute({
       type: result.finding?.category ?? primitive.id,
       endpoint: findingUrl,
       method: result.finding?.request?.method,
@@ -325,10 +369,23 @@ export async function runPrimitiveById(
       confidence: result.confidence,
       cwe: result.finding?.cwe,
       remediation: result.finding?.remediation,
+      // Escalation of an already proven finding carries its experiment
+      // provenance into the commit gate. Fresh direct primitive calls remain
+      // candidates until the research/retest path creates an experiment.
+      ...(Array.isArray(ctx.experimentIds) && ctx.experimentIds.length > 0
+        ? { experimentIds: ctx.experimentIds }
+        : {}),
       // W1: when the oracle proved weaponizability, persist a first-class
       // EXPLOIT_PROOF node (real request/response/impact) via writeFinding.
       ...(proof ? { exploitProof: proof } : {}),
     })
+    if (!commitResult?.ok) {
+      return {
+        ok: false,
+        reason: commitResult?.error ?? 'primitive confirmation was not persisted as a finding',
+        result,
+      }
+    }
   }
 
   return { ok: true, result }
@@ -443,11 +500,14 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
         roles: z.array(z.string()).optional(),
         sessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for the actor'),
         altSessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for an alternate actor'),
+       sessionRef: z.string().optional().describe('Origin-bound SessionManager reference for the primary actor'),
+       altSessionRef: z.string().optional().describe('Origin-bound SessionManager reference for the alternate actor'),
         objectId: z.string().optional().describe('Object id owned by the actor (IDOR)'),
         altObjectId: z.string().optional().describe('Object id owned by another user (IDOR)'),
         workflowSteps: z.array(z.string()).optional(),
         payloads: z.array(z.string()).optional(),
         state: z.record(z.string(), z.any()).optional(),
+       experimentIds: z.array(z.string()).optional().describe('Proven experiment IDs authorizing finding promotion for an escalation run.'),
         authRequired: z.boolean().optional(),
         authType: z.string().optional(),
         useCase: z.string().optional().describe('Analyser-assigned endpoint use-case'),

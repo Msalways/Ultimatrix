@@ -15,6 +15,8 @@ export type HypothesisKind =
   | 'mass_assignment'
   | 'workflow_bypass'
   | 'information_disclosure'
+  | 'reflected_injection'
+  | 'open_redirect'
   | 'replay'
   | 'state_confusion'
   | 'client_side_only_validation'
@@ -51,6 +53,13 @@ export interface ResearchHypothesis {
   kind: HypothesisKind
   reason: string
   targetEndpoints: string[]
+  /**
+   * Request parameter names carrying the hypothesized signal (e.g. query
+   * params observed echoing into a response). Survives graph persistence via
+   * the hypothesis property spread; consumed by experiment planning and
+   * marker mutation so the probe targets the observed sink, not a guess.
+   */
+  targetParams?: string[]
   relatedWorkflowIds: string[]
   relatedEntityIds: string[]
   requiredSetup: string[]

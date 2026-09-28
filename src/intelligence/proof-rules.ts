@@ -8,8 +8,8 @@
  * structural — no prose scanning.
  *
  * Floors by severity (impact):
- *   critical — ≥2 independent captures of kind har_entry/raw_request/raw_response
- *   high     — ≥1 non-text capture (screenshot/har_entry/raw_request/raw_response)
+ *   critical — ≥2 independent captures of kind browser_effect/har_entry/raw_request/raw_response
+ *   high     — ≥1 non-text capture (browser_effect/screenshot/har_entry/raw_request/raw_response)
  *   medium   — ≥1 evidence item of any kind
  *   low      — ≥1 evidence item of any kind, conflicts tolerated
  *   info     — no floor (informational note, not a vuln claim)
@@ -56,9 +56,9 @@ export interface ProofCheckInput {
   items: EvidenceItem[]
 }
 
-const STRUCTURED_KINDS: EvidenceItemType[] = ['har_entry', 'raw_request', 'raw_response']
-const NON_TEXT_KINDS: EvidenceItemType[] = ['screenshot', 'har_entry', 'raw_request', 'raw_response']
-const ALL_KINDS: EvidenceItemType[] = ['text', 'screenshot', 'har_entry', 'raw_request', 'raw_response']
+const STRUCTURED_KINDS: EvidenceItemType[] = ['browser_effect', 'har_entry', 'raw_request', 'raw_response']
+const NON_TEXT_KINDS: EvidenceItemType[] = ['browser_effect', 'screenshot', 'har_entry', 'raw_request', 'raw_response']
+const ALL_KINDS: EvidenceItemType[] = ['text', 'browser_effect', 'screenshot', 'har_entry', 'raw_request', 'raw_response']
 
 /** Default deterministic floor for a severity. Unknown severities get no floor. */
 export function defaultProofFloor(severity: string): ProofRule {
@@ -133,8 +133,11 @@ export function checkProof(input: ProofCheckInput): ProofCheckResult {
   }
 
   const qualifying = input.items.filter(i => rule.requiredEvidenceKinds.includes(i.type) && qualifiesForEndpoint(input.endpoint, i))
-  const sources = new Set(qualifying.map(i => i.id))
-  const evidenceRefs = [...sources]
+  // A request and its response from one execution are one source. Independent
+  // executions are identified by the typed executionId; legacy items fall back
+  // to their stable ledger id until provenance is populated.
+  const sources = new Set(qualifying.map(i => i.observed?.executionId ?? i.id))
+  const evidenceRefs = qualifying.map(i => i.id)
 
   const missingEvidence: string[] = []
   if (evidenceRefs.length < rule.minIndependentSources) {

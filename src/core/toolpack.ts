@@ -29,6 +29,7 @@ import { httpRequest, followRedirects } from '../tools/http-tools'
 import { listCapturedRequests, replayCapturedRequest } from '../tools/replay-tools'
 import { manageSkills } from '../tools/skill-manage-tools'
 import { recordEvidence, writeFinding } from '../tools/control-tools'
+import { recordDisposition, getDispositions } from '../tools/disposition-tools'
 import { askUser } from '../tools/interaction-tools'
 import { detectReactions, getDialogEvidence, getRecentChanges } from '../tools/reaction-tools'
 import {
@@ -71,7 +72,7 @@ import { createRunTaskGraphTool } from '../manager/tools/run-task-graph'
 import { wrapStagehandTools } from '../browser/dialog-inject'
 import { CrossEngagementMemory } from '../intelligence/cross-engagement'
 import { getSessionContext } from '../tools/context-tools'
-import { useCredential } from '../tools/credential-tools'
+import { useCredential, acquireActors } from '../tools/credential-tools'
 import { extractBrowserAuth } from '../tools/extract-browser-auth'
 
 // ─── Types ─────────────────────────────────────────────────────────────
@@ -162,6 +163,7 @@ function sessionTools(p: string): Record<string, any> {
     useSession: s(useSession, p),
     extractSessionCookie: s(extractSessionCookie, p),
     useCredential: s(useCredential, p),
+    acquireActors: s(acquireActors, p),
     extractBrowserAuth: s(extractBrowserAuth, p),
   }
 }
@@ -177,6 +179,13 @@ function miscTools(p: string): Record<string, any> {
     getRecentChanges: s(getRecentChanges, p),
     recordOutcome: s(recordOutcomeTool, p),
     webSearch: s(webSearch, p),
+    // Rulings the operator makes. This MUST be in the brain's pack: the prompt
+    // tells the model to record a correction, and a model told to call a tool
+    // that is not in its pack will either guess a name or narrate the write
+    // instead. That is not a hypothetical — it is exactly what happened in the
+    // first live run of this feature.
+    recordDisposition: s(recordDisposition, p),
+    getDispositions: s(getDispositions, p),
   }
 }
 
@@ -266,7 +275,7 @@ function externalTools(config: UltimatrixConfig, p: string): Record<string, any>
     const adapter = ALL_ADAPTERS.find(candidate => candidate.id === id)
     if (!adapter) return []
     const commandBuilder = sandbox ? TOOL_COMMANDS[id] : undefined
-    const tool = commandBuilder
+    const tool = sandbox && commandBuilder
       ? buildAdapterTool(createSandboxAdapter(adapter, sandbox, commandBuilder))
       : buildAdapterTool(adapter)
     return [[id, s(tool, p)]]

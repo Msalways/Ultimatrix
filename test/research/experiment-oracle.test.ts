@@ -19,6 +19,20 @@ describe('evaluateExperimentOracle', () => {
     expect(evaluateExperimentOracle('exp', oracle, [evidence('base', 'unique-42'), evidence('mut', 'unique-42')]).status).toBe('disproven')
   })
 
+  it('proves a marker URL echoed into response headers (redirect sinks)', () => {
+    const marker = 'https://marker-abc123.example.com/'
+    const oracle = { type: 'unique-marker' as const, baselineEvidenceId: 'base', mutationEvidenceId: 'mut', marker }
+    const base = evidence('base', '', { status: 302, responseHeaders: { location: '/' } })
+    const mut = evidence('mut', '', { status: 302, responseHeaders: { location: marker } })
+    expect(evaluateExperimentOracle('exp', oracle, [base, mut]).status).toBe('proven')
+    // Marker already in the baseline Location is not fresh evidence.
+    const baseLeak = evidence('base', '', { status: 302, responseHeaders: { Location: marker } })
+    expect(evaluateExperimentOracle('exp', oracle, [baseLeak, mut]).status).toBe('disproven')
+    // Header-name case must not matter (fetch lowercases, HAR preserves).
+    const mutCap = evidence('mut', '', { status: 302, responseHeaders: { Location: marker } })
+    expect(evaluateExperimentOracle('exp', oracle, [base, mutCap]).status).toBe('proven')
+  })
+
   it('returns inconclusive when referenced evidence is missing', () => {
     const outcome = evaluateExperimentOracle('exp', {
       type: 'oast-callback', evidenceId: 'callback', correlationToken: 'token-1',

@@ -132,6 +132,7 @@ async function runSlice(
 ): Promise<SliceOutcome & { findings: Finding[] }> {
   const results: PrimitiveResult[] = []
   const confirmedFindings: Finding[] = []
+  const persistedPrimitiveIds: string[] = []
   let confirmed = 0
 
   const ctx: SliceExecContext = {
@@ -165,9 +166,12 @@ async function runSlice(
       results.push(result)
 
       if (result.confirmed && (result.confidence ?? 0) >= 0.7) {
-        confirmed++
         const finding = await persistFinding(slice, result, evidenceGate)
-        if (finding) confirmedFindings.push(finding)
+        if (finding) {
+          confirmed++
+          confirmedFindings.push(finding)
+          persistedPrimitiveIds.push(result.primitiveId)
+        }
       }
     } catch (err) {
       log.warn(`[campaign] primitive ${primitiveId} failed on ${slice.endpoint.url}: ${(err as Error).message}`)
@@ -182,7 +186,7 @@ async function runSlice(
     }
   }
 
-  return { slice, results, confirmed, findings: confirmedFindings, budgetExceeded: budget.exceeded }
+  return { slice, results, confirmed, findings: confirmedFindings, persistedPrimitiveIds, budgetExceeded: budget.exceeded }
 }
 
 async function persistFinding(

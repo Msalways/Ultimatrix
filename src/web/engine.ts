@@ -113,7 +113,7 @@ export class WebEngine {
     this.forensicLog = this.runtime!.forensicLog
 
     // Scope guard — same as CLI
-    const scopeConfig = this.config.scope ?? (opts.target ? deriveScopeFromTarget(opts.target) : null)
+    const scopeConfig = this.runtime?.services.scopeConfig ?? this.config.scope ?? (opts.target ? deriveScopeFromTarget(opts.target) : null)
     setScopeConfig(scopeConfig)
     // External-tool policy: opt-in only (deny by default)
     setExternalToolsConfig(this.config.externalTools ?? null)
@@ -126,7 +126,7 @@ export class WebEngine {
 
     // Engine services (brain, worker pool, skill registry, blackboard, evidence, council, model selector)
     this.engineServices = await createEngineServices({
-      config: this.config,
+      config: this.runtime?.config ?? this.config,
       memory: this.memory,
       target: opts.target,
       identity: this.runtimeIdentity,
@@ -363,7 +363,7 @@ export class WebEngine {
       await this.engineServices.lazyServices?.close()
       await this.engineServices.extensionRegistry?.closeAll()
       this.engineServices = await createEngineServices({
-        config: this.config,
+        config: this.runtime?.config ?? this.config,
         memory: this.memory,
         target: this.target,
         identity: this.runtimeIdentity,
@@ -373,7 +373,7 @@ export class WebEngine {
       })
 
       // Update scope guard
-      const scopeConfig = this.config.scope ?? (this.target ? deriveScopeFromTarget(this.target) : null)
+      const scopeConfig = this.runtime?.services.scopeConfig ?? this.config.scope ?? (this.target ? deriveScopeFromTarget(this.target) : null)
       setScopeConfig(scopeConfig)
       // Update external-tool policy (opt-in only)
       setExternalToolsConfig(this.config.externalTools ?? null)

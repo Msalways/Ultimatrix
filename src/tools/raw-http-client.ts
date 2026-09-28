@@ -14,7 +14,8 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import net from 'node:net'
-import { isUrlInScope } from '../safety/scope-guard'
+import { isUrlInScope, enforceAction } from '../safety/scope-guard'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 
 function parseTarget(url: string): { host: string; port: number; tls: boolean } {
   const u = new URL(url)
@@ -39,13 +40,25 @@ export const rawHttpClient = createTool({
     socketClosed: z.boolean().optional(),
   }),
   execute: async (ctx) => {
+    try {
+      enforceAction('execute', { toolId: 'rawHttpClient' })
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error), socketClosed: true }
+    }
     const scope = isUrlInScope(ctx.url)
     if (!scope.allowed) return { ok: false, error: `out of scope: ${scope.reason}`, socketClosed: true }
 
     const { host, port, tls } = parseTarget(ctx.url)
-    const socket = tls
-      ? (await import('node:tls')).connect({ host, port, rejectUnauthorized: false })
-      : net.connect({ host, port })
+    const release = await getTargetTransportGovernor().acquire(ctx.url)
+    let socket: import('node:net').Socket
+    try {
+      socket = tls
+        ? (await import('node:tls')).connect({ host, port, rejectUnauthorized: false })
+        : net.connect({ host, port })
+    } catch (error) {
+      release()
+      throw error
+    }
 
     return new Promise((resolve) => {
       let buf = ''
@@ -54,6 +67,7 @@ export const rawHttpClient = createTool({
         if (settled) return
         settled = true
         try { socket.destroy() } catch { /* ignore */ }
+        release()
         resolve(out)
       }
       socket.setTimeout(ctx.timeoutMs ?? 8000, () => finish({ ok: false, error: 'timeout', socketClosed: true }))

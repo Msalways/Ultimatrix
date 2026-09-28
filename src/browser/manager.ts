@@ -1,4 +1,5 @@
 import { StagehandBrowser } from '@mastra/stagehand'
+import type { BrowserHandle, CamofoxBrowserHandle } from './provider'
 import type { UltimatrixConfig } from '../config'
 import { PROVIDER_INFO } from '../config'
 import { log } from '../utils/logger'
@@ -12,10 +13,14 @@ import { redactString } from '../security/secret-vault'
 import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface BrowserManagerState {
-  browser: StagehandBrowser | null
-  activeBrowser: StagehandBrowser | null
+  browser: BrowserHandle | null
+  activeBrowser: BrowserHandle | null
   creating: boolean
   configSnapshot: { headless: boolean; viewport: { width: number; height: number }; env: string } | null
+}
+
+function isCamofoxBrowser(browser: unknown): browser is CamofoxBrowserHandle {
+  return !!browser && typeof browser === 'object' && (browser as { providerName?: unknown }).providerName === 'camofox'
 }
 
 export function createBrowserManagerState(): BrowserManagerState {
@@ -81,14 +86,20 @@ export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
   if (config.browser.provider && config.browser.provider !== 'stagehand') {
     throw new Error(`Unsupported browser provider: ${config.browser.provider}. Use resolveBrowserProvider() for non-stagehand providers.`)
   }
-  if (state.browser) return state.browser
+  if (state.browser) {
+    if (isCamofoxBrowser(state.browser)) throw new Error('A Camoufox browser is already active; provider cannot switch to Stagehand in this workflow')
+    return state.browser as StagehandBrowser
+  }
   if (state.creating) {
     // Wait for the other creation to finish
     const start = Date.now()
     while (state.creating && Date.now() - start < 30_000) {
       // busy wait — creation is fast
     }
-    if (state.browser) return state.browser
+    if (state.browser) {
+      if (isCamofoxBrowser(state.browser)) throw new Error('A Camoufox browser is already active; provider cannot switch to Stagehand in this workflow')
+      return state.browser as StagehandBrowser
+    }
   }
   state.creating = true
   try {
@@ -119,18 +130,23 @@ export function getOrCreateBrowser(config: UltimatrixConfig): StagehandBrowser {
   } finally {
     state.creating = false
   }
-  return state.browser!
+  return state.browser as StagehandBrowser
 }
 
-export function setActiveBrowser(b: StagehandBrowser): void {
+export function setActiveBrowser(b: BrowserHandle): void {
   const state = getBrowserManagerState()
   if (state.activeBrowser && state.activeBrowser !== b && state.browser !== b) {
-    state.activeBrowser.close().catch(() => {})
+    const previous = state.activeBrowser as any
+    if (isCamofoxBrowser(previous)) {
+      void (previous.context as any)?.close?.()
+    } else {
+      void previous.close?.()
+    }
   }
   state.activeBrowser = b
 }
 
-export function getActiveBrowser(): StagehandBrowser | null {
+export function getActiveBrowser(): BrowserHandle | null {
   const state = getBrowserManagerState()
   return state.activeBrowser || state.browser
 }
@@ -164,6 +180,7 @@ export function getActiveCamofoxSession(): ActiveCamofoxSession | null {
 export function getActiveBrowserContext(): any | null {
   if (camofoxSession) return camofoxSession.context ?? null
   const b = getActiveBrowser()
+  if (isCamofoxBrowser(b)) return b.context ?? null
   try {
     return (b as any)?.requireStagehand?.()?.context ?? null
   } catch {
@@ -190,7 +207,13 @@ export async function closeBrowser(): Promise<void> {
       stopDialogWatcher()
       getGlobalReactionObserver().detach()
       getGlobalObserver().detach()
-      await state.browser.close()
+      const browser = state.browser
+      if (isCamofoxBrowser(browser)) {
+        await (browser.context as any)?.close?.()
+        await (browser as any)?.close?.()
+      } else {
+        await (browser as any)?.close?.()
+      }
     } catch (err) {
       log.dim(`Browser close error: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -243,10 +266,13 @@ export function getActivePage(): any | null {
   try {
     const stagehand = (b as any)?.requireStagehand?.()
     if (stagehand?.context) {
-      return stagehand.context.activePage() || stagehand.context.pages?.[0] || null
+      const active = stagehand.context.activePage
+      const page = typeof active === 'function' ? active() : active
+      return page || stagehand.context.pages?.[0] || null
     }
   } catch {}
   // Camoufox (Playwright) session.
+  if (isCamofoxBrowser(b)) return b.page ?? null
   return camofoxSession?.page ?? null
 }
 

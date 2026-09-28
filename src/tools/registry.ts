@@ -3,6 +3,7 @@ import { recordTestCase } from './record-test-case'
 import { parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse } from './observation-tools'
 import { extractSessionCookie, extractCsrfToken, useSession } from './session-tools'
 import { recordEvidence, linkEvidenceToClaim, writeFinding } from './control-tools'
+import { recordDisposition, getDispositions } from './disposition-tools'
 import { verifyChainsTool } from './detect-chains-tool'
 import { queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams, upsertPage, addAction, addInput, addEndpoint, addAuthFlow, addRBACRole, addAttack, chainFindings } from '../graph/tools'
 import { readAppModelSection, writeAppModelSection } from './app-model-tools'
@@ -19,7 +20,7 @@ import { runPrimitiveTool } from '../primitives'
 import { runCampaignTool } from '../campaign/campaign-tool'
 import { diagnoseTargetTool } from '../orchestration/tools'
 import { recordOutcomeTool } from '../intelligence/outcome-feedback'
-import { useCredential } from './credential-tools'
+import { useCredential, acquireActors } from './credential-tools'
 import { dualSessionOrchestrator } from './dual-session'
 import { detectMarkerLeak } from './marker-oracle'
 import { rawHttpClient } from './raw-http-client'
@@ -35,7 +36,7 @@ export {
   recordTestCase,
   parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
   extractSessionCookie, extractCsrfToken, useSession,
-  recordEvidence, linkEvidenceToClaim, writeFinding,
+  recordEvidence, linkEvidenceToClaim, writeFinding, recordDisposition, getDispositions,
   verifyChainsTool,
   queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
   getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds,
@@ -53,6 +54,7 @@ export {
   diagnoseTargetTool,
   recordOutcomeTool,
   useCredential,
+  acquireActors,
   dualSessionOrchestrator,
   detectMarkerLeak,
   rawHttpClient,
@@ -72,7 +74,7 @@ export function registerAllTools() {
     recordTestCase,
     parseResponse, evaluateRendered, measureTiming, compareResponses, checkWaf, findEndpointsInResponse,
     extractSessionCookie, extractCsrfToken, useSession,
-    recordEvidence, linkEvidenceToClaim, writeFinding,
+    recordEvidence, linkEvidenceToClaim, writeFinding, recordDisposition, getDispositions,
     verifyChains: verifyChainsTool,
     queryGraph, updateGraph, getTestCoverage, getAttackPath, getUntestedActions, getAuthFlows, getTargetSummary, getEndpointsWithParams,
     getGraphSchema, getCaptureOverview, queryRelations, getGraphNeighborhood, getWorkflowAround, traceValue, explainReachability, getUntestedWorkarounds,
@@ -90,6 +92,7 @@ export function registerAllTools() {
     diagnoseTarget: diagnoseTargetTool,
     recordOutcome: recordOutcomeTool,
     useCredential,
+    acquireActors,
     dualSessionOrchestrator,
     detectMarkerLeak,
     rawHttpClient,

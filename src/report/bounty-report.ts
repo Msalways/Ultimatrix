@@ -10,6 +10,7 @@
  */
 
 import { NodeType, type FindingNode, type ExploitProofNode, type EndpointNode } from '../graph/schema'
+import { redactHeadersStrict, redactString } from '../security/secret-vault'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -74,10 +75,11 @@ export function buildReport(
     const severity = String(props.severity ?? 'unknown')
     severityBreakdown[severity] = (severityBreakdown[severity] ?? 0) + 1
 
-    // Find linked exploit proof
+    // Join proofs by the canonical logical finding id, not the physical node id.
+    const logicalFindingId = String(props.findingId ?? finding.id)
     const proof = exploitProofs.find(p => {
       const pProps = p.properties as Record<string, unknown>
-      return String(pProps.findingId ?? '') === finding.id
+      return String(pProps.findingId ?? '') === logicalFindingId
     })
     const proofProps = proof?.properties as Record<string, unknown> | undefined
 
@@ -100,8 +102,8 @@ export function buildReport(
       exploitProof: proofProps ? {
         method: String(proofProps.method ?? 'GET'),
         url: String(proofProps.url ?? ''),
-        headers: typeof proofProps.headers === 'object' ? proofProps.headers as Record<string, string> : undefined,
-        body: typeof proofProps.body === 'string' ? proofProps.body : undefined,
+        headers: typeof proofProps.headers === 'object' ? redactHeadersStrict(proofProps.headers as Record<string, string>) : undefined,
+        body: typeof proofProps.body === 'string' ? redactString(proofProps.body) : undefined,
         reproSteps: Array.isArray(proofProps.reproSteps) ? proofProps.reproSteps.map(String) : [],
       } : undefined,
     })

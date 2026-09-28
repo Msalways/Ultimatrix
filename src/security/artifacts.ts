@@ -13,7 +13,7 @@ export type ArtifactKind =
   | 'session'
   | 'exchange'
 
-export type ArtifactStatus = 'created' | 'redacted' | 'linked' | 'reported' | 'deleted'
+export type ArtifactStatus = 'created' | 'redacted' | 'encrypted' | 'linked' | 'reported' | 'deleted'
 
 export interface ProvenanceRef {
   source: string

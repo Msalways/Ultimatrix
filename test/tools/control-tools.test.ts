@@ -147,6 +147,23 @@ describe('control-tools', () => {
       )
     })
 
+    it('persists the proven sink shape (param/method) onto the finding node', async () => {
+      const { writeFinding } = await import('../../src/tools/control-tools')
+      await recordFor('text', 'user data reflected', '/sink')
+      const result = await callTool(writeFinding, {
+        type: 'xss',
+        endpoint: '/sink',
+        param: 'q',
+        method: 'GET',
+        severity: 'low',
+        confidence: 0.5,
+      })
+      expect(result.ok).toBe(true)
+      expect(mockStore.addFinding).toHaveBeenCalledWith(
+        expect.objectContaining({ param: 'q', method: 'GET' })
+      )
+    })
+
     it('assigns L4 evidence level when evidence contains har_entry', async () => {
       const { writeFinding } = await import('../../src/tools/control-tools')
       await recordFor('har_entry', '{"url":"/api"}', '/api')

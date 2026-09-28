@@ -27,6 +27,35 @@ describe('GraphStore', () => {
     return new GraphStore(join(tmpDir, 'test-graph.json'))
   }
 
+  describe('exploit proof identity', () => {
+    it('looks up a proof by the logical finding id, not the graph node id', () => {
+      const store = createStore()
+      const finding = store.addFinding({
+        endpoint: 'https://example.com/api/object',
+        technique: 'idor',
+        findingId: 'idor:https://example.com/api/object:*',
+        evidence: ['raw response'],
+        confidence: 0.9,
+        lifecycleStatus: 'verified',
+        evidenceLevel: 'L4',
+        severity: 'high',
+      })
+      const proof = store.addExploitProof({
+        findingId: finding.properties.findingId,
+        title: 'cross-actor object read',
+        method: 'GET',
+        url: 'https://example.com/api/object/2',
+        reproSteps: [],
+        replayable: false,
+        status: 'proposed',
+      })
+      store.addEdge({ type: EdgeType.PROVES, fromId: proof.id, toId: finding.id, properties: { findingId: finding.properties.findingId } })
+
+      expect(store.getExploitProof(finding.properties.findingId)).toHaveLength(1)
+      expect(store.getExploitProof(finding.properties.findingId)[0].id).toBe(proof.id)
+    })
+  })
+
   describe('upsertPage', () => {
     it('creates a new page node', () => {
       const store = createStore()
@@ -107,6 +136,22 @@ describe('GraphStore', () => {
       const finding = store.addFinding({ technique: 'info' })
       expect(finding.properties.severity).toBe('medium')
     })
+
+    it('counts recorded findings in the target summary', () => {
+      // getTargetSummary resolves display caps from the project config, so
+      // it needs the repo cwd (this suite chdirs into a tmp dir per test).
+      const store = createStore()
+      process.chdir(origCwd)
+      try {
+        expect(store.getTargetSummary().totalFindings).toBe(0)
+        store.addFinding({ technique: 'xss', endpoint: '/search', severity: 'high', evidence: ['alert(1)'] })
+        const summary = store.getTargetSummary()
+        expect(summary.totalFindings).toBe(1)
+        expect(summary.findingsBySeverity.high).toBe(1)
+      } finally {
+        process.chdir(tmpDir)
+      }
+    })
   })
 
   describe('addAuthFlow', () => {
@@ -115,6 +160,17 @@ describe('GraphStore', () => {
       const flow = store.addAuthFlow({ flowType: 'login', steps: [{ action: 'goto', url: '/login' }] })
       expect(flow.type).toBe(NodeType.AUTH_FLOW)
       expect(flow.properties.flowType).toBe('login')
+    })
+
+    it('defaults reusable to false: reusability is earned, not granted', () => {
+      const store = createStore()
+      const flow = store.addAuthFlow({ flowType: 'login', steps: ['plan text, no session'] as any })
+      expect(flow.properties.reusable).toBe(false)
+    })
+
+    it('keeps an explicit reusable flag from callers with real session material', () => {
+      const store = createStore()
+      const flow = store.addAuthFlow({ flowType: 'login', steps: [], reusable: true, cookies: [{ name: 's', value: 'v', domain: 'x', path: '/', httpOnly: false, secure: false, sameSite: 'Lax' }] })
       expect(flow.properties.reusable).toBe(true)
     })
   })

@@ -6,6 +6,8 @@ import { generateHypotheses } from '../../src/research/hypothesis-engine'
 import { planExperiments } from '../../src/research/experiment-planner'
 import { compareResearchResponses } from '../../src/research/differential'
 import { candidateFromExperiment } from '../../src/research/candidate-store'
+import { isTransportOrAssetUrl } from '../../src/research/utils'
+import { NodeType, type EndpointNode } from '../../src/graph/schema'
 
 function seededStore(): GraphStore {
   const store = new GraphStore('test-output/research-graph.json')
@@ -77,5 +79,90 @@ describe('research engine', () => {
     )
     expect(differential.interesting).toBe(false)
     expect(differential.authorizationMismatch).toBe(false)
+  })
+})
+
+describe('extraction noise gates (transport/asset URLs are not behavior)', () => {
+  const ep = (id: string, url: string, method = 'GET'): EndpointNode => ({
+    id,
+    type: NodeType.ENDPOINT,
+    properties: { url, method, params: [], tags: [], source: 'har-bridge' },
+  })
+  const mockStore = (endpoints: EndpointNode[]) => ({
+    queryNodes: (type: any) => (type === NodeType.ENDPOINT ? endpoints : []),
+  }) as any
+
+  it('isTransportOrAssetUrl flags infrastructure without target keywords', () => {
+    expect(isTransportOrAssetUrl('https://app.test/favicon.ico')).toBe(true)
+    expect(isTransportOrAssetUrl('https://app.test/static/app.js')).toBe(true)
+    expect(isTransportOrAssetUrl('https://app.test/socket.io/', 'POST')).toBe(true)
+    expect(isTransportOrAssetUrl('https://app.test/rest/admin/health')).toBe(true)
+    expect(isTransportOrAssetUrl('https://app.test/api/orders/12345')).toBe(false)
+    expect(isTransportOrAssetUrl('https://app.test/reflected/parameter/body?q=x')).toBe(false)
+    expect(isTransportOrAssetUrl(':::not a url:::')).toBe(false)
+  })
+
+  it('extractWorkflows skips transport/asset endpoints, keeps app routes', () => {
+    const store = mockStore([
+      ep('e1', 'https://app.test/favicon.ico'),
+      ep('e2', 'https://app.test/socket.io/', 'POST'),
+      ep('e3', 'https://app.test/api/orders/12345'),
+    ])
+    const names = extractWorkflows(store).map(w => w.name)
+    expect(names.some(n => /favicon|socket\.io/i.test(n))).toBe(false)
+    expect(names.length).toBeGreaterThan(0)
+  })
+
+  it('extractWorkflows names the route, never a query-string value', () => {
+    const store = mockStore([
+      ep('e1', 'https://app.test/remoteinclude/parameter/script?q=https://google.com/x'),
+    ])
+    const names = extractWorkflows(store).map(w => w.name)
+    expect(names.some(n => /google\.com/i.test(n))).toBe(false)
+  })
+
+  it('extractEntities skips asset endpoints instead of minting bundle entities', () => {
+    const store = mockStore([
+      ep('e1', 'https://app.test/static/app.js'),
+      ep('e2', 'https://app.test/api/orders/12345'),
+    ])
+    const names = extractEntities(store).map(e => e.name)
+    expect(names.some(n => /app\.js/i.test(n))).toBe(false)
+    expect(names.length).toBeGreaterThan(0)
+  })
+
+  it('withholds keyword-claimed state changes without corroborating structure', () => {
+    const store = mockStore([
+      ep('e1', 'https://app.test/dom/toxicdom/sessionStorage/array/eval'),
+      ep('e2', 'https://app.test/dom/toxicdom/sessionStorage/array/innerHtml'),
+    ])
+    const workflows = extractWorkflows(store)
+    for (const w of workflows) expect(w.stateChanges).toEqual([])
+  })
+
+  it('keeps keyword state changes when inputs corroborate them', () => {
+    const withParams = {
+      id: 'e1',
+      type: NodeType.ENDPOINT,
+      properties: {
+        url: 'https://app.test/login',
+        method: 'POST',
+        params: [{ name: 'username' }, { name: 'password' }],
+        tags: [],
+        source: 'har-bridge',
+      },
+    } as any
+    const store = mockStore([withParams])
+    const workflows = extractWorkflows(store)
+    expect(workflows.some(w => w.stateChanges.length > 0)).toBe(true)
+  })
+
+  it('uncorroborated keyword workflows yield no bypass hypothesis', () => {
+    const store = mockStore([
+      ep('e1', 'https://app.test/dom/toxicdom/sessionStorage/array/eval'),
+      ep('e2', 'https://app.test/dom/toxicdom/sessionStorage/array/innerHtml'),
+    ])
+    const hyps = generateHypotheses(store, extractWorkflows(store), extractEntities(store))
+    expect(hyps.some(h => h.kind === 'workflow_bypass')).toBe(false)
   })
 })

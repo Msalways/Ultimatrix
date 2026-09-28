@@ -4,8 +4,9 @@ import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type ExperimentNode } from '../graph/schema'
 import { extractWorkflows } from '../research/workflow-extractor'
 import { extractEntities } from '../research/entity-extractor'
-import { generateHypotheses } from '../research/hypothesis-engine'
+import { findLocationEchoes, findReflectedParams, generateHypotheses, selectHypotheses } from '../research/hypothesis-engine'
 import { planExperiments } from '../research/experiment-planner'
+import { redirectMarkerUrl, reflectionMarker, reflectionMutation, redirectMutation } from '../research/utils'
 import { compareResearchResponses as compareResponsesCore } from '../research/differential'
 import { candidateFromExperiment, listCandidates, upsertCandidate } from '../research/candidate-store'
 import { assessCandidateForReport } from '../research/verifier'
@@ -14,7 +15,7 @@ import type { FindingCandidate, ResearchExperiment } from '../research/types'
 import { evaluateExperimentOracle, evaluateIndependentRetest } from '../research/experiment-oracle'
 import { coreEvidenceLedger } from '../core/evidence'
 import { getForensicLog } from './report-tools'
-import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { getCapturedRequestStore, type CapturedRequest } from '../capture/captured-request-store'
 import { replayCapturedRequest } from './replay-tools'
 import { requestAsActor } from './actor-tools'
 import { getGlobalSessionManager } from '../http/session-manager'
@@ -37,6 +38,11 @@ const evidenceOracleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('browser-effect'), evidenceId: z.string(), effectKey: z.string(), expectedValue: z.string() }),
 ])
 
+async function executeTool(tool: any, args: Record<string, unknown>): Promise<any> {
+  if (!tool || typeof tool.execute !== 'function') return { ok: false, error: 'required research tool unavailable' }
+  return tool.execute(args, {} as never)
+}
+
 export const buildResearchMap = createTool({
   id: 'buildResearchMap',
   description: 'Extract workflows and entities from the graph, generate bug-bounty hypotheses, and persist the research map. Use before choosing what to test.',
@@ -48,18 +54,53 @@ export const buildResearchMap = createTool({
       const store = getGlobalGraphStore()
       const workflows = extractWorkflows(store)
       const entities = extractEntities(store)
-      const hypotheses = generateHypotheses(store, workflows, entities).slice(0, maxHypotheses || 25)
+      // Reflection evidence comes from captured traffic (request values
+      // echoed in response bodies), not the graph. Feed a bounded snapshot
+      // so injection hypotheses generate from observed behavior.
+      let captured: CapturedRequest[] = []
+      try {
+        const capturedStore = getCapturedRequestStore()
+        captured = capturedStore.list({ limit: 300 })
+          .map(ref => capturedStore.get(ref.id))
+          .filter((entry): entry is CapturedRequest => Boolean(entry))
+      } catch { /* capture unavailable — hypotheses fall back to graph structure */ }
+      // The cap bounds context, but a flat top-N slice starves whole
+      // attack classes when one speculative kind floods the ranking. Select
+      // across kinds so capture-backed hypotheses survive the cut.
+      const hypotheses = selectHypotheses(
+        generateHypotheses(store, workflows, entities, captured),
+        maxHypotheses || 25,
+      )
 
       persistWorkflows(store, workflows)
       persistEntities(store, entities)
       persistHypotheses(store, hypotheses)
       await store.save()
 
+      // Echo observability: the capture-driven rules depend on capture
+      // evidence that may not exist yet (map built before probing). Report
+      // the input counts so a missing hypothesis is diagnosable as "no echo
+      // evidence" vs "rule failure".
+      let reflectionSignals = 0
+      let locationSignals = 0
+      try {
+        reflectionSignals = findReflectedParams(captured).length
+      } catch { /* observability only — never fail the map */ }
+      try {
+        locationSignals = findLocationEchoes(captured).length
+      } catch { /* observability only — never fail the map */ }
       const value = {
         workflows: workflows.length,
         entities: entities.length,
         hypotheses: hypotheses.length,
         topHypotheses: hypotheses.slice(0, 8),
+        reflection: {
+          capturesScanned: captured.length,
+          echoesFound: reflectionSignals,
+          injectionHypotheses: hypotheses.filter(h => h.kind === 'reflected_injection').length,
+          locationEchoesFound: locationSignals,
+          redirectHypotheses: hypotheses.filter(h => h.kind === 'open_redirect').length,
+        },
       }
       getForensicLog()?.log({ type: 'tool-result', agent: 'solver-brain', tool: 'buildResearchMap', result: value })
       return { ok: true, value }
@@ -118,7 +159,11 @@ const replayMutationSchema = z.object({
 type ReplayMutation = z.infer<typeof replayMutationSchema>
 
 /** Pick a concrete mutation from the typed hypothesis when autonomy omitted one. */
-export function automaticMutation(kind: string | undefined, request: { url: string; body?: string }): ReplayMutation {
+export function automaticMutation(
+  kind: string | undefined,
+  request: { url: string; body?: string },
+  targetParams?: string[],
+): ReplayMutation {
   if (kind === 'idor' || kind === 'broken_access_control') {
     try {
       const url = new URL(request.url)
@@ -151,6 +196,41 @@ export function automaticMutation(kind: string | undefined, request: { url: stri
         return { body: JSON.stringify({ ...parsed, __sentinel_probe: true }) }
       }
     } catch { /* non-JSON bodies use the auth-boundary fallback */ }
+  }
+
+  if (kind === 'reflected_injection') {
+    // Marker-in-echoed-param: replace the observed reflection sink with a
+    // deterministic unique marker. The caller asserts the marker in the
+    // differential; the unique-marker oracle proves it on evaluation.
+    const params = Array.isArray(targetParams) && targetParams.length > 0
+      ? targetParams
+      : (() => {
+          try {
+            return [...new URL(request.url).searchParams.keys()]
+          } catch {
+            return []
+          }
+        })()
+    const { url } = reflectionMutation(request.url, params)
+    if (url) return { url }
+  }
+
+  if (kind === 'open_redirect') {
+    // Marker-URL-in-destination-param: swap the observed redirect sink for
+    // a deterministic marker URL on a reserved host. The replay path never
+    // follows redirects, so the marker host is never contacted; the
+    // differential asserts it in the Location header.
+    const params = Array.isArray(targetParams) && targetParams.length > 0
+      ? targetParams
+      : (() => {
+          try {
+            return [...new URL(request.url).searchParams.keys()]
+          } catch {
+            return []
+          }
+        })()
+    const { url } = redirectMutation(request.url, params)
+    if (url) return { url }
   }
 
   return { removeHeaderNames: ['authorization', 'cookie', 'x-auth-token', 'x-csrf-token'] }
@@ -197,8 +277,32 @@ export const executePlannedExperiment = createTool({
       }
     }
 
+    const hypothesis = node.properties.hypothesisId
+      ? store.getNode(node.properties.hypothesisId) as { properties?: { kind?: string; targetParams?: string[] } } | undefined
+      : undefined
+    const hypothesisKind = hypothesis?.properties?.kind
+    const hypothesisParams = Array.isArray(hypothesis?.properties?.targetParams)
+      ? hypothesis.properties.targetParams.filter((p): p is string => typeof p === 'string')
+      : undefined
+    const actorSessions = getGlobalSessionManager().listSessions()
+    // Cross-user hypotheses (IDOR / object-level access control) are only
+    // meaningful with two authenticated actors. Gate BEFORE capture work:
+    // with fewer actors the generic auth-stripping fallback would silently
+    // downgrade the test into an anonymous differential that can neither
+    // prove nor disprove cross-user access. Fail closed with the exact
+    // missing setup instead — the experiment stays re-runnable once actors
+    // exist (blocked is executable).
+    if ((hypothesisKind === 'idor' || hypothesisKind === 'broken_access_control') && actorSessions.length < 2) {
+      const reason = `blocked: hypothesis requires two authenticated actors, found ${actorSessions.length}. Acquire a second actor (credential login via browser, then verify both sessions) and re-run.`
+      node.properties.status = 'blocked'
+      node.properties.resultSummary = reason
+      node.updatedAt = Date.now()
+      await store.save()
+      return { ok: false, code: 'ACTORS_REQUIRED', error: reason, experimentId, requiredActors: ['actor-a', 'actor-b'], actorsPresent: actorSessions.length }
+    }
+
     const capturedStore = getCapturedRequestStore()
-    const baseline = node.properties.baselineRequest as { method?: string; url?: string } | undefined
+    const baseline = node.properties.baselineRequest as { method?: string; url?: string; headers?: Record<string, string>; body?: string } | undefined
     let selected = entryId ? capturedStore.get(entryId) : null
     if (!selected && baseline?.url) {
       const wantedMethod = (baseline.method ?? '').toUpperCase()
@@ -219,13 +323,13 @@ export const executePlannedExperiment = createTool({
     // path instead of abandoning the experiment; httpRequest records the new
     // request in the captured store and evidence ledger.
     if (!selected && baseline?.url && baseline.method) {
-      const acquired = await httpRequest.execute({
+      const acquired = await executeTool(httpRequest, {
         method: baseline.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
         url: baseline.url,
         ...(baseline.headers ? { headers: baseline.headers } : {}),
         ...(baseline.body !== undefined ? { body: baseline.body } : {}),
         timeoutMs: 10_000,
-      }, {} as never) as any
+      })
       if (acquired?.ok) {
         selected = capturedStore.list({ limit: 200 }).map(ref => capturedStore.get(ref.id)).reverse().find(entry =>
           !!entry && entry.url === baseline.url && entry.method.toUpperCase() === String(baseline.method).toUpperCase(),
@@ -238,18 +342,24 @@ export const executePlannedExperiment = createTool({
     node.updatedAt = Date.now()
     await store.save()
 
-    const hypothesis = node.properties.hypothesisId
-      ? store.getNode(node.properties.hypothesisId) as { properties?: { kind?: string } } | undefined
-      : undefined
-    const appliedMutation = mutation ?? automaticMutation(hypothesis?.properties?.kind, selected)
-    const hypothesisKind = hypothesis?.properties?.kind
-    const actorSessions = getGlobalSessionManager().listSessions()
     const alternateActor = actorSessions.length > 1 &&
       ['idor', 'broken_access_control', 'information_disclosure'].includes(String(hypothesisKind))
       ? actorSessions[1]
       : undefined
+    const appliedMutation = mutation ?? automaticMutation(hypothesisKind, selected, hypothesisParams)
     const evidenceBeforeBaseline = new Set(coreEvidenceLedger.all().map(item => item.id))
-    const baseResult = await replayCapturedRequest.execute({ entryId: selected.id, timeoutMs: appliedMutation.timeoutMs ?? 10_000 }, {} as never) as any
+    // Victim view: for cross-user hypotheses with two actors, the baseline
+    // itself replays under the first actor so BOTH sides carry session-tagged
+    // evidence the cross-identity oracle can verify. A raw capture replay
+    // would leave the victim side anonymous and unprovable. Other kinds keep
+    // the byte-identical baseline replay.
+    const victimActor = alternateActor &&
+      (hypothesisKind === 'idor' || hypothesisKind === 'broken_access_control')
+      ? actorSessions[0]
+      : undefined
+    const baseResult = victimActor
+      ? await executeTool(requestAsActor, { capturedRequestId: selected.id, actorId: victimActor, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
+      : await executeTool(replayCapturedRequest, { entryId: selected.id, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
     if (!baseResult?.ok) {
       node.properties.status = 'blocked'
       node.properties.resultSummary = `baseline replay failed: ${baseResult?.error ?? 'unknown error'}`
@@ -260,15 +370,15 @@ export const executePlannedExperiment = createTool({
     const baselineEvidence = coreEvidenceLedger.all().filter(item => !evidenceBeforeBaseline.has(item.id))
     const evidenceBeforeMutation = new Set(coreEvidenceLedger.all().map(item => item.id))
     const mutatedResult = alternateActor
-      ? await requestAsActor.execute({
+      ? await executeTool(requestAsActor, {
           capturedRequestId: selected.id,
           actorId: alternateActor,
           ...(appliedMutation.url ? { url: appliedMutation.url } : {}),
           ...(appliedMutation.method ? { method: appliedMutation.method } : {}),
           ...(appliedMutation.body !== undefined ? { body: appliedMutation.body } : {}),
           timeoutMs: appliedMutation.timeoutMs ?? 10_000,
-        }, {} as never) as any
-      : await replayCapturedRequest.execute({ entryId: selected.id, ...appliedMutation, timeoutMs: appliedMutation.timeoutMs ?? 10_000 }, {} as never) as any
+        })
+      : await executeTool(replayCapturedRequest, { entryId: selected.id, ...appliedMutation, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
     if (!mutatedResult?.ok) {
       node.properties.status = 'blocked'
       node.properties.resultSummary = `mutation replay failed: ${mutatedResult?.error ?? 'unknown error'}`
@@ -278,15 +388,42 @@ export const executePlannedExperiment = createTool({
     }
     const mutationEvidence = coreEvidenceLedger.all().filter(item => !evidenceBeforeMutation.has(item.id))
 
-    const baselineResponse = { status: baseResult.value.replayedStatus ?? selected.status ?? 0, headers: baseResult.value.response?.headers, body: baseResult.value.response?.body, url: selected.url }
+    const baselineResponse = { status: baseResult.value.replayedStatus ?? baseResult.value.actorStatus ?? selected.status ?? 0, headers: baseResult.value.response?.headers, body: baseResult.value.response?.body, url: selected.url }
     const mutatedResponse = {
       status: mutatedResult.value.replayedStatus ?? mutatedResult.value.actorStatus ?? 0,
       headers: mutatedResult.value.response?.headers,
       body: mutatedResult.value.response?.body,
       url: mutatedResult.value.requestSent?.url ?? selected.url,
     }
-    const differential = compareResponsesCore(baselineResponse, mutatedResponse, assertion)
-    node.properties.differential = differential
+    // Marker auto-assertion: the challenge injected by automaticMutation
+    // must be declared as an observable, otherwise the differential has no
+    // typed signal to match and a real echo reads as "no strong
+    // differential". Markers are derived from the parameters the mutation
+    // actually rewrote — never guessed. The builder is chosen by hypothesis
+    // kind (body marker vs redirect marker URL); both derive from the
+    // ORIGINAL request URL, never the mutated one.
+    let mergedAssertion = assertion
+    if ((hypothesisKind === 'reflected_injection' || hypothesisKind === 'open_redirect') && typeof appliedMutation.url === 'string') {
+      try {
+        // Markers derive from the ORIGINAL request URL (same input the
+        // mutation builder used), never the mutated URL — deriving from the
+        // mutated URL would hash the marker itself and never match.
+        const before = new URL(selected.url).searchParams
+        const after = new URL(appliedMutation.url).searchParams
+        const markerFor = (name: string): string => hypothesisKind === 'open_redirect'
+          ? redirectMarkerUrl(selected.url, name)
+          : reflectionMarker(selected.url, name)
+        const autoMarkers = [...after.keys()].filter(name => {
+          const marker = markerFor(name)
+          return after.get(name) === marker && before.get(name) !== marker
+        }).map(name => markerFor(name))
+        if (autoMarkers.length > 0) {
+          mergedAssertion = { markers: [...(assertion?.markers ?? []), ...autoMarkers], jsonFields: assertion?.jsonFields }
+        }
+      } catch { /* malformed URLs simply skip auto-assertion */ }
+    }
+    const differential = compareResponsesCore(baselineResponse, mutatedResponse, mergedAssertion)
+    node.properties.differential = differential as unknown as Record<string, unknown>
     node.properties.resultSummary = differential.reason
     node.properties.status = differential.interesting ? 'interesting' : 'rejected'
     node.updatedAt = Date.now()

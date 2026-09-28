@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { promisify } from 'node:util'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -40,6 +41,15 @@ export class TestRunner {
   }
 
   async run(testFile: string): Promise<TestResult> {
+    if (isBountyProfile()) {
+      return {
+        testFile,
+        testName: testFile,
+        status: 'not-run',
+        duration: 0,
+        error: 'Generated Playwright execution is disabled in bounty mode; use typed proof replay through the engagement transport.',
+      }
+    }
     const startTime = Date.now()
 
     try {
@@ -91,6 +101,23 @@ export class TestRunner {
   }
 
   async runAll(testDir: string, options: RunAllOptions = {}): Promise<RunResults> {
+    if (isBountyProfile()) {
+      return {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        errors: 0,
+        duration: 0,
+        results: [{
+          testFile: testDir,
+          testName: testDir,
+          status: 'not-run',
+          duration: 0,
+          error: 'Generated Playwright execution is disabled in bounty mode; use typed proof replay through the engagement transport.',
+        }],
+      }
+    }
     const { concurrency = 1, timeout = 120000 } = options
 
     if (concurrency <= 1) {

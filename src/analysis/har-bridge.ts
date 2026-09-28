@@ -20,7 +20,7 @@ import { getOastUrl } from '../oast/server'
 import { identifyPatterns, generateHypotheses, type Hypothesis } from '../analysis/har-analyzer'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { runAnalysis } from './analyser'
-import { redactHarJson } from '../security/secret-vault'
+import { redactHarJson, redactString } from '../security/secret-vault'
 import { promoteFindingCandidate } from '../tools/control-tools'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 
@@ -61,12 +61,14 @@ function resolveSelfOrigin(): string | null {
  */
 export async function bridgeHARToGraph(harJson: string, targetUrl: string): Promise<BridgeResult> {
   const store = getGlobalGraphStore()
+  // The operational replay store needs the original request/response material.
+  // Redaction is a presentation boundary for graph/LLM data, not a reason to
+  // turn authenticated captures into bare GETs.
+  const operationalArchive = parseHar(harJson)
+  getCapturedRequestStore().ingestHarEntries(operationalArchive.log.entries)
   const safeHarJson = redactHarJson(harJson)
   const archive = parseHar(safeHarJson)
   const entries = archive.log.entries
-
-  // P3.1 — make captured traffic replayable (replayCapturedRequest).
-  getCapturedRequestStore().ingestHarEntries(entries)
 
   if (entries.length === 0) {
     log.dim('HAR bridge: no entries to process')
@@ -123,9 +125,11 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
   // ── 2. Secrets → Finding nodes ────────────────────────────────
   // Secrets derived from a self (OAST callback) entry are tagged 'self-traffic'
   // so value-provenance never treats our own callback body as a target secret.
-  const secrets = getSecrets(entries)
+  // Detect secret *shape* from the operational archive, then redact the
+  // value before it reaches graph/LLM output.
+  const secrets = getSecrets(operationalArchive.log.entries)
   for (const secret of secrets) {
-    const entry = entries[secret.entryIndex]
+    const entry = operationalArchive.log.entries[secret.entryIndex]
     const entryUrl = entry?.request?.url ?? ''
     const method = entry?.request?.method ?? 'GET'
     const status = entry?.response?.status
@@ -139,7 +143,7 @@ export async function bridgeHARToGraph(harJson: string, targetUrl: string): Prom
       method,
       severity: 'info',
       confidence: 0.7,
-      description: `${secret.description}. Found in ${secret.location} (entry ${secret.entryIndex}): ${secret.name} = ${secret.value}`,
+      description: `${secret.description}. Found in ${secret.location} (entry ${secret.entryIndex}): ${secret.name} = ${redactString(secret.value)}`,
       evidence: [
         {
           type: 'har_entry',

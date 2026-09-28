@@ -4,6 +4,8 @@ import { chromium } from 'playwright'
 export interface HarCapture {
   capture: NetworkCapture
   browser: Awaited<ReturnType<typeof chromium.launch>>
+  /** Drain currently captured entries without closing the fallback browser. */
+  flush: () => Promise<string | null>
   stop: () => Promise<string | null>
 }
 
@@ -22,6 +24,14 @@ export async function startHarCapture(target: string, excludeDomains: string[]):
   return {
     capture,
     browser: captureBrowser,
+    flush: async () => {
+      await capture.flush()
+      const entries = capture.getEntries()
+      capture.clear()
+      if (entries.length === 0) return null
+      const har = capture.exportHar()
+      return JSON.stringify(har, null, 2)
+    },
     stop: async () => {
       capture.stop()
       await capture.flush()

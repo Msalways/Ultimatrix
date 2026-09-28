@@ -1,8 +1,10 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getConfig } from '../config'
-import { getActivePage, getActiveBrowserContext } from '../browser/manager'
+import { getActivePage, getActiveBrowser, getActiveBrowserContext, getActiveCamofoxSession } from '../browser/manager'
+import { isCamofoxHandle } from '../browser/provider'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { isUrlInScope } from '../safety/scope-guard'
 import { maskSecret } from '../capture/har-parser'
 import { log } from '../utils/logger'
 
@@ -74,16 +76,17 @@ export const useCredential = createTool({
     }
 
     try {
-      await page.act(`Type "${cred.email}" into the email or username field`)
-      await page.act(`Type "${cred.password}" into the password field`)
-      await page.act('Click the login or sign in button')
+      await performProviderLogin(page, cred.email, cred.password)
       const sessionName = await registerBrowserActor(role, page)
+      if (!sessionName) {
+        return { ok: false, email: cred.email, message: `Login actions completed for role "${role}", but no replayable actor session was captured. Verify the protected state and save the browser session.` }
+      }
       log.info(`[useCredential] Logged in as role "${role}" (${cred.email})`)
       return {
         ok: true,
         email: cred.email,
         maskedPassword: maskSecret(cred.password),
-        message: `Submitted login for role "${role}" (${cred.email}).${sessionName ? ` Stored actor session ${sessionName}.` : ' Browser state could not be exported; save the session after verification.'}`,
+        message: `Submitted login for role "${role}" (${cred.email}) and stored actor session ${sessionName}.`,
       }
     } catch (err) {
       return {
@@ -95,12 +98,102 @@ export const useCredential = createTool({
   },
 })
 
+async function performProviderLogin(page: any, email: string, password: string): Promise<void> {
+  // Never interpolate credentials into a natural-language model action.
+  // Both Stagehand v3 and Playwright expose provider-native locators, so the
+  // secret stays in the browser process and never enters a model prompt.
+  if (typeof page?.locator !== 'function') {
+    throw new Error('The active browser page does not expose a provider-neutral login surface')
+  }
+  const passwordField = page.locator('input[type="password"]').first()
+  let usernameField = page.locator('input[type="email"], input[autocomplete="username"], input[name*="user" i], input[name*="email" i]').first()
+  if (typeof usernameField.count === 'function' && await usernameField.count() === 0) {
+    usernameField = page.locator('input:not([type="password"])').first()
+  }
+  await usernameField.fill(email, { timeout: 8000 })
+  await passwordField.fill(password, { timeout: 8000 })
+  const submit = page.locator('button[type="submit"], input[type="submit"]').first()
+  if (typeof submit.count === 'function' && await submit.count() > 0) {
+    await submit.click({ timeout: 8000 })
+  } else if (typeof passwordField.press === 'function') {
+    await passwordField.press('Enter', { timeout: 8000 })
+  } else {
+    await passwordField.click({ timeout: 8000 })
+  }
+}
+
+interface ActorWorkspace {
+  page: any
+  context: any
+  close: () => Promise<void>
+}
+
+/**
+ * Create a login workspace without mutating the primary investigation page.
+ * Camoufox gets a real isolated Playwright context. Stagehand has one CDP
+ * context, so it uses a fresh target page with a cookie snapshot/restore around
+ * the login. The fallback is explicit and non-destructive for legacy handles.
+ */
+async function createActorWorkspace(loginUrl?: string): Promise<ActorWorkspace> {
+  const activePage = getActivePage()
+  if (!activePage) throw new Error('No active browser page')
+  const currentUrl = typeof activePage.url === 'function' ? String(activePage.url()) : ''
+  const targetUrl = loginUrl ?? (currentUrl && currentUrl !== 'about:blank' ? currentUrl : undefined)
+  const browser = (typeof getActiveBrowser === 'function' ? getActiveBrowser() : null)
+    ?? (typeof getActiveCamofoxSession === 'function' ? getActiveCamofoxSession()?.handle : null)
+
+  if (isCamofoxHandle(browser)) {
+    const baseContext = browser.context as any
+    const browserInstance = typeof baseContext?.browser === 'function' ? baseContext.browser() : undefined
+    if (typeof browserInstance?.newContext === 'function') {
+      const context = await browserInstance.newContext()
+      const page = await context.newPage()
+      if (targetUrl && typeof page.goto === 'function') {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+      }
+      return { page, context, close: async () => { await context.close() } }
+    }
+    if (typeof baseContext?.newPage === 'function') {
+      const page = await baseContext.newPage()
+      if (targetUrl && typeof page.goto === 'function') {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+      }
+      return { page, context: baseContext, close: async () => { await page.close?.() } }
+    }
+  }
+
+  const stagehandContext = (browser as any)?.requireStagehand?.()?.context
+  if (stagehandContext && typeof stagehandContext.newPage === 'function') {
+    const originalPage = typeof stagehandContext.activePage === 'function' ? stagehandContext.activePage() : undefined
+    const originalCookies = typeof stagehandContext.cookies === 'function' ? await stagehandContext.cookies() : []
+    const page = await stagehandContext.newPage(targetUrl)
+    if (typeof stagehandContext.clearCookies === 'function') await stagehandContext.clearCookies()
+    let restored = false
+    return {
+      page,
+      context: stagehandContext,
+      close: async () => {
+        if (!restored) {
+          if (originalCookies.length > 0 && typeof stagehandContext.addCookies === 'function') {
+            await stagehandContext.addCookies(originalCookies)
+          }
+          restored = true
+        }
+        if (originalPage && typeof stagehandContext.setActivePage === 'function') stagehandContext.setActivePage(originalPage)
+        if (typeof page?.close === 'function') await page.close()
+      },
+    }
+  }
+
+  return { page: activePage, context: getActiveBrowserContext(), close: async () => {} }
+}
+
 /** Register the browser's post-login cookies/token in the shared actor store. */
-async function registerBrowserActor(role: string, page: any): Promise<string | undefined> {
+async function registerBrowserActor(role: string, page: any, contextOverride?: any): Promise<string | undefined> {
   try {
     const currentUrl = typeof page.url === 'function' ? String(page.url()) : ''
     const origin = new URL(currentUrl).origin
-    const context = typeof getActiveBrowserContext === 'function' ? getActiveBrowserContext() : null
+    const context = contextOverride ?? (typeof getActiveBrowserContext === 'function' ? getActiveBrowserContext() : null)
     if (!context || typeof context.cookies !== 'function') return undefined
 
     const sessionName = `${role}:${origin}`
@@ -108,11 +201,19 @@ async function registerBrowserActor(role: string, page: any): Promise<string | u
     const session = manager.getSession(sessionName) ?? manager.createSession(sessionName, origin)
     const cookies = await context.cookies()
     for (const cookie of cookies ?? []) {
-      if (cookie?.name && cookie?.value !== undefined) session.cookies[String(cookie.name)] = String(cookie.value)
+      if (cookie?.name && cookie?.value !== undefined) {
+         manager.setCookie(sessionName, String(cookie.name), String(cookie.value), {
+           domain: cookie.domain,
+           path: cookie.path,
+           secure: cookie.secure,
+           httpOnly: cookie.httpOnly,
+           expires: cookie.expires,
+         })
+       }
     }
 
     if (typeof page.evaluate === 'function') {
-      const storage = await page.evaluate(() => {
+      const storage = (await page.evaluate(() => {
         const values: Record<string, string> = {}
         for (const source of [window.localStorage, window.sessionStorage]) {
           for (let i = 0; i < source.length; i++) {
@@ -121,10 +222,11 @@ async function registerBrowserActor(role: string, page: any): Promise<string | u
           }
         }
         return values
+      })) as Record<string, string>
+      const tokenEntry = Object.entries(storage ?? {}).find(([key, value]) => {
+        const text = String(value)
+        return text.length >= 8 && (/(?:auth|token|session)/i.test(key) || /^eyJ[A-Za-z0-9_-]+\./.test(text))
       })
-      const tokenEntry = Object.entries(storage ?? {}).find(([key, value]) =>
-        value.length >= 8 && (/(?:auth|token|session)/i.test(key) || /^eyJ[A-Za-z0-9_-]+\./.test(value)),
-      )
       if (tokenEntry) manager.setToken(sessionName, tokenEntry[1])
     }
     return sessionName
@@ -132,3 +234,78 @@ async function registerBrowserActor(role: string, page: any): Promise<string | u
     return undefined
   }
 }
+
+/**
+ * Actor acquisition — turns configured credential roles into replayable
+ * actor sessions for two-actor authorization testing (IDOR/BOLA). Logs
+ * each role in through the live browser via the sanctioned useCredential
+ * path (passwords never surface), then inventories the session store.
+ * Roles that cannot be acquired are reported as failed, never faked: the
+ * research loop fails closed on missing actors instead of downgrading to
+ * anonymous differentials.
+ */
+export const acquireActors = createTool({
+  id: 'acquireActors',
+  description:
+    'Log in configured credential roles through the live browser and register each as a replayable actor session for two-actor authorization testing (IDOR/BOLA cross-identity experiments). Returns the actor inventory; unacquired roles are reported as failed, never fabricated.',
+  inputSchema: z.object({
+    roles: z.array(z.string()).optional().describe('Subset of configured credential roles to acquire. Defaults to all configured roles.'),
+    loginUrl: z.string().url().optional().describe('Authorized login URL used in an isolated actor workspace. Defaults to the current in-scope page.'),
+  }),
+  execute: async ({ roles, loginUrl }) => {
+    if (loginUrl) {
+      const scope = isUrlInScope(loginUrl)
+      if (!scope.allowed) return { ok: false, error: `Scope violation: ${scope.reason}` }
+    }
+    const credentials = getConfig().credentials ?? {}
+    const configured = Object.keys(credentials)
+    const wanted = roles?.length ? roles.filter(r => credentials[r]) : configured
+    const unknownRoles = (roles ?? []).filter(r => !credentials[r])
+    const page = getActivePage()
+    if (!page) {
+      return {
+        ok: false,
+        acquired: [],
+        failed: wanted.map(role => ({ role, error: 'No active browser page — navigate to the login page before acquiring actors.' })),
+        unknownRoles,
+        actors: [] as Array<{ name: string; hasToken: boolean; cookieCount: number }>,
+      }
+    }
+    const manager = getGlobalSessionManager()
+    const acquired: Array<{ role: string; sessions: string[] }> = []
+    const failed: Array<{ role: string; error: string }> = []
+    for (const role of wanted) {
+      const cred = credentials[role]
+      let workspace: ActorWorkspace | undefined
+      try {
+        workspace = await createActorWorkspace(loginUrl)
+        await performProviderLogin(workspace.page, cred.email, cred.password)
+        const sessionName = await registerBrowserActor(role, workspace.page, workspace.context)
+        if (sessionName) {
+          acquired.push({ role, sessions: [sessionName] })
+        } else {
+          failed.push({ role, error: 'Login completed but no replayable actor session was captured.' })
+        }
+      } catch (error) {
+        failed.push({ role, error: error instanceof Error ? error.message : String(error) })
+      } finally {
+        try { await workspace?.close() } catch { /* workspace cleanup is best effort */ }
+      }
+    }
+    const actors = manager.listSessions().map(name => {
+      const session = manager.exportSession(name)
+      return {
+        name,
+        hasToken: !!session?.token,
+        cookieCount: session ? Object.keys(session.cookies).length : 0,
+      }
+    })
+    return {
+      ok: failed.length === 0 && acquired.length > 0,
+      acquired,
+      failed,
+      unknownRoles,
+      actors,
+    }
+  },
+})

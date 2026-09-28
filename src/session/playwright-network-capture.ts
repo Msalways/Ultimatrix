@@ -19,6 +19,8 @@ import {
 
 export interface PlaywrightCaptureHandle {
   attached: boolean
+  /** Drain completed entries without detaching the capture subscriber. */
+  flush: () => Promise<HarEntry[]>
   /** Stop capturing and return any completed HAR entries collected so far. */
   stop: () => Promise<HarEntry[]>
   /** Completed entries collected so far without stopping. */
@@ -84,24 +86,41 @@ export function attachHarCaptureViaPlaywright(
     builder.onPlaywrightRequestFailed(request.url(), request.method())
   }
 
-  context.on('response', (response) => {
+  const onResponseEvent = (response: import('playwright').Response) => {
     observed++
-    void onResponse(response as unknown as import('playwright').Response)
-  })
-  context.on('requestfailed', onRequestFailed)
+    void onResponse(response)
+  }
+  const onRequestFailedEvent = (request: import('playwright').Request) => {
+    onRequestFailed(request)
+  }
+  context.on('response', onResponseEvent)
+  context.on('requestfailed', onRequestFailedEvent)
+  let detached = false
+  const detach = () => {
+    if (detached) return
+    detached = true
+    const off = (context as any).off
+    if (typeof off === 'function') {
+      off.call(context, 'response', onResponseEvent)
+      off.call(context, 'requestfailed', onRequestFailedEvent)
+    }
+  }
 
   return {
     attached: true,
     entries: () => builder.entries(),
     requestCount: () => observed,
+    flush: async () => {
+      void requests
+      await Promise.allSettled([...inflight])
+      return builder.takeCompleted()
+    },
     stop: async () => {
       void requests
       await Promise.allSettled([...inflight])
-      try {
-        await context.close()
-      } catch {
-        /* context may already be closing */
-      }
+      detach()
+      // Capture owns listeners, not the browser context. The provider/session
+      // lifecycle owns context.close().
       return builder.takeCompleted()
     },
   }

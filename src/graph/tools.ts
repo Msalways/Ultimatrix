@@ -1,7 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from './store'
-import { NodeType } from './schema'
+import { NodeType, hasReplayableAuthMaterial } from './schema'
 import { getForensicLog } from '../tools/report-tools'
 
 /**
@@ -262,10 +262,19 @@ export const addAuthFlow = createTool({
   execute: async (input) => {
     try {
       const store = getGlobalGraphStore()
-      const result = store.addAuthFlow(input as any)
+      // A reusable claim with nothing replayable (plan text, empty capture)
+      // is definitionally broken — restoreSession errors on it. Coerce to
+      // non-reusable with a warning instead of persisting a lie.
+      let reusable = input.reusable
+      let notice: string | undefined
+      if (reusable === true && !hasReplayableAuthMaterial(input as any)) {
+        reusable = false
+        notice = 'Recorded as non-reusable: no cookies, storage, credential hash, or actionable steps were supplied.'
+      }
+      const result = store.addAuthFlow({ ...(input as any), ...(reusable !== undefined ? { reusable } : {}) })
       await store.save()
       getForensicLog()?.log({ type: 'graph-mutation', agent: 'worker', tool: 'addAuthFlow', args: { flowType: input.flowType }, result: { nodeId: result.id } })
-      return { ok: true, value: result }
+      return { ok: true, value: result, ...(notice ? { warning: notice } : {}) }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }

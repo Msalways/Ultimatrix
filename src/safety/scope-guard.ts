@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import type { ScopeConfig, AuthorizationCategory, ExternalToolsConfig } from '../config'
 import { log } from '../utils/logger'
 import { getEngagementServices } from '../runtime/engagement-context'
@@ -79,6 +80,30 @@ export function enforceAction(category: AuthorizationCategory, opts?: { toolId?:
   }
 }
 
+/** Map a state-changing HTTP verb to the explicit operator policy category. */
+export function categoryForHttpMethod(method: string): AuthorizationCategory {
+  switch (method.toUpperCase()) {
+    case 'GET':
+    case 'HEAD':
+    case 'OPTIONS':
+      return 'read'
+    case 'POST':
+      return 'create'
+    case 'PUT':
+    case 'PATCH':
+      return 'modify'
+    case 'DELETE':
+      return 'delete'
+    default:
+      throw new Error(`Unsupported HTTP method for authorization policy: ${method}`)
+  }
+}
+
+/** Enforce the configured action category before an HTTP request is sent. */
+export function enforceHttpMethod(method: string): void {
+  enforceAction(categoryForHttpMethod(method), { toolId: 'httpRequest' })
+}
+
 /**
  * Runtime scope expansion — explicit user approval of a proposed origin.
  * Merges the origin's hostname into the ambient scope's allowedDomains so the
@@ -97,6 +122,9 @@ export function approveScopeOrigin(url: string): void {
   if (!hostname) return
   const domains = config.allowedDomains ?? (config.allowedDomains = [])
   if (!domains.includes(hostname)) domains.push(hostname)
+  const origins = config.allowedOrigins ?? (config.allowedOrigins = [])
+  const origin = new URL(url).origin
+  if (!origins.includes(origin)) origins.push(origin)
 }
 
 /** Explicit opt-out (runtime `--allow-any`). Off by default = deny-by-default. */
@@ -125,6 +153,17 @@ export interface ScopeCheckOptions {
   allowAny?: boolean
 }
 
+function isPrivateIpLiteral(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (isIP(host) === 0) return false
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true
+  if (host.startsWith('127.') || host.startsWith('10.') || host.startsWith('192.168.') || host.startsWith('169.254.')) return true
+  const match = host.match(/^172\.(\d{1,3})\./)
+  if (match && Number(match[1]) >= 16 && Number(match[1]) <= 31) return true
+  if (host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true
+  return false
+}
+
 export function isUrlInScope(url: string, config: ScopeConfig | null = getScopeConfig(), opts: ScopeCheckOptions = {}): ScopeCheckResult {
   // Explicit opt-out overrides everything.
   if (opts.allowAny ?? isAllowAny()) return { allowed: true }
@@ -151,6 +190,11 @@ export function isUrlInScope(url: string, config: ScopeConfig | null = getScopeC
   }
 
   const hostname = parsed.hostname.toLowerCase()
+  if (!config.allowPrivateAddresses && isPrivateIpLiteral(hostname)) {
+    const msg = `Private or link-local address is not in scope: ${hostname}`
+    log.warn(`ScopeGuard: ${msg}`)
+    return { allowed: false, reason: msg }
+  }
   const domainMatch = config.allowedDomains.some((d) => {
     const domain = d.toLowerCase().trim()
     if (domain.startsWith('*.')) {
@@ -166,8 +210,26 @@ export function isUrlInScope(url: string, config: ScopeConfig | null = getScopeC
     return { allowed: false, reason: msg }
   }
 
+  if (config.allowedOrigins && config.allowedOrigins.length > 0 && !config.allowedOrigins.includes(parsed.origin)) {
+    const msg = `Origin not in scope: ${parsed.origin} (allowed: ${config.allowedOrigins.join(', ')})`
+    log.warn(`ScopeGuard: ${msg}`)
+    return { allowed: false, reason: msg }
+  }
+
+  const effectivePort = parsed.port
+    ? Number(parsed.port)
+    : parsed.protocol === 'https:' ? 443 : parsed.protocol === 'http:' ? 80 : NaN
+  if (config.allowedPorts && config.allowedPorts.length > 0 && !config.allowedPorts.includes(effectivePort)) {
+    const msg = `Port not in scope: ${effectivePort} (allowed: ${config.allowedPorts.join(', ')})`
+    log.warn(`ScopeGuard: ${msg}`)
+    return { allowed: false, reason: msg }
+  }
+
   if (config.allowedPaths && config.allowedPaths.length > 0) {
-    const pathMatch = config.allowedPaths.some((p) => parsed.pathname.startsWith(p))
+    const pathMatch = config.allowedPaths.some((allowedPath) => {
+      const normalized = allowedPath === '/' ? '/' : allowedPath.replace(/\/$/, '')
+      return parsed.pathname === normalized || parsed.pathname.startsWith(`${normalized}/`)
+    })
     if (!pathMatch) {
       const msg = `Path not in scope: ${parsed.pathname} (allowed: ${config.allowedPaths.join(', ')})`
       log.warn(`ScopeGuard: ${msg}`)

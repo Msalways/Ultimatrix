@@ -11,10 +11,13 @@
  */
 
 import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { coreEvidenceLedger } from '../core/evidence'
 import { httpRequest } from './http-tools'
+import { redactHeadersStrict } from '../security/secret-vault'
 
 export const listActors = createTool({
   id: 'listActors',
@@ -92,13 +95,14 @@ export const requestAsActor = createTool({
     }
 
     // Resolve actor headers
+    const finalUrl = url ?? captured.url
     let actorHeaders: Record<string, string> = {}
     let stripAuthHeaders = false
     if (actorId === 'unauthenticated') {
       stripAuthHeaders = true
     } else {
       const sm = getGlobalSessionManager()
-      actorHeaders = sm.getAllHeaders(actorId)
+      actorHeaders = sm.getAllHeaders(actorId, finalUrl)
       if (Object.keys(actorHeaders).length === 0) {
         // Actor not found in session manager — list available sessions
         const available = sm.listSessions()
@@ -130,7 +134,6 @@ Use storeSession to create an actor first, or pass "unauthenticated" for no auth
     }
 
     const finalMethod = (method ?? captured.method) as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
-    const finalUrl = url ?? captured.url
     let finalBody = body ?? captured.body
     if (['GET', 'HEAD'].includes(finalMethod)) finalBody = undefined
 
@@ -165,6 +168,26 @@ Use storeSession to create an actor first, or pass "unauthenticated" for no auth
     }
 
     const v = result.value!
+    // Tag the replay with its actor so cross-identity oracles can verify
+    // victim/attacker evidence pairs. Best-effort telemetry: a ledger
+    // failure must never fail a replay that already succeeded (same
+    // separation as forensic logging everywhere else).
+    try {
+      coreEvidenceLedger.record({
+        type: 'raw_response',
+        data: v.body ?? '',
+        label: `actor ${actorId}: ${finalMethod} ${finalUrl} → ${v.status}`,
+        observed: {
+          method: finalMethod,
+          url: finalUrl,
+          status: v.status,
+          ...(v.headers ? { responseHeaders: v.headers } : {}),
+          ...(v.body !== undefined ? { responseBody: v.body } : {}),
+        },
+        session: actorId,
+      })
+    } catch { /* evidence tagging is auxiliary to the replay result */ }
+    const bountyMode = isBountyProfile()
     return {
       ok: true,
       value: {
@@ -175,9 +198,12 @@ Use storeSession to create an actor first, or pass "unauthenticated" for no auth
         ...(captured.status !== undefined
           ? { statusDelta: `${captured.status} → ${v.status}` }
           : {}),
-        requestSent: sent,
+        requestSent: {
+          ...sent,
+          headers: bountyMode ? (redactHeadersStrict(sent.headers) ?? {}) : sent.headers,
+        },
         response: {
-          ...(v.headers ? { headers: v.headers } : {}),
+          ...(v.headers ? { headers: bountyMode ? (redactHeadersStrict(v.headers) ?? {}) : v.headers } : {}),
           ...(v.body !== undefined ? { body: v.body } : {}),
           ...(v.durationMs !== undefined ? { durationMs: v.durationMs } : {}),
         },

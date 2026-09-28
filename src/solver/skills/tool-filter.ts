@@ -6,7 +6,15 @@ import { initSkillIndex } from './loader'
  * Full core tool set used by the brain/council/strategist.
  * Workers do NOT receive this — they get WORKER_UNIVERSAL + skillRefs.
  */
-const CORE_TOOLS = [
+/**
+ * Tools the brain always receives, regardless of which skills are selected.
+ *
+ * Membership here is a statement that a capability is part of the agent's
+ * standing contract, not merely something it may fetch. A tool the prompt
+ * instructs the agent to use belongs here: verified live, a mandate that named
+ * a load-on-demand tool was silently unenforceable.
+ */
+export const CORE_TOOLS = [
   'listSkills',
   'discoverSkillsForTarget',
   'loadSkillBody',
@@ -38,6 +46,21 @@ const CORE_TOOLS = [
   'extractSessionCookie',
   'getResearchStatus',
   'getOastUrlTool',
+  // Rulings are a core capability, not an optional one. Verified live: with
+  // these absent, the brain could still reach them via loadTool, so the wiring
+  // looked correct — but on a casual turn ("those reflected-parameter things
+  // are just how it is built, stop bringing them up") the model never needed a
+  // tool, never loaded one, and simply PROMISED to comply. Nothing was recorded.
+  // A mandate that depends on a tool the agent does not already carry is not a
+  // mandate; these sit beside recordEvidence/askUser for the same reason.
+  'recordDisposition',
+  'getDispositions',
+  // Delegation, same reasoning as in brain-tools BOOTSTRAP_TOOL_IDS. Kept in
+  // step deliberately: the two sets are separate gates, and a capability added
+  // to only one of them is invisible half the time — which is precisely how the
+  // worker path stayed dead while every other check looked green.
+  'spawnWorker',
+  'runTaskGraph',
 ]
 
 /**

@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { ASSUMPTION_VERIFICATION, EVIDENCE_DISCIPLINE } from '../prompts/core-contract'
+import { bountyContractBlock } from '../prompts/bounty-contract'
+import { isBountyProfile } from '../safety/bounty-policy'
 import type { UltimatrixConfig } from '../config'
 
 /**
@@ -44,7 +46,15 @@ export function getBrainInstructions(config?: UltimatrixConfig): string {
     .replace('{{TONE_LINE}}', toneLine)
 
   // Append shared evidence discipline and assumption verification
-  return `${body}\n\n${EVIDENCE_DISCIPLINE}\n\n${ASSUMPTION_VERIFICATION}`
+  const shared = `${body}\n\n${EVIDENCE_DISCIPLINE}\n\n${ASSUMPTION_VERIFICATION}`
+
+  // Live bounty engagements additionally get program-triage and impact
+  // discipline. Read the profile from the engagement container, not from the
+  // passed config alone: the effective config may be a different object than the
+  // one the CLI mutated, and a gate that reads the wrong surface silently
+  // stands down mid-run.
+  const bounty = isBountyProfile() || config?.bounty?.enabled === true ? bountyContractBlock() : ''
+  return bounty ? `${shared}\n\n${bounty}` : shared
 }
 
 export const BRAIN_INSTRUCTIONS = getBrainInstructions({} as UltimatrixConfig)

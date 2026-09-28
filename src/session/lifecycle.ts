@@ -24,10 +24,13 @@ import { getGlobalGraphStore } from '../graph/store'
 import { runSpiderRuntime, stableTargetId, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
 import { spiderEventLine } from '../spider/render'
 import { createInterface } from 'node:readline/promises'
+import type { Interface } from 'node:readline'
+import { ReplInputQueue } from './repl-input'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
-import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny, enforceAction, isUrlInScope } from '../safety/scope-guard'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
 import { Agent } from '@mastra/core/agent'
@@ -53,17 +56,25 @@ import { coreEvidenceLedger } from '../core/evidence'
 
 /**
  * Unified capture session: the live CDP-backed capture (preferred) or the
- * standalone headless Playwright capture (fallback). Both expose a uniform
- * `stop()` that returns a HAR JSON string (or null).
+ * standalone headless Playwright capture (fallback). `flush()` drains entries
+ * while keeping capture attached; `stop()` detaches it.
  */
 type HarCaptureSession = {
   kind: 'cdp'
   handle: CdpCaptureHandle
+  flush: () => Promise<string | null>
   stop: () => Promise<string | null>
 } | {
   kind: 'headless'
   handle: HarCapture
+  flush: () => Promise<string | null>
   stop: () => Promise<string | null>
+}
+
+function serializeHarEntries(entries: unknown[]): string | null {
+  return entries.length
+    ? JSON.stringify({ log: { version: '1.2', creator: { name: 'ultimatrix', version: '8.0.0' }, entries } }, null, 2)
+    : null
 }
 import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import { ModelSelector } from '../models/selector'
@@ -103,6 +114,8 @@ export interface SessionResources {
    * queues instead. This is the structural single-owner invariant.
    */
   readline: ReadlineInterface | null
+  /** Owns stdin from readline creation; the REPL and askUser read from it. */
+  replInput?: ReplInputQueue
   /** True when the Ink full-screen console owns the terminal (stdin + screen). */
   consoleMode: boolean
   /** Proposed origins the user pre-approved (CLI `--approve-origin`) before the crawl. */
@@ -294,7 +307,7 @@ export class SessionLifecycle {
     // Activate scope guard from config.
     // If no explicit scope, derive one from config.target so tools are not
     // hard-rejected out of the box.
-    const scopeConfig = config.scope ?? (config.target ? deriveScopeFromTarget(config.target) : null)
+    const scopeConfig = this.runtime?.services.scopeConfig ?? config.scope ?? (config.target ? deriveScopeFromTarget(config.target) : null)
     setScopeConfig(scopeConfig)
     // External-tool policy is opt-in only (deny by default) — ambient for the
     // adapter chokepoint in buildAdapterTool.
@@ -352,17 +365,20 @@ export class SessionLifecycle {
     } else {
       const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false })
       setReadlineInterface(rl)
+      // Own stdin from the instant the interface exists. readline drains piped
+      // input immediately and fires `close` exactly once, so any listener added
+      // later (after engine setup) misses every line and the close — leaving the
+      // REPL blocked forever on input that has already been consumed. The queue
+      // attaches synchronously here and buffers whatever arrives until the REPL
+      // is ready to consume it.
+      const replInput = new ReplInputQueue(rl as unknown as Interface)
+      this._resources.replInput = replInput
       // F25 FIX: Bridge readline into the console input resolver so askUser works
       // through the resolver codepath consistently. Previously setConsoleInputResolver
       // was never called, leaving askUser broken when Ink owned stdin.
       setConsoleInputResolver(async (_question: string) => {
-        return new Promise<string>((resolve) => {
-          const timer = setTimeout(() => { resolve('__TIMEOUT__') }, 300_000)
-          const onLine = (line: string) => { clearTimeout(timer); rl.removeListener('close', onClose); resolve(line.trim()) }
-          const onClose = () => { clearTimeout(timer); resolve('') }
-          rl.once('line', onLine)
-          rl.once('close', onClose)
-        })
+        const line = await replInput.read()
+        return line === null ? '' : line.trim()
       })
       this._resources.readline = rl
       this.registerCleanup(async () => { rl.close() })
@@ -420,8 +436,17 @@ export class SessionLifecycle {
         : getActivePage()
       if (page) {
         try {
+          enforceAction('browser_action', { toolId: 'lifecycle.initialNavigation' })
+          const scope = isUrlInScope(target)
+          if (!scope.allowed) throw new Error(`Scope violation: ${scope.reason}`)
           log.info(`Navigating to ${target}...`)
-          const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 })
+          const release = await getTargetTransportGovernor().acquire(target)
+          let response: any
+          try {
+            response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 })
+          } finally {
+            release()
+          }
           const status = response?.status() || 'unknown'
           const title = await page.title().catch(() => '')
           log.info(`Loaded ${target} â€" status: ${status}, title: "${title}"`)
@@ -619,6 +644,7 @@ export class SessionLifecycle {
         harCapture = {
           kind: 'cdp',
           handle,
+          flush: async () => serializeHarEntries(await handle.flush()),
           stop: async () => {
             const entries = await handle.stop()
             if (entries.length === 0) return null
@@ -639,6 +665,7 @@ export class SessionLifecycle {
             harCapture = {
               kind: 'cdp',
               handle,
+              flush: async () => serializeHarEntries(await handle.flush()),
               stop: async () => {
                 const entries = await handle.stop()
                 if (entries.length === 0) return null
@@ -654,7 +681,7 @@ export class SessionLifecycle {
       if (!harCapture) {
         try {
           const headless = await startHarCapture(target, ['localhost', '127.0.0.1'])
-          harCapture = { kind: 'headless', handle: headless, stop: headless.stop }
+          harCapture = { kind: 'headless', handle: headless, flush: headless.flush, stop: headless.stop }
           this._resources.workflow?.setCaptureSource('anonymous-fallback')
           log.info('HAR capture started (headless fallback — anonymous session, labeled captureSource=anonymous-fallback)')
         } catch (err) {
@@ -666,8 +693,15 @@ export class SessionLifecycle {
 
     if (harCapture) {
       this.registerCleanup(async () => {
-        log.dim('Stopping HAR capture...')
-        try { await harCapture!.stop() } catch {}
+        log.dim('Flushing and stopping HAR capture...')
+        try {
+          const finalHar = await harCapture!.flush()
+          if (finalHar && target) await bridgeHARToGraph(finalHar, target)
+        } catch { /* final capture is best effort */ }
+        try {
+          const trailingHar = await harCapture!.stop()
+          if (trailingHar && target) await bridgeHARToGraph(trailingHar, target)
+        } catch {}
       })
     }
 
@@ -761,7 +795,7 @@ export class SessionLifecycle {
     const harCapture = this._resources.harCapture
     if (harCapture) {
       try {
-        const harJson = await harCapture.stop()
+        const harJson = await harCapture.flush()
         if (harJson) {
           const safeHarJson = redactHarJson(harJson)
           const capturesDir = resolve(workspace.getTargetDir(target), 'captures')
@@ -776,7 +810,7 @@ export class SessionLifecycle {
           })
 
           try {
-            const bridgeResult = await bridgeHARToGraph(safeHarJson, target)
+            const bridgeResult = await bridgeHARToGraph(harJson, target)
             if (bridgeResult.contextForLLM) {
               this._resources.harContextForLLM = bridgeResult.contextForLLM
               log.success(`HAR bridge: ${bridgeResult.endpointsWritten} endpoints, ${bridgeResult.secretsWritten} secrets, ${bridgeResult.factsWritten} facts, ${bridgeResult.hypothesesGenerated} hypotheses â†’ graph`)
@@ -790,7 +824,7 @@ export class SessionLifecycle {
       } catch (err) {
         log.error('HAR save failed: ' + (err instanceof Error ? err.message : String(err)))
       }
-      this._resources.harCapture = null
+      // Keep the subscriber attached for the attack phase; session cleanup owns stop().
     }
 
     // C4/C5 — post-crawl discovery: shadow API probes + js-miner over captured
@@ -817,7 +851,7 @@ export class SessionLifecycle {
   }
 
   private async setupEngineOwned(): Promise<void> {
-    const config = this._resources.config!
+    const config = this.runtime?.config ?? this._resources.config!
     if (config.engine === 'legacy') this.assertPhase('spider')
     else if (this.phase !== 'resources') throw new Error(`Invalid lifecycle phase: expected resources, got ${this.phase}`)
     const { browser, memory, target, harContextForLLM, threadId, resourceId } = this._resources as SessionResources
@@ -934,6 +968,14 @@ export class SessionLifecycle {
         engine: config.engine,
       })
 
+      // Input is owned by ReplInputQueue, attached the moment the readline
+      // interface was created (see setupResources). Reading through the queue
+      // means a line that arrives during engine setup or mid-turn is buffered
+      // rather than dropped, and EOF resolves exactly once.
+      const replInput = (this._resources as SessionResources).replInput
+      const readLine = (): Promise<string | null> =>
+        replInput ? replInput.read() : Promise.resolve(null)
+
       try {
         if (!target) {
           log.info('No target set. Tell me a URL to investigate.')
@@ -945,20 +987,7 @@ export class SessionLifecycle {
           process.stdout.write(dashedBorder() + '\n')
           process.stdout.write(`${promptTarget}> `)
 
-          const line = await new Promise<string | null>((resolve) => {
-            if (!rl) { resolve(null); return }
-            const onLine = (l: string) => {
-              rl.removeListener('close', onClose)
-              resolve(l)
-            }
-            const onClose = () => {
-              rl.removeListener('line', onLine)
-              resolve(null)
-            }
-            rl.once('line', onLine)
-            rl.once('close', onClose)
-          })
-
+          const line = await readLine()
           if (line === null) break
           if (!line.trim()) continue
 
@@ -973,6 +1002,7 @@ export class SessionLifecycle {
           process.stdout.write('\n')
         }
       } finally {
+        replInput?.dispose()
         await this.cleanup()
       }
       return

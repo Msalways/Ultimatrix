@@ -40,6 +40,15 @@ export async function importStateIntoStagehand(
     })))
   }
 
+  if (state.sessionStorage && Object.keys(state.sessionStorage).length > 0) {
+    const page = getActivePage(stagehand)
+    if (page) {
+      for (const [key, value] of Object.entries(state.sessionStorage)) {
+        await (page as any).evaluate((k: string, v: string) => sessionStorage.setItem(k, v), key, value)
+      }
+    }
+  }
+
   if (state.localStorage && Object.keys(state.localStorage).length > 0) {
     const page = getActivePage(stagehand)
     if (page) {
@@ -59,19 +68,31 @@ export async function exportStateFromStagehand(
   const cookies = ctx ? await ctx.cookies() : []
 
   let lsData: Record<string, string> = {}
+  let ssData: Record<string, string> = {}
   if (page) {
     try {
       const result = await page.evaluate(() => {
-        const items: Record<string, string> = {}
+        const local: Record<string, string> = {}
         for (let i = 0; i < window.localStorage.length; i++) {
           const k = window.localStorage.key(i)
-          if (k) items[k] = window.localStorage.getItem(k) || ''
+          if (k) local[k] = window.localStorage.getItem(k) || ''
         }
-        return items
+        const session: Record<string, string> = {}
+        for (let i = 0; i < window.sessionStorage.length; i++) {
+          const k = window.sessionStorage.key(i)
+          if (k) session[k] = window.sessionStorage.getItem(k) || ''
+        }
+        return { local, session }
       })
-      lsData = result as Record<string, string>
+      if (result && typeof result === 'object' && 'local' in result) {
+        lsData = result.local as Record<string, string>
+        ssData = result.session as Record<string, string>
+      } else {
+        // Older page adapters returned the localStorage map directly.
+        lsData = result as Record<string, string>
+      }
     } catch {
-      // localStorage not available in all contexts
+      // storage not available in all contexts
     }
   }
 
@@ -87,7 +108,7 @@ export async function exportStateFromStagehand(
       expires: c.expires,
     })) : [],
     localStorage: lsData,
-    sessionStorage: {},
+    sessionStorage: ssData,
   }
 }
 
@@ -100,6 +121,7 @@ export async function importStateFromPlaywright(
   const state = JSON.parse(raw) as {
     cookies: BrowserState['cookies']
     origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>
+    sessionStorage?: Record<string, string>
   }
 
   if (state.cookies) {
@@ -128,6 +150,15 @@ export async function importStateFromPlaywright(
             await (page as any).evaluate((k: string, v: string) => localStorage.setItem(k, v), item.name, item.value)
           }
         }
+      }
+    }
+  }
+
+  if (state.sessionStorage && Object.keys(state.sessionStorage).length > 0) {
+    const page = getActivePage(stagehand)
+    if (page) {
+      for (const [key, value] of Object.entries(state.sessionStorage)) {
+        await (page as any).evaluate((k: string, v: string) => sessionStorage.setItem(k, v), key, value)
       }
     }
   }

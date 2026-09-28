@@ -143,6 +143,23 @@ export function resolveEffectiveConfig(config: UltimatrixConfig): EffectiveConfi
   }
 
   if (!defaultModel.credentialConfigured) errors.push(`credentials missing for default provider: ${defaultModel.provider}`)
+
+  // A present-but-incomplete authorization record is never treated as consent.
+  // Surface it so the operator cannot believe a placeholder grants a live run.
+  const auth = config.authorization
+  if (auth) {
+    if (!auth.confirmed) {
+      const incomplete = !auth.target?.trim() || !auth.timestamp?.trim()
+        || Number.isNaN(Date.parse(auth.timestamp))
+      if (incomplete) {
+        warnings.push('authorization record is incomplete and is NOT treated as consent; fill target + timestamp before any live run')
+      }
+    }
+    if (config.bounty?.enabled && !auth.confirmed) {
+      errors.push('bounty.enabled is set but authorization is not a complete confirmed record')
+    }
+  }
+
   const mcp = (config.mcp ?? []).map(mcpStatus)
   for (const server of mcp) {
     for (const warning of server.warnings) warnings.push(`mcp.${server.name}: ${warning}`)

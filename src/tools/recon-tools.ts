@@ -1,6 +1,8 @@
-﻿import { createTool } from '@mastra/core/tools'
+import { createTool } from '@mastra/core/tools'
+import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
-import { isUrlInScope } from '../safety/scope-guard'
+import { isUrlInScope, enforceHttpMethod } from '../safety/scope-guard'
+import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { Resolver } from 'node:dns/promises'
 
 function base64urlDecode(s: string): string {
@@ -184,9 +186,10 @@ export const runRecon = createTool({
         if (!scopeCheck.allowed) {
           result.techStack = []
         } else {
-          const pageRes = await fetch(targetUrl, {
+          enforceHttpMethod('GET')
+          const pageRes = await getTargetTransportGovernor().run(targetUrl, () => fetch(targetUrl, {
             signal: AbortSignal.timeout(10000),
-          })
+          }))
           const html = await pageRes.text()
           const headers: Record<string, string> = {}
           pageRes.headers.forEach((v, k) => { headers[k] = v })
@@ -239,12 +242,13 @@ export const graphqlIntrospect = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
-      const res = await fetch(url, {
+      enforceHttpMethod('POST')
+      const res = await getTargetTransportGovernor().run(url, () => fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: '{__schema{types{name fields{name}}}}' }),
         signal: AbortSignal.timeout(10000),
-      })
+      }))
 
       if (!res.ok) {
         return { ok: false, error: `HTTP ${res.status}: ${res.statusText}` }
@@ -329,7 +333,8 @@ export const frameworkFingerprint = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
+      enforceHttpMethod('GET')
+      const res = await getTargetTransportGovernor().run(url, () => fetch(url, { signal: AbortSignal.timeout(10000) }))
       const html = await res.text()
 
       const headers: Record<string, string> = {}
@@ -432,6 +437,9 @@ export const cloudMetadataProbe = createTool({
   }),
   execute: async (ctx): Promise<{ ok: boolean; value?: any; error?: string }> => {
     const { url } = ctx
+    if (isBountyProfile()) {
+      return { ok: false, error: 'Direct cloud metadata probes are disabled in bounty mode; use a target-mediated, explicitly authorized SSRF test.' }
+    }
 
     const scopeCheck = isUrlInScope(url)
     if (!scopeCheck.allowed) {
@@ -479,9 +487,9 @@ export const cloudMetadataProbe = createTool({
     const trySsrf = async (p: typeof probes[0]) => {
       const ssrfUrl = `${base}/${encodeURIComponent(p.url)}`
       try {
-        const ssrfRes = await fetch(ssrfUrl, {
+        const ssrfRes = await getTargetTransportGovernor().run(ssrfUrl, () => fetch(ssrfUrl, {
           signal: AbortSignal.timeout(5000),
-        })
+        }))
         const text = await ssrfRes.text()
         if (text.length > 0 && !text.includes('404') && !text.includes('Not Found')) {
           results.push({
