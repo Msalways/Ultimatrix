@@ -39,7 +39,7 @@ function createMockStagehand() {
 describe('attachHarCaptureViaCdp (live CDP capture)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('prefers the active page target session over the root context connection', () => {
+  it('prefers the active page target session over the root context connection', async () => {
     const { stagehand, conn, sent } = createMockStagehand()
     const targetHandlers: Record<string, Function> = {}
     const target = {
@@ -47,36 +47,49 @@ describe('attachHarCaptureViaCdp (live CDP capture)', () => {
       off: vi.fn(),
       send: vi.fn((method: string) => { sent.push({ method, target: true }); return Promise.resolve({}) }),
     }
-    stagehand.context.activePage = () => ({ mainSession: target })
+    // ASYNC, as the real accessor is. The old synchronous read turned this into
+    // an unresolved Promise, page.mainSession was undefined, and the `??` chose
+    // the root connection — the one that observes zero requests. That is the
+    // defect this suite exists to prevent regressing.
+    stagehand.context.activePage = async () => ({ mainSession: target })
 
-    attachHarCaptureViaCdp(stagehand, {})
+    const handle = attachHarCaptureViaCdp(stagehand, {})
+    await handle.ready
 
     expect(target.on).toHaveBeenCalledWith('Network.requestWillBeSent', expect.any(Function))
     expect(conn.on).not.toHaveBeenCalled()
     expect(target.send).toHaveBeenCalledWith('Network.enable', {})
   })
 
-  it('attaches to the live CDP connection and enables Network', () => {
+  it('attaches to the live CDP connection and enables Network', async () => {
     const { stagehand, conn, sent } = createMockStagehand()
-    
+
     const handle = attachHarCaptureViaCdp(stagehand, {})
     expect(handle.attached).toBe(true)
+    // Subscription happens once the target session resolves, so `ready` is the
+    // point at which any of this is guaranteed. Asserting before awaiting it was
+    // asserting a race.
+    await handle.ready
     expect(conn.on).toHaveBeenCalledWith('Network.requestWillBeSent', expect.any(Function))
     expect(conn.on).toHaveBeenCalledWith('Network.responseReceived', expect.any(Function))
     expect(conn.on).toHaveBeenCalledWith('Network.loadingFinished', expect.any(Function))
     expect(sent.some((s) => s.method === 'Network.enable')).toBe(true)
   })
 
-  it('returns attached:false when no CDP connection exists', () => {
-    
+  it('reports failure through ready when no CDP connection exists', async () => {
     const handle = attachHarCaptureViaCdp({ context: {} } as any, {})
-    expect(handle.attached).toBe(false)
+    // No connection is only knowable after the async resolve, so the signal
+    // moved from `attached:false` to a rejected `ready`. The caller already
+    // handles rejection by falling back to the Playwright capture path.
+    await expect(handle.ready).rejects.toThrow(/No usable CDP connection/)
+    expect(await handle.flush()).toEqual([])
   })
 
   it('captures a full request/response pair into a HAR entry', async () => {
     const { stagehand, handlers } = createMockStagehand()
-    
+
     const handle = attachHarCaptureViaCdp(stagehand, {})
+    await handle.ready
     handlers['Network.requestWillBeSent']({
       requestId: 'r1',
       timestamp: 1,
@@ -98,6 +111,7 @@ describe('attachHarCaptureViaCdp (live CDP capture)', () => {
     const { stagehand, handlers, conn } = createMockStagehand()
     
     const handle = attachHarCaptureViaCdp(stagehand, { captureResponseBody: true, captureRequestBody: true })
+    await handle.ready
     handlers['Network.requestWillBeSent']({
       requestId: 'r2',
       timestamp: 1,
@@ -152,6 +166,7 @@ describe('attachHarCaptureViaCdp (live CDP capture)', () => {
     const { stagehand, handlers } = createMockStagehand()
 
     const handle = attachHarCaptureViaCdp(stagehand, {})
+    await handle.ready
     handlers['Network.requestWillBeSent']({ requestId: 'a', timestamp: 1, request: { url: 'http://localhost:52236/oast', method: 'GET', headers: {} } })
     handlers['Network.responseReceived']({ requestId: 'a', timestamp: 2, response: { url: 'http://localhost:52236/oast', status: 200, mimeType: 'text/plain', headers: {} } })
     handlers['Network.loadingFinished']({ requestId: 'a', timestamp: 3 })

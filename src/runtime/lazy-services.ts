@@ -129,7 +129,7 @@ export class LazySolverServices {
     return wrapStagehandTools(await this.ensureBrowser())
   }
 
-  async ensureCapture(): Promise<CaptureSession> {
+  async ensureCapture(observedPage?: any): Promise<CaptureSession> {
     if (this.captureValue) return this.captureValue
     if (this.capturePromise) return this.capturePromise
     this.capturePromise = (async () => {
@@ -154,7 +154,7 @@ export class LazySolverServices {
       } else {
         const stagehand = browser?.requireStagehand?.()
         if (stagehand?.context?.conn) {
-          const handle = attachHarCaptureViaCdp(stagehand, { captureResponseBody: true, captureRequestBody: true })
+          const handle = attachHarCaptureViaCdp(stagehand, { captureResponseBody: true, captureRequestBody: true, page: observedPage })
           if (handle.attached) {
             try {
               await handle.ready
@@ -164,15 +164,27 @@ export class LazySolverServices {
                 stop: async () => serialize(await handle.stop()),
               }
               this.options.workflow?.setCaptureSource('cdp')
-            } catch {
+              if (process.env.ULTIMATRIX_BROWSER_TRACE) console.log('[bt-cap] CDP source=cdp attached=true ready=ok')
+            } catch (captureError) {
+              if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+                console.log('[bt-cap] CDP ready THREW, falling back to Playwright: ' +
+                  String((captureError as Error)?.message ?? captureError).slice(0, 160))
+              }
               // Stagehand deployments can expose a connection without the
               // Network CDP domain. Keep observation live via the generic
               // Playwright capture browser instead of losing the HAR.
               capture = await this.startFallbackCapture()
             }
           }
-          else capture = await this.startFallbackCapture()
+          else {
+            if (process.env.ULTIMATRIX_BROWSER_TRACE) console.log('[bt-cap] CDP conn present but handle.attached=FALSE -> Playwright fallback')
+            capture = await this.startFallbackCapture()
+          }
         } else {
+          if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+            console.log('[bt-cap] NO stagehand.context.conn (conn=' +
+              String(stagehand?.context?.conn) + ') -> Playwright fallback, which cannot see Stagehand traffic')
+          }
           capture = await this.startFallbackCapture()
         }
       }
@@ -275,7 +287,6 @@ export class LazySolverServices {
       // type confusion that kept every live run HTTP-only — the browser started
       // fine and the observation path simply never had a handle to drive.
       const handle = await withTimeout(this.ensureBrowser(), observationTimeoutMs, 'Browser startup')
-      capture = await withTimeout(this.ensureCapture(), observationTimeoutMs, 'Network capture setup')
       const sessionId = runtime.browserSession?.sessionId
       page = sessionId ? await runtime.browser.getActivePage(sessionId) as any : undefined
       if (process.env.ULTIMATRIX_BROWSER_TRACE) {
@@ -320,11 +331,19 @@ export class LazySolverServices {
         }
       }
       if (!page || typeof page.goto !== 'function') {
-        await capture.stop()
-        this.captureValue = undefined
-        capture = undefined
+        if (capture) {
+          await capture.stop()
+          this.captureValue = undefined
+          capture = undefined
+        }
         throw new Error('Browser provider did not expose a navigable page and could not open one')
       }
+      // Capture is attached AFTER the page is resolved and BEFORE navigation,
+      // and it is handed the page itself. Attaching first and letting the
+      // observer provision its own page afterwards put the CDP subscription on
+      // a different target: it enabled Network, reported ready, and recorded
+      // nothing. Verified live 2026-09-29 — see CdpCaptureOptions.page.
+      capture = await withTimeout(this.ensureCapture(page), observationTimeoutMs, 'Network capture setup')
       await withTimeout(
         page.goto(target, { waitUntil: 'domcontentloaded', timeout: observationTimeoutMs }),
         observationTimeoutMs,

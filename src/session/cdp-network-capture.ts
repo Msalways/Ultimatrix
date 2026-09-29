@@ -10,6 +10,16 @@ export interface CdpCaptureOptions {
   maxResponseBodySize?: number
   captureRequestBody?: boolean
   captureResponseBody?: boolean
+  /**
+   * The exact page to capture. Pass it when the caller already has one.
+   *
+   * Capturing "whatever page is active when the capture starts" is a race: the
+   * observer provisions its own page and then navigates THAT, so the
+   * subscription lands on a different target and records nothing. Verified live
+   * 2026-09-29 on OWASP Juice Shop — CDP attached, Network.enable accepted, zero
+   * requests, precisely because the two pages differed.
+   */
+  page?: any
 }
 
 export interface CdpCaptureHandle {
@@ -48,8 +58,22 @@ export function attachHarCaptureViaCdp(
   // the root context connection. Subscribing to context.conn therefore looks
   // attached but observes zero requests (or rejects Network.enable). Keep the
   // root connection only as a compatibility fallback for older Stagehand.
-  const page: any = (stagehand as any)?.context?.activePage?.()
-  const conn: any = page?.mainSession ?? (stagehand as any)?.context?.conn
+  //
+  // `activePage()` is ASYNC. This call site used to read it synchronously, so
+  // `page` was an unresolved Promise, `page.mainSession` was undefined, and the
+  // `??` silently selected the root connection every single time — the one the
+  // comment above says observes zero requests. Capture then reported
+  // attached:true, resolved ready, and recorded nothing at all, which surfaced
+  // as "Baseline observation captured zero network requests".
+  // Verified live 2026-09-29 on OWASP Juice Shop. Same class of defect as the
+  // page resolver in browser/manager.ts: a thenable passed off as a real object.
+  const pagePromise: Promise<any> | null =
+    opts.page != null
+      ? Promise.resolve(opts.page)
+      : typeof (stagehand as any)?.context?.activePage === 'function'
+        ? Promise.resolve((stagehand as any).context.activePage())
+        : null
+
   const noop: CdpCaptureHandle = {
     attached: false,
     ready: Promise.resolve(),
@@ -58,8 +82,33 @@ export function attachHarCaptureViaCdp(
     entries: () => [],
     requestCount: () => 0,
   }
-  if (!conn || typeof conn.on !== 'function' || typeof conn.send !== 'function') {
-    return noop
+
+  // Resolved asynchronously, and every subscription below is registered once it
+  // lands. `ready` rejects when no usable connection exists, which the caller
+  // already handles by falling back — so the sync signature and its
+  // attached/ready contract are unchanged.
+  let conn: any = null
+  let connResolved = false
+  const resolveConn = async (): Promise<any> => {
+    if (connResolved) return conn
+    connResolved = true
+    const page = pagePromise ? await pagePromise : undefined
+    conn = page?.mainSession ?? (stagehand as any)?.context?.conn
+    if (!conn || typeof conn.on !== 'function' || typeof conn.send !== 'function') {
+      throw new Error('No usable CDP connection for HAR capture')
+    }
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      const pageAny: any = page
+      console.log('[bt-cap-resolve] ' + JSON.stringify({
+        pageCtor: pageAny?.constructor?.name,
+        pageIsPromise: typeof pageAny?.then === 'function',
+        pageKeys: pageAny ? Object.getOwnPropertyNames(Object.getPrototypeOf(pageAny)).slice(0, 14) : null,
+        hasMainSession: !!pageAny?.mainSession,
+        usedRootConn: !pageAny?.mainSession,
+        connCtor: conn?.constructor?.name,
+      }))
+    }
+    return conn
   }
 
   const builder: HarEntryBuilder = createHarEntryBuilder()
@@ -70,9 +119,10 @@ export function attachHarCaptureViaCdp(
   const cleanup: Array<() => void> = []
 
   const on = (event: string, handler: (params: any) => void) => {
+    if (!conn) throw new Error('CDP capture subscribed before the connection resolved')
     conn.on(event, handler)
     cleanup.push(() => {
-      if (typeof conn.off === 'function') conn.off(event, handler)
+      if (typeof conn?.off === 'function') conn.off(event, handler)
     })
   }
 
@@ -117,6 +167,11 @@ export function attachHarCaptureViaCdp(
   const requestMethods = new Map<string, string>()
   const responseMeta = new Map<string, { url: string; method: string; status: number; contentType?: string }>()
 
+  // Every Network.* subscription is registered in one place, called only once
+  // the target session has actually resolved. Registering eagerly against a
+  // not-yet-known connection is what made this look attached while seeing
+  // nothing.
+  const register = () => {
   on('Network.requestWillBeSent', (p: any) => {
     observed++
     if (p?.request?.method) requestMethods.set(p.requestId, p.request.method)
@@ -152,10 +207,18 @@ export function attachHarCaptureViaCdp(
     }
   })
   on('Network.loadingFailed', (p: any) => builder.onLoadingFailed(p))
+  }
 
   // The caller must await this before navigation; otherwise the document
   // request can race the subscription and produce an empty HAR.
-  const ready = conn.send('Network.enable', {}).then(() => undefined)
+  // Resolving the connection is part of `ready`, not a separate step: the
+  // target session is only obtainable asynchronously, and subscribing before
+  // it lands is the defect this fixes.
+  const ready = (async () => {
+    const c = await resolveConn()
+    register()
+    await c.send('Network.enable', {})
+  })()
 
   return {
     attached: true,
@@ -172,7 +235,7 @@ export function attachHarCaptureViaCdp(
       // Await any in-flight body/post-data fetches so entries are complete.
       await Promise.allSettled([...pendingBodies])
       try {
-        await conn.send('Network.disable', {})
+        await conn?.send('Network.disable', {})
       } catch {
         /* ignore */
       }
