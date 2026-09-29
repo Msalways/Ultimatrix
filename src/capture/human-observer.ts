@@ -1,4 +1,5 @@
 import type { Page } from 'playwright'
+import type { AuthFlowType } from '../types/shared'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
@@ -43,6 +44,23 @@ const SAML_PATTERNS = [
   /saml/i, /saml2/i, /sso\/saml/i, /adfs/i, /okta.*saml/i,
   /onelogin.*saml/i, /ping.*federate/i,
 ]
+
+/**
+ * Map a detected auth type onto the graph's flow vocabulary.
+ *
+ * The two vocabularies are deliberately different: AuthType describes what was
+ * SEEN on the page, AuthFlowType describes what kind of flow a node records. A
+ * form-based login is a `login` flow; `unknown` still means a login form was
+ * observed, so it is a `login` flow and not a discarded observation.
+ */
+export function toAuthFlowType(authType: AuthType): AuthFlowType {
+  switch (authType) {
+    case 'oauth': return 'oauth'
+    case 'saml': return 'saml'
+    case 'form': return 'login'
+    default: return 'login'
+  }
+}
 
 export class AuthStateDetector {
   private lastState: AuthState | null = null
@@ -288,10 +306,38 @@ export class HumanObserver {
     this.page = page
     this.capturing = true
 
-    // Hook auth detection into navigation events
+    // Hook auth detection into navigation events.
+    //
+    // A detected login form used to be logged and nothing else, so the one
+    // piece of ground truth that ends endpoint guessing — the REAL login
+    // endpoint, read from the live form — was discarded and the model went on
+    // inventing /api/login. Auth flows stayed at 0 in the graph on an app built
+    // around authentication, which is exactly what was observed live against
+    // OWASP Juice Shop (whose real endpoint is /rest/user/login).
+    //
+    // Observing a login form IS the knowledge. It belongs in the graph, not in a
+    // log line. addAuthFlow is idempotent by (flowType, startUrl), so repeated
+    // detections across navigations collapse to one node.
     this.authDetector.onStateChange((_prev, current) => {
-      if (current.hasLoginForm) {
-        log.info(`[human-observer] Auth state changed: detected ${current.authType} login (endpoint: ${current.loginEndpoint || 'same-page'})`)
+      if (!current.hasLoginForm) return
+      log.info(`[human-observer] Auth state changed: detected ${current.authType} login (endpoint: ${current.loginEndpoint || 'same-page'})`)
+      try {
+        const services = getEngagementServices()
+        const startUrl = String(this.page?.url?.() ?? '')
+        services?.graph?.addAuthFlow({
+          flowType: toAuthFlowType(current.authType),
+          startUrl,
+          reusable: true,
+          name: `${current.authType} login form`,
+          description: current.loginEndpoint
+            ? `Observed login form submitting to ${current.loginEndpoint} (password field: ${current.hasPasswordField}, forms on page: ${current.formCount})`
+            : `Observed ${current.authType} login form on ${startUrl} (no form action observed; same-page submit)`,
+          steps: [{ action: 'login-form-observed', url: current.loginEndpoint || startUrl }],
+        })
+      } catch (error) {
+        // Persistence is best-effort: a failure here must never take down the
+        // observer that is recording the interaction.
+        log.warn(`[human-observer] could not persist observed auth flow: ${(error as Error)?.message ?? error}`)
       }
     })
 

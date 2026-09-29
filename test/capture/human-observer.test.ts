@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { toAuthFlowType } from '../../src/capture/human-observer'
+import type { AuthType } from '../../src/capture/human-observer'
 
 function makePage(overrides: Record<string, any> = {}) {
   const listeners: Record<string, Function[]> = {}
@@ -748,5 +750,40 @@ describe('HumanObserver', () => {
       expect(state!.hasLoginForm).toBe(true)
     })
 
+  })
+})
+
+/**
+ * An observed login form is KNOWLEDGE, and knowledge the system cannot query
+ * is knowledge it does not have.
+ *
+ * Verified live 2026-09-29 on OWASP Juice Shop: AuthStateDetector read the real
+ * login endpoint off the live form, and the state-change callback logged it and
+ * threw it away. Auth flows stayed 0 in the graph on an application built
+ * around authentication, and the model went on inventing /api/login when the
+ * answer was /rest/user/login.
+ */
+describe('toAuthFlowType', () => {
+  it('maps a form login to a login flow', () => {
+    expect(toAuthFlowType('form')).toBe('login')
+  })
+
+  it('passes oauth and saml through', () => {
+    expect(toAuthFlowType('oauth')).toBe('oauth')
+    expect(toAuthFlowType('saml')).toBe('saml')
+  })
+
+  it('treats an unknown type as a login flow, because a login form WAS seen', () => {
+    // The trigger is `hasLoginForm`, not the type. Discarding 'unknown' would
+    // re-create the original bug for any page whose type could not be pinned.
+    expect(toAuthFlowType('unknown')).toBe('login')
+  })
+
+  it('never returns a value outside the graph vocabulary', () => {
+    const valid = new Set(['login', 'logout', 'refresh', 'jwt-forgery', 'default-creds',
+      'oauth', 'session-reuse', 'form-fill', 'navigation', 'custom', 'saml', 'mfa', 'api-key'])
+    for (const t of ['form', 'oauth', 'saml', 'unknown'] as AuthType[]) {
+      expect(valid.has(toAuthFlowType(t))).toBe(true)
+    }
   })
 })
