@@ -33,6 +33,29 @@ function getBrowserManagerState(): BrowserManagerState {
   return getEngagementServices()?.browserManager ?? legacyBrowserManager
 }
 
+/**
+ * The one place a browser handle is registered, so reads and writes cannot
+ * diverge.
+ *
+ * Verified live 2026-09-29 (OWASP Juice Shop): the browser started, and then
+ * every read of the handle came back empty. The cause was two sources of truth.
+ * The writer reached through `runtime.services.browserManager`; the reader used
+ * `getBrowserManagerState()`, which is `getEngagementServices()?.browserManager
+ * ?? legacyBrowserManager` — and `getEngagementServices()` returns undefined
+ * outside `runWithEngagementServices`. So the write landed on the engagement
+ * object and the read consulted `legacyBrowserManager`. Different objects, same
+ * field name, silent as anything.
+ *
+ * That is why the browser looked "started but pageless" for every run, and why
+ * auth flows and roles were permanently zero: the agent had no page to observe
+ * with. Callers must register here rather than reaching into services directly.
+ */
+export function registerBrowserHandle(handle: unknown): void {
+  const state = getBrowserManagerState()
+  state.browser = handle as never
+  state.activeBrowser = handle as never
+}
+
 const STAGEHAND_FAST_PROVIDER = 'groq'
 const STAGEHAND_FAST_MODEL = 'llama-3.1-8b-instant'
 
@@ -259,17 +282,163 @@ export function getBrowserState(): {
   }
 }
 
+/** Call an accessor without letting a provider shape change throw us out of here. */
+function safeCall<T>(fn: () => T): T | undefined {
+  try { return fn() } catch { return undefined }
+}
+
+/** Await an accessor without letting a provider shape change throw us out of here. */
+async function safeCallAsync<T>(fn: () => T | Promise<T>): Promise<T | undefined> {
+  try { return await fn() } catch { return undefined }
+}
+
+/**
+ * True for a thenable.
+ *
+ * A Promise is truthy, so a synchronous accessor read that returns one is
+ * indistinguishable from a real page by any truthiness check. That ambiguity
+ * is the whole bug, so it gets one named predicate rather than an inline check.
+ */
+function isThenable(v: unknown): v is Promise<unknown> {
+  return !!v && (typeof v === 'object' || typeof v === 'function') &&
+    typeof (v as { then?: unknown }).then === 'function'
+}
+
+/**
+ * Stable short identity for an object, for tracing which instance a reader saw.
+ *
+ * Two objects with the same field name are the whole failure mode here, so
+ * "which instance?" has to be answerable at runtime. WeakMap-based: no global
+ * counter to drift, and it never retains anything.
+ */
+const ids = new WeakMap<object, string>()
+let seq = 0
+function objId(o: unknown): string {
+  if (o === null) return 'null'
+  if (o === undefined) return 'undefined'
+  if (typeof o !== 'object' && typeof o !== 'function') return String(o)
+  let id = ids.get(o as object)
+  if (!id) { id = `o${++seq}`; ids.set(o as object, id) }
+  return id
+}
+function stateId(s: unknown): string { return objId(s) }
+function handleId(h: unknown): string { return objId(h) }
+export const __browserTraceIds = { objId }
+
+/**
+ * Resolve the current page from a browser context, whatever shape it exposes.
+ *
+ * This accessor has changed shape across provider versions, and guessing one is
+ * what made the whole browser layer silently dead. Verified live 2026-09-28
+ * (OWASP Juice Shop, 5 consecutive runs): the old code read `context.activePage`,
+ * absent on Stagehand v3, then fell back to `context.pages?.[0]` — but `pages` is
+ * a METHOD there, so `[0]` was undefined and this always returned null.
+ * Observation failed with "Browser provider did not expose a navigable page" and
+ * the engagement degraded to HTTP-only.
+ *
+ * The cost was not a missing browser. AuthStateDetector and role learning live
+ * in the browser layer, so auth flows and RBAC roles came out 0 on an
+ * application built around them, and the agent fell back to guessing endpoint
+ * paths. A degraded mode is defensible; a degraded mode nobody can see is not.
+ */
+export function resolveContextPage(context: any): any | null {
+  if (!context) return null
+  const active = context.activePage
+  const fromActive = typeof active === 'function' ? safeCall(() => active()) : active
+  if (fromActive && !isThenable(fromActive)) return fromActive
+
+  const rawPages = context.pages
+  const pages = typeof rawPages === 'function' ? safeCall(() => rawPages()) : rawPages
+  const first = Array.isArray(pages) ? pages[0] : safeCall(() => pages?.[0])
+  if (first && !isThenable(first)) return first
+
+  // Some builds expose the current page directly on the context.
+  const direct = context.page
+  return direct && !isThenable(direct) ? direct : null
+}
+
+/**
+ * Await the same resolution. This is the CANONICAL form: on Stagehand v3 the
+ * page accessors are async, so a synchronous read hands back an unresolved
+ * Promise — which is truthy, and therefore looks like a page to every caller
+ * until it dereferences `.goto` and finds `undefined`.
+ *
+ * That is the actual root cause of the dead browser layer, found live
+ * 2026-09-29 on OWASP Juice Shop after a runtime probe printed
+ * `String(ctx.activePage())` as `[object Object]` — a Promise, not a page. The
+ * synchronous resolver was the only thing standing between a working browser
+ * and five-plus runs of HTTP-only engagement.
+ */
+export async function resolveContextPageAsync(context: any): Promise<any | null> {
+  if (!context) return null
+  const active = context.activePage
+  const fromActive = typeof active === 'function' ? await safeCallAsync(() => active()) : active
+  if (fromActive) return fromActive
+
+  const rawPages = context.pages
+  const pages = await (typeof rawPages === 'function' ? safeCallAsync(() => rawPages()) : rawPages)
+  const first = Array.isArray(pages) ? pages[0] : await pages?.[0]
+  if (first) return first
+
+  const direct = await context.page
+  return direct ?? null
+}
+
+/**
+ * Resolve a page, CREATING one if the provider has none yet.
+ *
+ * The read-only resolver above was not enough. Verified live 2026-09-28 (OWASP
+ * Juice Shop, 5 runs): the browser started, exposed no page, and observation
+ * failed with "Browser provider did not expose a navigable page" — because
+ * observation needs a page in order to navigate, while the provider only gets
+ * one once something navigates. A deadlocked pair.
+ *
+ * The provider does have a way out: `context.newPage(url)`. Verified in the
+ * installed @mastra/stagehand build alongside `context.activePage()`,
+ * `context.pages()` and `context.setActivePage(page)`. Provisioning here means
+ * observation can start from nothing, which is what every browser-resident
+ * capability depends on — AuthStateDetector and role learning among them.
+ *
+ * A URL is passed through when we have one so the page opens already useful;
+ * without it, the page is created blank and the caller navigates as before.
+ */
+export async function ensureContextPage(context: any, url?: string): Promise<any | null> {
+  if (!context) return null
+  // Awaited, not synchronous: the sync resolver rejects thenables, and on
+  // Stagehand v3 every page accessor returns one.
+  const existing = await resolveContextPageAsync(context)
+  if (existing) return existing
+  if (typeof context.newPage !== 'function') return null
+  // newPage RETURNS the page it opened. Discarding that and re-resolving was
+  // wrong: verified live 2026-09-29, `newPage` succeeded and the follow-up
+  // resolve still came back empty, so the open page was thrown away. Prefer the
+  // returned value; fall back to a re-read only if it is not navigable.
+  let created: any = null
+  try {
+    created = url ? await context.newPage(url) : await context.newPage()
+  } catch {
+    return await resolveContextPageAsync(context)
+  }
+  if (typeof created?.goto === 'function') return created
+  const reread = await resolveContextPageAsync(context)
+  if (reread) return reread
+  return typeof created?.goto === 'function' ? created : null
+}
+
 export function getActivePage(): any | null {
   const state = getBrowserManagerState()
   const b = state.activeBrowser || state.browser
+  if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+    log.warn(`[browser-trace] getActivePage state=${stateId(state)} handle=${handleId(b)} legacy=${state === legacyBrowserManager} ctx=${safeCall(() => String(!!(b as any)?.requireStagehand?.()?.context))}`)
+  }
   if (!b && !camofoxSession) return null
   try {
     const stagehand = (b as any)?.requireStagehand?.()
-    if (stagehand?.context) {
-      const active = stagehand.context.activePage
-      const page = typeof active === 'function' ? active() : active
-      return page || stagehand.context.pages?.[0] || null
+    const page = resolveContextPage(stagehand?.context)
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      log.warn(`[browser-trace]   resolved page=${page ? 'yes' : 'NULL'}`)
     }
+    if (page) return page
   } catch {}
   // Camoufox (Playwright) session.
   if (isCamofoxBrowser(b)) return b.page ?? null

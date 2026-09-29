@@ -697,7 +697,20 @@ export async function solve(
       const message = error instanceof Error ? error.message : String(error);
       log.warn(`[observation] baseline unavailable: ${message}`);
       board.addFact(`Browser observation failed: ${message}. Use bounded HTTP reconnaissance as fallback.`, "observation-failure");
-      emitMessage({ kind: "event", event: "observation.failed", label: "browser observation unavailable; HTTP fallback allowed", status: "warn" });
+      // Carry the reason. Verified live across 5 runs: the label said only
+      // "browser observation unavailable; HTTP fallback allowed", so the operator
+      // (and the transcript) could not tell a missing browser from a failed
+      // navigation from a capture that collected nothing. Silently degrading to
+      // HTTP is defensible; degrading without saying why is not — and it is
+      // especially costly here, because the browser layer is where auth-state
+      // detection lives, so its absence is the reason auth flows stayed at zero.
+      emitMessage({
+        kind: "event",
+        event: "observation.failed",
+        label: `browser observation unavailable: ${message}. HTTP fallback allowed — browser-dependent capabilities (auth state, roles, interaction) are OFF for this engagement.`,
+        status: "warn",
+        data: { error: message },
+      });
     }
   } else if (lazyServices?.observationState?.status === 'failed') {
     // A model/provider fallback shares the same engagement services. Surface

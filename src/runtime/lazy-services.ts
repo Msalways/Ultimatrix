@@ -1,4 +1,4 @@
-﻿import type { MastraMemory } from '@mastra/core/memory'
+import type { MastraMemory } from '@mastra/core/memory'
 import type { UltimatrixConfig } from '../config'
 import type { Blackboard } from '../core/blackboard'
 import type { DynamicToolRegistry } from '../extensions/tool-registry'
@@ -18,6 +18,8 @@ import { bridgeHARToGraph } from '../analysis/har-bridge'
 import { resolve } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { wrapStagehandTools } from '../browser/dialog-inject'
+import { log } from '../utils/logger'
+import { ensureContextPage, registerBrowserHandle, __browserTraceIds } from '../browser/manager'
 import type { RuntimeIdentity } from './identity'
 
 type CaptureSession = {
@@ -106,9 +108,16 @@ export class LazySolverServices {
       const session = await this.options.runtime.startBrowser()
       this.options.runtime.services.dialogWatcher.attach(session.browser)
       this.browserValue = session.browser
-      // Bridge to BrowserManagerState so getActivePage()/getActiveBrowser() work
-      this.options.runtime.services.browserManager.browser = session.browser
-      this.options.runtime.services.browserManager.activeBrowser = session.browser
+      if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+        log.warn(`[browser-trace] ensureBrowser got handle=${__browserTraceIds.objId(session.browser)} from startBrowser()`)
+      }
+      // Register through the single accessor the readers use. Writing straight
+      // into `runtime.services.browserManager` looked equivalent and was not:
+      // getBrowserManagerState() resolves to the engagement services only while
+      // inside runWithEngagementServices, and to the module-level fallback
+      // otherwise. Same field, different object, and the browser silently read
+      // back as absent — which is what kept every live run HTTP-only.
+      registerBrowserHandle(session.browser)
       return session.browser
     })().finally(() => {
       this.browserPromise = undefined
@@ -258,15 +267,63 @@ export class LazySolverServices {
     let capture: CaptureSession | undefined
     let page: any
     try {
-      await withTimeout(this.ensureBrowser(), observationTimeoutMs, 'Browser startup')
+      // Hold the HANDLE that ensureBrowser() returns. Reading it back off the
+      // runtime did not work: `runtime.browser` is the BrowserProvider
+      // (engagement-runtime.ts), which has no requireStagehand, so
+      // `runtime.browser?.requireStagehand?.()?.context` was always undefined
+      // and the provisioning attempt below could never open a page. This is the
+      // type confusion that kept every live run HTTP-only — the browser started
+      // fine and the observation path simply never had a handle to drive.
+      const handle = await withTimeout(this.ensureBrowser(), observationTimeoutMs, 'Browser startup')
       capture = await withTimeout(this.ensureCapture(), observationTimeoutMs, 'Network capture setup')
       const sessionId = runtime.browserSession?.sessionId
       page = sessionId ? await runtime.browser.getActivePage(sessionId) as any : undefined
+      if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+        const h: any = handle
+        const sh = h?.requireStagehand?.()
+        const ctx: any = sh?.context
+        console.log('[bt] ' + JSON.stringify({
+          handle: !!h,
+          handleCtor: h?.constructor?.name,
+          requireStagehand: typeof h?.requireStagehand,
+          shCtor: sh?.constructor?.name,
+          ctxCtor: ctx?.constructor?.name,
+          ctxNewPage: typeof ctx?.newPage,
+          ctxPages: typeof ctx?.pages,
+          ctxActivePage: typeof ctx?.activePage,
+          sessionId: sessionId ?? null,
+          providerGotPage: !!page,
+          pageGoto: typeof page?.goto,
+        }))
+      }
+      if (!page || typeof page.goto !== 'function') {
+        // A freshly started provider may expose no page at all, and the old code
+        // treated that as fatal. It is not fatal: the provider can open one. This
+        // was the difference between a working browser and a permanently
+        // HTTP-only engagement — verified live 2026-09-28 across five runs
+        // against a real application, where the failure silently zeroed auth
+        // flows and RBAC roles because those capabilities live in the browser
+        // layer. Provision a page, then carry on.
+        const context = (handle as any)?.requireStagehand?.()?.context
+        page = await ensureContextPage(context, target)
+        if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+          const c: any = context
+          console.log('[bt-provision] ' + JSON.stringify({
+            ctx: !!c,
+            ctxCtor: c?.constructor?.name,
+            newPage: typeof c?.newPage,
+            activePage: typeof c?.activePage,
+            pages: typeof c?.pages,
+            provisioned: !!page,
+            pageGoto: typeof page?.goto,
+          }))
+        }
+      }
       if (!page || typeof page.goto !== 'function') {
         await capture.stop()
         this.captureValue = undefined
         capture = undefined
-        throw new Error('Browser provider did not expose a navigable page')
+        throw new Error('Browser provider did not expose a navigable page and could not open one')
       }
       await withTimeout(
         page.goto(target, { waitUntil: 'domcontentloaded', timeout: observationTimeoutMs }),

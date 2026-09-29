@@ -172,6 +172,55 @@ export const flushEvidence = (findingKey?: string): BufferedFindingEvidence[] =>
   return all
 }
 
+/**
+ * What status a finding is BORN with.
+ *
+ * This used to be "pending_verification if high/critical and weak, else
+ * verified" — which made 'verified' mean "not pending" rather than "proven".
+ * Verified live against a real application (OWASP Juice Shop, own container,
+ * 2026-09-28): 29 capture-only secret leads came out marked
+ * `lifecycleStatus: 'verified'` with `confirmed: undefined` and evidence that
+ * was nothing but a HAR entry index — proof that a URL was fetched, not that a
+ * secret exists in it. The sample read `api_key = api_key`: a keyword match on a
+ * JS file that merely contains the string "api_key".
+ *
+ * `verified` is therefore reserved for findings that demonstrated consequence.
+ * The evidence gate has already decided the claim is ADMISSIBLE; this decides
+ * whether anything was actually PROVEN. A claim resting on a passive capture is
+ * a lead, and is born a candidate.
+ *
+ * This matches the intent already stated where those leads are created:
+ * "Passive capture proves the value was observed, not that it has reportable
+ * impact. Keep it informational until a replayable experiment proves more."
+ *
+ * Promotion to `verified` on a high/critical finding is the verifier's job —
+ * an independent replay — and that path now goes through the disposition log,
+ * so the reason travels with the promotion.
+ */
+export function deriveBornLifecycleStatus(
+  severity: string,
+  evidenceLevel: EvidenceLevel,
+  items: Array<{ type: string }>,
+): 'candidate' | 'pending_verification' | 'verified' {
+  // A browser effect or screenshot is the only evidence that something actually
+  // happened in the application, as opposed to something being fetched. A
+  // raw_request/raw_response pair, however strong it looks, is a record of
+  // traffic — on its own it proves nothing about behaviour.
+  const demonstratedConsequence = items.some(
+    e => e.type === 'browser_effect' || e.type === 'screenshot')
+  if (demonstratedConsequence) return 'verified'
+
+  // A serious claim that nothing has proven is not merely a lead — it needs the
+  // independent replay, which is the only thing that can move it. Sending it to
+  // the verifier is honest; calling it 'candidate' would quietly demote a
+  // high-severity claim, and calling it 'verified' is the over-claim this
+  // function exists to remove.
+  if (severity === 'high' || severity === 'critical') return 'pending_verification'
+
+  // Everything else that rests on a passive capture is a lead.
+  return 'candidate'
+}
+
 function determineEvidenceLevel(items: Array<{ type: string }>): EvidenceLevel {
   if (items.length === 0) return 'L1'
   const hasHarOrRaw = items.some(e => e.type === 'har_entry' || e.type === 'raw_request' || e.type === 'raw_response')
@@ -451,10 +500,11 @@ export async function promoteFindingCandidate(input: PromoteFindingInput): Promi
   })
   const screenshotPaths = evidenceItems.filter(e => e.type === 'screenshot').map(e => e.data)
 
-  const gateLifecycleStatus: FindingNode['properties']['lifecycleStatus'] =
-    (effectiveSeverity === 'high' || effectiveSeverity === 'critical') && evidenceLevel === 'L1'
-      ? 'pending_verification'
-      : 'verified'
+  const gateLifecycleStatus = deriveBornLifecycleStatus(
+    effectiveSeverity,
+    evidenceLevel,
+    evidenceItems,
+  )
 
   // A prior ruling on this claim outranks a fresh verdict computed from evidence
   // alone. Without this the machine would resurrect a finding the operator had

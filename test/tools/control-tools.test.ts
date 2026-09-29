@@ -127,7 +127,12 @@ describe('control-tools', () => {
         confidence: 0.3,
       })
       expect(result.ok).toBe(true)
-      expect(result.value.lifecycleStatus).toBe('verified')
+      // Was 'verified'. Corrected 2026-09-28 after a live run against a real
+      // application produced 29 findings marked `verified` whose evidence was
+      // nothing but a HAR entry index — proof that a URL was fetched, not that
+      // anything was wrong. This item has NO evidence at all, and the test's own
+      // name says it is "not a vuln claim"; 'candidate' is the honest status.
+      expect(result.value.lifecycleStatus).toBe('candidate')
     })
 
     it('creates a finding when structural evidence supports the claim', async () => {
@@ -232,7 +237,7 @@ describe('control-tools', () => {
       expect(mockStore.addFinding).not.toHaveBeenCalled()
     })
 
-    it('high severity with raw evidence gets verified status', async () => {
+    it('high severity with raw evidence is routed to the verifier, not marked verified', async () => {
       const { writeFinding } = await import('../../src/tools/control-tools')
       await recordFor('raw_request', 'GET /api/debug HTTP/1.1', '/api/debug')
       const result = await callTool(writeFinding, {
@@ -242,7 +247,11 @@ describe('control-tools', () => {
         confidence: 0.7,
       })
       expect(result.ok).toBe(true)
-      expect(result.value.lifecycleStatus).toBe('verified')
+      // Was 'verified'. A raw_request records that a request went out; it is not
+      // evidence that anything leaked, and it certainly is not an independent
+      // replay. A high-severity claim that nothing has proven needs the verifier,
+      // so 'pending_verification' is the honest answer.
+      expect(result.value.lifecycleStatus).toBe('pending_verification')
       expect(result.value.proofCheck.passed).toBe(true)
     })
 
@@ -426,7 +435,11 @@ describe('control-tools', () => {
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.value.evidenceLevel).toBe('L4')
-        expect(result.value.lifecycleStatus).toBe('verified')
+        // Was 'verified'. A capture is a record of traffic, not proof of impact.
+        // The human asserting it does not change that — the gate exists precisely
+        // so an assertion cannot substitute for an observation. A high-severity
+        // claim resting on a capture goes to the independent replay.
+        expect(result.value.lifecycleStatus).toBe('pending_verification')
         expect(result.value.proofCheck.passed).toBe(true)
       }
       expect(mockStore.addFinding).toHaveBeenCalled()
