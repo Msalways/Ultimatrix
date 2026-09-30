@@ -151,3 +151,72 @@ describe('async page accessors (the real root cause)', () => {
     expect(newPage).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * THE DEFECT THAT KEPT THE BROWSER TOOLS DEAD.
+ *
+ * `activePage` and `pages` are METHODS that use `this`. Calling them through a
+ * detached reference loses the receiver, the call throws, and the safeCall
+ * guard swallows it into `null` — which is indistinguishable from "no page".
+ *
+ * Proven in a single scope on OWASP Juice Shop, 2026-09-29: a direct
+ * `ctx.activePage()` returned a live page object (with its own conn/ws) while
+ * `resolveContextPageAsync(ctx)` returned `null`, with `ctxIdentity === true`.
+ * Every stagehand_* tool answered "No active browser page available for this
+ * provider" on runs where a working page had just been navigated.
+ *
+ * These tests use a receiver-dependent accessor, which is the only shape that
+ * can catch this. A mock returning a plain object hides it completely.
+ */
+function receiverDependentPage() {
+  const page = { goto: vi.fn(), marker: 'live-page' }
+  return {
+    page,
+    ctx: {
+      self: null as any,
+      activePage(this: any) {
+        if (!this) throw new TypeError("cannot read properties of undefined (reading 'sessionId')")
+        return Promise.resolve(this._page)
+      },
+      pages(this: any) {
+        if (!this) throw new TypeError("cannot read properties of undefined (reading 'tabs')")
+        return Promise.resolve([this._page])
+      },
+      _page: page,
+    },
+  }
+}
+
+describe('accessors must be invoked on their receiver', () => {
+  it('async resolver reaches a receiver-dependent activePage()', async () => {
+    const { page, ctx } = receiverDependentPage()
+    expect(await resolveContextPageAsync(ctx)).toBe(page)
+  })
+
+  it('async resolver reaches a receiver-dependent pages()', async () => {
+    const { page, ctx } = receiverDependentPage()
+    // activePage throws only when detached; with a live receiver both work, so
+    // exercise pages() as the sole path.
+    const onlyPages = { ...ctx, activePage: undefined }
+    expect(await resolveContextPageAsync(onlyPages)).toBe(page)
+  })
+
+  it('sync resolver rejects thenables but still resolves on the receiver', () => {
+    const { ctx } = receiverDependentPage()
+    // The sync resolver cannot await, so it must return null rather than a
+    // Promise — and it must not throw while doing so.
+    expect(resolveContextPage(ctx)).toBeNull()
+  })
+
+  it('does not lose the receiver even when a shape is hostile', async () => {
+    const hostile = {
+      activePage(this: any) {
+        if (!this) throw new Error('detached')
+        return Promise.resolve({ goto: vi.fn() })
+      },
+    }
+    const got = await resolveContextPageAsync(hostile)
+    expect(got).not.toBeNull()
+    expect(typeof got?.goto).toBe('function')
+  })
+})

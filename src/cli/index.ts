@@ -199,8 +199,22 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
             const store = runtime!.graph
             const allNodes = store.queryNodes()
             const findingNodes = allNodes.filter(n => n.type === 'Finding')
+            const { checkProof } = await import('../intelligence/proof-rules')
             findings = findingNodes.map(n => {
               const p = n.properties as Record<string, any>
+              // The report's proof gate is not optional and must not be
+              // bypassed. The old code never set proofCheck at all, so
+              // generateReport() dropped EVERY finding and produced a confident
+              // report of a target with 600+ nodes and 6 findings reporting zero.
+              // That is worse than an empty report: it is a false clean bill.
+              // Evaluate the real rule instead, and let the gate decide.
+              const proof = checkProof({
+                findingType: String(p.technique ?? p.findingType ?? 'unknown'),
+                endpoint: String(p.endpoint ?? ''),
+                severity: String(p.severity ?? 'info'),
+                findingId: n.id,
+                items: Array.isArray(p.evidenceItems) ? p.evidenceItems : [],
+              })
               return {
                 id: n.id,
                 title: `${p.technique} on ${p.endpoint}`,
@@ -212,6 +226,7 @@ function getApprovedOrigins(cliArgs: string[]): string[] {
                 firstSeen: new Date(n.createdAt),
                 lastSeen: new Date(n.updatedAt),
                 status: 'open' as const,
+                proofCheck: proof,
               }
             })
           })
