@@ -83,7 +83,7 @@ export const saveSession = createTool({
 
     const cookies = await context.cookies().catch(() => [])
 
-    const page = getActivePage()
+    const page = await getActivePage()
     let localStorage: Record<string, string> = {}
     if (page) {
       try {
@@ -226,7 +226,7 @@ export const restoreSession = createTool({
     }
 
     const localStorage = flow.properties.localStorage as Record<string, string> || {}
-    const page = getActivePage()
+    const page = await getActivePage()
     if (page && Object.keys(localStorage).length > 0) {
       for (const [key, value] of Object.entries(localStorage)) {
         await page.evaluate((k: string, v: string) => window.localStorage.setItem(k, v), key, value).catch(() => {})
@@ -404,7 +404,7 @@ export const reproduceFlow = createTool({
       return { ok: false, error: `Flow "${flowName}" not found` }
     }
 
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) return { ok: false, error: 'No browser page available' }
     try {
       enforceAction('browser_action', { toolId: 'reproduceFlow' })

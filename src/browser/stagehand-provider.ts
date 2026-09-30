@@ -36,7 +36,7 @@ export class StagehandProvider implements BrowserProvider {
   }
 
   async getActivePage(_sessionId: string): Promise<unknown> {
-    return getActivePage()
+    return await getActivePage()
   }
 
   async captureScreenshot(sessionId: string, context: string, outputDir?: string): Promise<string | null> {

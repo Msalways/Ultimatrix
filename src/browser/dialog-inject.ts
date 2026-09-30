@@ -25,7 +25,7 @@ import { recordBrowserEffectEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
 import { wireRenderTrace } from '../capture/render-bridge'
 import { getGlobalObserver } from '../capture/human-observer'
-import { getActivePage } from './manager'
+import { getActivePage, resolveContextPageAsync } from './manager'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { isCamofoxHandle } from './provider'
 import { randomUUID } from 'node:crypto'
@@ -46,21 +46,60 @@ const STAGEHAND_TOOL_NAMES = [
  * every page-derived safety/evidence branch silently disappear in normal
  * solver calls.
  */
-function resolvePage(browser: any, context: any): any {
+/**
+ * Resolve the page a browser tool should act on.
+ *
+ * Two defects lived here, both invisible because a failed lookup is
+ * indistinguishable from a working one until a tool refuses to run.
+ *
+ * 1. `context.activePage()` is ASYNC. Calling it and returning the result handed
+ *    back an unresolved Promise — truthy, so it passed every downstream check as
+ *    "a page", and the tool failed on it much later.
+ * 2. The `return` sat INSIDE the try block, so when the handle exposed no
+ *    requireStagehand this function returned undefined immediately and the
+ *    await getActivePage() fallback below was unreachable. `return` does not throw, so
+ *    the catch never fired. That is why every stagehand_* tool answered "No
+ *    active browser page available for this provider" on live runs where a page
+ *    demonstrably existed — verified on OWASP Juice Shop 2026-09-29.
+ */
+async function resolvePage(browser: any, context: any): Promise<any> {
   if (context?.page) return context.page
   if (isCamofoxHandle(browser)) return browser.page
-  try {
-    const stagehand = browser?.requireStagehand?.()
-    const active = stagehand?.context?.activePage
-    const activePage = typeof active === 'function' ? active() : active
-    return activePage
-      ?? (Array.isArray(stagehand?.context?.pages) ? stagehand.context.pages[0] : undefined)
-      ?? stagehand?.context?.pages?.[0]
-  } catch {
-    // Fall through to the engagement-scoped manager for legacy handles.
+  if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+    console.log('[bt-resolvePage] ' + JSON.stringify({
+      browser: !!browser,
+      browserCtor: browser?.constructor?.name,
+      hasRequireStagehand: typeof browser?.requireStagehand,
+    }))
   }
   try {
-    return getActivePage()
+    const stagehand = browser?.requireStagehand?.()
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      const ctx: any = stagehand?.context
+      let rawActive = 'n/a'
+      let rawPages = 'n/a'
+      try { rawActive = JSON.stringify(await ctx?.activePage?.()) ?? 'undefined' } catch (e) { rawActive = 'THREW ' + (e as Error).message.slice(0, 60) }
+      try { const p = await ctx?.pages?.(); rawPages = Array.isArray(p) ? 'array[' + p.length + ']' : typeof p } catch (e) { rawPages = 'THREW ' + (e as Error).message.slice(0, 60) }
+      const direct = await resolveContextPageAsync(ctx)
+      console.log('[bt-resolvePage]   raw activePage=' + String(rawActive).slice(0, 60) + '  pages=' + rawPages +
+        '  resolverSameScope=' + (direct ? 'PAGE' : 'null') + '  ctxIdentity=' + (ctx === (browser as any)?.requireStagehand?.()?.context))
+    }
+    const fromContext = await resolveContextPageAsync(stagehand?.context)
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      console.log('[bt-resolvePage]   fromContext=' + (fromContext ? 'PAGE' : 'null'))
+    }
+    if (fromContext) return fromContext
+  } catch (error) {
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      console.log('[bt-resolvePage]   context path threw: ' + String((error as Error)?.message ?? error).slice(0, 120))
+    }
+  }
+  try {
+    const fallback = await getActivePage()
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      console.log('[bt-resolvePage]   manager fallback=' + (fallback ? 'PAGE' : 'null'))
+    }
+    return fallback
   } catch {
     return undefined
   }
@@ -136,7 +175,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         const evidenceIds: string[] = []
         const recordActionEffect = (input: Parameters<typeof recordBrowserEffectEvidence>[0]) =>
           recordBrowserEffectEvidence({ ...input, executionId: input.executionId ?? actionId, ...(actor ? { session: actor } : {}) })
-        const page = resolvePage(browser, context)
+        const page = await resolvePage(browser, context)
         const pageUrl = () => {
           try { return String(page?.url?.() ?? '') } catch { return '' }
         }

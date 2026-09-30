@@ -1,4 +1,4 @@
-﻿import type { MastraMemory } from '@mastra/core/memory'
+import type { MastraMemory } from '@mastra/core/memory'
 import { Agent } from '@mastra/core/agent'
 import { createTool } from '@mastra/core/tools'
 import { TokenLimiterProcessor } from '@mastra/core/processors'
@@ -257,7 +257,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     description: 'Inspect the current page for typed authentication state and entry points.',
     inputSchema: z.object({ url: z.string().optional() }),
     execute: async ({ url }) => {
-      const page = getActivePage()
+      const page = await getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
       const actionId = randomUUID()
       const correlationToken = `browser:${actionId}`
@@ -288,7 +288,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     description: 'Check whether the current browser session can reach specified protected URLs.',
     inputSchema: z.object({ urls: z.array(z.string()).min(1) }),
     execute: async ({ urls }) => {
-      const page = getActivePage()
+      const page = await getActivePage()
       if (!page) return { ok: false, error: 'No active browser page' }
       const actionId = randomUUID()
       const correlationToken = `browser:${actionId}`

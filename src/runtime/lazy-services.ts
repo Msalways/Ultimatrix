@@ -188,7 +188,7 @@ export class LazySolverServices {
           capture = await this.startFallbackCapture()
         }
       }
-      await this.attachCaptureObservers()
+      await this.attachCaptureObservers(observedPage)
       return capture
     })().then(capture => {
       this.captureValue = capture
@@ -211,15 +211,35 @@ export class LazySolverServices {
     return { handle, flush: handle.flush, stop: handle.stop }
   }
 
-  private async attachCaptureObservers(): Promise<void> {
+  private async attachCaptureObservers(observedPage?: any): Promise<void> {
     const runtime = this.options.runtime
-    const sessionId = runtime?.browserSession?.sessionId
-    if (!runtime || !sessionId) return
-    const page = await runtime.browser.getActivePage(sessionId) as any
-    if (!page) return
+    if (!runtime) return
+    // Prefer the page the caller already resolved. Re-resolving through the
+    // provider looked equivalent and was not: provider.getActivePage() returns
+    // null on Stagehand v3, and the old `if (!page) return` then bailed out
+    // SILENTLY, so the human observer, the passive observer and all auth-state
+    // detection were never attached on any live run. Verified live 2026-09-29
+    // against OWASP Juice Shop: a run that captured 793 nodes and 41 endpoints
+    // produced zero human-observer activity and zero AUTH_FLOW nodes.
+    let page = observedPage
+    if (!page) {
+      const sessionId = runtime.browserSession?.sessionId
+      if (!sessionId) return
+      page = await runtime.browser.getActivePage(sessionId) as any
+    }
+    if (!page) {
+      if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+        console.log('[bt-observers] no page available — humanObserver/passiveObserver NOT attached')
+      }
+      return
+    }
     this.capturePage = page
     if (!runtime.services.humanObserver.isCapturing()) runtime.services.humanObserver.attach(page)
     runtime.services.passiveObserver.attach(page)
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      console.log('[bt-observers] humanObserver=' + runtime.services.humanObserver.isCapturing() +
+        ' passiveObserver attached to the observed page')
+    }
   }
 
   async ensureOast(): Promise<number> {

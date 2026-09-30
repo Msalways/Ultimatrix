@@ -130,7 +130,7 @@ export const askUser = createTool({
     const outputDir = target ? workspace.getTargetDir(target) : undefined
 
     let screenshotPath: string | null = null
-    const page = getActivePage()
+    const page = await getActivePage()
     if (page) {
       screenshotPath = await captureScreenshot(screenshotContext || 'askUser', outputDir)
     }

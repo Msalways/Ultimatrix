@@ -32,7 +32,7 @@ export const extractBrowserAuth = createTool({
     error: z.string().optional(),
   }),
   execute: async ({ includeCookies, includeLocalStorage, includeSessionStorage, filterKeys }) => {
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) {
       return { ok: false, error: 'No browser page available' }
     }

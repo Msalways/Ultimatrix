@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     const engine = targetManager.getEngine(target)
     if (!engine?.isInitialized()) return NextResponse.json({ ok: false, error: 'target engine is not active' }, { status: 404 })
     // State query only — starting the automation browser is an explicit POST.
-    return NextResponse.json({ ok: true, target, browser: engine.getBrowserState() })
+    return NextResponse.json({ ok: true, target, browser: await engine.getBrowserState() })
   } catch (err) {
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
   }

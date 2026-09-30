@@ -154,7 +154,7 @@ export class ReactionObserver {
    * Capture a baseline snapshot BEFORE an agent action.
    */
   async captureBaseline(): Promise<ReactionSnapshot | null> {
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) return null
 
     try {
@@ -183,7 +183,7 @@ export class ReactionObserver {
       return { reactions: [], hasChanges: false, summary: '', baseline: null, current: null }
     }
 
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) {
       return { reactions: [], hasChanges: false, summary: '', baseline: this.baseline, current: null }
     }

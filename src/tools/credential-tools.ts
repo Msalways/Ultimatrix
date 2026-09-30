@@ -70,7 +70,7 @@ export const useCredential = createTool({
       }
     }
 
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) {
       return { ok: false, message: 'No active browser page — navigate to the login page before calling login.' }
     }
@@ -135,7 +135,7 @@ interface ActorWorkspace {
  * the login. The fallback is explicit and non-destructive for legacy handles.
  */
 async function createActorWorkspace(loginUrl?: string): Promise<ActorWorkspace> {
-  const activePage = getActivePage()
+  const activePage = await getActivePage()
   if (!activePage) throw new Error('No active browser page')
   const currentUrl = typeof activePage.url === 'function' ? String(activePage.url()) : ''
   const targetUrl = loginUrl ?? (currentUrl && currentUrl !== 'about:blank' ? currentUrl : undefined)
@@ -261,7 +261,7 @@ export const acquireActors = createTool({
     const configured = Object.keys(credentials)
     const wanted = roles?.length ? roles.filter(r => credentials[r]) : configured
     const unknownRoles = (roles ?? []).filter(r => !credentials[r])
-    const page = getActivePage()
+    const page = await getActivePage()
     if (!page) {
       return {
         ok: false,

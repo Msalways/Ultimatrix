@@ -246,17 +246,17 @@ export async function closeBrowser(): Promise<void> {
   }
 }
 
-export function getBrowserState(): {
+export async function getBrowserState(): Promise<{
   active: boolean
   headless: boolean | null
   env: string | null
   pageCount: number | null
   currentUrl: string | null
   humanCaptureActive: boolean
-} {
+}> {
   const state = getBrowserManagerState()
   const b = state.activeBrowser || state.browser
-  const page = getActivePage()
+  const page = await getActivePage()
   let pageCount: number | null = null
   let currentUrl: string | null = null
 
@@ -343,12 +343,14 @@ export const __browserTraceIds = { objId }
  */
 export function resolveContextPage(context: any): any | null {
   if (!context) return null
-  const active = context.activePage
-  const fromActive = typeof active === 'function' ? safeCall(() => active()) : active
+  // Invoked on the object, for the same reason as the async variant: a detached
+  // call loses `this` and the accessor throws.
+  const fromActive = safeCall(() =>
+    typeof context.activePage === 'function' ? context.activePage() : context.activePage)
   if (fromActive && !isThenable(fromActive)) return fromActive
 
-  const rawPages = context.pages
-  const pages = typeof rawPages === 'function' ? safeCall(() => rawPages()) : rawPages
+  const pages = safeCall(() =>
+    typeof context.pages === 'function' ? context.pages() : context.pages)
   const first = Array.isArray(pages) ? pages[0] : safeCall(() => pages?.[0])
   if (first && !isThenable(first)) return first
 
@@ -371,16 +373,23 @@ export function resolveContextPage(context: any): any | null {
  */
 export async function resolveContextPageAsync(context: any): Promise<any | null> {
   if (!context) return null
-  const active = context.activePage
-  const fromActive = typeof active === 'function' ? await safeCallAsync(() => active()) : active
+  // Called ON THE OBJECT, never through a detached reference. `activePage` and
+  // `pages` are methods that use `this`; `const f = ctx.activePage; f()` loses
+  // the receiver, the call throws, and the guard below swallows it into null.
+  // That is why this resolver returned null while a direct `ctx.activePage()` in
+  // the very same scope returned a live page object — measured on OWASP Juice
+  // Shop 2026-09-29, and the reason every stagehand_* tool reported "No active
+  // browser page available for this provider" with a working browser open.
+  const fromActive = await safeCallAsync(() =>
+    typeof context.activePage === 'function' ? context.activePage() : context.activePage)
   if (fromActive) return fromActive
 
-  const rawPages = context.pages
-  const pages = await (typeof rawPages === 'function' ? safeCallAsync(() => rawPages()) : rawPages)
+  const pages = await safeCallAsync(() =>
+    typeof context.pages === 'function' ? context.pages() : context.pages)
   const first = Array.isArray(pages) ? pages[0] : await pages?.[0]
   if (first) return first
 
-  const direct = await context.page
+  const direct = await safeCallAsync(() => context.page)
   return direct ?? null
 }
 
@@ -419,25 +428,39 @@ export async function ensureContextPage(context: any, url?: string): Promise<any
   } catch {
     return await resolveContextPageAsync(context)
   }
-  if (typeof created?.goto === 'function') return created
+  if (typeof created?.goto === 'function') {
+    // Make the new page ACTIVE. A page that exists but is not active is
+    // invisible to every later resolution: `activePage()` returns something
+    // else (or nothing), so the tools answered "No active browser page
+    // available for this provider" on runs where a working page existed and had
+    // just been navigated. Verified live on OWASP Juice Shop 2026-09-29.
+    if (typeof context.setActivePage === 'function') {
+      try { await context.setActivePage(created) } catch { /* best-effort */ }
+    }
+    return created
+  }
   const reread = await resolveContextPageAsync(context)
   if (reread) return reread
   return typeof created?.goto === 'function' ? created : null
 }
 
-export function getActivePage(): any | null {
+/**
+ * The engagement's active page.
+ *
+ * ASYNC, necessarily. Stagehand v3 exposes `activePage()` and `pages()` as
+ * promises, so a synchronous read can only ever return a thenable — truthy, and
+ * therefore passed off as a page by every downstream check. This function was
+ * the last-resort fallback for every browser tool, and while it stayed
+ * synchronous it silently reported "no page" on runs where a page plainly
+ * existed. Verified live on OWASP Juice Shop, 2026-09-29.
+ */
+export async function getActivePage(): Promise<any | null> {
   const state = getBrowserManagerState()
   const b = state.activeBrowser || state.browser
-  if (process.env.ULTIMATRIX_BROWSER_TRACE) {
-    log.warn(`[browser-trace] getActivePage state=${stateId(state)} handle=${handleId(b)} legacy=${state === legacyBrowserManager} ctx=${safeCall(() => String(!!(b as any)?.requireStagehand?.()?.context))}`)
-  }
   if (!b && !camofoxSession) return null
   try {
     const stagehand = (b as any)?.requireStagehand?.()
-    const page = resolveContextPage(stagehand?.context)
-    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
-      log.warn(`[browser-trace]   resolved page=${page ? 'yes' : 'NULL'}`)
-    }
+    const page = await resolveContextPageAsync(stagehand?.context)
     if (page) return page
   } catch {}
   // Camoufox (Playwright) session.
@@ -449,7 +472,7 @@ export async function captureScreenshot(
   context: string,
   outputDir?: string,
 ): Promise<string | null> {
-  const page = getActivePage()
+  const page = await getActivePage()
   if (!page) return null
 
   const dir = outputDir || process.cwd()
