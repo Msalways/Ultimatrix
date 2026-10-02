@@ -377,7 +377,7 @@ const SECRET_NAME_TOKENS: Record<string, Set<string>> = {
   api_key: new Set(['key', 'apikey', 'api']),
   token: new Set(['token', 'bearer', 'authorization', 'auth']),
   password: new Set(['password', 'passwd', 'pwd', 'passphrase']),
-  session: new Set(['session', 'sid', 'jsessionid', 'sessionid']),
+  session: new Set(['session', 'jsessionid', 'sessionid']),
   csrf: new Set(['csrf', 'xsrf']),
 }
 
