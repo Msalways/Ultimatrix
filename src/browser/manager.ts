@@ -416,6 +416,10 @@ export async function ensureContextPage(context: any, url?: string): Promise<any
   // Awaited, not synchronous: the sync resolver rejects thenables, and on
   // Stagehand v3 every page accessor returns one.
   const existing = await resolveContextPageAsync(context)
+  if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+    console.log('[bt-ensure] existing=' + (existing ? 'PAGE' : 'null') +
+      ' newPage=' + typeof context.newPage)
+  }
   if (existing) return existing
   if (typeof context.newPage !== 'function') return null
   // newPage RETURNS the page it opened. Discarding that and re-resolving was
@@ -425,7 +429,10 @@ export async function ensureContextPage(context: any, url?: string): Promise<any
   let created: any = null
   try {
     created = url ? await context.newPage(url) : await context.newPage()
-  } catch {
+  } catch (error) {
+    if (process.env.ULTIMATRIX_BROWSER_TRACE) {
+      console.log('[bt-ensure] newPage threw: ' + String((error as Error)?.message ?? error).slice(0, 140))
+    }
     return await resolveContextPageAsync(context)
   }
   if (typeof created?.goto === 'function') {
