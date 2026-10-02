@@ -5,6 +5,7 @@ import {
   getEntries,
   getEndpoints,
   getSecrets,
+  nameMatchesSecretType,
   getDataFlows,
   createEmptyHar,
   addEntry,
@@ -268,5 +269,54 @@ describe('HAR Parser', () => {
       expect(methods['GET']).toBe(1)
       expect(methods['POST']).toBe(1)
     })
+  })
+})
+
+/**
+ * WHY — the canned "Secret Exposure" false positives.
+ *
+ * Secret classes were matched by SUBSTRING regex on a name: `/sid/i`,
+ * `/token/i`, `/password/i`. `/sid/i` matches "considered", "outside",
+ * "residual" and "provided". Names are a structured, closed vocabulary and
+ * need no regex at all, so matching is now TOKEN EQUALITY.
+ *
+ * Known limitation, measured live 2026-10-02 and NOT fixed by this change: a
+ * body key named exactly `sid`, `csrf` or `key` still matches its class. Token
+ * equality removes substring noise; it cannot tell a credential from a field
+ * that happens to be called "key". See har-secret-false-positives memory.
+ */
+describe('nameMatchesSecretType', () => {
+  it('matches real secret names by token', () => {
+    expect(nameMatchesSecretType('api_key', 'X-Api-Key')).toBe(true)
+    expect(nameMatchesSecretType('api_key', 'apiKey')).toBe(true)
+    expect(nameMatchesSecretType('token', 'Authorization')).toBe(true)
+    expect(nameMatchesSecretType('token', 'access_token')).toBe(true)
+    expect(nameMatchesSecretType('password', 'X-Db-Password')).toBe(true)
+    expect(nameMatchesSecretType('session', 'JSESSIONID')).toBe(true)
+    expect(nameMatchesSecretType('session', 'session_id')).toBe(true)
+    expect(nameMatchesSecretType('csrf', 'X-CSRF-Token')).toBe(true)
+  })
+
+  it('REJECTS names that merely CONTAIN a secret substring', () => {
+    // Every one of these matched the old /sid/i or /token/i regexes.
+    expect(nameMatchesSecretType('session', 'considered')).toBe(false)
+    expect(nameMatchesSecretType('session', 'outside')).toBe(false)
+    expect(nameMatchesSecretType('session', 'residual')).toBe(false)
+    expect(nameMatchesSecretType('session', 'provided')).toBe(false)
+    expect(nameMatchesSecretType('token', 'tokenizer')).toBe(false)
+    expect(nameMatchesSecretType('password', 'passwordless')).toBe(false)
+  })
+
+  it('does not sweep in ordinary transport headers', () => {
+    for (const name of ['accept', 'content-type', 'user-agent', 'referer',
+      'sec-fetch-mode', 'sec-ch-ua-platform', 'host', 'connection']) {
+      expect(nameMatchesSecretType('session', name)).toBe(false)
+      expect(nameMatchesSecretType('token', name)).toBe(false)
+      expect(nameMatchesSecretType('password', name)).toBe(false)
+    }
+  })
+
+  it('has no vocabulary for an unknown secret class', () => {
+    expect(nameMatchesSecretType('nonexistent_class', 'X-Api-Key')).toBe(false)
   })
 })

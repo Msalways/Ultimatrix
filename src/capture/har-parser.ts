@@ -1,4 +1,4 @@
-﻿import { z } from 'zod'
+import { z } from 'zod'
 
 // HAR 1.2 Types (generic, no hardcoding)
 export const HarRequestSchema = z.object({
@@ -326,7 +326,7 @@ function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Arra
   const out: Array<{ name: string; value: string }> = []
   // JWTs are intrinsically value-shaped and may appear outside JSON.
   if (type === 'jwt') {
-    const jwtPattern = new RegExp(patterns[0].source, patterns[0].flags.includes('g') ? patterns[0].flags : `${patterns[0].flags}g`)
+    const jwtPattern = new RegExp(JWT_VALUE.source, 'g')
     for (const match of body.matchAll(jwtPattern)) {
       const value = match[0]
       if (isUsableBodySecret(value)) out.push({ name: type, value })
@@ -335,29 +335,76 @@ function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Arra
   }
   // For JavaScript/JSON bodies, require a key-to-value assignment. A bare
   // keyword in a bundle is documentation or code, not a leaked credential.
-  const keyPattern = type === 'api_key' ? 'api[_-]?key|apikey|access[_-]?key'
-    : type === 'token' ? 'token|bearer|authorization'
-      : type === 'password' ? 'password|passwd|pwd|secret'
-        : type === 'session' ? 'session|sid|jsessionid'
-          : 'csrf|xsrf|_token'
-  const assignment = new RegExp(`(?:["']?(${keyPattern})["']?)\\s*(?::|=)\\s*["']([^"']+)["']`, 'ig')
+  // Key-to-value assignment, captured BROADLY, then filtered by token equality
+  // via nameMatchesSecretType below.
+  //
+  // The old alternation (`session|sid|jsessionid`, unanchored inside the capture
+  // group) matched any name CONTAINING those letters. On OWASP Juice Shop a
+  // socket.io handshake body {"sid":"..."} - our own unauthenticated websocket
+  // id - became "Secret Exposure: session", six to eight times per run, on an
+  // application exposing no secrets at all.
+  //
+  // The backreference \1 is load-bearing: it makes the closing quote match the
+  // opening one. Without it, the optional-quote prefix plus a greedy character
+  // class desynchronise and the pattern silently matches NOTHING - which is
+  // exactly how the first attempt at this fix failed.
+  const assignment = /(["']?)([A-Za-z_$][\w$.\-]*)\1\s*[:=]\s*["']([^"'\n]+)["']/g
   for (const match of body.matchAll(assignment)) {
-    const value = match[2]
-    if (isUsableBodySecret(value)) out.push({ name: match[1], value })
+    const key = match[2]
+    if (!nameMatchesSecretType(type, key)) continue
+    const value = match[3]
+    if (isUsableBodySecret(value)) out.push({ name: key, value })
   }
   return out
 }
 
+/**
+ * Split a header/param/body key into its constituent tokens.
+ *
+ * `X-Api-Key` -> [x, api, key];  `JSESSIONID` -> [jsessionid];
+ * `access_token` -> [access, token];  `apiKey` -> [api, key].
+ */
+function nameTokens(name: string): string[] {
+  return String(name)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+/** Token vocabulary per secret class. Equality on tokens, never substring. */
+const SECRET_NAME_TOKENS: Record<string, Set<string>> = {
+  api_key: new Set(['key', 'apikey', 'api']),
+  token: new Set(['token', 'bearer', 'authorization', 'auth']),
+  password: new Set(['password', 'passwd', 'pwd', 'passphrase']),
+  session: new Set(['session', 'sid', 'jsessionid', 'sessionid']),
+  csrf: new Set(['csrf', 'xsrf']),
+}
+
+/**
+ * Does this NAME identify this class of secret?
+ *
+ * Token-equality only. The previous implementation was a substring regex, and
+ * `/sid/i` matches considered, outside, residual and provided - which is how an
+ * application exposing no secrets produced a report full of "Secret Exposure:
+ * session" findings. A name qualifies when one of its tokens is exactly a known
+ * word for the class.
+ */
+export function nameMatchesSecretType(type: string, name: string): boolean {
+  const vocab = SECRET_NAME_TOKENS[type]
+  if (!vocab) return false
+  return nameTokens(name).some(t => vocab.has(t))
+}
+
+/** JWTs are detected by VALUE shape, not by name - shape, not vocabulary. */
+const JWT_VALUE = /eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9_.\+/=]*/
+
 export function getSecrets(entries: HarEntry[]): Secret[] {
   const secrets: Secret[] = []
-  const secretPatterns = [
-    { type: 'api_key', patterns: [/api[_-]?key/i, /apikey/i, /access[_-]?key/i] },
-    { type: 'token', patterns: [/token/i, /bearer/i, /authorization/i] },
-    { type: 'password', patterns: [/password/i, /passwd/i, /pwd/i, /secret/i] },
-    { type: 'session', patterns: [/session/i, /sid/i, /jsessionid/i] },
-    { type: 'csrf', patterns: [/csrf/i, /xsrf/i, /_token/i] },
-    { type: 'jwt', patterns: [/eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*/] },
-  ]
+  // Every class matches by token-equality on the NAME; jwt is the one class
+  // identified by value shape instead.
+  const secretTypes = Object.keys(SECRET_NAME_TOKENS).concat('jwt')
+  const secretPatterns = secretTypes.map(type => ({ type, patterns: [] as RegExp[] }))
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
@@ -365,7 +412,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check headers
     for (const header of entry.request.headers) {
       for (const { type, patterns } of secretPatterns) {
-        if ((patterns.some(p => p.test(header.name)) || (type === 'jwt' && patterns.some(p => p.test(header.value)))) && isUsableHeaderSecret(type, header.name, header.value)) {
+        if ((nameMatchesSecretType(type, header.name) || (type === 'jwt' && JWT_VALUE.test(header.value))) && isUsableHeaderSecret(type, header.name, header.value)) {
           secrets.push({
             type,
             location: 'header',
@@ -382,7 +429,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check response headers
     for (const header of entry.response.headers) {
       for (const { type, patterns } of secretPatterns) {
-        if ((patterns.some(p => p.test(header.name)) || (type === 'jwt' && patterns.some(p => p.test(header.value)))) && isUsableHeaderSecret(type, header.name, header.value)) {
+        if ((nameMatchesSecretType(type, header.name) || (type === 'jwt' && JWT_VALUE.test(header.value))) && isUsableHeaderSecret(type, header.name, header.value)) {
           secrets.push({
             type,
             location: 'header',
@@ -399,7 +446,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check cookies
     for (const cookie of entry.response.cookies) {
       for (const { type, patterns } of secretPatterns) {
-        if (patterns.some(p => p.test(cookie.name)) && isUsableBodySecret(cookie.value)) {
+        if (nameMatchesSecretType(type, cookie.name) && isUsableBodySecret(cookie.value)) {
           secrets.push({
             type,
             location: 'cookie',
