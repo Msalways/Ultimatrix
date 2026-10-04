@@ -421,6 +421,27 @@ function expectedSurfaceEndpoints(fixture: Fixture): Array<{ method: string; pat
   return endpoints
 }
 
+function expectedWorkflowSequences(fixture: Fixture): Array<Array<{ method: string; path: string }>> {
+  const step = (method: string, path = fixture.route) => ({ method, path })
+  if (fixture.kind === 'case-1') return [[step('GET'), step('POST')]]
+  if (fixture.kind === 'case-2') return [[step('GET'), step('POST'), step('GET'), step('POST')]]
+  // One actor's recorded trace cannot represent both sides of an authorization check.
+  return []
+}
+
+function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ method: string; path: string }>> {
+  return nodes.filter(node => node.type === 'Workflow'
+    && node.properties.source === 'operator-demonstration'
+    && node.properties.sequenceObserved === true)
+    .map(node => (Array.isArray(node.properties.steps) ? node.properties.steps : [])
+      .filter((step: any) => step?.requestId && typeof step.method === 'string' && typeof step.url === 'string')
+      .flatMap((step: any) => {
+        try { return [{ method: step.method, path: new URL(step.url).pathname }] }
+        catch { return [] }
+      }))
+    .filter(sequence => sequence.length >= 2)
+}
+
 function redactUrlQuery(value: string): string {
   try {
     const url = new URL(value)
@@ -458,6 +479,8 @@ async function executeRun(input: {
     hypothesisKinds: graphNodes.filter(node => node.type === 'Hypothesis').map(node => String(node.properties.kind ?? 'unknown')),
     experimentStatuses: graphNodes.filter(node => node.type === 'Experiment').map(node => String(node.properties.status ?? 'unknown')),
     expectedEndpoints: expectedSurfaceEndpoints(input.fixture),
+    expectedWorkflowSequences: expectedWorkflowSequences(input.fixture),
+    observedWorkflowSequences: observedWorkflowSequences(graphNodes),
     observedEndpoints: graphNodes.filter(node => node.type === 'Endpoint').flatMap(node => {
       if (typeof node.properties.method !== 'string' || typeof node.properties.url !== 'string') return []
       try { return [{ method: node.properties.method, path: new URL(node.properties.url).pathname }] }
@@ -708,7 +731,7 @@ async function main(): Promise<void> {
         for (const variant of variants) {
           const report = await executeRun({ fixture: matchedFixture, variant, model: args.model, configPath, iteration })
           runs.push(report)
-          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, experiments ${report.score.targetLearning.plannedExperiments} planned/${report.score.targetLearning.attemptedExperiments} attempted/${report.score.targetLearning.blockedExperiments} blocked; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
+          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedWorkflowSequenceCount}/${report.score.targetLearning.expectedWorkflowSequenceCount} expected ordered workflows mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, experiments ${report.score.targetLearning.plannedExperiments} planned/${report.score.targetLearning.attemptedExperiments} attempted/${report.score.targetLearning.blockedExperiments} blocked; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
         }
       }
     }

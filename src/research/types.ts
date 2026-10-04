@@ -27,13 +27,19 @@ export interface ResearchWorkflow {
   id: string
   name: string
   entryUrl?: string
-  steps: Array<{ action: string; url?: string; endpointId?: string; method?: string }>
+  steps: Array<{ action: string; url?: string; endpointId?: string; method?: string; selector?: string; requestId?: string }>
   relatedEndpoints: string[]
   requiredAuth?: boolean
   inputFields: string[]
   stateChanges: string[]
   observedRoles: string[]
   confidence: number
+  /** Provenance distinguishes an observed action/request trace from route-based inference. */
+  source?: 'operator-demonstration' | 'endpoint-inference' | string
+  /** True only when multiple captured requests were recorded in their observed order. */
+  sequenceObserved?: boolean
+  capturedRequestIds?: string[]
+  capturedAt?: number
 }
 
 export interface ResearchEntity {

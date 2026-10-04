@@ -621,6 +621,7 @@ export interface WorkflowNode extends GraphNodeData {
     capturedRequestIds?: string[]
     source?: string
     capturedAt?: number
+    sequenceObserved?: boolean
   }
 }
 

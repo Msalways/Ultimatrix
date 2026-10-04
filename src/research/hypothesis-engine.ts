@@ -169,12 +169,22 @@ export function generateHypotheses(
     // compatibility; the runtime can resolve their requests later. When
     // relations exist, require at least one high-value application endpoint.
     const endpointEvidenceAvailable = workflow.relatedEndpoints.length === 0 || highValueEndpointIds.length > 0
-    if ((workflow.steps.length >= 2 || workflow.stateChanges.length > 0) && endpointEvidenceAvailable && hasStructuredWorkflowSignal) {
+    // A route cluster is useful target context, but its graph iteration order
+    // is not an observed sequence. Only operator traces with multiple captured
+    // requests can ground skip/replay hypotheses. Keep legacy caller-provided
+    // workflows usable when they have no explicit inferred provenance.
+    const sequenceCanBeTested = workflow.source === 'endpoint-inference'
+      ? workflow.sequenceObserved === true
+      : workflow.steps.length >= 2 || workflow.stateChanges.length > 0
+    if (sequenceCanBeTested && (workflow.source !== 'operator-demonstration' || workflow.sequenceObserved === true)
+      && endpointEvidenceAvailable && hasStructuredWorkflowSignal) {
       hypotheses.push({
         id: stableId('hypothesis', ['workflow-bypass', workflow.id]),
         title: `${workflow.name} may be bypassable by direct API replay or step skipping`,
         kind: 'workflow_bypass',
-        reason: 'Workflow has state-changing behavior. Direct API replay and step skipping often reveal business logic bugs.',
+        reason: workflow.sequenceObserved
+          ? 'Multiple requests were observed in this ordered workflow. Test replay and step skipping against a fresh baseline state.'
+          : 'Workflow structure suggests stateful behavior. Verify the intended transition before testing replay or step skipping.',
         targetEndpoints: highValueEndpointIds,
         relatedWorkflowIds: [workflow.id],
         relatedEntityIds: entities.filter(e => e.endpoints.some(id => workflow.relatedEndpoints.includes(id))).map(e => e.id),

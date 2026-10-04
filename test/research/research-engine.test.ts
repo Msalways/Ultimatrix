@@ -7,7 +7,7 @@ import { planExperiments } from '../../src/research/experiment-planner'
 import { compareResearchResponses } from '../../src/research/differential'
 import { candidateFromExperiment } from '../../src/research/candidate-store'
 import { isTransportOrAssetUrl } from '../../src/research/utils'
-import { NodeType, type EndpointNode } from '../../src/graph/schema'
+import { NodeType, type EndpointNode, type WorkflowNode } from '../../src/graph/schema'
 
 function seededStore(): GraphStore {
   const store = new GraphStore('test-output/research-graph.json')
@@ -107,8 +107,8 @@ describe('extraction noise gates (transport/asset URLs are not behavior)', () =>
     type: NodeType.ENDPOINT,
     properties: { url, method, params: [], tags: [], source: 'har-bridge' },
   })
-  const mockStore = (endpoints: EndpointNode[]) => ({
-    queryNodes: (type: any) => (type === NodeType.ENDPOINT ? endpoints : []),
+  const mockStore = (endpoints: EndpointNode[], workflows: WorkflowNode[] = []) => ({
+    queryNodes: (type: any) => type === NodeType.ENDPOINT ? endpoints : type === NodeType.WORKFLOW ? workflows : [],
   }) as any
 
   it('isTransportOrAssetUrl flags infrastructure without target keywords', () => {
@@ -175,6 +175,47 @@ describe('extraction noise gates (transport/asset URLs are not behavior)', () =>
     const store = mockStore([withParams])
     const workflows = extractWorkflows(store)
     expect(workflows.some(w => w.stateChanges.length > 0)).toBe(true)
+  })
+
+  it('keeps operator-recorded request order and provenance in the research map', () => {
+    const endpoint = ep('e1', 'https://app.test/api/offer/redeem', 'POST')
+    endpoint.properties.params = [{ name: 'offer', type: 'string', in: 'body' }]
+    const recorded: WorkflowNode = {
+      id: 'workflow:observed', type: NodeType.WORKFLOW, label: 'Observed offer flow',
+      properties: {
+        name: 'operator-demonstration', entryUrl: 'https://app.test/api/offer/redeem',
+        steps: [
+          { action: 'request', url: 'https://app.test/api/offer/redeem', endpointId: 'e1', method: 'GET', requestId: 'cap-1' },
+          { action: 'request', url: 'https://app.test/api/offer/redeem', endpointId: 'e1', method: 'POST', requestId: 'cap-2' },
+        ],
+        relatedEndpoints: ['e1'], inputFields: ['offer'], stateChanges: ['POST'], observedRoles: [],
+        confidence: 1, capturedRequestIds: ['cap-1', 'cap-2'], source: 'operator-demonstration',
+        sequenceObserved: true,
+      },
+      createdAt: 1, updatedAt: 1,
+    }
+    const workflows = extractWorkflows(mockStore([endpoint], [recorded]))
+    const observed = workflows.find(workflow => workflow.id === recorded.id)!
+
+    expect(observed).toMatchObject({
+      source: 'operator-demonstration', sequenceObserved: true,
+      capturedRequestIds: ['cap-1', 'cap-2'],
+      steps: [{ method: 'GET', requestId: 'cap-1' }, { method: 'POST', requestId: 'cap-2' }],
+    })
+    expect(generateHypotheses(mockStore([endpoint], [recorded]), workflows, [])
+      .some(hypothesis => hypothesis.kind === 'workflow_bypass' && hypothesis.relatedWorkflowIds.includes(recorded.id))).toBe(true)
+  })
+
+  it('does not turn endpoint clusters into observed workflow-bypass hypotheses', () => {
+    const get = ep('e1', 'https://app.test/api/checkout', 'GET')
+    const post = ep('e2', 'https://app.test/api/checkout', 'POST')
+    post.properties.params = [{ name: 'total', type: 'number', in: 'body' }]
+    const store = mockStore([get, post])
+    const workflows = extractWorkflows(store)
+
+    expect(workflows.some(workflow => workflow.steps.length >= 2 && workflow.source === 'endpoint-inference')).toBe(true)
+    expect(workflows.every(workflow => workflow.sequenceObserved === false)).toBe(true)
+    expect(generateHypotheses(store, workflows, []).some(hypothesis => hypothesis.kind === 'workflow_bypass')).toBe(false)
   })
 
   it('uncorroborated keyword workflows yield no bypass hypothesis', () => {

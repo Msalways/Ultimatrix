@@ -69,6 +69,7 @@ export async function persistOperatorWorkflow(startedAt: number, endedAt: number
       stateChanges: [...new Set(requestSteps.filter(event => !['GET', 'HEAD', 'OPTIONS'].includes(event.step.method ?? '')).map(event => event.step.method!))],
       observedRoles: [], confidence: 1, capturedRequestIds: requestSteps.map(event => event.step.requestId!).filter(Boolean),
       source: 'operator-demonstration', capturedAt: startedAt,
+      sequenceObserved: requestSteps.length >= 2 && steps.filter(step => Boolean(step.requestId)).length >= 2,
     },
     createdAt: Date.now(), updatedAt: Date.now(),
   }

@@ -1,4 +1,4 @@
-import { NodeType, type ActionNode, type EndpointNode, type InputNode } from '../graph/schema'
+import { NodeType, type ActionNode, type EndpointNode, type InputNode, type WorkflowNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { ResearchWorkflow } from './types'
 import {stableId, uniq, isTransportOrAssetUrl} from './utils'
@@ -24,6 +24,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
   const endpoints = store.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
   const actions = store.queryNodes(NodeType.ACTION) as ActionNode[]
   const inputs = store.queryNodes(NodeType.INPUT) as InputNode[]
+  const recorded = store.queryNodes(NodeType.WORKFLOW) as WorkflowNode[]
   const workflows = new Map<string, ResearchWorkflow>()
 
   for (const endpoint of endpoints) {
@@ -57,6 +58,8 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
       stateChanges: uniq([...(existing?.stateChanges || []), ...(corroborated ? classified.stateChanges : [])]),
       observedRoles: existing?.observedRoles || [],
       confidence: Math.min(0.95, (existing?.confidence || 0.45) + 0.1),
+      source: 'endpoint-inference',
+      sequenceObserved: false,
     })
   }
 
@@ -84,6 +87,37 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
       stateChanges: uniq([...(existing?.stateChanges || []), ...classified.stateChanges]),
       observedRoles: existing?.observedRoles || [],
       confidence: Math.min(0.85, (existing?.confidence || 0.35) + 0.1),
+      source: 'endpoint-inference',
+      sequenceObserved: false,
+    })
+  }
+
+  // Explicit demonstrations already preserve event chronology and captured
+  // request IDs. Reuse those traces as the authoritative workflow sequence;
+  // route-cluster workflows above remain useful context but are not sequences.
+  for (const node of recorded) {
+    const props = node.properties
+    if (props.source !== 'operator-demonstration') continue
+    const steps = Array.isArray(props.steps) ? props.steps : []
+    const capturedRequestIds = Array.isArray(props.capturedRequestIds) ? props.capturedRequestIds : []
+    const sequenceObserved = props.sequenceObserved === true
+      && capturedRequestIds.length >= 2
+      && steps.filter(step => Boolean(step.requestId)).length >= 2
+    workflows.set(node.id, {
+      id: node.id,
+      name: props.name,
+      entryUrl: props.entryUrl,
+      steps: steps.map(({ action, url, endpointId, method, selector, requestId }) => ({ action, url, endpointId, method, selector, requestId })),
+      relatedEndpoints: [...props.relatedEndpoints],
+      requiredAuth: props.requiredAuth,
+      inputFields: [...props.inputFields],
+      stateChanges: [...props.stateChanges],
+      observedRoles: [...props.observedRoles],
+      confidence: props.confidence,
+      source: 'operator-demonstration',
+      sequenceObserved,
+      capturedRequestIds: [...capturedRequestIds],
+      capturedAt: props.capturedAt,
     })
   }
 

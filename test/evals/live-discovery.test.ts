@@ -122,6 +122,44 @@ describe('live discovery scoring', () => {
     })
   })
 
+  it('scores exact ordered workflow steps while allowing unrelated observed traffic between them', () => {
+    const result = scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], experiments: [], candidates: [],
+      requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+      targetLearning: {
+        workflowCount: 1, entityCount: 0, hypothesisKinds: [], experimentStatuses: [],
+        expectedEndpoints: [], observedEndpoints: [],
+        expectedWorkflowSequences: [[
+          { method: 'GET', path: '/one-time' },
+          { method: 'POST', path: '/one-time' },
+          { method: 'POST', path: '/one-time' },
+        ]],
+        observedWorkflowSequences: [[
+          { method: 'GET', path: '/' },
+          { method: 'GET', path: '/one-time' },
+          { method: 'GET', path: '/favicon.ico' },
+          { method: 'POST', path: '/one-time' },
+          { method: 'POST', path: '/one-time' },
+        ]],
+      },
+    })
+    expect(result.targetLearning).toMatchObject({
+      expectedWorkflowSequenceCount: 1, matchedWorkflowSequenceCount: 1, workflowSequenceRecall: 1,
+    })
+
+    const wrongOrder = scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], experiments: [], candidates: [],
+      requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+      targetLearning: {
+        workflowCount: 1, entityCount: 0, hypothesisKinds: [], experimentStatuses: [],
+        expectedEndpoints: [], observedEndpoints: [],
+        expectedWorkflowSequences: [[{ method: 'GET', path: '/one-time' }, { method: 'POST', path: '/one-time' }]],
+        observedWorkflowSequences: [[{ method: 'POST', path: '/one-time' }, { method: 'GET', path: '/one-time' }]],
+      },
+    })
+    expect(wrongOrder.targetLearning.workflowSequenceRecall).toBe(0)
+  })
+
   it('requires nine vulnerable runs, at least seven independently proven, and zero confirmed controls', () => {
     const vulnerable = score('vulnerable')
     const control = score('control')

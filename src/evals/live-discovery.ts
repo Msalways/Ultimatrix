@@ -29,6 +29,8 @@ export interface DiscoveryTargetLearning {
   experimentStatuses: string[]
   expectedEndpoints: Array<{ method: string; path: string }>
   observedEndpoints: Array<{ method: string; path: string }>
+  expectedWorkflowSequences?: Array<Array<{ method: string; path: string }>>
+  observedWorkflowSequences?: Array<Array<{ method: string; path: string }>>
 }
 
 export interface DiscoveryRunInput {
@@ -62,6 +64,9 @@ export interface DiscoveryRunScore {
     expectedEndpointCount: number
     observedExpectedEndpointCount: number
     endpointRecall: number | null
+    expectedWorkflowSequenceCount: number
+    matchedWorkflowSequenceCount: number
+    workflowSequenceRecall: number | null
     hypothesisKinds: string[]
     expectedHypothesisKinds: string[]
     matchedHypothesisKinds: string[]
@@ -113,6 +118,22 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const observedEndpointKeys = new Set((input.targetLearning?.observedEndpoints ?? []).map(endpointKey))
   const expectedEndpoints = input.targetLearning?.expectedEndpoints ?? []
   const observedExpectedEndpointCount = expectedEndpoints.filter(endpoint => observedEndpointKeys.has(endpointKey(endpoint))).length
+  const expectedWorkflowSequences = input.targetLearning?.expectedWorkflowSequences ?? []
+  const remainingObservedSequences = [...(input.targetLearning?.observedWorkflowSequences ?? [])]
+  const matchedWorkflowSequenceCount = expectedWorkflowSequences.filter(expected => {
+    const expectedKeys = expected.map(endpointKey)
+    const matchIndex = remainingObservedSequences.findIndex(observed => {
+      let expectedIndex = 0
+      for (const step of observed) {
+        if (endpointKey(step) === expectedKeys[expectedIndex]) expectedIndex += 1
+        if (expectedIndex === expectedKeys.length) return true
+      }
+      return expectedKeys.length === 0
+    })
+    if (matchIndex < 0) return false
+    remainingObservedSequences.splice(matchIndex, 1)
+    return true
+  }).length
 
   return {
     verifiedFindingIds,
@@ -131,6 +152,11 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
       expectedEndpointCount: expectedEndpoints.length,
       observedExpectedEndpointCount,
       endpointRecall: expectedEndpoints.length ? observedExpectedEndpointCount / expectedEndpoints.length : null,
+      expectedWorkflowSequenceCount: expectedWorkflowSequences.length,
+      matchedWorkflowSequenceCount,
+      workflowSequenceRecall: expectedWorkflowSequences.length
+        ? matchedWorkflowSequenceCount / expectedWorkflowSequences.length
+        : null,
       hypothesisKinds,
       expectedHypothesisKinds,
       matchedHypothesisKinds,
@@ -156,6 +182,8 @@ export interface DiscoveryBenchmarkScore {
     runsWithWorkflowMap: number
     runsWithCompleteEndpointMap: number
     averageEndpointRecall: number | null
+    runsWithCompleteWorkflowSequences: number
+    averageWorkflowSequenceRecall: number | null
     runsWithExpectedHypothesis: number
     averageHypothesisRecall: number | null
     runsWithPlannedExperiments: number
@@ -179,6 +207,7 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const learningScores = runs.map(run => run.score.targetLearning)
   const qualifiesAsLearnedAndAttacked = (score: DiscoveryRunScore['targetLearning']) =>
     score.workflowCount > 0 && score.hypothesisRecall === 1 && score.attemptedExperiments > 0
+      && (score.workflowSequenceRecall === null || score.workflowSequenceRecall === 1)
   const qualifiedVulnerableRuns = vulnerable.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
   const qualifiedControlRuns = controls.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
   const learningPass = vulnerable.length === 9 && controls.length === 9 &&
@@ -186,6 +215,7 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
     qualifiedControlRuns >= Math.ceil(controls.length * (7 / 9))
   const scoredHypothesisRuns = learningScores.filter(score => score.hypothesisRecall !== null)
   const scoredEndpointRuns = learningScores.filter(score => score.endpointRecall !== null)
+  const scoredWorkflowRuns = learningScores.filter(score => score.workflowSequenceRecall !== null)
   return {
     vulnerableRuns: vulnerable.length,
     verifiedVulnerableRuns,
@@ -200,6 +230,10 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
       runsWithCompleteEndpointMap: learningScores.filter(score => score.endpointRecall === 1).length,
       averageEndpointRecall: scoredEndpointRuns.length
         ? scoredEndpointRuns.reduce((sum, score) => sum + (score.endpointRecall ?? 0), 0) / scoredEndpointRuns.length
+        : null,
+      runsWithCompleteWorkflowSequences: learningScores.filter(score => score.workflowSequenceRecall === 1).length,
+      averageWorkflowSequenceRecall: scoredWorkflowRuns.length
+        ? scoredWorkflowRuns.reduce((sum, score) => sum + (score.workflowSequenceRecall ?? 0), 0) / scoredWorkflowRuns.length
         : null,
       runsWithExpectedHypothesis: learningScores.filter(score => score.matchedHypothesisKinds.length > 0).length,
       averageHypothesisRecall: scoredHypothesisRuns.length
