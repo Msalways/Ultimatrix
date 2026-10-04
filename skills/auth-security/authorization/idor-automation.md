@@ -35,8 +35,8 @@ IDOR typically appears in these parameter patterns:
 
 ## IDOR via API Versioning
 
-1. Test `/api/v1/users/123` → `/api/v2/users/123` (newer version may skip auth checks)
-2. Test `/api/internal/users/123` vs `/api/public/users/123`
+1. Compare versioned or internal/public routes only when those exact routes are observed in the target's client code, links, or captured traffic.
+2. Keep the captured method and request shape while changing only the actor or object identifier.
 3. Test with different `Accept` headers:
    - `Accept: application/json` vs `Accept: text/html` — different versions may have different auth
 4. Test with `X-API-Version: 1` header — version via header may bypass path-based checks

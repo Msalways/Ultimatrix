@@ -62,6 +62,14 @@ vi.mock('../../src/config', () => ({
 
 import { solve } from '../../src/solver/solver'
 
+const TEST_SOLVER_CONFIG = {
+  provider: 'test',
+  model: 'test-model',
+  modelCapabilities: {
+    'test/test-model': { contextWindow: 128_000, maxOutputTokens: 8_192 },
+  },
+}
+
 function agentYielding(chunks: unknown[]) {
   return {
     instructions: undefined as any,
@@ -80,6 +88,7 @@ async function run(chunks: unknown[]) {
   const result = await solve(agentYielding(chunks), {
     origin: 'https://target.test',
     goal: 'check the endpoint',
+    ultimatrixConfig: TEST_SOLVER_CONFIG as any,
   })
   return result as { answer?: { content?: string }; error?: string }
 }

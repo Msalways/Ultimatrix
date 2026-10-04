@@ -11,6 +11,7 @@
  */
 
 import type { HarEntry } from './har-parser'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 export interface CapturedRequest {
   id: string
@@ -21,7 +22,7 @@ export interface CapturedRequest {
   status?: number
   responseHeaders?: Record<string, string>
   responseBody?: string
-  source: 'tool' | 'har'
+  source: 'tool' | 'har' | 'browser'
   capturedAt: number
   /** Stable id for one independent execution (request + response share it). */
   executionId?: string
@@ -33,6 +34,7 @@ export interface CapturedRequestRef {
   url: string
   status?: number
   source: CapturedRequest['source']
+  capturedAt: number
 }
 
 export interface CapturedRequestFilter {
@@ -61,6 +63,8 @@ export class CapturedRequestStore {
     responseHeaders?: Record<string, string>
     responseBody?: string
     executionId?: string
+    source?: CapturedRequest['source']
+    capturedAt?: number
   }): CapturedRequest {
     this.seq += 1
     const entry: CapturedRequest = {
@@ -72,8 +76,8 @@ export class CapturedRequestStore {
       ...(input.status !== undefined ? { status: input.status } : {}),
       ...(input.responseHeaders ? { responseHeaders: input.responseHeaders } : {}),
       ...(input.responseBody !== undefined ? { responseBody: input.responseBody } : {}),
-      source: 'tool',
-      capturedAt: Date.now(),
+      source: input.source ?? 'tool',
+      capturedAt: input.capturedAt ?? Date.now(),
       ...(input.executionId ? { executionId: input.executionId } : {}),
     }
     this.entries.set(entry.id, entry)
@@ -96,7 +100,7 @@ export class CapturedRequestStore {
         responseHeaders: harHeadersToRecord(e.response?.headers),
         responseBody: e.response?.content?.text,
         source: 'har',
-        capturedAt: Date.now(),
+        capturedAt: Date.parse(e.startedDateTime) || Date.now(),
       }
       this.entries.set(entry.id, entry)
       n += 1
@@ -116,7 +120,7 @@ export class CapturedRequestStore {
         }
       }
       if (filter?.urlContains && !e.url.includes(filter.urlContains)) continue
-      refs.push({ id: e.id, method: e.method, url: e.url, status: e.status, source: e.source })
+      refs.push({ id: e.id, method: e.method, url: e.url, status: e.status, source: e.source, capturedAt: e.capturedAt })
       if (filter?.limit && refs.length >= filter.limit) break
     }
     return refs
@@ -139,6 +143,8 @@ export class CapturedRequestStore {
 let singleton: CapturedRequestStore | null = null
 
 export function getCapturedRequestStore(): CapturedRequestStore {
+  const owned = getEngagementServices()?.capturedRequests
+  if (owned) return owned
   if (!singleton) singleton = new CapturedRequestStore()
   return singleton
 }

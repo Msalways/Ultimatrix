@@ -59,6 +59,7 @@ export interface TechniqueContext {
     tags?: string[]
   }
   param?: string
+  inputLocation?: string
   role?: string
   roles?: string[]
   sessionHeaders?: Record<string, string>
@@ -420,17 +421,21 @@ export async function runPrimitive(
     const executionId = randomUUID()
     const res = await executor(step)
     const payloadSource = String(step.metadata?.payloadSource ?? 'static')
-    evidenceGate.recordToolOutput(
-      `[${step.request.method} ${step.request.url}] request` +
-        (step.request.body ? ` body=${step.request.body}` : ''),
-    )
-    evidenceGate.recordObserved({
-      type: 'raw_request',
-      data: step.request.body ?? '',
-      label: `${step.request.method} ${step.request.url}`,
-      observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '', payloadSource, executionId },
-      ...(step.actor ? { session: step.actor } : {}),
-    })
+    // Do not manufacture request evidence for preflight/scope failures: an
+    // executor error without an HTTP response does not prove the request left.
+    if (res.ok || res.status !== undefined) {
+      evidenceGate.recordToolOutput(
+        `[${step.request.method} ${step.request.url}] request` +
+          (step.request.body ? ` body=${step.request.body}` : ''),
+      )
+      evidenceGate.recordObserved({
+        type: 'raw_request',
+        data: step.request.body ?? '',
+        label: `${step.request.method} ${step.request.url}`,
+        observed: { method: step.request.method, url: step.request.url, requestHeaders: step.request.headers, requestBody: step.request.body ?? '', payloadSource, executionId },
+        ...(step.actor ? { session: step.actor } : {}),
+      })
+    }
     if (res.status !== undefined) {
       evidenceGate.recordToolOutput(
         `[${step.request.method} ${step.request.url}] response status=${res.status}` +

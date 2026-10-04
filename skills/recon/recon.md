@@ -8,8 +8,6 @@ triggers: ["find all endpoints", "map the attack surface", "reconnaissance", "di
 mitreAttack: ["T1595", "T1592"]
 owaspRefs: ["OWASP Top 10 A05:2021 Security Misconfiguration"]
 strategy:
-  seedPaths: ["/openapi.json", "/api/openapi.json", "/swagger.json", "/swagger/v1/swagger.json", "/v1/openapi.json", "/docs", "/api-docs"]
-  versionPrefixes: ["/v1", "/v2", "/v3", "/api/v1", "/api/v2"]
   relevanceSignals: ["admin", "internal", "debug", "manage", "secret", "config", "console", "backdoor", "private", "test"]
 ---
 
@@ -59,9 +57,9 @@ cat subs_passive.txt amass_passive.txt amass_passive.txt 2>/dev/null | sed 's/^\
 1. Navigate to the target URL and capture the full page snapshot
 2. Extract all links, forms, and API endpoints from the page source
 3. Use **stagehand_extract** to get structured data from complex pages (forms, links, data attributes)
-4. Test common paths: /api, /graphql, /admin, /.env, /robots.txt, /sitemap.xml, /swagger, /openapi.json
-5. Check for API documentation endpoints: /docs, /api-docs, /swagger.json, /openapi.yaml
-6. Record every discovered endpoint to the graph with **updateGraph**
+4. Follow only links, forms, API calls, and resource URLs present in captured traffic or delivered client code. Do not guess documentation paths, version prefixes, or common directories.
+5. If the target links to API documentation, fetch that exact linked URL and extract its operations; otherwise leave API documentation undiscovered.
+6. Record each observed endpoint and its source evidence to the graph with **updateGraph**
 
 ```bash
 # Probe which discovered subdomains are alive and capture titles/status
@@ -70,11 +68,8 @@ cat subs_passive.txt | sort -u | httpx -title -tech-detect -status-code -o live_
 # Content discovery against the live host
 gobuster dir -u https://target.com -w /usr/share/seclists/Discovery/Web-Content/common.txt -t 20 -x php,asp,aspx,jsp,html,bak,json
 
-# Common sensitive-path spot checks (fast, low noise)
-for p in robots.txt sitemap.xml .env .git/HEAD swagger.json openapi.json api-docs; do
-  code=$(curl -sk -o /dev/null -w "%{http_code}" "https://target.com/$p")
-  [ "$code" != "404" ] && echo "[${code}] /$p"
-done
+# Fetch robots.txt, sitemap.xml, or security.txt only when linked by the page,
+# declared by captured client code, or explicitly requested by the operator.
 ```
 
 ```bash
@@ -224,7 +219,7 @@ Activate at the start of any assessment (or whenever new surface appears) to map
 
 ## Detection Approach
 
-Work passive-before-active to avoid premature detection. Phase 1: passive — tech stack from headers/errors/cookies, JS library versions, public repos, CT logs, DNS. Phase 2: endpoint discovery — capture the page, extract links/forms/API endpoints, probe common paths (`/api`, `/graphql`, `/admin`, `/.env`, `/robots.txt`, `/swagger`). Phase 3: deep page analysis (the highest-value step) — read HTML source for comments/hidden fields/inline config, analyze JS bundles for embedded secrets and internal endpoints and source maps, probe exposed files, and fingerprint the framework. Phase 4: GraphQL recon if applicable (introspection). Phase 5: record everything to the graph and write findings for disclosures. Revisit recon iteratively as new findings reveal more surface.
+Work from target-provided evidence. Capture the page, extract links/forms/API calls, and inspect delivered client code and responses. Follow only observed or linked routes, or paths explicitly authorized by the operator; do not guess conventional docs paths, version prefixes, or directories. Analyze captured HTML/JS/API responses for disclosures and fingerprint the framework. If an observed GraphQL route exists, assess its schema under the engagement's authorization. Record each endpoint with its source evidence and revisit discovery when new target-provided surface appears.
 
 ## Pitfalls
 

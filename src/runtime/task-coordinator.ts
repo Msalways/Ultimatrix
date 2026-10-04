@@ -7,14 +7,18 @@ import type {
   TaskRetryableStatus,
   TaskRetryPolicy,
   TaskState,
+  ResearchTaskKind,
   WorkflowEvidenceRef,
 } from '../workflow/types'
 import { buildTaskContextCheckpoint } from './task-context'
+import { taskResourceClaims } from './task-resources'
 import { createTaskAttribution, runWithTaskAttribution } from './task-attribution'
 
 export interface TaskRequest {
   taskId?: string
   objective: string
+  kind?: ResearchTaskKind
+  resourceClaims?: string[]
   skillId?: string
   parentTaskId?: string
   dependencyTaskIds?: string[]
@@ -38,6 +42,7 @@ export interface TaskRequest {
 export interface TaskExecutionResult {
   workerId?: string
   summary: string
+  status?: 'blocked'
   /** F3 — ToolResultStore ref for the full worker output (getToolResult). */
   resultRef?: string
   evidence?: WorkflowEvidenceRef[]
@@ -67,6 +72,7 @@ const emptyUsage = () => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0, mod
 function cloneTask(task: TaskState): TaskState {
   return {
     ...task,
+    resourceClaims: task.resourceClaims ? [...task.resourceClaims] : undefined,
     dependencyTaskIds: [...task.dependencyTaskIds],
     contextRefs: [...task.contextRefs],
     requiredCapabilities: [...task.requiredCapabilities],
@@ -99,6 +105,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export class TaskCoordinator {
   private readonly controllers = new Map<string, AbortController>()
+  private readonly resourceClaimTails = new Map<string, Promise<void>>()
   private checkpointTail: Promise<void> = Promise.resolve()
 
   constructor(
@@ -113,6 +120,7 @@ export class TaskCoordinator {
   }
 
   async plan(request: TaskRequest): Promise<TaskState> {
+    if (request.resourceClaims?.some(claim => !claim.trim() || claim.length > 160)) throw new Error('Task resource claims must be non-empty strings no longer than 160 characters')
     const task = this.buildPlannedTask(request, new Set(this.workflow.state.tasks.map((item) => item.taskId)))
     await this.checkpoint(task)
     return task
@@ -143,6 +151,8 @@ export class TaskCoordinator {
     return {
       taskId,
       objective: request.objective,
+      kind: request.kind,
+      resourceClaims: request.resourceClaims ? [...new Set(request.resourceClaims)] : undefined,
       skillId: request.skillId,
       parentTaskId: request.parentTaskId,
       dependencyTaskIds: request.dependencyTaskIds ?? [],
@@ -177,23 +187,57 @@ export class TaskCoordinator {
     if (!stored) throw new Error(`Task ${taskId} does not exist`)
     if (stored.status !== 'planned') throw new Error(`Task ${taskId} is ${stored.status}, expected planned`)
     const task = cloneTask(stored)
-    let resumedFromWait = task.attemptHistory.at(-1)?.status === 'waiting'
-
-    while (task.attempts < task.retryPolicy.maxAttempts || resumedFromWait) {
-      resumedFromWait = false
-      const terminal = await this.executeAttempt(task, options)
-      if (['completed', 'waiting', 'cancelled', 'budget_exceeded', 'budget_unverifiable'].includes(terminal.status)) return terminal
-      const retryStatus = terminal.status === 'timed_out' ? 'timed_out' : 'failed'
-      if (!terminal.retryPolicy.retryOn.includes(retryStatus) || terminal.attempts >= terminal.retryPolicy.maxAttempts) return terminal
-      terminal.status = 'planned'
-      terminal.workerId = undefined
-      terminal.error = undefined
-      terminal.completedAt = undefined
-      terminal.updatedAt = this.now()
-      await this.checkpoint(terminal)
-      await sleep(terminal.retryPolicy.backoffMs, options.signal)
+    const incompleteDependencies = task.dependencyTaskIds.flatMap(id => {
+      const dependency = this.workflow.state.tasks.find(item => item.taskId === id)
+      return !dependency || dependency.status !== 'completed' ? [id] : []
+    })
+    if (incompleteDependencies.length > 0) {
+      task.status = 'blocked'
+      task.error = `Task blocked: prerequisite task(s) are missing or incomplete: ${incompleteDependencies.join(', ')}`
+      task.completedAt = this.now()
+      task.updatedAt = task.completedAt
+      await this.checkpoint(task)
+      return task
     }
-    return task
+    const releaseClaims = await this.acquireResourceClaims(task)
+    try {
+      let resumedFromWait = task.attemptHistory.at(-1)?.status === 'waiting'
+
+      while (task.attempts < task.retryPolicy.maxAttempts || resumedFromWait) {
+        resumedFromWait = false
+        const terminal = await this.executeAttempt(task, options)
+        if (['completed', 'waiting', 'cancelled', 'budget_exceeded', 'budget_unverifiable'].includes(terminal.status)) return terminal
+        const retryStatus = terminal.status === 'timed_out' ? 'timed_out' : 'failed'
+        if (!terminal.retryPolicy.retryOn.includes(retryStatus) || terminal.attempts >= terminal.retryPolicy.maxAttempts) return terminal
+        terminal.status = 'planned'
+        terminal.workerId = undefined
+        terminal.error = undefined
+        terminal.completedAt = undefined
+        terminal.updatedAt = this.now()
+        await this.checkpoint(terminal)
+        await sleep(terminal.retryPolicy.backoffMs, options.signal)
+      }
+      return task
+    } finally {
+      releaseClaims()
+    }
+  }
+
+  private async acquireResourceClaims(task: TaskState): Promise<() => void> {
+    const releases: Array<() => void> = []
+    for (const claim of taskResourceClaims(task)) {
+      const previous = this.resourceClaimTails.get(claim) ?? Promise.resolve()
+      let unlock!: () => void
+      const gate = new Promise<void>(resolve => { unlock = resolve })
+      const tail = previous.then(() => gate)
+      this.resourceClaimTails.set(claim, tail)
+      await previous
+      releases.push(() => {
+        unlock()
+        void tail.then(() => { if (this.resourceClaimTails.get(claim) === tail) this.resourceClaimTails.delete(claim) })
+      })
+    }
+    return () => { for (const release of releases.reverse()) release() }
   }
 
   private async executeAttempt(task: TaskState, options: TaskRunOptions): Promise<TaskState> {
@@ -319,6 +363,18 @@ const attribution = createTaskAttribution(task.taskId, remainingTokenLimit, (err
       captureUsage()
       if (waiting) return task
       if (controller.signal.aborted) throw controller.signal.reason ?? new Error('Task cancelled')
+      if (result.status === 'blocked') {
+        task.resultSummary = result.summary.slice(0, 2000)
+        task.error = task.resultSummary
+        task.status = 'blocked'
+        attempt.status = 'blocked'
+        attempt.error = task.error
+        attempt.completedAt = this.now()
+        task.completedAt = attempt.completedAt
+        task.updatedAt = attempt.completedAt
+        await this.checkpoint(task)
+        return task
+      }
       if (task.budget.tokenLimit !== undefined && attribution.usage.reportedCalls < attribution.usage.modelCalls) {
         budgetUnverifiable = true
         throw new Error(`Task ${task.taskId} cannot verify token budget because provider usage was unavailable`)

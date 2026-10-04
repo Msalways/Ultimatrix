@@ -69,6 +69,7 @@ async function recordFor(type: string, data: string, endpoint: string) {
 describe('control-tools', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    mockWorkspace.getCurrentTarget.mockReturnValue(null)
     mockStore.queryNodes.mockReturnValue([])
     mockStore.getNode.mockImplementation((id: string) => id === 'experiment:proven' ? {
       id,
@@ -94,6 +95,54 @@ describe('control-tools', () => {
   })
 
   describe('writeFinding — structural evidence contract (A5)', () => {
+    it('generates from the experiment oracle and canonical baseline/mutation requests', async () => {
+      const { recordStructuredEvidence, writeFinding } = await import('../../src/tools/control-tools')
+      const baseline = recordStructuredEvidence({
+        type: 'raw_response',
+        data: '[{"id":1}]',
+        label: 'baseline response',
+        observed: { method: 'GET', url: 'http://127.0.0.1:3006/rest/products/search?q=apple', status: 200, responseBody: '[{"id":1}]' },
+      })
+      const mutation = recordStructuredEvidence({
+        type: 'raw_response',
+        data: '[{"id":1},{"id":2}]',
+        label: 'mutation response',
+        observed: { method: 'GET', url: 'http://127.0.0.1:3006/rest/products/search?q=apple%27%29%29%20or%201%3D1--', status: 200, responseBody: '[{"id":1},{"id":2}]' },
+      })
+      mockStore.getNode.mockReturnValue({
+        id: 'experiment:proven',
+        type: 'Experiment',
+        properties: {
+          oracle: { type: 'json-array-growth', baselineEvidenceId: baseline.id, mutationEvidenceId: mutation.id, minimumGrowth: 1 },
+          outcome: { status: 'proven', proof: { experimentId: 'experiment:proven', phase: 'initial', evidenceRefs: [baseline.id, mutation.id] } },
+          retest: { outcome: { status: 'proven', proof: { experimentId: 'experiment:proven', phase: 'retest', evidenceRefs: ['ev:fresh-baseline', 'ev:fresh-mutation'] } } },
+        },
+      })
+      mockWorkspace.getCurrentTarget.mockReturnValue('juice-shop')
+
+      const result = await callTool(writeFinding, {
+        type: 'sql_injection',
+        endpoint: 'http://127.0.0.1:3006/rest/products/search',
+        param: 'q',
+        method: 'GET',
+        severity: 'info',
+        confidence: 1,
+        experimentIds: ['experiment:proven'],
+        evidenceIds: [baseline.id, mutation.id],
+      })
+
+      expect(result.ok).toBe(true)
+      const { generateFromFinding } = await import('../../src/generation/test-generator')
+      expect(generateFromFinding).toHaveBeenCalledWith(expect.objectContaining({
+        differentialReplay: {
+          baseline: { method: 'GET', url: 'http://127.0.0.1:3006/rest/products/search?q=apple' },
+          mutation: { method: 'GET', url: 'http://127.0.0.1:3006/rest/products/search?q=apple%27%29%29%20or%201%3D1--' },
+          minimumArrayGrowth: 1,
+        },
+      }))
+      mockWorkspace.getCurrentTarget.mockReturnValue(null)
+    })
+
     it('HARD-REJECTS a non-info finding with no supporting evidence', async () => {
       const { writeFinding } = await import('../../src/tools/control-tools')
       const result = await callTool(writeFinding, {
@@ -150,6 +199,44 @@ describe('control-tools', () => {
       expect(mockStore.addFinding).toHaveBeenCalledWith(
         expect.objectContaining({ findingId: 'xss:/search:q' })
       )
+    })
+
+    it('attaches canonical evidence by ID without asking the model to copy raw bodies', async () => {
+      const { recordStructuredEvidence, writeFinding } = await import('../../src/tools/control-tools')
+      const evidence = recordStructuredEvidence({
+        type: 'raw_response',
+        data: '{"data":[{"id":1},{"id":2}]}',
+        label: 'GET /search?q=apple → 200',
+        observed: { method: 'GET', url: 'https://example.com/search?q=apple', status: 200 },
+      })
+      const result = await callTool(writeFinding, {
+        type: 'sql_injection',
+        endpoint: 'https://example.com/search',
+        param: 'q',
+        method: 'GET',
+        observedStatus: 200,
+        severity: 'high',
+        confidence: 0.9,
+        evidenceIds: [evidence.id],
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.value.evidence.map((item: any) => item.id)).toContain(evidence.id)
+    })
+
+    it('rejects unknown canonical evidence IDs', async () => {
+      const { writeFinding } = await import('../../src/tools/control-tools')
+      const result = await callTool(writeFinding, {
+        type: 'sql_injection',
+        endpoint: 'https://example.com/search',
+        severity: 'high',
+        confidence: 0.9,
+        evidenceIds: ['ev_not_in_ledger'],
+      })
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('Unknown canonical evidence id')
+      expect(mockStore.addFinding).not.toHaveBeenCalled()
     })
 
     it('persists the proven sink shape (param/method) onto the finding node', async () => {

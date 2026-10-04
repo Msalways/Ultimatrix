@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { toAuthFlowType } from '../../src/capture/human-observer'
 import type { AuthType } from '../../src/capture/human-observer'
+import { getCapturedRequestStore } from '../../src/capture/captured-request-store'
 
 function makePage(overrides: Record<string, any> = {}) {
   const listeners: Record<string, Function[]> = {}
@@ -71,6 +72,38 @@ describe('HumanObserver', () => {
   })
 
   describe('basic lifecycle', () => {
+    it('captures in-scope browser request and response traffic', async () => {
+      const store = getCapturedRequestStore()
+      store.clear()
+      const obs = new HumanObserver()
+      const page = makePage()
+      obs.attach(page as any)
+      const request = {
+        url: () => 'https://example.com/api/profile?tab=security',
+        method: () => 'GET',
+        allHeaders: async () => ({ accept: 'application/json' }),
+        headers: () => ({ accept: 'application/json' }),
+        postData: () => null,
+        response: async () => ({
+          status: () => 200,
+          allHeaders: async () => ({ 'content-type': 'application/json' }),
+          headers: () => ({ 'content-type': 'application/json' }),
+          body: async () => Buffer.from('{"mfa":true}'),
+        }),
+      }
+      page._emit('request', request)
+      page._emit('requestfinished', request)
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(store.list()).toEqual([expect.objectContaining({
+        method: 'GET', source: 'browser', status: 200,
+        url: 'https://example.com/api/profile?tab=security',
+      })])
+      expect(store.get('cap-1')?.responseBody).toBe('{"mfa":true}')
+      obs.detach()
+      store.clear()
+    })
+
     it('starts not capturing', () => {
       const obs = new HumanObserver()
       expect(obs.isCapturing()).toBe(false)

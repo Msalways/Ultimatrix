@@ -1,4 +1,5 @@
 import type { ModelModuleRole, ModelTierName, TaskComplexity, TierConfig, UltimatrixConfig } from '../config'
+import { ContextWindowRegistry } from './context-window-registry'
 
 export type ModelRole = 'brain' | 'worker' | 'spider' | 'crawlSummarizer' | 'verifier' | 'reporter' | 'council'
 export type ModelTier = 'fast' | 'balanced' | 'powerful' | 'default'
@@ -125,6 +126,5 @@ export function resolveModelRef(config: UltimatrixConfig, options: ModelRouteOpt
 
 export function findMaxOutputTokens(config: UltimatrixConfig, provider: string, model: string): number | undefined {
   const modelId = fullModelId(provider, model)
-  return config.modelCapabilities?.[modelId]?.maxOutputTokens
-    ?? config.modelCapabilities?.[model]?.maxOutputTokens
+  return new ContextWindowRegistry(config).getMaxOutput(modelId) || undefined
 }

@@ -80,6 +80,25 @@ describe('research engine', () => {
     expect(differential.interesting).toBe(false)
     expect(differential.authorizationMismatch).toBe(false)
   })
+
+  it('creates a SQLi research task only from a captured query-input route', () => {
+    const store = new GraphStore('test-output/sqli-graph.json')
+    store.addEndpoint({
+      method: 'GET',
+      url: 'https://app.test/rest/products/search',
+      params: [{ name: 'q', type: 'query', in: 'query' }],
+      tags: ['har-capture'],
+      source: 'har-bridge',
+    })
+    const hypotheses = generateHypotheses(store, [], [])
+    const hypothesis = hypotheses.find(item => item.kind === 'sql_injection')
+    expect(hypothesis).toMatchObject({ targetParams: ['q'], requiredSetup: expect.arrayContaining(['Capture a non-empty benign input through the target UI']) })
+    expect(planExperiments(store, [hypothesis!])[0]).toMatchObject({
+      title: 'Compare observed search input with a bounded boolean SQL expression',
+      baselineRequest: { method: 'GET', url: 'https://app.test/rest/products/search' },
+      status: 'planned',
+    })
+  })
 })
 
 describe('extraction noise gates (transport/asset URLs are not behavior)', () => {
@@ -96,6 +115,7 @@ describe('extraction noise gates (transport/asset URLs are not behavior)', () =>
     expect(isTransportOrAssetUrl('https://app.test/favicon.ico')).toBe(true)
     expect(isTransportOrAssetUrl('https://app.test/static/app.js')).toBe(true)
     expect(isTransportOrAssetUrl('https://app.test/socket.io/', 'POST')).toBe(true)
+    expect(isTransportOrAssetUrl('https://app.test/$%7Bgt(r.root,!0)%7D', 'GET')).toBe(true)
     expect(isTransportOrAssetUrl('https://app.test/rest/admin/health')).toBe(true)
     expect(isTransportOrAssetUrl('https://app.test/api/orders/12345')).toBe(false)
     expect(isTransportOrAssetUrl('https://app.test/reflected/parameter/body?q=x')).toBe(false)

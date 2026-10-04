@@ -170,6 +170,25 @@ describe('HAR Parser', () => {
       expect(bodySecrets[0].name).toBe('apiKey')
       expect(bodySecrets[0].value).toBe('real-secret-value-123')
     })
+
+    it('does not misclassify public configuration values as API keys or CSRF tokens', () => {
+      const archive = structuredClone(validHar)
+      archive.log.entries[0].response.content.text = JSON.stringify({
+        overwriteUrlForCsrfChallenge: 'http://htmledit.squarefree.com',
+        key: 'scoreBoardChallenge',
+      })
+      expect(getSecrets(getEntries(archive)).filter(secret => secret.location === 'body')).toEqual([])
+    })
+
+    it('keeps credential-shaped API and CSRF values when their field names are specific', () => {
+      const archive = structuredClone(validHar)
+      archive.log.entries[0].response.content.text = JSON.stringify({
+        apiKey: 'real-secret-value-123',
+        csrfToken: '8f34ad17b9963ac2d401aa5f',
+      })
+      expect(getSecrets(getEntries(archive)).filter(secret => secret.location === 'body').map(secret => secret.name).sort())
+        .toEqual(['apiKey', 'csrfToken'])
+    })
   })
 
   describe('getDataFlows', () => {
@@ -280,21 +299,31 @@ describe('HAR Parser', () => {
  * "residual" and "provided". Names are a structured, closed vocabulary and
  * need no regex at all, so matching is now TOKEN EQUALITY.
  *
- * Known limitation, measured live 2026-10-02 and NOT fixed by this change: a
- * body key named exactly `sid`, `csrf` or `key` still matches its class. Token
- * equality removes substring noise; it cannot tell a credential from a field
- * that happens to be called "key". See har-secret-false-positives memory.
+ * A field name and its value must both look credential-shaped. Security prose
+ * in configuration keys and challenge labels are not leaked credentials.
  */
 describe('nameMatchesSecretType', () => {
   it('matches real secret names by token', () => {
     expect(nameMatchesSecretType('api_key', 'X-Api-Key')).toBe(true)
     expect(nameMatchesSecretType('api_key', 'apiKey')).toBe(true)
+    expect(nameMatchesSecretType('api_key', 'aws_access_key_id')).toBe(true)
+    expect(nameMatchesSecretType('api_key', 'aws_secret_access_key')).toBe(true)
     expect(nameMatchesSecretType('token', 'Authorization')).toBe(true)
     expect(nameMatchesSecretType('token', 'access_token')).toBe(true)
     expect(nameMatchesSecretType('password', 'X-Db-Password')).toBe(true)
     expect(nameMatchesSecretType('session', 'JSESSIONID')).toBe(true)
     expect(nameMatchesSecretType('session', 'session_id')).toBe(true)
     expect(nameMatchesSecretType('csrf', 'X-CSRF-Token')).toBe(true)
+    expect(nameMatchesSecretType('csrf', 'csrfToken')).toBe(true)
+    expect(nameMatchesSecretType('api_key', 'api_key')).toBe(true)
+  })
+
+  it('rejects ambiguous names and security configuration labels', () => {
+    expect(nameMatchesSecretType('api_key', 'key')).toBe(false)
+    expect(nameMatchesSecretType('api_key', 'access_key_id')).toBe(false)
+    expect(nameMatchesSecretType('api_key', 'aws_access_key_name')).toBe(false)
+    expect(nameMatchesSecretType('csrf', 'csrf')).toBe(false)
+    expect(nameMatchesSecretType('csrf', 'overwriteUrlForCsrfChallenge')).toBe(false)
   })
 
   it('REJECTS names that merely CONTAIN a secret substring', () => {

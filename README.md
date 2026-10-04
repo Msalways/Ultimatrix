@@ -384,6 +384,16 @@ try {
 | [Skill Packs](docs/SKILL-PACKS.md) | Author or import validated methodology |
 | `npx ultimatrix --help` | Current CLI surface |
 
+### Internal live discovery benchmark
+
+With an NVIDIA API credential available from the environment or provider configuration, run:
+
+```bash
+npm run benchmark:discovery -- --runs 3 --out evals/live-discovery.json
+```
+
+It runs `interact -t` against randomized, disposable loopback apps with matched vulnerable and patched workflows. Without a credential, it records `untested` and makes no model calls. Each target run is limited to 100 HTTP requests and five minutes. Reports under `evals/` are local benchmark artifacts.
+
 ```bash
 npm test                 # full Vitest suite
 npm run test:evals       # architecture boundary evaluations

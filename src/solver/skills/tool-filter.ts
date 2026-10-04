@@ -29,6 +29,7 @@ export const CORE_TOOLS = [
   'queryRelations',
   'getGraphNeighborhood',
   'getWorkflowAround',
+  'observeHumanActions',
   'traceValue',
   'explainReachability',
   'getUntestedWorkarounds',

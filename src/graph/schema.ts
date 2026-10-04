@@ -157,13 +157,19 @@ export const ReflexionSchema = z.object({
 export const WorkflowSchema = z.object({
   name: z.string(),
   entryUrl: z.string().url().optional(),
-  steps: z.array(z.object({ action: z.string(), url: z.string().optional(), endpointId: z.string().optional(), method: z.string().optional() })),
+  steps: z.array(z.object({
+    action: z.string(), url: z.string().optional(), endpointId: z.string().optional(), method: z.string().optional(),
+    selector: z.string().optional(), requestId: z.string().optional(),
+  })),
   relatedEndpoints: z.array(z.string()).optional(),
   requiredAuth: z.boolean().optional(),
   inputFields: z.array(z.string()),
   stateChanges: z.array(z.string()),
   observedRoles: z.array(z.string()),
   confidence: z.number().min(0).max(1),
+  capturedRequestIds: z.array(z.string()).optional(),
+  source: z.string().optional(),
+  capturedAt: z.number().optional(),
 })
 
 export const EntitySchema = z.object({
@@ -182,6 +188,7 @@ export const HypothesisSchema = z.object({
   kind: z.string(),
   reason: z.string(),
   targetEndpoints: z.array(z.string()),
+  targetParams: z.array(z.string()).optional(),
   relatedWorkflowIds: z.array(z.string()).optional(),
   relatedEntityIds: z.array(z.string()).optional(),
   requiredSetup: z.array(z.string()).optional(),
@@ -604,13 +611,16 @@ export interface WorkflowNode extends GraphNodeData {
   properties: {
     name: string
     entryUrl?: string
-    steps: Array<{ action: string; url?: string; endpointId?: string; method?: string }>
+    steps: Array<{ action: string; url?: string; endpointId?: string; method?: string; selector?: string; requestId?: string }>
     relatedEndpoints: string[]
     requiredAuth?: boolean
     inputFields: string[]
     stateChanges: string[]
     observedRoles: string[]
     confidence: number
+    capturedRequestIds?: string[]
+    source?: string
+    capturedAt?: number
   }
 }
 

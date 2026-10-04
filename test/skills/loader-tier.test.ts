@@ -72,7 +72,10 @@ describe('Skill tool chains', () => {
     const skill = loadSkill('exploitation')
     expect(skill).not.toBeNull()
     expect(skill!.toolChains.length).toBeGreaterThanOrEqual(1)
-    expect(skill!.toolChains[0].steps[0]).toBe('httpRequest')
+    expect(skill!.toolChains[0].steps).toEqual([
+      'listCapturedRequests', 'buildResearchMap', 'planResearchExperiments',
+      'executePlannedExperiment', 'evaluateResearchExperiment', 'writeFinding',
+    ])
   })
 
   it('modern-xss has both reflected and DOM chains', () => {

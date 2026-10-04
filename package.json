@@ -43,6 +43,7 @@
     "test:watch": "vitest",
     "test:e2e": "tsx scripts/test-e2e.ts",
     "test:evals": "vitest run test/evals",
+    "benchmark:discovery": "tsx scripts/live-discovery-benchmark.ts --live",
     "clean": "node -e \"const fs=require('fs');['dist','.next'].forEach(d=>{try{fs.rmSync(d,{recursive:true,force:true})}catch{}})\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",

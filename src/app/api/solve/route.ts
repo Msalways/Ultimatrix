@@ -13,6 +13,7 @@
  */
 
 import { NextRequest } from 'next/server'
+import { randomUUID } from 'node:crypto'
 import { targetManager } from '@/web/target-manager'
 
 export const dynamic = 'force-dynamic'
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
     let controllerClosed = false
 
     // F42: SSE frame envelope — every frame carries runId + monotonic seq + timestamp.
-    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const runId = `run-${randomUUID()}`
     let seq = 0
 
     // F36: Write batching — buffer frames for 50ms then flush.
@@ -117,10 +118,14 @@ export async function POST(req: NextRequest) {
         on('spider:progress', (e) => send('spider:progress', e))
         on('spider:event', (e) => send('spider:event', e))
 
+        let offInteractionRequest = () => {}
+        engine.beginInteractionRun(runId)
+        offInteractionRequest = engine.onInteractionRequest(request => send('interaction', request))
         const heartbeat = setInterval(() => send('heartbeat', { timestamp: Date.now() }), 30_000)
         const cleanup = () => {
           clearInterval(heartbeat)
           if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+          offInteractionRequest()
           for (const [event, handler] of listeners) emitter.off(event as any, handler)
           // Final flush
           flush()
@@ -128,6 +133,7 @@ export async function POST(req: NextRequest) {
         const close = () => {
           if (controllerClosed) return
           controllerClosed = true
+          engine.endInteractionRun(runId)
           flush()
           try { controller.close() } catch {}
         }
@@ -143,6 +149,7 @@ export async function POST(req: NextRequest) {
           const result = await engine.solve({
             goal,
             interactionMode: interactionMode === 'run' ? 'run' : undefined,
+            interactionRunId: runId,
             solverConfig,
             // F37 FIX: Skip forwarding the solver's internal "done" message —
             // the route sends its own canonical "done" event with the full result.

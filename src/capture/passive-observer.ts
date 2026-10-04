@@ -24,6 +24,15 @@ export class PassiveObserver {
   private requests = new Map<string, ObservedRequest>()
   private responses = new Map<string, ObservedResponse>()
   private cleanup = new Map<Page, Array<() => void>>()
+  private captureFlusher?: () => Promise<unknown>
+
+  setCaptureFlusher(flush?: () => Promise<unknown>): void {
+    this.captureFlusher = flush
+  }
+
+  async flushCapturedRequests(): Promise<void> {
+    await this.captureFlusher?.()
+  }
 
   attach(page: Page): void {
     if (this.pages.has(page)) return
@@ -110,6 +119,7 @@ export class PassiveObserver {
     for (const fn of this.cleanup.get(page) ?? []) fn()
     this.cleanup.delete(page)
     this.pages.delete(page)
+    if (this.pages.size === 0) this.captureFlusher = undefined
   }
 
   private tryAttach(page: Page, event: string, handler: (...args: any[]) => void): boolean {

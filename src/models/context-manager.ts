@@ -11,6 +11,7 @@ export interface ContextFitParams {
   modelId: string
   systemPrompt: string
   toolSchemas: string
+  toolSchemaTokens?: number
   conversationHistory: string
   enrichedGoal: string
   expectedOutputTokens?: number
@@ -18,6 +19,7 @@ export interface ContextFitParams {
 
 export interface ContextValidation {
   fits: boolean
+  reason?: string
   totalInputTokens: number
   availableForOutput: number
   breakdown: {
@@ -42,7 +44,7 @@ function estimateTokens(text: string): number {
   const words = text.split(/\s+/).filter(Boolean).length
   // Code blocks and special chars tend to tokenize more
   const codeOverhead = (text.match(/[{}[\]();=<>!&|]/g)?.length ?? 0) * 0.1
-  return Math.ceil(words * 1.3 + codeOverhead)
+  return Math.max(Math.ceil(words * 1.3 + codeOverhead), Math.ceil(text.length / 4))
 }
 
 export class ContextBudgetManager {
@@ -67,19 +69,21 @@ export class ContextBudgetManager {
    */
   validateContextFit(params: ContextFitParams): ContextValidation {
     const caps = this.capabilities[params.modelId]
-    const contextWindow = this.registry?.getContextWindow(params.modelId) || caps?.contextWindow || DEFAULT_CONTEXT_WINDOW
+    const registryEntry = this.registry?.resolve(params.modelId)
+    const contextWindow = registryEntry?.contextWindow || this.registry?.getContextWindow(params.modelId) || caps?.contextWindow || DEFAULT_CONTEXT_WINDOW
     const maxOutput = this.registry?.getMaxOutput(params.modelId) || caps?.maxOutputTokens || DEFAULT_MAX_OUTPUT
     const reservedOutput = params.expectedOutputTokens ?? maxOutput
+    const usableContext = Math.max(0, contextWindow - (registryEntry?.reservedMargin ?? 0))
 
     const systemTokens = estimateTokens(params.systemPrompt)
-    const toolsTokens = estimateTokens(params.toolSchemas)
+    const toolsTokens = Math.max(estimateTokens(params.toolSchemas), params.toolSchemaTokens ?? 0)
     const historyTokens = estimateTokens(params.conversationHistory)
     const goalTokens = estimateTokens(params.enrichedGoal)
 
     const totalInputTokens = systemTokens + toolsTokens + historyTokens + goalTokens
-    const availableForOutput = Math.max(0, contextWindow - totalInputTokens - reservedOutput)
+    const availableForOutput = Math.max(0, usableContext - totalInputTokens - reservedOutput)
 
-    const utilization = contextWindow > 0 ? totalInputTokens / contextWindow : 1
+    const utilization = usableContext > 0 ? totalInputTokens / usableContext : 1
 
     let severity: ContextValidation['severity']
     if (utilization >= CRITICAL_THRESHOLD) {
@@ -90,11 +94,11 @@ export class ContextBudgetManager {
       severity = 'ok'
     }
 
-    const fits = totalInputTokens + reservedOutput <= contextWindow
+    const fits = totalInputTokens + reservedOutput <= usableContext
     const suggestions = this.suggestReductions(
       { system: systemTokens, tools: toolsTokens, history: historyTokens, goal: goalTokens },
       availableForOutput,
-      contextWindow,
+      usableContext,
     )
 
     return {

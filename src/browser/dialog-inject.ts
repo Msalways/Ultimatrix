@@ -26,9 +26,11 @@ import { getGlobalBotHandler } from './anti-bot'
 import { wireRenderTrace } from '../capture/render-bridge'
 import { getGlobalObserver } from '../capture/human-observer'
 import { getActivePage, resolveContextPageAsync } from './manager'
-import { getTargetTransportGovernor } from '../runtime/target-governor'
+import { getEngagementServices } from '../runtime/engagement-context'
 import { isCamofoxHandle } from './provider'
 import { randomUUID } from 'node:crypto'
+import { createTool } from '@mastra/core/tools'
+import { z } from 'zod'
 
 const STAGEHAND_TOOL_NAMES = [
   'stagehand_act',
@@ -38,7 +40,194 @@ const STAGEHAND_TOOL_NAMES = [
   'stagehand_screenshot',
   'stagehand_tabs',
   'stagehand_close',
+  'browserInteract',
 ]
+
+type ObservedControl = {
+  tag: string
+  role?: string
+  name?: string
+  type?: string
+  id?: string
+  placeholder?: string
+  inputName?: string
+  locators: Array<{ kind: 'role' | 'label' | 'placeholder' | 'text' | 'css'; value: string; role?: string }>
+}
+
+const observedControls = new WeakMap<object, { url: string; controls: ObservedControl[] }>()
+
+/** Read visible page structure without making a second model call. */
+async function readPageDom(page: any, mode: 'observe' | 'extract', maxLength = 20_000): Promise<any> {
+  // Stagehand v3 serializes evaluate callbacks with Function#toString and
+  // runs them in the page. TSX/esbuild can inject a module-local `__name`
+  // helper into that function, which does not exist in the page realm. Pass a
+  // self-contained expression string so the browser receives plain JavaScript.
+  const limit = Number.isFinite(maxLength) ? Math.max(500, Math.min(20_000, Math.floor(maxLength))) : 20_000
+  const expression = `(() => {
+    try {
+      const limit = ${limit};
+      const visible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const cssPath = (el) => {
+        const parts = [];
+        let current = el;
+        while (current && current.nodeType === 1) {
+          const id = current.id || '';
+          if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) { parts.unshift('#' + id); break; }
+          const tag = current.tagName.toLowerCase();
+          const siblings = current.parentElement ? Array.from(current.parentElement.children).filter((sibling) => sibling.tagName === current.tagName) : [];
+          const index = siblings.indexOf(current);
+          parts.unshift(tag + (siblings.length > 1 ? ':nth-of-type(' + (index + 1) + ')' : ''));
+          current = current.parentElement;
+        }
+        return parts.join(' > ');
+      };
+      const controls = Array.from(document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="searchbox"],[contenteditable="true"]'))
+        .filter(visible).slice(0, 80).map((el) => {
+          const input = el instanceof HTMLInputElement ? el : null;
+          const labelElement = input?.labels?.[0] ?? (el instanceof HTMLTextAreaElement ? el.labels?.[0] : null);
+          const aria = (el.getAttribute('aria-label') || '').trim();
+          const label = (labelElement?.innerText || labelElement?.textContent || '').trim();
+          const placeholder = input?.placeholder || (el instanceof HTMLTextAreaElement ? el.placeholder : '');
+          const text = String(el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 100);
+          const id = el.id || '';
+          const inputName = el.getAttribute('name') || '';
+          const role = el.getAttribute('role') || (el instanceof HTMLAnchorElement ? 'link' : el instanceof HTMLButtonElement ? 'button' : input?.type === 'search' ? 'searchbox' : input || el instanceof HTMLTextAreaElement ? 'textbox' : undefined);
+          const accessibleName = aria || label || placeholder || text;
+          const locators = [];
+          if (role && accessibleName) locators.push({ kind: 'role', role, value: accessibleName });
+          if (label) locators.push({ kind: 'label', value: label });
+          if (placeholder) locators.push({ kind: 'placeholder', value: placeholder });
+          if (text && (el instanceof HTMLButtonElement || el instanceof HTMLAnchorElement || el.getAttribute('role') === 'button')) locators.push({ kind: 'text', value: text });
+          const observedCssPath = cssPath(el);
+          if (observedCssPath) locators.push({ kind: 'css', value: observedCssPath });
+          if (inputName) locators.push({ kind: 'css', value: el.tagName.toLowerCase() + '[name=' + JSON.stringify(inputName) + ']' });
+          return { tag: el.tagName.toLowerCase(), role, name: accessibleName || undefined, type: input?.type, id: id || undefined, placeholder: placeholder || undefined, inputName: inputName || undefined, locators };
+        });
+      const bodyText = (document.body?.innerText || '').slice(0, limit);
+      return { title: document.title, text: bodyText, textLength: document.body?.innerText?.length ?? 0, controls,
+        links: Array.from(document.querySelectorAll('a[href]')).filter(visible).slice(0, 100).map((a) => a.href) };
+    } catch (error) {
+      return { __error: String(error) };
+    }
+  })()`
+  const snapshot = await page.evaluate(expression)
+  if (snapshot?.__error) throw new Error(`DOM snapshot failed: ${String(snapshot.__error).slice(0, 200)}`)
+  const url = String(page.url?.() ?? '')
+  const controls = Array.isArray(snapshot?.controls) ? snapshot.controls as ObservedControl[] : []
+  observedControls.set(page, { url, controls })
+  const common = {
+    success: true,
+    source: 'live-dom',
+    url,
+    title: String(snapshot?.title ?? ''),
+    controls,
+    links: Array.isArray(snapshot?.links) ? snapshot.links : [],
+    truncated: Number(snapshot?.textLength ?? 0) > String(snapshot?.text ?? '').length,
+    textLength: Number(snapshot?.textLength ?? 0),
+  }
+  return mode === 'observe'
+    ? { ...common, text: String(snapshot?.text ?? '').slice(0, 5000) }
+    : { ...common, text: String(snapshot?.text ?? '').slice(0, maxLength) }
+}
+
+function buildBrowserInteractTool(browser: any): any {
+  return createTool({
+    id: 'browserInteract',
+    description: 'Perform one deterministic click, fill, or key press on exactly one visible control described by the latest page inspection. Use its exact locator (role, label, placeholder, text, or CSS). Fill and press are separate actions; inspect the page again after each action.',
+    inputSchema: z.object({
+      action: z.enum(['click', 'fill', 'press']),
+      locator: z.object({
+        kind: z.enum(['role', 'label', 'placeholder', 'text', 'css']),
+        value: z.string().min(1).max(200),
+        role: z.string().max(40).optional(),
+      }),
+      value: z.string().max(512).optional().describe('Required for fill; the exact text to enter.'),
+      timeoutMs: z.number().int().positive().max(8000).default(5000),
+    }),
+    execute: async (input: any, context: any) => {
+      const page = context?.page ?? await resolvePage(browser, context)
+      if (!page) return { success: false, error: 'No active browser page available for this provider' }
+      const currentUrl = String(page.url?.() ?? '')
+      const observation = observedControls.get(page)
+      if (!observation || observation.url !== currentUrl) {
+        return { success: false, error: 'Observe the current page immediately before acting; no current DOM observation is available.' }
+      }
+      const locator = input.locator
+      const match = observation.controls.some((control) => control.locators.some((item) =>
+        item.kind === locator.kind && item.value === locator.value && (item.role ?? '') === (locator.role ?? ''),
+      ))
+      if (!match) return { success: false, error: 'The requested locator was not present in the latest visible-control observation.' }
+      if (input.action === 'fill' && typeof input.value !== 'string') return { success: false, error: 'fill requires a value.' }
+      if (input.action === 'press' && input.value !== undefined && !['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'Space'].includes(input.value)) {
+        return { success: false, error: 'press accepts only Enter, Tab, Escape, ArrowDown, ArrowUp, Home, End, or Space.' }
+      }
+      const observed = observation.controls.find((control) => control.locators.some((item) =>
+        item.kind === locator.kind && item.value === locator.value && (item.role ?? '') === (locator.role ?? ''),
+      ))
+      if (input.action === 'fill' && (!observed || !['input', 'textarea'].includes(observed.tag) || ['password', 'hidden', 'file'].includes(String(observed.type ?? '')))) {
+        return { success: false, error: 'fill is limited to observed, non-sensitive text inputs and textareas.' }
+      }
+      let target: any
+      try {
+        const observedCssPath = observed?.locators.find((item) => item.kind === 'css')?.value
+        if (observedCssPath && typeof page.locator === 'function') {
+          // Stagehand v3 exposes a Playwright-like `locator()` API but not
+          // Playwright's `getByRole`/`getByText` helpers. Resolve the exact
+          // element captured in the DOM inventory, regardless of provider.
+          target = page.locator(observedCssPath)
+        } else {
+          switch (locator.kind) {
+            case 'role': target = page.getByRole(locator.role, { name: locator.value, exact: true }); break
+            case 'label': target = page.getByLabel(locator.value, { exact: true }); break
+            case 'placeholder': target = page.getByPlaceholder(locator.value, { exact: true }); break
+            case 'text': target = page.getByText(locator.value, { exact: true }); break
+            case 'css': target = page.locator(locator.value); break
+          }
+        }
+        const count = await target.count()
+        if (count !== 1) return { success: false, error: `Observed locator must resolve to exactly one element; found ${count}.` }
+        if (!await target.isVisible()) return { success: false, error: 'Observed element is no longer visible; observe the page again.' }
+        if (input.action === 'click') await target.click({ timeout: input.timeoutMs })
+        else if (input.action === 'fill') await target.fill(input.value, { timeout: input.timeoutMs })
+        else if (typeof target.press === 'function') await target.press(input.value || 'Enter', { timeout: input.timeoutMs })
+        else if (typeof page.keyboard?.press === 'function') await page.keyboard.press(input.value || 'Enter')
+        else if (typeof page.mainSession?.send === 'function') {
+          const key = input.value || 'Enter'
+          const keyCode: Record<string, { key: string; code: string; windowsVirtualKeyCode: number; text?: string }> = {
+            Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+            Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+            Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+            ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+            ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+            Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+            End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 },
+            Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
+          }
+          const descriptor = keyCode[key]
+          if (!descriptor) return { success: false, error: 'This browser provider cannot press the requested key.' }
+          await target.click()
+          await page.mainSession.send('Input.dispatchKeyEvent', { type: 'keyDown', ...descriptor })
+          await page.mainSession.send('Input.dispatchKeyEvent', { type: 'keyUp', ...descriptor, text: undefined })
+        } else return { success: false, error: 'This browser provider does not expose keyboard input.' }
+        observedControls.delete(page)
+        return {
+          success: true,
+          action: input.action,
+          locator: { kind: locator.kind, value: locator.value, ...(locator.role ? { role: locator.role } : {}) },
+          ...(input.action === 'fill' ? { valueLength: input.value.length } : input.action === 'press' ? { key: input.value || 'Enter' } : {}),
+          url: String(page.url?.() ?? currentUrl),
+        }
+      } catch (error) {
+        observedControls.delete(page)
+        return { success: false, error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) }
+      }
+    },
+  })
+}
 
 /**
  * Resolve the page owned by the wrapped provider. Mastra's tool execution
@@ -139,10 +328,16 @@ function buildReactionEvidence(reactionResult: ReactionResult): string {
  * Before execution: snapshot dialog count + capture reaction baseline.
  * After execution: read intercepted dialogs, detect UI reactions, append evidence.
  */
-export function wrapStagehandTools(browser: any): Record<string, any> {
+export function wrapStagehandTools(browser: any, captureFlush?: () => Promise<unknown>): Record<string, any> {
+  const passiveObserver = getEngagementServices()?.passiveObserver
+  const flushCapturedRequests = captureFlush ?? passiveObserver?.flushCapturedRequests?.bind(passiveObserver)
   // Use the browser's configured toolset so lifecycle-sensitive exclusions
   // (notably close for the shared session) cannot be reintroduced.
-  const raw = browser.getTools() as Record<string, any>
+  const raw = { ...(browser.getTools() as Record<string, any>) }
+  // Stagehand's observe/extract and act operations make secondary LLM calls.
+  // Keep those optional: DOM facts and simple visible-control actions can be
+  // gathered deterministically from the already-authorized Playwright page.
+  if (!raw.browserInteract) raw.browserInteract = buildBrowserInteractTool(browser)
   const wrapped: Record<string, any> = {}
   const watcher = getGlobalDialogWatcher()
   const reactionObserver = getGlobalReactionObserver()
@@ -208,23 +403,92 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
         }
 
         const before = watcher.getDialogs().length
+        const readOnlyInspection = name === 'stagehand_observe'
+          || name === 'stagehand_extract'
+          || name === 'stagehand_screenshot'
 
-        // Capture reaction baseline BEFORE tool execution
-        try { await reactionObserver.captureBaseline() } catch {}
+        // Read-only inspection cannot create UI reactions. Stagehand's
+        // accessibility snapshot can also hang on a live page, so keep these
+        // tools on their deterministic DOM path without reaction snapshots.
+        if (!readOnlyInspection) {
+          try { await reactionObserver.captureBaseline() } catch {}
+        }
 
         // Pass the provider page into the tool context. Mastra normally gives
         // tools only `{ agent }`; Stagehand/Camoufox tools themselves still
         // receive their normal context fields.
         const toolContext = { ...(context && typeof context === 'object' ? context : {}), page }
         let result: any
-        const governorUrl = name === navigateToolName && typeof input?.url === 'string' ? input.url : pageUrl()
-        const releaseTargetSlot = await getTargetTransportGovernor().acquire(governorUrl || 'about:blank')
         try {
-          result = await originalExecute(input, toolContext)
+          if (name === 'stagehand_observe') {
+            result = await readPageDom(page, 'observe')
+          } else if (name === 'stagehand_extract') {
+            result = await readPageDom(page, 'extract', Math.max(500, Math.min(20_000, Number(input?.maxLength) || 20_000)))
+          } else {
+            result = await originalExecute(input, toolContext)
+          }
         } catch (error) {
           result = { success: false, error: error instanceof Error ? error.message : String(error) }
-        } finally {
-          releaseTargetSlot()
+        }
+
+        if (result?.success === false) {
+          const message = String(result.error ?? result.message ?? 'provider returned success=false')
+            .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+            .replace(/\b(?:api[_-]?key|access[_-]?token)\s*[:=]\s*\S+/gi, '[credential redacted]')
+            .slice(0, 240)
+          log.warn(`[dialog-inject] ${name} failed on ${pageUrl() || 'unknown page'}: ${message}`)
+        }
+
+        if (name !== 'stagehand_observe' && name !== 'stagehand_extract') {
+          // Any action, navigation, tab switch, or explicit control may make
+          // the prior locator inventory stale.
+          observedControls.delete(page)
+        }
+
+        if ((name === 'stagehand_observe' || name === 'stagehand_extract') && result?.success) {
+          const controls = Array.isArray(result.controls) ? result.controls as ObservedControl[] : []
+          const summary = controls.slice(0, 16).map((control) => ({
+            tag: control.tag,
+            role: control.role,
+            name: control.name,
+            type: control.type,
+            locators: control.locators.slice(0, 3),
+          }))
+          const effect = recordActionEffect({
+            data: `observed ${controls.length} visible controls from the live DOM`,
+            label: `${name} live DOM snapshot`,
+            url: pageUrl(),
+            effects: { source: 'live-dom', controlCount: String(controls.length), controls: JSON.stringify(summary) },
+            correlationToken,
+          })
+          evidenceIds.push(effect.id)
+        }
+
+        if (name === 'browserInteract' && result?.success) {
+          const effect = recordActionEffect({
+            data: `browser ${String(result.action)} on an observed visible control`,
+            label: `browser control ${String(result.action)}`,
+            url: String(result.url ?? pageUrl()),
+            effects: {
+              action: String(result.action),
+              locatorKind: String(result.locator?.kind ?? ''),
+              locator: String(result.locator?.value ?? '').slice(0, 120),
+              ...(typeof result.valueLength === 'number' ? { valueLength: String(result.valueLength) } : {}),
+              ...(typeof result.key === 'string' ? { key: result.key } : {}),
+            },
+            correlationToken,
+          })
+          evidenceIds.push(effect.id)
+        }
+
+        // Browser transport policy counts each actual HTTP request. Flush the
+        // shared HAR capture after the action so newly observed UI inputs are
+        // available to the planner in this turn; charging the action itself as
+        // another request double-counted browser traffic and spent the budget.
+        try {
+          await flushCapturedRequests?.()
+        } catch (error) {
+          log.dim(`[dialog-inject] Browser capture flush failed: ${error instanceof Error ? error.message : String(error)}`)
         }
 
          // Auto-record page after navigation
@@ -329,7 +593,7 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
 
         // Read intercepted dialogs from JS interceptor
         let newDialogs: DialogEvent[] = []
-        if (page) {
+        if (page && !readOnlyInspection) {
           try {
             newDialogs = await watcher.readInterceptedDialogs(page)
           } catch {}
@@ -358,9 +622,11 @@ export function wrapStagehandTools(browser: any): Record<string, any> {
 
         // Detect UI reactions (modals, toasts, errors, etc.)
         let reactionResult: ReactionResult | null = null
-        try {
-          reactionResult = await reactionObserver.detectReaction()
-        } catch {}
+        if (!readOnlyInspection) {
+          try {
+            reactionResult = await reactionObserver.detectReaction()
+          } catch {}
+        }
 
         // Build evidence strings
         const dialogEvidence = buildDialogEvidence(newDialogs)

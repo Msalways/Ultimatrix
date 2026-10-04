@@ -42,7 +42,7 @@ export function SolverTab() {
           <div className="grid grid-cols-2 gap-4">
             <ConfigField label="Max Parallel">
               <ConfigNumber
-                value={solver.maxParallel ?? 1}
+                value={solver.maxParallel ?? 3}
                 onChange={(v) => update({ solver: { ...solver, maxParallel: v } })}
                 min={1}
               />

@@ -5,6 +5,10 @@ import { WorkerFactory, type WorkerConfig } from './factory'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { StagehandBrowser } from '@mastra/stagehand'
 import { ContextBudgetManager } from '../models/context-manager'
+import { ContextWindowRegistry } from '../models/context-window-registry'
+import { resolveModelRef } from '../models/routing'
+import { compileCapabilities } from '../capabilities/compiler'
+import { buildAgentInstructions } from '../mastra/agent-instructions'
 import type { WorkspaceManager } from '../workspace'
 import { log } from '../utils/logger'
 import { emitWorkerTimeout, emitWorkerKilled } from '../events/emitter'
@@ -51,7 +55,8 @@ export class WorkerPool {
   private browser: StagehandBrowser | null = null
   private running = 0
   private maxConcurrency: number
-  private contextManager: ContextBudgetManager | null = null
+  private contextManager: ContextBudgetManager
+  private contextWindows: ContextWindowRegistry
   /** Optional workspace used for logical tenant/sandbox isolation. */
   private workspace: WorkspaceManager | null = null
   /** Pool-level tenant/sandbox association (logical isolation namespace). */
@@ -59,7 +64,7 @@ export class WorkerPool {
   private sandboxId: string | null = null
 
   constructor(
-    config: UltimatrixConfig,
+    private readonly config: UltimatrixConfig,
     private skillRegistry: SkillRegistry,
     browser?: StagehandBrowser,
     workspace?: WorkspaceManager,
@@ -68,11 +73,10 @@ export class WorkerPool {
     this.factory = new WorkerFactory(config, skillRegistry, extensionRegistry)
     this.browser = browser || null
     this.workspace = workspace || null
-    this.maxConcurrency = config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel
+    this.maxConcurrency = Math.min(config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel, 3)
 
-    if (config.modelCapabilities) {
-      this.contextManager = new ContextBudgetManager(config.modelCapabilities)
-    }
+    this.contextWindows = new ContextWindowRegistry(config)
+    this.contextManager = new ContextBudgetManager(config.modelCapabilities ?? {}, this.contextWindows)
   }
 
   setBrowser(browser: StagehandBrowser): void {
@@ -117,17 +121,41 @@ export class WorkerPool {
    * accurately reflects the real worker prompt size.
    */
   validateWorkerContext(config: WorkerConfig, modelId: string): ReturnType<ContextBudgetManager['validateContextFit']> | null {
-    if (!this.contextManager) return null
+    const route = resolveModelRef(this.config, {
+      modelId: config.modelId || modelId || undefined,
+      tier: config.tier,
+      role: 'worker',
+      complexity: config.complexity,
+    })
+    const selectedModelId = route.modelId || route.model
+    if (!this.contextWindows.resolve(selectedModelId) && !this.contextWindows.resolve(route.model)) {
+      return {
+        fits: false,
+        reason: `No context-window and output limit metadata is registered for selected worker model ${selectedModelId}.`,
+        totalInputTokens: 0,
+        availableForOutput: 0,
+        breakdown: { system: 0, tools: 0, history: 0, goal: 0 },
+        suggestions: ['Register contextWindow and maxOutputTokens for the selected model.'],
+        severity: 'critical',
+      }
+    }
     const skill = this.skillRegistry.load(config.skillId)
-    // Estimate tool schemas: each tool ≈ 120 tokens average (from mastra/index.ts heuristic)
-    const toolCount = 30 // typical worker gets ~30 tools (CORE_TOOLS + skill refs)
-    const estimatedToolTokens = toolCount * 120
+    const skillInstructions = [skill.instructions, ...(skill.fragments ?? []).map(fragment => `--- ${fragment.title} ---\n${fragment.content}`)].join('\n\n')
+    const runtimeContext = config.context === undefined ? '' : `## Runtime Task Context\n${JSON.stringify(config.context)}`
+    const taskInstructions = runtimeContext ? `\n## Current Task\n${runtimeContext}` : ''
+    const capabilities = compileCapabilities({ skillIds: [config.skillId] })
+    // Match createAgent's prompt estimator: 120 tokens per active tool schema.
+    // Include the scoped runPrimitive schema when the skill declares primitives.
+    const activeToolCount = capabilities.tools.length + (capabilities.primitives.length > 0 ? 1 : 0)
+    const toolSchemaTokens = activeToolCount * 120
     return this.contextManager.validateContextFit({
-      modelId,
-      systemPrompt: skill?.instructions || '',
-      toolSchemas: `[estimated ${toolCount} tools, ~${estimatedToolTokens} tokens]`,
+      modelId: selectedModelId,
+      systemPrompt: `${buildAgentInstructions(this.config, skillInstructions, 'worker')}${taskInstructions}`,
+      toolSchemas: JSON.stringify({ toolIds: capabilities.tools, scopedPrimitiveTool: capabilities.primitives.length > 0 }),
+      toolSchemaTokens,
       conversationHistory: '',
       enrichedGoal: config.task,
+      expectedOutputTokens: route.maxOutputTokens,
     })
   }
 

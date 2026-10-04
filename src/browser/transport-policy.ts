@@ -1,7 +1,7 @@
 import type { BrowserHandle } from './provider'
 import { isCamofoxHandle } from './provider'
 import { isUrlInScope } from '../safety/scope-guard'
-import { getTargetTransportGovernor } from '../runtime/target-governor'
+import { getTargetTransportGovernor, type TargetTransportGovernor } from '../runtime/target-governor'
 import type { ScopeConfig, UltimatrixConfig } from '../config'
 
 export type BrowserPolicyCleanup = () => Promise<void>
@@ -31,7 +31,7 @@ function isNonNetworkScheme(url: string): boolean {
   return NON_NETWORK_SCHEMES.has(protocolOf(url))
 }
 
-async function governUrl(url: string, continueRequest: () => Promise<void>, failRequest: (reason: string) => Promise<void>, scope: ScopeConfig | null): Promise<void> {
+async function governUrl(url: string, continueRequest: () => Promise<void>, failRequest: (reason: string) => Promise<void>, scope: ScopeConfig | null, governor: TargetTransportGovernor): Promise<void> {
   if (isNonNetworkScheme(url) || !isHttpUrl(url)) {
     await continueRequest()
     return
@@ -41,7 +41,7 @@ async function governUrl(url: string, continueRequest: () => Promise<void>, fail
     await failRequest('BlockedByClient')
     return
   }
-  const release = await getTargetTransportGovernor().acquire(url)
+  const release = await governor.acquire(url)
   try {
     await continueRequest()
   } finally {
@@ -50,7 +50,8 @@ async function governUrl(url: string, continueRequest: () => Promise<void>, fail
 }
 
 /**
- * Attach provider-native request interception for a live bounty engagement.
+ * Attach provider-native request interception for a bounty or evidence-bound
+ * engagement. The latter shares the engagement's hard wire-request budget.
  * Playwright uses context.route; Stagehand v3 uses the active target's native
  * CDP Fetch domain. Both paths abort before an out-of-scope request is sent.
  */
@@ -58,9 +59,10 @@ export async function attachBrowserTransportPolicy(
   browser: BrowserHandle,
   config: UltimatrixConfig,
 ): Promise<BrowserPolicyCleanup> {
-  if (!config.bounty?.enabled) return async () => {}
+  if (!config.bounty?.enabled && config.scope?.requireObservedRoutes !== true) return async () => {}
 
   const scope = config.scope ?? null
+  const governor = getTargetTransportGovernor()
   if (isCamofoxHandle(browser)) {
     const context = browser.context as any
     if (!context || typeof context.route !== 'function') {
@@ -73,6 +75,7 @@ export async function attachBrowserTransportPolicy(
         async () => { await route.continue() },
         async (reason) => { await route.abort(reason) },
         scope,
+        governor,
       )
     }
     await context.route('**/*', handler)
@@ -83,7 +86,7 @@ export async function attachBrowserTransportPolicy(
 
   const stagehand = (browser as any)?.requireStagehand?.()
   const context = stagehand?.context
-  const page = typeof context?.activePage === 'function' ? context.activePage() : undefined
+  const page = typeof context?.activePage === 'function' ? await context.activePage() : undefined
   const connection = page?.mainSession ?? context?.conn
   if (!connection || typeof connection.on !== 'function' || typeof connection.send !== 'function') {
     throw new Error('Bounty browser policy requires Stagehand CDP Fetch support')
@@ -96,6 +99,7 @@ export async function attachBrowserTransportPolicy(
       async () => { await connection.send('Fetch.continueRequest', { requestId: params.requestId }) },
       async () => { await connection.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'BlockedByClient' }) },
       scope,
+      governor,
     ).catch(() => {
       // A policy handler must never leave a paused request hanging.
       void connection.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Failed' }).catch(() => {})

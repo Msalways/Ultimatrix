@@ -2,16 +2,87 @@ import { createTool } from '@mastra/core/tools'
 import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, type AuthFlowNode, type ActionNode } from '../graph/schema'
+import { NodeType, EdgeType, type AuthFlowNode, type ActionNode, type WorkflowNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { getGlobalObserver } from '../capture/human-observer'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { getActiveBrowser, getActiveBrowserContext, getActivePage } from '../browser/manager'
 import { log } from '../utils/logger'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isUrlInScope, enforceAction } from '../safety/scope-guard'
 import { redactString } from '../security/secret-vault'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { getEngagementServices } from '../runtime/engagement-context'
+
+/** Store a redacted operator demonstration and link it to the traffic it caused. */
+export async function persistOperatorWorkflow(startedAt: number, endedAt: number, actions = getGlobalObserver().getActionsSinceSnapshot()): Promise<string | undefined> {
+  const services = getEngagementServices()
+  const store = services?.graph ?? getGlobalGraphStore()
+  const requests = (services?.capturedRequests ?? getCapturedRequestStore()).list({ limit: 500 })
+    .filter(r => r.source === 'browser' && r.capturedAt >= startedAt && r.capturedAt <= endedAt)
+  if (!actions.length && !requests.length) return undefined
+
+  const endpointIds: string[] = []
+  const requestSteps: Array<{ timestamp: number; step: WorkflowNode['properties']['steps'][number] }> = []
+  const paramNames = new Map<string, Set<string>>()
+  for (const ref of requests) {
+    let parsed: URL
+    try { parsed = new URL(ref.url) } catch { continue }
+    if (!isUrlInScope(parsed.toString(), services ? services.scopeConfig : undefined, { allowAny: services?.allowAny }).allowed) continue
+    const routeUrl = `${parsed.origin}${parsed.pathname}`
+    const request = (services?.capturedRequests ?? getCapturedRequestStore()).get(ref.id)
+    const names = new Set<string>()
+    parsed.searchParams.forEach((_value, key) => names.add(key))
+    if (request?.body) {
+      try {
+        const body = JSON.parse(request.body)
+        if (body && typeof body === 'object' && !Array.isArray(body)) Object.keys(body).forEach(key => names.add(key))
+      } catch { /* retain URL parameter names only */ }
+    }
+    const endpoint = store.addEndpoint({
+      url: routeUrl,
+      method: ref.method,
+      source: 'operator-demonstration',
+      params: [...names].map(name => ({ name, type: 'unknown', in: parsed.searchParams.has(name) ? 'query' : 'body' })),
+    })
+    endpointIds.push(endpoint.id)
+    paramNames.set(endpoint.id, names)
+    requestSteps.push({ timestamp: ref.capturedAt, step: { action: 'request', url: routeUrl, endpointId: endpoint.id, method: ref.method.toUpperCase(), requestId: ref.id } })
+  }
+  const steps: WorkflowNode['properties']['steps'] = [
+    ...actions.map(action => ({ timestamp: action.timestamp, step: { action: action.type, url: safeRouteUrl(action.url), selector: action.selector } })),
+    ...requestSteps,
+  ].sort((a, b) => a.timestamp - b.timestamp).map(event => event.step)
+  const uniqueEndpointIds = [...new Set(endpointIds)]
+  const pageUrl = actions.find(a => a.url)?.url ?? requests[0]?.url
+  const entryUrl = safeRouteUrl(pageUrl)
+  const id = `workflow:${randomUUID()}`
+  const workflow: WorkflowNode = {
+    id, type: NodeType.WORKFLOW, label: `Operator demonstrated workflow (${actions.length} actions, ${requestSteps.length} requests)`,
+    properties: {
+      name: 'operator-demonstration', entryUrl, steps, relatedEndpoints: uniqueEndpointIds,
+      inputFields: [...new Set([
+        ...[...paramNames.values()].flatMap(names => [...names]),
+        ...actions.map(action => action.selector).filter((selector): selector is string => Boolean(selector)),
+      ])],
+      stateChanges: [...new Set(requestSteps.filter(event => !['GET', 'HEAD', 'OPTIONS'].includes(event.step.method ?? '')).map(event => event.step.method!))],
+      observedRoles: [], confidence: 1, capturedRequestIds: requestSteps.map(event => event.step.requestId!).filter(Boolean),
+      source: 'operator-demonstration', capturedAt: startedAt,
+    },
+    createdAt: Date.now(), updatedAt: Date.now(),
+  }
+  store.upsertNode(workflow)
+  for (const endpointId of uniqueEndpointIds) store.addEdge({ fromId: id, toId: endpointId, type: EdgeType.REACHES })
+  for (let i = 1; i < uniqueEndpointIds.length; i++) store.addEdge({ fromId: uniqueEndpointIds[i - 1]!, toId: uniqueEndpointIds[i]!, type: EdgeType.ORDERED_BEFORE })
+  await store.save()
+  return id
+}
+
+function safeRouteUrl(value?: string): string | undefined {
+  if (!value) return undefined
+  try { const url = new URL(value); return `${url.origin}${url.pathname}` } catch { return undefined }
+}
 
 function hashCredential(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16)

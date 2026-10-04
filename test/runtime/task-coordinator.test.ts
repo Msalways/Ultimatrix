@@ -20,6 +20,43 @@ afterEach(async () => {
 })
 
 describe('TaskCoordinator lifecycle proof', () => {
+  it('blocks a task when a declared prerequisite has not completed', async () => {
+    const { store } = await createStore('dependency-blocked')
+    const execute = vi.fn(async () => ({ summary: 'should not execute' }))
+    const coordinator = new TaskCoordinator(store, execute)
+    await coordinator.plan({ taskId: 'prerequisite', objective: 'learn the required route' })
+    await coordinator.plan({ taskId: 'dependent', objective: 'test the route', dependencyTaskIds: ['prerequisite'] })
+
+    const result = await coordinator.executePlanned('dependent')
+
+    expect(result.status).toBe('blocked')
+    expect(result.error).toContain('prerequisite task(s) are missing or incomplete: prerequisite')
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('enforces shared resource claims across independently dispatched tasks', async () => {
+    const { store } = await createStore('resource-claims')
+    let active = 0
+    let maxActive = 0
+    const coordinator = new TaskCoordinator(store, async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 25))
+      active--
+      return { summary: 'bounded test complete' }
+    })
+    await Promise.all(['first', 'second'].map(taskId => coordinator.plan({
+      taskId,
+      objective: 'test an observed input under one actor session',
+      kind: 'security_test',
+      resourceClaims: ['session:member'],
+    })))
+
+    await Promise.all(['first', 'second'].map(taskId => coordinator.executePlanned(taskId)))
+
+    expect(maxActive).toBe(1)
+  })
+
   it('persists a stable task separately from its worker and keeps evidence as references', async () => {
     const { path, store } = await createStore('complete')
     const seen: string[] = []

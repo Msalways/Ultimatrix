@@ -87,8 +87,11 @@ export function ChatStream() {
   const historyState = useChatStore((s) => s.historyState)
   const showReasoning = useConfigStore((s) => s.config?.interaction?.showReasoning ?? true)
   const [historyReadyTarget, setHistoryReadyTarget] = useState<string | null>(null)
+  const [pendingInteraction, setPendingInteraction] = useState<{ requestId: string; kind: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
+  const pendingInteractionRef = useRef<{ requestId: string; kind: string } | null>(null)
   const loadedTargetRef = useRef<string | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -180,7 +183,9 @@ export function ChatStream() {
     function handleSSEEvent(event: string, data: string) {
       if (aborted) return
       try {
-        const parsed = data ? JSON.parse(data) : null
+        const envelope = data ? JSON.parse(data) : null
+        const parsed = envelope?.payload ?? envelope
+        if (envelope?.runId) activeRunIdRef.current = envelope.runId
         if (event === 'solver') {
           const msg = parsed
           switch (msg.kind) {
@@ -439,6 +444,24 @@ export function ChatStream() {
             status: 'running',
             label: parsed.headless === false ? 'Starting visible browser' : 'Starting browser',
           } as any)
+        } else if (event === 'interaction') {
+          const current = { requestId: parsed.requestId, kind: parsed.kind }
+          pendingInteractionRef.current = current
+          setPendingInteraction(current)
+          addMessage({
+            id: nextId(),
+            type: 'interaction',
+            requestId: parsed.requestId,
+            kind: parsed.kind,
+            question: parsed.question,
+            options: parsed.options,
+            context: parsed.context,
+            timestamp: Date.now(),
+          })
+          updateMessage(streamStatusId, {
+            status: 'running',
+            label: parsed.kind === 'browser-handoff' ? 'Waiting for your browser action' : 'Waiting for your input',
+          } as any)
           addMessage({
             id: nextId(),
             type: 'phase',
@@ -668,11 +691,42 @@ export function ChatStream() {
       clearInterval(durationInterval)
       aborted = true
       eventSourceRef.current = null
+      activeRunIdRef.current = null
+      pendingInteractionRef.current = null
+      setPendingInteraction(null)
       setStreaming(false)
       setRunning(false)
       answerBuffer = ''
     }
   }, [activeTarget, addMessage, updateMessage, removeMessage, setStreaming, setPhase, incrementToolCalls, incrementFindings, setRunning, setDuration, incrementTokens, reset])
+
+  const handleOperatorInput = useCallback((message: string) => {
+    const runId = activeRunIdRef.current
+    if (!runId || !activeTarget) return
+    const pending = pendingInteractionRef.current
+    addMessage({ id: nextId(), role: 'user', content: message, timestamp: Date.now() })
+    fetch('/api/solve/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target: activeTarget,
+        runId,
+        kind: pending ? 'reply' : 'steer',
+        ...(pending ? { requestId: pending.requestId } : {}),
+        message,
+      }),
+    }).then(async response => {
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        addMessage({ id: nextId(), type: 'error', content: data.error || `Operator input failed (${response.status})`, timestamp: Date.now() } as any)
+      } else if (pending) {
+        pendingInteractionRef.current = null
+        setPendingInteraction(null)
+      }
+    }).catch(error => addMessage({
+      id: nextId(), type: 'error', content: error instanceof Error ? error.message : 'Operator input failed', timestamp: Date.now(),
+    } as any))
+  }, [activeTarget, addMessage])
 
   const handleStop = useCallback(() => {
     if (eventSourceRef.current) {
@@ -764,10 +818,11 @@ export function ChatStream() {
       </div>
       <ChatInput
         onSend={handleSend}
+        onSteer={handleOperatorInput}
         onStop={handleStop}
         disabled={!activeTarget}
         isStreaming={isStreaming}
-        placeholder={activeTarget ? `Ask about ${activeTarget}...` : 'Add a target to begin...'}
+        placeholder={!activeTarget ? 'Add a target to begin...' : pendingInteraction?.kind === 'browser-handoff' ? 'Complete the browser action, then describe what happened...' : isStreaming ? 'Steer the assessment...' : `Ask about ${activeTarget}...`}
       />
     </div>
   )
@@ -823,6 +878,17 @@ function MessageBubble({
   isStreaming?: boolean
   onSend: (goal: string, mode?: InputMode) => void
 }) {
+  if ((message as any).type === 'interaction') {
+    const m = message as any
+    return (
+      <div className="mx-4 my-3 rounded-md border border-sky-900/60 bg-sky-950/20 px-3 py-3 text-sm text-sky-100 sm:ml-8">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-300">{m.kind === 'approval' ? 'Approval needed' : m.kind === 'browser-handoff' ? 'Browser handoff' : 'Agent question'}</div>
+        <p className="mt-1 whitespace-pre-wrap">{m.question}</p>
+        {m.context?.url && <p className="mt-2 break-all text-xs text-sky-200/60">{m.context.url}</p>}
+        {Array.isArray(m.options) && m.options.length > 0 && <p className="mt-1 text-xs text-sky-200/70">Options: {m.options.join(' · ')}</p>}
+      </div>
+    )
+  }
   if ((message as any).type === 'tool-call') {
     return <ToolCallCard message={message as ToolCallMessage} />
   }

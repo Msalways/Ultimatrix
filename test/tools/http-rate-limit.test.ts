@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __setTestFallback } from '../../src/runtime/engagement-context'
+import { TargetTransportGovernor } from '../../src/runtime/target-governor'
+
+const { forensicLogSpy } = vi.hoisted(() => ({ forensicLogSpy: vi.fn() }))
 
 vi.mock('../../src/safety/scope-guard', () => ({
   isUrlInScope: vi.fn().mockReturnValue({ allowed: true }),
@@ -8,11 +12,11 @@ vi.mock('../../src/safety/scope-guard', () => ({
 }))
 
 vi.mock('../../src/tools/report-tools', () => ({
-  getForensicLog: vi.fn().mockReturnValue({ log: vi.fn() }),
+  getForensicLog: vi.fn().mockReturnValue({ log: forensicLogSpy }),
 }))
 
 vi.mock('../../src/tools/control-tools', () => ({
-  recordStructuredEvidence: vi.fn(),
+  recordStructuredEvidence: vi.fn(() => ({ id: 'test-evidence' })),
 }))
 
 vi.mock('../../src/compression/headroom-service', () => ({
@@ -73,6 +77,7 @@ function make429Response(retryAfterSec?: number) {
 beforeEach(async () => {
   vi.clearAllMocks()
   testCounter++
+  __setTestFallback({ targetGovernor: new TargetTransportGovernor({ requestsPerMinute: 60, maxConcurrent: 4, maxRequests: 100 }) } as any)
 
   const mod = await import('../../src/tools/http-tools')
   httpRequest = mod.httpRequest
@@ -82,21 +87,24 @@ beforeEach(async () => {
 
 afterEach(() => {
   mockFetch.mockReset()
+  __setTestFallback(null)
 })
 
 describe('Per-host delay enforcement', () => {
   it('enforces delay between requests to the same host', async () => {
     const host = uniqueHost('delay')
-    mockFetch.mockResolvedValue(makeOkResponse())
+    const fetchStartedAt: number[] = []
+    mockFetch.mockImplementation(async () => {
+      fetchStartedAt.push(Date.now())
+      return makeOkResponse()
+    })
 
     const r1 = await httpRequest.execute({ method: 'GET', url: `https://${host}/a`, timeoutMs: 5000 } as any)
-    expect(r1.ok).toBe(true)
+    expect(r1.ok, JSON.stringify(r1)).toBe(true)
 
-    const start = Date.now()
     const r2 = await httpRequest.execute({ method: 'GET', url: `https://${host}/b`, timeoutMs: 5000 } as any)
-    const elapsed = Date.now() - start
     expect(r2.ok).toBe(true)
-    expect(elapsed).toBeGreaterThanOrEqual(150)
+    expect(fetchStartedAt[1] - fetchStartedAt[0]).toBeGreaterThanOrEqual(150)
   })
 
   it('does NOT delay requests to different hosts', async () => {
@@ -111,7 +119,7 @@ describe('Per-host delay enforcement', () => {
       mockFetch.mockResolvedValue(makeOkResponse())
 
       const r1 = await httpRequest.execute({ method: 'GET', url: `https://${host1}/x`, timeoutMs: 5000 } as any)
-      expect(r1.ok).toBe(true)
+      expect(r1.ok, JSON.stringify(r1)).toBe(true)
 
       const start = Date.now()
       const r2 = await httpRequest.execute({ method: 'GET', url: `https://${host2}/x`, timeoutMs: 5000 } as any)
@@ -125,6 +133,29 @@ describe('Per-host delay enforcement', () => {
 })
 
 describe('429 backoff retry', () => {
+  it('counts each retry against an active campaign request budget', async () => {
+    const { getScopeConfig } = await import('../../src/safety/scope-guard')
+    ;(getScopeConfig as any).mockReturnValue({ authorizedPentest: true })
+    let reservations = 0
+    __setTestFallback({
+      targetGovernor: new TargetTransportGovernor({ requestsPerMinute: 60, maxConcurrent: 4, maxRequests: 100 }),
+      campaignRequestBudget: () => ++reservations <= 1,
+    } as any)
+    mockFetch.mockResolvedValue(make429Response(1))
+
+    const result = await httpRequest.execute({
+      method: 'GET',
+      url: `https://${uniqueHost('campaign-budget')}/page`,
+      timeoutMs: 5000,
+    } as any)
+
+    expect(result.ok).toBe(false)
+    expect((result as any).error).toContain('campaign request/time budget')
+    expect(reservations).toBe(2)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    ;(getScopeConfig as any).mockReturnValue(null)
+  })
+
   it('retries on 429 and returns 200 on second attempt', async () => {
     const host = uniqueHost('retry')
     let calls = 0
@@ -140,7 +171,7 @@ describe('429 backoff retry', () => {
       timeoutMs: 5000,
     } as any)
 
-    expect(result.ok).toBe(true)
+    expect(result.ok, JSON.stringify(result)).toBe(true)
     expect(calls).toBe(2)
   })
 
@@ -156,6 +187,45 @@ describe('429 backoff retry', () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain('429')
+  })
+})
+
+describe('failed HTTP request evidence', () => {
+  it('records the failure and target governor state in the forensic log', async () => {
+    const { getScopeConfig } = await import('../../src/safety/scope-guard')
+    const host = uniqueHost('forensic-failure')
+    ;(getScopeConfig as any).mockReturnValue({ authorizedPentest: true })
+    mockFetch.mockRejectedValue(new Error('simulated socket failure'))
+
+    try {
+      const result = await httpRequest.execute({
+        method: 'GET',
+        url: `https://${host}/search?q=apple`,
+        timeoutMs: 1000,
+      } as any)
+
+      expect(result).toMatchObject({ ok: false, error: 'simulated socket failure' })
+      expect(forensicLogSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'tool-error',
+        tool: 'httpRequest',
+        error: 'simulated socket failure',
+        args: expect.objectContaining({
+          method: 'GET',
+          url: `https://${host}/search?q=apple`,
+          timeoutMs: 1000,
+          targetTransport: expect.objectContaining({
+            origin: `https://${host}`,
+            requestsUsed: expect.any(Number),
+            maxRequests: 100,
+            requestsInWindow: expect.any(Number),
+            active: 0,
+            nextAvailableInMs: expect.any(Number),
+          }),
+        }),
+      }))
+    } finally {
+      ;(getScopeConfig as any).mockReturnValue(null)
+    }
   })
 })
 
@@ -194,7 +264,7 @@ describe('robots.txt blocking', () => {
       timeoutMs: 5000,
     } as any)
 
-    expect(result.ok).toBe(true)
+    expect(result.ok, JSON.stringify(result)).toBe(true)
   })
 
   it('allows all when robots.txt is unavailable', async () => {
@@ -210,6 +280,6 @@ describe('robots.txt blocking', () => {
       timeoutMs: 5000,
     } as any)
 
-    expect(result.ok).toBe(true)
+    expect(result.ok, JSON.stringify(result)).toBe(true)
   })
 })

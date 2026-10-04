@@ -1,17 +1,4 @@
-/**
- * Campaign Dispatch Tool — Phase 2 / T2.6
- *
- * A Mastra tool the LLM strategist can call to plan + execute a coverage
- * campaign against the current knowledge graph. It:
- *   - builds an EvidenceGate (shared with writeFinding via setEvidenceGateForFindings)
- *   - builds a PrimitiveRunner that executes each primitive via the real HTTP tool
- *   - calls executeCampaign(graphStore, config, { executor, primitives, evidenceGate })
- *   - returns the CampaignResult (findings + coverage) to the LLM
- *
- * This lets the strategist emit whole campaigns instead of single tool calls,
- * while confirmed primitives are still persisted into the graph through the
- * existing writeFinding maker/checker path.
- */
+/** Mastra dispatch tool and deterministic solve hook for coverage campaigns. */
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
@@ -24,116 +11,126 @@ import { listPrimitiveMetadata } from '../primitives'
 import { EvidenceGate } from '../intelligence/evidence-gate'
 import { setEvidenceGateForFindings } from '../tools/control-tools'
 import { getOutcomeFeedbackStore } from '../intelligence/outcome-feedback'
+import { getAllSkills } from '../solver/skills/loader'
+import type { CampaignResult } from './types'
+import { getEngagementServices } from '../runtime/engagement-context'
 
-/**
- * Minimal config used when the tool is registered without a live config
- * (e.g. the global tool registry / tests). The brain always passes the real
- * UltimatrixConfig so rate limiting and budget policy match the session.
- */
 function defaultCampaignConfig(): UltimatrixConfig {
   return {
-    provider: 'groq',
-    model: 'llama3-8b-8192',
-    depth: DEFAULTS.depth,
-    timeout: DEFAULTS.timeout,
-    creds: {},
-    browser: DEFAULTS.browser,
-    memory: DEFAULTS.memory,
-    agent: DEFAULTS.agent,
+    provider: 'groq', model: 'llama3-8b-8192', depth: DEFAULTS.depth, timeout: DEFAULTS.timeout,
+    creds: {}, browser: DEFAULTS.browser, memory: DEFAULTS.memory, agent: DEFAULTS.agent,
     rateLimit: { ...DEFAULTS.rateLimit, backoffSteps: [...DEFAULTS.rateLimit.backoffSteps] },
-    engine: DEFAULTS.engine,
-    budgetPolicy: DEFAULTS.budgetPolicy as unknown as BudgetPolicy,
+    engine: DEFAULTS.engine, budgetPolicy: DEFAULTS.budgetPolicy as unknown as BudgetPolicy,
   }
+}
+
+export async function runCampaignAssessment(
+  config: UltimatrixConfig,
+  gate = new EvidenceGate(),
+  settings: {
+    maxSlices?: number
+    maxConcurrency?: number
+    maxRequests?: number
+    maxDurationMs?: number
+    includeAnonymous?: boolean
+    roleFilter?: string[]
+    techniqueFilter?: string[]
+  } = {},
+): Promise<CampaignResult> {
+  const graphStore = getGlobalGraphStore()
+  setEvidenceGateForFindings(gate)
+  const skills = getAllSkills()
+  const domains = [...new Set(skills.map(skill => skill.domain))].sort()
+  const actorSessions: Record<string, string[]> = {}
+  const sessionManager = getEngagementServices()?.httpSessions
+  const sessionRefs = sessionManager?.listSessions().filter(ref => {
+    try {
+      return Object.keys(sessionManager.getAllHeaders(ref)).some(name =>
+        /^(authorization|proxy-authorization|cookie|x-auth-token|x-api-key)$/i.test(name),
+      )
+    } catch { return false }
+  }) ?? []
+  if (sessionRefs.length) actorSessions.authenticated = sessionRefs
+  for (const ref of sessionRefs) {
+    actorSessions[ref] = [...(actorSessions[ref] ?? []), ref]
+    const role = ref.split(':', 1)[0]
+    actorSessions[role] = [...(actorSessions[role] ?? []), ref]
+  }
+  const domainsByPrimitive = new Map<string, Set<string>>()
+  const primitiveIdsByDomain = Object.fromEntries(domains.map(domain => [
+    domain,
+    [...new Set(skills.filter(skill => skill.domain === domain).flatMap(skill => skill.primitives))],
+  ]))
+  for (const skill of skills) {
+    for (const primitive of skill.primitives) {
+      const mapped = domainsByPrimitive.get(primitive) ?? new Set<string>()
+      mapped.add(skill.domain)
+      domainsByPrimitive.set(primitive, mapped)
+    }
+  }
+  const primitives = listPrimitiveMetadata()
+    .filter(primitive => domainsByPrimitive.has(primitive.id))
+    .map(primitive => ({
+      id: primitive.id,
+      description: primitive.description,
+      tags: primitive.tags,
+      domains: [...domainsByPrimitive.get(primitive.id)!],
+    }))
+  const executor = createPrimitiveRunner(graphStore, config, gate)
+  return executeCampaign(graphStore, config, {
+    executor,
+    primitives,
+    evidenceGate: gate,
+    maxConcurrency: settings.maxConcurrency,
+    maxRequests: settings.maxRequests ?? config.campaign?.maxRequests,
+    maxDurationMs: settings.maxDurationMs ?? config.campaign?.maxDurationMs,
+    onSliceComplete: async outcome => {
+      const feedback = getOutcomeFeedbackStore()
+      for (const result of outcome.results) {
+        if (result.confirmed && outcome.persistedPrimitiveIds?.includes(result.primitiveId)) {
+          feedback.recordOutcome(`finding:${outcome.slice.endpoint.url}:${result.primitiveId}`, result.primitiveId, { accepted: true })
+          recordTechniqueConfirmed(result.primitiveId)
+        } else recordTechniqueFailed(result.primitiveId)
+      }
+    },
+    planOptions: {
+      maxSlices: settings.maxSlices ?? config.campaign?.maxSlices,
+      includeAnonymous: settings.includeAnonymous,
+      roleFilter: settings.roleFilter,
+      techniqueFilter: settings.techniqueFilter,
+      domainNames: domains,
+      actorSessions,
+      domainPrimitiveIds: primitiveIdsByDomain,
+    },
+  })
 }
 
 export function createCampaignTool(config: UltimatrixConfig = defaultCampaignConfig()) {
   return createTool({
     id: 'runCampaign',
-    description:
-      'Plan and execute a coverage campaign over the discovered endpoints. ' +
-      'Builds a coverage matrix (endpoint × param × role × state × technique), ' +
-      'then runs all applicable technique primitives via the plan, persisting ' +
-      'evidence-gated confirmed findings into the knowledge graph. ' +
-      'Returns the confirmed findings and coverage statistics. ' +
-      'Use this to launch a systematic sweep instead of testing endpoints one at a time.',
+    description: 'Run deterministic, bounded coverage over discovered endpoint inputs and roles. Positives remain candidates until a proven replayable experiment and independent retest authorize promotion.',
     inputSchema: z.object({
-      maxSlices: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe('Cap on number of slices to execute (highest priority first)'),
-      maxConcurrency: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe('Bounded concurrency for slice execution'),
-      includeAnonymous: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe('Include an anonymous role for unauthenticated endpoints'),
-      roleFilter: z
-        .array(z.string())
-        .optional()
-        .describe('Only run slices for these roles'),
-      techniqueFilter: z
-        .array(z.string())
-        .optional()
-        .describe('Only run these primitive ids'),
+      maxSlices: z.number().int().positive().optional(),
+      maxConcurrency: z.number().int().positive().optional(),
+      maxRequests: z.number().int().positive().optional(),
+      maxDurationMs: z.number().int().positive().optional(),
+      includeAnonymous: z.boolean().optional().default(true),
+      roleFilter: z.array(z.string()).optional(),
+      techniqueFilter: z.array(z.string()).optional(),
     }),
-    execute: async ({ maxSlices, maxConcurrency, includeAnonymous, roleFilter, techniqueFilter }) => {
-      const graphStore = getGlobalGraphStore()
-      const gate = new EvidenceGate()
-      // Maker/Checker: campaign-persisted findings consult this same gate.
-      setEvidenceGateForFindings(gate)
-
-      const executor = createPrimitiveRunner(graphStore, config, gate)
-
-      const result = await executeCampaign(graphStore, config, {
-        executor,
-        // T6: derived metadata tags (from each primitive's declared identity)
-        // so the planner can route techniques to the endpoints they fit —
-        // not an empty tag array that degrades to blanket relevance.
-        primitives: listPrimitiveMetadata().map((p) => ({
-          id: p.id,
-          description: p.description,
-          tags: p.tags,
-        })),
-        evidenceGate: gate,
-        maxConcurrency,
-        onSliceComplete: async (outcome) => {
-          const fbStore = getOutcomeFeedbackStore()
-          for (const result of outcome.results) {
-            if (result.confirmed && outcome.persistedPrimitiveIds?.includes(result.primitiveId)) {
-              fbStore.recordOutcome(
-                `finding:${outcome.slice.endpoint.url}:${result.primitiveId}`,
-                result.primitiveId,
-                { accepted: true },
-              )
-              // G11: Wire evolution — record confirmed technique for weight updates
-              recordTechniqueConfirmed(result.primitiveId)
-            } else {
-              // G11: Record failed technique for weight dampening
-              recordTechniqueFailed(result.primitiveId)
-            }
-          }
-        },
-        planOptions: {
-          maxSlices,
-          includeAnonymous,
-          roleFilter,
-          techniqueFilter,
-        },
-      })
-
+    execute: async settings => {
+      const result = await runCampaignAssessment(config, new EvidenceGate(), settings)
       return {
         ok: true,
         findings: result.findings,
         coverage: result.coverage,
         budgetExceeded: result.budgetExceeded,
         slicesRun: result.slicesRun,
+        requestsUsed: result.requestsUsed,
+        status: result.status,
+        remainingSlices: result.remainingSlices,
+        domains: result.domains,
+        units: result.units,
       }
     },
   })

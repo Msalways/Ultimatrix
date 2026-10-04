@@ -31,11 +31,11 @@ export const authzMatrix: TechniquePrimitive = {
       id: 'authz-baseline',
       description: `Baseline request as primary actor to ${url}`,
       request: { method, url, headers: baseHeaders },
-      actor: ctx.role,
+      actor: ctx.sessionRef ?? ctx.role,
       metadata: { kind: 'baseline' },
     }
 
-    const altRole = (ctx.roles ?? []).find(r => r !== ctx.role) ?? ctx.role ?? 'admin'
+    const altRole = ctx.altSessionRef ?? (ctx.roles ?? []).find(r => r !== ctx.role) ?? ctx.role ?? 'admin'
     let altHeaders: Record<string, string>
     if (ctx.altSessionHeaders) {
       altHeaders = { ...ctx.altSessionHeaders }
@@ -47,7 +47,7 @@ export const authzMatrix: TechniquePrimitive = {
       id: 'authz-alt',
       description: `Replayed request as alternate actor to ${url}`,
       request: { method, url, headers: altHeaders },
-      actor: altRole,
+      actor: ctx.altSessionRef ?? altRole,
       expectedSignal: 'alternate actor receives different/forbidden access',
       metadata: { kind: 'alt' },
     }

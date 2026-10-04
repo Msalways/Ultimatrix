@@ -28,6 +28,7 @@ export const TOOL_EFFECTS: Record<string, CapabilityEffects> = {
   // Browser tools
   stagehand_navigate: { browser: true, network: true, externallyVisible: true, reversibility: 'read-only', estimatedLatencyMs: 5000, estimatedTokenCost: 30 },
   stagehand_act: { browser: true, network: true, externallyVisible: true, reversibility: 'reversible', estimatedLatencyMs: 3000, estimatedTokenCost: 40 },
+  browserInteract: { browser: true, network: true, externallyVisible: true, reversibility: 'reversible', estimatedLatencyMs: 1000, estimatedTokenCost: 20 },
   stagehand_extract: { browser: true, reversibility: 'read-only', estimatedLatencyMs: 2000, estimatedTokenCost: 30 },
   stagehand_observe: { browser: true, reversibility: 'read-only', estimatedLatencyMs: 1000, estimatedTokenCost: 20 },
   stagehand_screenshot: { browser: true, createsArtifact: true, reversibility: 'read-only', estimatedLatencyMs: 2000, estimatedTokenCost: 10 },

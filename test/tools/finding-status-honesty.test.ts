@@ -69,4 +69,9 @@ describe('what status a finding is born with', () => {
     expect(deriveBornLifecycleStatus('info', 'L4', pair)).toBe('candidate')
     expect(deriveBornLifecycleStatus('medium', 'L4', pair)).toBe('candidate')
   })
+
+  it('a replayable experiment with an independent retest can promote a capture to verified', () => {
+    const pair = [...capture('raw_request'), ...capture('raw_response')]
+    expect(deriveBornLifecycleStatus('medium', 'L4', pair, true)).toBe('verified')
+  })
 })

@@ -40,10 +40,12 @@ import { buildDoneIndex } from "./done-index";
 import type { WorkflowStore } from "../workflow/store";
 import type { DynamicToolRegistry } from "../extensions/tool-registry";
 import type { LazySolverServices } from "../runtime/lazy-services";
-import { buildResearchMap, planResearchExperiments, executePlannedExperiment } from "../tools/research-tools";
+import { buildResearchMap, planResearchExperiments } from "../tools/research-tools";
 import { useCredential } from "../tools/credential-tools";
 import { discoverSkillsForTarget, loadSkillBodyTool } from "../tools/skill-tools";
 import { resolveProgressTimeoutMs } from "./model-fallback";
+import type { CampaignResult } from "../campaign/types";
+import { buildAssessmentReport, type AssessmentReport } from "./assessment-report";
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -94,6 +96,9 @@ export interface SolverAnswer {
   planSummary?: string;
   status: SolveResult["reason"];
   completed: boolean;
+  assessmentStatus?: 'complete' | 'partial';
+  assessmentReport?: AssessmentReport;
+  campaign?: CampaignResult;
   usage?: { inputTokens: number; outputTokens: number };
   durationMs: number;
   steps: number;
@@ -172,6 +177,7 @@ export interface SolveResult {
     | "goal_achieved"
     | "response_complete"
     | "grounding_failed"
+    | "context_blocked"
     | "frontier_exhausted"
     | "budget_reached"
     | "stale"
@@ -194,12 +200,18 @@ export interface SolveResult {
   /** Structured final answer — the UI-facing source of truth. */
   answer?: SolverAnswer;
   error?: string;
+  assessmentStatus?: 'complete' | 'partial';
+  assessmentReport?: AssessmentReport;
+  campaign?: CampaignResult;
+  campaignError?: string;
 }
 
 export interface SolveParams {
   origin: string;
   goal: string;
   interactionMode?: "ask" | "run";
+  /** Correlates operator replies and steering with one live shared-engine run. */
+  interactionRunId?: string;
   hints?: string[];
   model?: string;
   config?: SolverConfig;
@@ -256,42 +268,76 @@ interface CompletionResult {
 
 /** Bound provider stalls between stream chunks so deterministic research can
  * hand back a partial, honest result instead of hanging the whole turn. */
-async function* withProgressWatchdog<T>(
+export async function* withProgressWatchdog<T>(
   source: AsyncIterable<T>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): AsyncGenerator<T> {
   const iterator = source[Symbol.asyncIterator]()
+  let pendingToolCalls = 0
   while (true) {
     let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
     try {
-      const next = await Promise.race([
-        iterator.next(),
-        new Promise<IteratorResult<T>>((_, reject) => {
+      const nextPromise = iterator.next()
+      const races: Array<Promise<IteratorResult<T>>> = [nextPromise]
+      // Tool execution is part of the model stream, but a long browser/HTTP
+      // call is not a stalled model. The turn-level abort signal still bounds
+      // the operation while its result is pending.
+      if (pendingToolCalls === 0) {
+        races.push(new Promise<IteratorResult<T>>((_, reject) => {
           timer = setTimeout(() => reject(new Error(`Model progress watchdog expired after ${timeoutMs}ms`)), timeoutMs)
-        }),
-      ])
+        }))
+      }
+      if (signal) {
+        races.push(new Promise<IteratorResult<T>>((_, reject) => {
+          onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Solver aborted'))
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }))
+      }
+      const next = await Promise.race(races)
       if (next.done) return
+      const event = next.value as { type?: unknown }
+      if (event.type === 'tool-call') pendingToolCalls++
+      else if (event.type === 'tool-result' || event.type === 'tool-error' || event.type === 'tool-output-error') {
+        pendingToolCalls = Math.max(0, pendingToolCalls - 1)
+      }
       yield next.value
     } catch (error) {
-      await iterator.return?.()
+      // Do not wait for a tool-backed iterator to finish after the hard turn
+      // deadline. Its stream has the same abort signal; returning control here
+      // keeps a slow browser/model operation from extending the run budget.
+      try { void Promise.resolve(iterator.return?.()).catch(() => {}) } catch { /* best-effort cancellation */ }
       throw error
     } finally {
       if (timer) clearTimeout(timer)
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort)
     }
   }
 }
 
 // ─── Recent Discoveries (per-turn graph diff) ───────────────
 
-function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  return Promise.race([
+  let onAbort: (() => void) | undefined
+  const races: Array<Promise<T>> = [
     promise,
     new Promise<T>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
     }),
-  ]).finally(() => {
+  ]
+  if (signal) {
+    races.push(new Promise<T>((_, reject) => {
+      onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Solver aborted'))
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }))
+  }
+  return Promise.race(races).finally(() => {
     if (timer) clearTimeout(timer)
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort)
   })
 }
 
@@ -562,6 +608,8 @@ export async function solve(
   const loopDetector = params.loopDetector || new LoopDetector();
   const reflexion = params.reflexion || new ReflexionEngine();
   const forensicLog = getForensicLog();
+  let campaignResult: CampaignResult | undefined;
+  let campaignError: string | undefined;
 
   // Wire EvidenceGate into writeFinding for Maker/Checker split
   const { setEvidenceGateForFindings } = await import("../tools/control-tools");
@@ -599,6 +647,10 @@ export async function solve(
   const emit = (event: PhaseEvent) => params.onPhase?.(event);
   const emitMessage = (message: SolverStreamMessage) => params.onMessage?.(message);
   const startTime = Date.now();
+  const timeoutSignal = AbortSignal.timeout(cfg.maxDurationMs);
+  const streamSignal = params.signal
+    ? AbortSignal.any([params.signal, timeoutSignal])
+    : timeoutSignal;
 
   // Seed blackboard (only if fresh)
   if (board.facts.length === 0) {
@@ -639,6 +691,8 @@ export async function solve(
     markResearchBootstrapAttempted?: () => void;
     crawl?: () => Promise<unknown>;
     crawlState?: unknown;
+    taskStates?: ReadonlyArray<{ taskId: string; status: string }>;
+    runCoverageCampaign?: (gate: EvidenceGate) => Promise<CampaignResult>;
     /** Stop a detached crawl (implemented by LazySolverServices). */
     abortCrawl?: (reason?: string) => void;
   } | undefined;
@@ -648,7 +702,12 @@ export async function solve(
     emit({ phase: "observe", step: 0, activity: "autonomous-observation" });
     emitMessage({ kind: "event", event: "observation.started", label: "observing target surface", status: "running" });
     try {
-      const observed = await lazyServices.observe();
+      const observed = await withPromiseTimeout(
+        lazyServices.observe(),
+        cfg.maxDurationMs,
+        "Target observation",
+        streamSignal,
+      );
       board.addFact(
         `Autonomous observation completed: ${observed.requests} captured requests at ${observed.url}; use captured browser traffic and discovered endpoints as evidence.`,
         "observation",
@@ -658,14 +717,16 @@ export async function solve(
       // Recon/spider crawling is part of observation, not exploitation. Run it
       // before handing control to the brain so the first hypothesis is based
       // on the discovered surface rather than guessed paths.
-      if (lazyServices.crawl && !lazyServices.crawlState) {
+      if (lazyServices.crawl && !lazyServices.crawlState && params.ultimatrixConfig?.spider?.enabled !== false) {
         emitMessage({ kind: "event", event: "recon.started", label: "mapping links, forms, and workflows", status: "running" });
         try {
           const crawlTimeoutMs = Math.min(45_000, Math.max(5_000, params.config?.maxDurationMs ? Math.floor(params.config.maxDurationMs * 0.15) : 45_000));
-          const spider = await Promise.race([
+          const spider = await withPromiseTimeout(
             lazyServices.crawl(),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`crawl timeout after ${crawlTimeoutMs}ms`)), crawlTimeoutMs)),
-          ]);
+            crawlTimeoutMs,
+            "Recon crawl",
+            streamSignal,
+          );
           const spiderState = spider && typeof spider === "object" ? spider as Record<string, unknown> : undefined;
           board.addFact(`Recon crawl completed${spiderState?.pagesSeen ? `: ${String(spiderState.pagesSeen)} pages seen` : ""}; use the discovered surface for attack selection.`, "recon");
           emitMessage({ kind: "event", event: "recon.completed", label: "target surface mapped", status: "ok" });
@@ -681,14 +742,19 @@ export async function solve(
           // A timed-out adaptive crawler can still leave useful HAR/script
           // traffic behind. Run passive/shadow discovery over that partial
           // capture so the research map does not stop at the landing page.
-          try {
-            const { runPostCrawlDiscovery } = await import('../discovery/post-crawl');
-            await runPostCrawlDiscovery(params.origin);
-            board.addFact('Post-crawl discovery completed over the partial capture after recon failure.', 'post-crawl-fallback');
-          } catch (discoveryError) {
-            board.addFact(`Post-crawl fallback failed: ${discoveryError instanceof Error ? discoveryError.message : String(discoveryError)}`, 'post-crawl-fallback-failure');
+          if (!streamSignal.aborted) {
+            try {
+              const { runPostCrawlDiscovery } = await import('../discovery/post-crawl');
+              await runPostCrawlDiscovery(params.origin);
+              board.addFact('Post-crawl discovery completed over the partial capture after recon failure.', 'post-crawl-fallback');
+            } catch (discoveryError) {
+              board.addFact(`Post-crawl fallback failed: ${discoveryError instanceof Error ? discoveryError.message : String(discoveryError)}`, 'post-crawl-fallback-failure');
+            }
           }
         }
+      } else if (lazyServices.crawl && !lazyServices.crawlState && params.ultimatrixConfig?.spider?.enabled === false) {
+        board.addFact('Adaptive spider crawl skipped by config; use the baseline browser capture and previously learned graph surface.', 'recon-disabled');
+        emitMessage({ kind: 'event', event: 'recon.skipped', label: 'adaptive crawl disabled; reusing observed target surface', status: 'ok' });
       }
     } catch (error) {
       // Observation failure is recoverable: retain an explicit fact so the
@@ -719,6 +785,28 @@ export async function solve(
     const message = lazyServices.observationState.error ?? 'browser observation unavailable'
     board.addFact(`Browser observation already failed for this engagement: ${message}. Use bounded HTTP reconnaissance; do not retry browser startup in this turn.`, 'observation-failure-reused')
     emitMessage({ kind: "event", event: "observation.reused", label: "reusing browser failure; HTTP fallback active", status: "warn" })
+  }
+  const campaignEnabled = params.ultimatrixConfig?.campaign?.auto ?? DEFAULTS.campaign?.auto ?? true
+  if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
+    emitMessage({ kind: 'event', event: 'coverage.started', label: 'running deterministic input coverage', status: 'running' })
+    try {
+      campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId)
+      board.addFact(
+        `Deterministic coverage ${campaignResult.status}: ${campaignResult.coverage.slicesExecuted} unit(s), ${campaignResult.requestsUsed} HTTP request(s), ${campaignResult.remainingSlices.length} pending unit(s).`,
+        'coverage',
+      )
+      emitMessage({
+        kind: 'event',
+        event: 'coverage.completed',
+        label: `coverage ${campaignResult.status}: ${campaignResult.units.length} unit result(s), ${campaignResult.domains.length} skill domain(s)`,
+        status: campaignResult.status === 'complete' ? 'ok' : 'warn',
+        data: { status: campaignResult.status, requestsUsed: campaignResult.requestsUsed, domains: campaignResult.domains.length, remaining: campaignResult.remainingSlices.length },
+      })
+    } catch (error) {
+      campaignError = error instanceof Error ? error.message : String(error)
+      board.addFact(`Deterministic coverage did not run: ${campaignError}`, 'coverage-failure')
+      emitMessage({ kind: 'event', event: 'coverage.failed', label: `coverage unavailable: ${campaignError}`, status: 'warn' })
+    }
   }
   // F1 FIX: Do NOT call resetTurn() here — capabilities persist across turns.
   // Previously discovered/activated tools (browser, workers, crawl) remain available.
@@ -781,37 +869,11 @@ export async function solve(
       researchMapBuilt: Boolean(mapResult?.ok),
       experimentPlanned: Boolean(planResult?.ok && planned.length > 0),
     });
-    let autoExecuted = 0;
-    for (const experiment of planned) {
-      // Missing method metadata is a read-only GET by HTTP convention. Treat
-      // it as safe so anonymous/collaborative turns do not silently skip every
-      // plan generated from sparse graph endpoints.
-      const method = String(experiment.baselineRequest?.method ?? 'GET').toUpperCase();
-      if (params.interactionMode !== 'run' && !['GET', 'HEAD', 'OPTIONS'].includes(method)) continue;
-      emitMessage({
-        kind: "tool",
-        name: "executePlannedExperiment",
-        args: { experimentId: experiment.id, method },
-      });
-      const result = await execute(executePlannedExperiment, { experimentId: experiment.id });
-      emitMessage({
-        kind: "tool-result",
-        name: "executePlannedExperiment",
-        ok: Boolean(result?.ok),
-        result: result?.ok ? JSON.stringify(result.value ?? { ok: true }) : String(result?.error ?? 'experiment failed'),
-      });
-      getForensicLog()?.log({
-        type: result?.ok ? 'tool-result' : 'tool-error',
-        agent: 'solver-brain',
-        tool: 'executePlannedExperiment',
-        result: result?.ok ? result.value : undefined,
-        error: result?.ok ? undefined : result?.error,
-      });
-      if (result?.ok) autoExecuted++;
-      if (autoExecuted >= 3) break;
-    }
-    board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned, ${autoExecuted} idempotent experiments executed.`, 'research-bootstrap');
-    emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${autoExecuted} experiments executed`, status: "ok" });
+    // Prepare typed work before the brain is built, but leave execution to the
+    // goal-aware solver turn. Pre-goal replay used to run the first three GET
+    // experiments regardless of relevance or missing workflow prerequisites.
+    board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned and queued for current-goal selection. No experiment ran before goal routing.`, 'research-bootstrap');
+    emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${planned.length} experiments queued for goal-aware selection`, status: "ok" });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     board.addFact(`Autonomous research bootstrap unavailable: ${message}; continue with model-selected tools.`, 'research-bootstrap-failure');
@@ -933,6 +995,7 @@ export async function solve(
   sections.push({ name: 'Budget', priority: 80, content: budgetInstruction });
 
   let enrichedGoal = buildBudgetedGoal(sections, params.ultimatrixConfig ?? {});
+  const goalContextTruncated = enrichedGoal.includes('[Goal budget:')
 
   // Stale detection — prepended BEFORE the budgeted goal (highest priority override)
   if (alerts.some(alert => alert.type === "stale-execution")) {
@@ -992,7 +1055,7 @@ export async function solve(
       kind: "event",
       event: "context.checked",
       label: `context ${stage} ${ctxCheck.severity}: ${ctxCheck.totalInputTokens}/${capacity} tokens`,
-      status: ctxCheck.severity === "critical" ? "error" : ctxCheck.severity === "warning" || !hasCapabilityData ? "warn" : "ok",
+      status: !hasCapabilityData || ctxCheck.severity === "critical" ? "error" : ctxCheck.severity === "warning" ? "warn" : "ok",
       data: {
         modelId: contextModelId,
         totalInputTokens: ctxCheck.totalInputTokens,
@@ -1005,21 +1068,41 @@ export async function solve(
       },
     });
     if (!hasCapabilityData) {
+      contextBlockReason = `Cannot safely dispatch ${contextModelId || "the selected model"}: no verified context-window and output-token metadata is available.`
       emitMessage({
         kind: "event",
-        event: "model.capability_missing",
-        label: `no context-window metadata for ${contextModelId || "selected model"}`,
-        status: "warn",
-        data: { modelId: contextModelId },
+        event: "context.blocked",
+        label: contextBlockReason,
+        status: "error",
+        data: { modelId: contextModelId, stage, totalInputTokens: ctxCheck.totalInputTokens, capacity },
       });
+      throw new Error(contextBlockReason)
+    }
+    if (goalContextTruncated) {
+      contextBlockReason = "The required goal context exceeded its budget and was truncated; dispatch was blocked to preserve the complete task."
+      emitMessage({
+        kind: "event",
+        event: "context.blocked",
+        label: contextBlockReason,
+        status: "error",
+        data: { modelId: contextModelId, stage, capacity, reason: "goal-truncated" },
+      })
+      throw new Error(contextBlockReason)
     }
     if (!ctxCheck.fits || ctxCheck.severity === "critical") {
       const enforcement = budgetPolicy?.enforcement ?? "soft";
       if (enforcement === "hard") {
-        throw new Error(
+        contextBlockReason =
           `Context overflow: ${ctxCheck.totalInputTokens} tokens exceeds model capacity. ` +
-            `Suggestions: ${ctxCheck.suggestions.join("; ")}`,
-        );
+            `Suggestions: ${ctxCheck.suggestions.join("; ")}`
+        emitMessage({
+          kind: "event",
+          event: "context.blocked",
+          label: contextBlockReason,
+          status: "error",
+          data: { modelId: contextModelId, stage, totalInputTokens: ctxCheck.totalInputTokens, capacity },
+        })
+        throw new Error(contextBlockReason)
       }
       if (enforcement === "soft") {
         // ─── Adaptive Context: compress instructions + reduce tools ──
@@ -1058,7 +1141,7 @@ export async function solve(
           log.dim(`[context] Adaptive: tools ${allToolEntries.length} exceed budget ${adaptivePlan.toolBudget} — prepareStep will filter`);
         }
 
-        // 4. Re-validate with compressed payload and truncate goal if still overflows
+        // 4. Re-validate; preserve the required goal and evidence if it still overflows.
         const reCheck = ctxManager.validateContextFit({
           modelId: contextModelId,
           systemPrompt: agentInstructions,
@@ -1068,27 +1151,20 @@ export async function solve(
           expectedOutputTokens,
         });
         if (!reCheck.fits) {
-          const truncated = ctxManager.truncateToFit({
-            modelId: contextModelId,
-            systemPrompt: agentInstructions,
-            toolSchemas: await stringifyToolSchemas(activeTools),
-            conversationHistory,
-            enrichedGoal,
-            expectedOutputTokens,
-          });
-          enrichedGoal = truncated.enrichedGoal;
-          // The truncated history must actually replace the original — using
-          // only the truncated goal while streaming the full recalled history
-          // leaves the overflow in place (observed: 168k/131k with the goal
-          // already capped at 5%).
-          conversationHistory = truncated.conversationHistory;
-          log.dim(`[context] Goal truncated to ${ctxManager.estimateTokens(enrichedGoal)} tokens; history to ${ctxManager.estimateTokens(conversationHistory)} tokens (last resort)`);
+          contextBlockReason =
+            `Context remains over capacity after safe instruction compression (${reCheck.totalInputTokens} input tokens; ${capacity} token window). Required goal and evidence context was preserved.`
+          emitMessage({
+            kind: "event",
+            event: "context.blocked",
+            label: contextBlockReason,
+            status: "error",
+            data: { modelId: contextModelId, stage, totalInputTokens: reCheck.totalInputTokens, capacity },
+          })
+          throw new Error(contextBlockReason)
         }
       }
     }
   };
-
-  await validateNextContext("initial");
 
   emit({ phase: "observe", step: 0, text: "" });
 
@@ -1110,19 +1186,15 @@ export async function solve(
   // hallucinations. Allow the model to recover from a few of these within the
   // same stream; terminate only when it keeps selecting unavailable tools.
   let unavailableToolErrors = 0;
-  let terminalFailureReason: Extract<SolveResult['reason'], 'model_failed' | 'tool_unavailable' | 'browser_failed' | 'tool_failed'> | undefined;
+  let terminalFailureReason: Extract<SolveResult['reason'], 'context_blocked' | 'model_failed' | 'tool_unavailable' | 'browser_failed' | 'tool_failed'> | undefined;
   let ranCapabilityTurn = false;
-  const timeoutSignal = AbortSignal.timeout(cfg.maxDurationMs);
-  const streamSignal = params.signal
-    ? AbortSignal.any([params.signal, timeoutSignal])
-    : timeoutSignal;
-
   // Snapshot graph state for stale detection (compare before/after tool calls)
   const graphStateSnapshot = { findings: 0, endpoints: 0, tests: 0 };
   // F14 FIX: Immutable turn-start snapshot for accurate newFindings delta.
   // graphStateSnapshot is mutated during the turn for stale detection;
   // turnStartSnapshot stays frozen so newFindings = current - turnStart.
   const turnStartSnapshot = { findings: 0, endpoints: 0, tests: 0 };
+  let contextBlockReason: string | undefined;
   try {
     const graphStore = getGlobalGraphStore();
     const initialSummary = graphStore.getTargetSummary();
@@ -1170,19 +1242,20 @@ export async function solve(
     // F26 FIX: Set interaction mode before agent.stream() so askUser/askUserConfirm
     // auto-approve in 'run' mode. Reset after the stream completes.
     setInteractionMode(params.interactionMode);
+    await validateNextContext("initial");
 
     const progressTimeoutMs = resolveProgressTimeoutMs(cfg.maxDurationMs, cfg.progressTimeoutMs)
     const stream = await withPromiseTimeout(agent.stream(enrichedGoal, {
       maxSteps: cfg.maxToolCalls,
       ...(params.memory ? { memory: params.memory } : {}),
       abortSignal: streamSignal,
-    }), progressTimeoutMs, "Model stream startup");
+    }), progressTimeoutMs, "Model stream startup", streamSignal);
 
     let lastToolCallArgs: Record<string, unknown> | undefined;
     let lastToolCallId: string | undefined;
     const workerToolNames = new Set(["spawnWorker", "spawn-worker", "spawnSwarm", "spawn-swarm", "runTaskGraph", "run-task-graph"]);
 
-    for await (const chunk of withProgressWatchdog(stream.fullStream, progressTimeoutMs)) {
+    for await (const chunk of withProgressWatchdog(stream.fullStream, progressTimeoutMs, streamSignal)) {
       if (streamSignal.aborted) {
         throw new Error(params.signal?.aborted
           ? "Solver interrupted"
@@ -1490,12 +1563,14 @@ export async function solve(
           ((stream as any).object ?? Promise.resolve(undefined)) as Promise<unknown>,
           progressTimeoutMs,
           "Model canonical object",
+          streamSignal,
         ),
-        withPromiseTimeout(stream.text as Promise<string | undefined>, progressTimeoutMs, "Model canonical text"),
+        withPromiseTimeout(stream.text as Promise<string | undefined>, progressTimeoutMs, "Model canonical text", streamSignal),
         withPromiseTimeout(
           stream.reasoningText as Promise<string | undefined>,
           progressTimeoutMs,
           "Model canonical reasoning",
+          streamSignal,
         ),
       ]);
       const objectResponse = resolvedObject && typeof resolvedObject === "object" && "response" in resolvedObject
@@ -1529,14 +1604,17 @@ export async function solve(
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    const classified = classifyModelFailure(errMsg, {
-      interrupted: Boolean(params.signal?.aborted),
-      timedOut: timeoutSignal.aborted,
-      timeoutMs: cfg.maxDurationMs,
-      existingReason: terminalFailureReason,
-    });
-    if (classified.reason) terminalFailureReason = classified.reason;
-    lastError = classified.message;
+    const classified = contextBlockReason
+      ? undefined
+      : classifyModelFailure(errMsg, {
+          interrupted: Boolean(params.signal?.aborted),
+          timedOut: timeoutSignal.aborted,
+          timeoutMs: cfg.maxDurationMs,
+          existingReason: terminalFailureReason,
+        });
+    if (contextBlockReason) terminalFailureReason = "context_blocked";
+    else if (classified?.reason) terminalFailureReason = classified.reason;
+    lastError = contextBlockReason ?? classified?.message ?? errMsg;
     // Keep provider/memory failures visible to interactive renderers. The
     // structured done envelope still carries the same status, but a live
     // ChatBox needs an event it can paint before the turn is closed.
@@ -1770,6 +1848,41 @@ export async function solve(
     // Graph store not available
   }
 
+  const assessmentReport = params.interactionMode === 'run'
+    ? buildAssessmentReport({
+        discovery: (() => {
+          const graph = getEngagementServices()?.graph;
+          const count = (type: NodeType) => {
+            try { return graph?.queryNodes(type).length ?? 0 } catch { return 0 }
+          }
+          return {
+            pages: count(NodeType.PAGE),
+            endpoints: count(NodeType.ENDPOINT),
+            inputs: count(NodeType.INPUT),
+            workflows: count(NodeType.WORKFLOW),
+            authFlows: count(NodeType.AUTH_FLOW),
+            roles: count(NodeType.RBAC_ROLE),
+          }
+        })(),
+        spiderEnabled: params.ultimatrixConfig?.spider?.enabled !== false,
+        observation: (() => {
+          const state = lazyServices?.observationState
+          return state?.status === 'completed'
+            ? { status: state.status, requests: state.result?.requests }
+            : state
+        })(),
+        crawl: (() => {
+          const state = lazyServices?.crawlState as { stopReason?: string; pagesSeen?: number; frontier?: unknown[] } | undefined
+          return state ? { stopReason: state.stopReason, pagesSeen: state.pagesSeen, frontierRemaining: state.frontier?.length } : undefined
+        })(),
+        campaignEnabled,
+        campaign: campaignResult,
+        campaignError,
+        solverReason: reason,
+        tasks: lazyServices?.taskStates,
+      })
+    : undefined;
+
   const answer: SolverAnswer = {
     content: answerContent,
     reasoning: answerReasoning,
@@ -1777,6 +1890,8 @@ export async function solve(
     planSummary: board.planSummary?.() || undefined,
     status: reason,
     completed,
+    ...(assessmentReport ? { assessmentStatus: assessmentReport.status, assessmentReport } : {}),
+    ...(campaignResult ? { campaign: campaignResult } : {}),
     usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     durationMs: Date.now() - startTime,
     steps: toolCallCount,
@@ -1818,6 +1933,9 @@ export async function solve(
     text: answerContent || undefined,
     answer,
     error: lastError || undefined,
+    ...(assessmentReport ? { assessmentStatus: assessmentReport.status, assessmentReport } : {}),
+    ...(campaignResult ? { campaign: campaignResult } : {}),
+    ...(campaignError ? { campaignError } : {}),
   };
 }
 

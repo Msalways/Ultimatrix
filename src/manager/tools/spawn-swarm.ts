@@ -74,37 +74,7 @@ export function createSpawnSwarmTool(
         limitedTasks.map(t => ({ skillId: t.skillId, task: t.task })))
 
       async function buildInformedTask(taskDef: typeof limitedTasks[0], priorResults: typeof results): Promise<string> {
-        let informedTask = taskDef.task
-
-        if (taskDef.endpointId) {
-          try {
-            const endpoint = Array.from((store as any).nodes.values()).find(
-              (n: any) => n.id === taskDef.endpointId
-            )
-            if (endpoint) {
-              const p = (endpoint as any).properties as any
-              const headerLines = (p.headers || []).map((h: any) => `  ${h.name}: ${h.value}`)
-              const cookieStr = (p.cookies || []).map((c: any) => `  ${c.name}=${c.value}`).join('; ')
-
-              let endpointBlock = `${taskDef.task}\n\n## Target Endpoint\n- URL: ${p.url}\n- Method: ${p.method}\n- Params: ${JSON.stringify(p.params || [])}${p.authRequired ? '\n- Auth Required: Yes (' + (p.authType || 'unknown') + ')' : ''}`
-
-              if (headerLines.length > 0) {
-                endpointBlock += `\n\n## Captured Headers (use these in your HTTP request headers)\n${headerLines.join('\n')}`
-              }
-              if (cookieStr) {
-                endpointBlock += `\n\n## Captured Cookies (use these in your HTTP request cookie header)\n  ${cookieStr}`
-              }
-              if (p.authType) {
-                endpointBlock += `\n\n## Auth Type: ${p.authType} — retrieve the captured auth headers for ${p.url} to get full auth context`
-              }
-
-              informedTask = endpointBlock
-            }
-          } catch {
-            // Fall back to raw task
-          }
-        }
-
+        let informedTask = sharedBuildInformedTask({ task: taskDef.task, endpointId: taskDef.endpointId, store })
         if (priorResults.length > 0) {
           const priorFindings = priorResults
             .filter(r => r.status === 'completed' && r.result)

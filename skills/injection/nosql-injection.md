@@ -6,7 +6,7 @@ tier: balanced
 toolRefs: [httpRequest, parseResponse, evaluateRendered, updateGraph, writeFinding, followRedirects, recordEvidence, getCapturedHeaders, runPrimitive]
 primitives: [nosqlInjection]
 triggers: ["nosql injection", "mongodb injection", "nosql injection", "nosql attack", "document database injection", "operator injection", "mongodb operator", "nosql authentication bypass", "couchdb injection", "database injection nosql"]
-contextBoosts: [sqli]
+contextBoosts: [nosql, nosqli, mongodb, document-database]
 mitreAttack: ["T1190", "T1059"]
 owaspRefs: ["OWASP Top 10 A03:2021 Injection"]
 ---
@@ -37,12 +37,7 @@ owaspRefs: ["OWASP Top 10 A03:2021 Injection"]
 
 ## Auth Context
 
-NoSQL injection is most impactful when it bypasses authentication. Document databases store credentials as JSON fields, and naive query construction allows operators to alter query logic. The attacker replaces string values with operator objects that evaluate to true for multiple records. This differs from SQL injection — there are no `UNION` or `DROP` statements. Instead, exploit query operators (`$ne`, `$gt`, `$regex`) to manipulate boolean logic.
-
-Authentication bypass works because `{"username": {"$ne": ""}, "password": {"$ne": ""}}` matches any document where both fields are non-empty — typically all users. The database returns the first match, which may be the admin account. This is the most common and reliable NoSQL injection vector.
-
----
-
+Only test object-valued query inputs when the captured request or delivered client code shows that the server may bind them into a document query. Operator syntax is not proof by itself: framework parsers and schema validators often reject object values. A `findOne` result does not establish which actor was returned. Use an engagement-owned test account/record and a matched baseline; never infer administrator access from a status code or an unlabelled response.
 ## MongoDB Operator Injection
 
 ### Core Concept

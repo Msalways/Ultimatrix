@@ -156,6 +156,7 @@ export function filterToolsToBudget(
     stagehand_observe: 2,
     stagehand_extract: 2,
     stagehand_act: 2,
+    browserInteract: 2,
     useSession: 2,
     extractSessionCookie: 2,
     // Tier 4: research + orchestration

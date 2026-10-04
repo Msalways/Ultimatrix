@@ -44,8 +44,8 @@ describe('TaskGraphRunner', () => {
     const result = await runner.run({
       maxParallel: 2,
       tasks: [
-        { taskId: 'a', objective: 'root a', skillId: 'recon', acceptanceCriteria: [{ id: 'a-summary', description: 'summary', type: 'summary_present' }] },
-        { taskId: 'b', objective: 'root b', skillId: 'recon' },
+        { taskId: 'a', objective: 'root a', skillId: 'recon', kind: 'entity_relationships', contextRefs: ['graph:entity:a'], acceptanceCriteria: [{ id: 'a-summary', description: 'summary', type: 'summary_present' }] },
+        { taskId: 'b', objective: 'root b', skillId: 'recon', kind: 'entity_relationships', contextRefs: ['graph:entity:b'] },
         { taskId: 'c', objective: 'dependent', skillId: 'analysis', dependencyTaskIds: ['a', 'b'] },
       ],
     })
@@ -55,6 +55,103 @@ describe('TaskGraphRunner', () => {
     expect(events.indexOf('start:c')).toBeGreaterThan(events.indexOf('end:a'))
     expect(events.indexOf('start:c')).toBeGreaterThan(events.indexOf('end:b'))
     expect(workflow.state.tasks.find((task) => task.taskId === 'a')?.acceptanceResults[0].passed).toBe(true)
+  })
+
+  it('runs up to three independent evidence-grounded learning tasks by default', async () => {
+    let active = 0
+    let maxActive = 0
+    const { runner } = await setup(async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      active--
+      return { summary: 'independent graph analysis' }
+    })
+
+    const result = await runner.run({ tasks: ['a', 'b', 'c', 'd'].map(taskId => ({
+      taskId,
+      objective: `analyze observed entity ${taskId}`,
+      skillId: 'analysis',
+      kind: 'entity_relationships' as const,
+      contextRefs: [`graph:entity:${taskId}`],
+    })) })
+
+    expect(result.status).toBe('completed')
+    expect(maxActive).toBe(3)
+  })
+
+  it('serializes stateful tests that claim the same session and requires those claims', async () => {
+    let active = 0
+    let maxActive = 0
+    const { runner, coordinator } = await setup(async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 10))
+      active--
+      return { summary: 'bounded test complete' }
+    })
+
+    const result = await runner.run({ maxParallel: 3, tasks: ['first', 'second'].map(taskId => ({
+      taskId,
+      objective: 'test this observed input under the authenticated actor',
+      skillId: 'recon',
+      kind: 'security_test' as const,
+      resourceClaims: [`endpoint:${taskId}`],
+      ...(taskId === 'first' ? { contextRefs: ['endpoint:first', 'session:member'] } : { contextRefs: ['endpoint:second', 'session:member'] }),
+    })) })
+    const invalid = validateTaskGraph({ tasks: [{ taskId: 'missing-claim', objective: 'stateful test', skillId: 'recon', kind: 'security_test', contextRefs: ['endpoint:account'] }] }, coordinator, skills as any)
+
+    expect(result.status).toBe('completed')
+    expect(maxActive).toBe(1)
+    expect(invalid.valid).toBe(false)
+    expect(invalid.errors).toContainEqual(expect.objectContaining({ code: 'invalid_task', taskId: 'missing-claim' }))
+  })
+
+  it('rejects duplicate learning questions before persisting or dispatching them', async () => {
+    const execute = vi.fn(async () => ({ summary: 'should not run' }))
+    const { workflow, runner, coordinator } = await setup(execute)
+    const tasks = ['first', 'second'].map(taskId => ({
+      taskId,
+      objective: 'map the products search workflow',
+      skillId: 'analysis',
+      kind: 'entity_relationships' as const,
+      contextRefs: ['workflow:product-search'],
+    }))
+
+    const validation = validateTaskGraph({ tasks }, coordinator, skills as any)
+    const result = await runner.run({ tasks })
+
+    expect(validation.errors).toContainEqual(expect.objectContaining({ code: 'duplicate_work', taskId: 'second' }))
+    expect(result.status).toBe('invalid')
+    expect(workflow.state.tasks).toEqual([])
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('treats configured worker parallelism as a cap', async () => {
+    let active = 0
+    let maxActive = 0
+    const { coordinator } = await setup(async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 25))
+      active--
+      return { summary: 'graph analysis complete' }
+    })
+    const tool = createRunTaskGraphTool(coordinator, skills as any, undefined, 1)
+
+    const result = await (tool as any).execute({
+      maxParallel: 3,
+      tasks: ['a', 'b', 'c'].map(taskId => ({
+        taskId,
+        objective: `analyze observed entity ${taskId}`,
+        skillId: 'analysis',
+        kind: 'entity_relationships',
+        contextRefs: [`graph:entity:${taskId}`],
+      })),
+    }, {})
+
+    expect(result.status).toBe('completed')
+    expect(maxActive).toBe(1)
   })
 
   it('marks unmet acceptance partial, blocks dependents, and returns replan reasons', async () => {
@@ -139,8 +236,8 @@ describe('TaskGraphRunner', () => {
     })
 
     await runner.run({ maxParallel: 2, tasks: [
-      { taskId: 'left', objective: 'left', skillId: 'recon' },
-      { taskId: 'right', objective: 'right', skillId: 'recon' },
+      { taskId: 'left', objective: 'left', skillId: 'recon', kind: 'entity_relationships', contextRefs: ['graph:entity:left'] },
+      { taskId: 'right', objective: 'right', skillId: 'recon', kind: 'entity_relationships', contextRefs: ['graph:entity:right'] },
     ] })
 
     expect(workflow.state.tasks.find((task) => task.taskId === 'left')).toMatchObject({ evidenceRefs: ['evidence-left'], graphRefs: ['page:https://task-graph.example/left'] })

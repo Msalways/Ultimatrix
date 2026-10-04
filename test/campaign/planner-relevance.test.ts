@@ -54,24 +54,23 @@ describe('planCampaign signal routing', () => {
     })
     const prims = [primitive('ssrfOast', ['ssrf', 'oast']), primitive('classicInjection', ['sqli'])]
     const plan = planCampaign(store([ep]), { primitives: prims })
-    const slice = plan.slices.find((s) => s.endpoint.id === 'ep1')
-    expect(slice).toBeDefined()
-    expect(slice!.techniqueIds).toContain('ssrfOast')
-    expect(slice!.reason).toContain('signals: url-like-param')
+    const slices = plan.slices.filter((s) => s.endpoint.id === 'ep1')
+    expect(slices.length).toBeGreaterThan(0)
+    expect(slices.flatMap(s => s.techniqueIds)).toContain('ssrfOast')
+    expect(slices.find(s => s.techniqueIds.includes('ssrfOast'))?.reason).toContain('signals: url-like-param')
     // base(hasParams) 1 + signalBoost 3
-    expect(slice!.priority).toBeGreaterThanOrEqual(4)
+    expect(slices.find(s => s.techniqueIds.includes('ssrfOast'))!.priority).toBeGreaterThanOrEqual(4)
   })
 
   it('routes graphql endpoints to graphql-tagged primitives even without params', () => {
     const ep = endpoint({ url: 'https://app.test/graphql', method: 'POST', params: [] })
     const prims = [primitive('graphqlBola', ['graphql', 'bola']), primitive('classicInjection', ['sqli'])]
     const plan = planCampaign(store([ep]), { primitives: prims })
-    const slice = plan.slices.find((s) => s.endpoint.id === 'ep1')
-    expect(slice).toBeDefined()
-    expect(slice!.techniqueIds).toContain('graphqlBola')
-    expect(slice!.reason).toContain('graphql')
+    const slices = plan.slices.filter((s) => s.endpoint.id === 'ep1')
+    expect(slices.flatMap(s => s.techniqueIds)).toContain('graphqlBola')
+    expect(slices.find(s => s.techniqueIds.includes('graphqlBola'))?.reason).toContain('graphql')
     // state-changing 0 + graphql boost 3
-    expect(slice!.priority).toBeGreaterThanOrEqual(3)
+    expect(slices.find(s => s.techniqueIds.includes('graphqlBola'))!.priority).toBeGreaterThanOrEqual(3)
   })
 
   it('keeps auth-bound techniques off unauthenticated, param-less endpoints', () => {
@@ -87,12 +86,11 @@ describe('planCampaign signal routing', () => {
     const ep = endpoint({ url: 'https://app.test/me', authRequired: true, params: [{ name: 'userId', type: 'string' }] })
     const prims = [primitive('authzMatrix', ['authz']), primitive('idorSwapper', ['idor'])]
     const plan = planCampaign(store([ep]), { primitives: prims })
-    const slice = plan.slices.find((s) => s.endpoint.id === 'ep1')
-    expect(slice).toBeDefined()
-    expect(slice!.role).toBe('authenticated')
-    expect(slice!.techniqueIds).toEqual(expect.arrayContaining(['authzMatrix', 'idorSwapper']))
+    const slices = plan.slices.filter((s) => s.endpoint.id === 'ep1')
+    expect(slices.map(s => s.role)).toContain('authenticated')
+    expect(slices.flatMap(s => s.techniqueIds)).toEqual(expect.arrayContaining(['authzMatrix', 'idorSwapper']))
     // authenticated 2 + object-id signal boost 3 + hasParams 1
-    expect(slice!.priority).toBeGreaterThanOrEqual(6)
+    expect(slices.find(s => s.techniqueIds.includes('idorSwapper'))!.priority).toBeGreaterThanOrEqual(6)
   })
 
   it('keeps generic recon techniques relevant to any endpoint', () => {
@@ -102,6 +100,18 @@ describe('planCampaign signal routing', () => {
     const slice = plan.slices.find((s) => s.endpoint.id === 'ep1')
     expect(slice).toBeDefined()
     expect(slice!.techniqueIds).toContain('recon')
+  })
+
+  it('does not schedule transport assets, unresolved client templates, or an inputless root page', () => {
+    const eps = [
+      endpoint({ url: 'https://app.test/scripts.js' }),
+      endpoint({ id: 'root', url: 'https://app.test/' }),
+      endpoint({ id: 'template', url: 'https://app.test/$%7Bgt(r.root,!0)%7D' }),
+      endpoint({ id: 'search', url: 'https://app.test/rest/products/search', params: [{ name: 'q', type: 'query', in: 'query' }] }),
+    ].map((ep, index) => ({ ...ep, id: ['script', 'root', 'template', 'search'][index] }))
+    const plan = planCampaign(store(eps), { primitives: [primitive('recon', ['recon']), primitive('sqli', ['sqli'])] })
+    expect(plan.slices.map(slice => slice.endpoint.id)).toEqual(expect.arrayContaining(['search']))
+    expect(plan.slices.some(slice => ['ep1', 'root', 'template'].includes(slice.endpoint.id))).toBe(false)
   })
 
   it('respects techniqueFilter', () => {

@@ -24,6 +24,20 @@ export function logSolveSummary(result: SolveResult): void {
   log.dim(
     `${formatDuration(result.durationMs)} | ${result.toolCalls} tool ${result.toolCalls === 1 ? 'call' : 'calls'} | ${result.newFindings} new ${result.newFindings === 1 ? 'finding' : 'findings'}`,
   )
+  if (result.assessmentStatus) {
+    const report = result.assessmentReport
+    if (!report) {
+      log.warn(`Coverage assessment is ${result.assessmentStatus}; structured details are unavailable.`)
+      return
+    }
+    const d = report.discovery
+    const t = report.testedCoverage
+    const label = report.status === 'complete' ? log.success : log.warn
+    label(`Assessment ${report.status}: discovered ${d.endpoints} endpoint(s), ${d.inputs} input(s), ${d.workflows} workflow(s), ${d.roles} role(s); tested ${t.executed}/${t.planned} unit(s), ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP request(s).`)
+    for (const unknown of d.unknowns) log.dim(`Unknown: ${unknown}`)
+    for (const blocker of report.blockers) log.warn(`Blocker: ${blocker}`)
+    for (const work of report.remainingWork) log.dim(`Remaining: ${work}`)
+  }
 }
 
 function formatDuration(durationMs: number): string {

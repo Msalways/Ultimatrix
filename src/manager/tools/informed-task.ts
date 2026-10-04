@@ -10,11 +10,23 @@
 import type { GraphStore } from '../../graph/store'
 import { getEvolutionSummary } from '../../intelligence/evolution'
 import { getCapturedRequestStore } from '../../capture/captured-request-store'
+import { redactUrl } from '../../security/secret-vault'
 
 export interface InformedTaskInput {
   task: string
   endpointId?: string
   store: GraphStore
+}
+
+function routeUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try { const url = new URL(redactUrl(value)); return `${url.origin}${url.pathname}` } catch { return undefined }
+}
+
+function names(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(item => typeof item === 'string' ? item : item?.name).filter(Boolean)
+  if (value && typeof value === 'object') return Object.keys(value)
+  return []
 }
 
 /** Compact brain-state so workers inherit the operator's situational awareness. */
@@ -45,13 +57,14 @@ export function buildInformedTask(input: InformedTaskInput): string {
     if (!endpoint) return `${task}${brainStateBlock()}`
 
     const p = endpoint.properties as any
-    const headerLines = (p.headers || []).map((h: any) => `  ${h.name}: ${h.value}`)
-    const cookieStr = (p.cookies || []).map((c: any) => `  ${c.name}=${c.value}`).join('; ')
+    const url = routeUrl(p.url) ?? '(invalid observed URL)'
+    const headerNames = names(p.headers)
+    const cookieNames = names(p.cookies)
 
-    let block = `${task}\n\n## Target Endpoint\n- URL: ${p.url}\n- Method: ${p.method}\n- Params: ${JSON.stringify(p.params || [])}${p.authRequired ? '\n- Auth Required: Yes (' + (p.authType || 'unknown') + ')' : ''}${p.tags ? '\n- Tags: ' + p.tags.join(', ') : ''}`
-    if (headerLines.length > 0) block += `\n\n## Captured Headers (use these in your HTTP request headers)\n${headerLines.join('\n')}`
-    if (cookieStr) block += `\n\n## Captured Cookies (use these in your HTTP request cookie header)\n  ${cookieStr}`
-    if (p.authType) block += `\n\n## Auth Type: ${p.authType} — retrieve the captured auth headers for ${p.url} to get full auth context`
+    let block = `${task}\n\n## Observed Target Endpoint\n- URL: ${url}\n- Method: ${p.method}\n- Inputs: ${JSON.stringify(p.params || [])}${p.authRequired ? '\n- Auth Required: Yes (' + (p.authType || 'unknown') + ')' : ''}${p.tags ? '\n- Tags: ' + p.tags.join(', ') : ''}`
+    if (headerNames.length > 0) block += `\n- Observed request header names: ${headerNames.join(', ')}`
+    if (cookieNames.length > 0) block += `\n- Observed cookie names: ${cookieNames.join(', ')}`
+    if (p.authType) block += `\n- Auth Type: ${p.authType}; use a registered session reference to retrieve credentials.`
 
     return `${block}${brainStateBlock()}`
   } catch {

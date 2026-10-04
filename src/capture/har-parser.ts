@@ -304,14 +304,30 @@ export function maskSecret(value: string): string {
   return `${v.slice(0, 4)}${'*'.repeat(Math.min(12, v.length - 4))}`
 }
 
-function isUsableBodySecret(value: string): boolean {
+function isUsableBodySecret(value: string, type?: string): boolean {
   const normalized = value.trim().toLowerCase()
   if (value.trim().length < 8) return false
+  // Configuration URLs and hostnames are not credentials, even when they are
+  // stored under a security-related field name.
+  if (/^(?:https?:\/\/|wss?:\/\/|[a-z0-9.-]+\.[a-z]{2,}(?:\/|$))/i.test(value.trim())) return false
   // Human-readable labels/help text are not credentials. Token/session/CSRF
   // values must be compact value-shaped strings; passwords still allow spaces
   // but must contain non-word entropy beyond a field label.
   if (/\s/.test(value) && !/[!@#$%^&*()_+=\-]/.test(value)) return false
-  return !/^(?:token|password|session|secret|example|placeholder|undefined|null|redacted|test|true|false|your[-_])/i.test(normalized)
+  if (/^(?:token|password|session|secret|example|placeholder|undefined|null|redacted|test|true|false|your[-_])/i.test(normalized)) return false
+  // Key/token-shaped fields need credential-like values. This intentionally
+  // rejects public labels such as `scoreBoardChallenge` while retaining common
+  // high-entropy hex/base64 secrets and generated test credentials.
+  if (type === 'api_key' || type === 'csrf' || type === 'token' || type === 'session') {
+    const compact = value.trim()
+    if (compact.length < (type === 'api_key' ? 16 : 12)) return false
+    const classes = [/[a-z]/.test(compact), /[A-Z]/.test(compact), /\d/.test(compact), /[^a-zA-Z0-9]/.test(compact)].filter(Boolean).length
+    const hasNumericOrSymbol = /[\d\W_]/.test(compact)
+    const hasLongEncodedShape = compact.length >= 24 && /^[A-Za-z0-9+/_=-]+$/.test(compact)
+    if (!hasLongEncodedShape && (!hasNumericOrSymbol || classes < 2)) return false
+    if (type === 'api_key' && !hasLongEncodedShape && classes < 3) return false
+  }
+  return true
 }
 
 function isUsableHeaderSecret(type: string, headerName: string, value: string): boolean {
@@ -319,7 +335,7 @@ function isUsableHeaderSecret(type: string, headerName: string, value: string): 
   if (type === 'jwt') return /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.?[A-Za-z0-9_\-./+=]*/.test(value)
   if (!/(authorization|cookie|set-cookie|x[-_]?(auth|csrf|xsrf)|token|session|sid)/i.test(name)) return false
   if (/^(?:authorization|proxy-authorization)$/i.test(name)) return /^(?:bearer|basic)\s+\S+/i.test(value.trim())
-  return isUsableBodySecret(value)
+  return isUsableBodySecret(value, type)
 }
 
 function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Array<{ name: string; value: string }> {
@@ -329,7 +345,7 @@ function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Arra
     const jwtPattern = new RegExp(JWT_VALUE.source, 'g')
     for (const match of body.matchAll(jwtPattern)) {
       const value = match[0]
-      if (isUsableBodySecret(value)) out.push({ name: type, value })
+    if (isUsableBodySecret(value, type)) out.push({ name: type, value })
     }
     return out
   }
@@ -352,8 +368,12 @@ function bodySecretMatches(body: string, type: string, patterns: RegExp[]): Arra
   for (const match of body.matchAll(assignment)) {
     const key = match[2]
     if (!nameMatchesSecretType(type, key)) continue
+    // Report specialized credentials under their specific class only. A
+    // csrfToken is also literally a token, but double classifying it creates
+    // duplicate candidate findings without adding evidence.
+    if (type === 'token' && (nameMatchesSecretType('csrf', key) || nameMatchesSecretType('api_key', key))) continue
     const value = match[3]
-    if (isUsableBodySecret(value)) out.push({ name: key, value })
+    if (isUsableBodySecret(value, type)) out.push({ name: key, value })
   }
   return out
 }
@@ -374,7 +394,7 @@ function nameTokens(name: string): string[] {
 
 /** Token vocabulary per secret class. Equality on tokens, never substring. */
 const SECRET_NAME_TOKENS: Record<string, Set<string>> = {
-  api_key: new Set(['key', 'apikey', 'api']),
+  api_key: new Set(['apikey']),
   token: new Set(['token', 'bearer', 'authorization', 'auth']),
   password: new Set(['password', 'passwd', 'pwd', 'passphrase']),
   session: new Set(['session', 'jsessionid', 'sessionid']),
@@ -387,13 +407,23 @@ const SECRET_NAME_TOKENS: Record<string, Set<string>> = {
  * Token-equality only. The previous implementation was a substring regex, and
  * `/sid/i` matches considered, outside, residual and provided - which is how an
  * application exposing no secrets produced a report full of "Secret Exposure:
- * session" findings. A name qualifies when one of its tokens is exactly a known
- * word for the class.
+ * session" findings. A name qualifies when its structured tokens identify a
+ * credential field; ambiguous bare fields and prose labels do not.
  */
 export function nameMatchesSecretType(type: string, name: string): boolean {
   const vocab = SECRET_NAME_TOKENS[type]
   if (!vocab) return false
-  return nameTokens(name).some(t => vocab.has(t))
+  const tokens = nameTokens(name)
+  if (type === 'api_key') {
+    const namedApiKey = tokens.includes('apikey') || (tokens.includes('api') && tokens.includes('key'))
+    const namedAwsKey = tokens.includes('aws') && tokens.includes('access') && tokens.includes('key') && (tokens.includes('id') || tokens.includes('secret'))
+    return namedApiKey || namedAwsKey
+  }
+  if (type === 'csrf') {
+    const challengeName = tokens.includes('csrf') || tokens.includes('xsrf')
+    return challengeName && (tokens.includes('token') || tokens.includes('secret') || tokens.includes('value'))
+  }
+  return tokens.some(t => vocab.has(t))
 }
 
 /** JWTs are detected by VALUE shape, not by name - shape, not vocabulary. */
@@ -446,7 +476,7 @@ export function getSecrets(entries: HarEntry[]): Secret[] {
     // Check cookies
     for (const cookie of entry.response.cookies) {
       for (const { type, patterns } of secretPatterns) {
-        if (nameMatchesSecretType(type, cookie.name) && isUsableBodySecret(cookie.value)) {
+        if (nameMatchesSecretType(type, cookie.name) && isUsableBodySecret(cookie.value, type)) {
           secrets.push({
             type,
             location: 'cookie',

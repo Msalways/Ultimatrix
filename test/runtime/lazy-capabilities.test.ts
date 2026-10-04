@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
 import { buildRuntimeEnvelope, runtimeEnvelopeTokenBudget, sanitizeDurableContext } from '../../src/runtime/context-envelope'
+import { LazySolverServices } from '../../src/runtime/lazy-services'
+import { EvidenceGate } from '../../src/intelligence/evidence-gate'
+import { __setTestFallback } from '../../src/runtime/engagement-context'
+import { SessionManager } from '../../src/http/session-manager'
+import { CapturedRequestStore } from '../../src/capture/captured-request-store'
 
 const descriptor = {
   id: 'coldTool',
@@ -57,5 +62,36 @@ describe('bounded runtime context', () => {
     expect(envelope).not.toContain('reasoning')
     expect(sanitizeDurableContext({ ok: 1, reasoning: 'scratch', requestBody: 'secret', nested: { tool_output: 'large' } }))
       .toEqual({ ok: 1, nested: {} })
+  })
+})
+
+describe('coverage campaign turn scoping', () => {
+  afterEach(() => __setTestFallback(null))
+
+  it('reuses work for retries in one turn and refreshes on a later turn', async () => {
+    const graph = {
+      queryNodes: () => [], getAllEdges: () => [], getNode: () => undefined,
+      getTargetSummary: () => ({ totalPages: 0, totalEndpoints: 0, totalFindings: 0, totalTests: 0, authFlows: 0, rbacRoles: 0 }),
+      upsertNode: (node: unknown) => node, save: async () => {},
+    }
+    __setTestFallback({
+      graph, httpSessions: new SessionManager(), capturedRequests: new CapturedRequestStore(),
+      findingState: { evidenceBuffer: new Map(), evidenceGate: null },
+    } as any)
+    const services = new LazySolverServices({
+      config: { provider: 'test', campaign: { maxRequests: 100, maxDurationMs: 10_000 } } as any,
+      target: 'http://target.test', skillRegistry: {} as any,
+      extensionRegistry: {} as any,
+    })
+    const firstGate = new EvidenceGate()
+    const firstRun = services.runCoverageCampaign(firstGate, 'turn-1')
+    expect(services.runCoverageCampaign(firstGate, 'turn-1')).toBe(firstRun)
+    const secondGate = new EvidenceGate()
+    const secondRun = services.runCoverageCampaign(secondGate, 'turn-2')
+
+    await Promise.all([firstRun, secondRun])
+    expect((await firstRun).status).toBe('partial')
+    expect((await secondRun).status).toBe('partial')
+    __setTestFallback(null)
   })
 })

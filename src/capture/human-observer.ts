@@ -4,6 +4,8 @@ import { getTechniqueRegistry } from '../skills/technique-registry'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
 import { getEngagementServices } from '../runtime/engagement-context'
+import { getCapturedRequestStore } from './captured-request-store'
+import { isUrlInScope } from '../safety/scope-guard'
 
 export type HumanActionType = 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
 
@@ -346,6 +348,9 @@ export class HumanObserver {
 
   private attachInjectedObserver(page: Page): void {
     const sp = page as any
+    const services = getEngagementServices()
+    const requestStore = services?.capturedRequests ?? getCapturedRequestStore()
+    const requestStartedAt = new WeakMap<object, number>()
 
     if (typeof sp.addInitScript === 'function') sp.addInitScript(STAGEHAND_INIT_SCRIPT).catch(() => {})
     if (typeof sp.evaluate === 'function') sp.evaluate(STAGEHAND_INIT_SCRIPT).catch(() => {})
@@ -385,6 +390,52 @@ export class HumanObserver {
         })
       } catch (error) {
         log.dim(`[human-observer] console events unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      const requestStartHandler = (request: any) => {
+        const url = typeof request.url === 'function' ? request.url() : ''
+        if (url && isUrlInScope(url, services ? services.scopeConfig : undefined, { allowAny: services?.allowAny }).allowed) {
+          requestStartedAt.set(request, Date.now())
+        }
+      }
+      const requestFinishHandler = async (request: any) => {
+        const capturedAt = requestStartedAt.get(request)
+        requestStartedAt.delete(request)
+        if (!capturedAt) return
+        try {
+          const response = await request.response?.()
+          let responseBody: string | undefined
+          if (response?.body) {
+            const body = await response.body().catch(() => undefined)
+            if (body) responseBody = body.subarray(0, 1024 * 1024).toString('utf8')
+          }
+          requestStore.record({
+            method: request.method(),
+            url: request.url(),
+            headers: await request.allHeaders().catch(() => request.headers()),
+            body: request.postData() ?? undefined,
+            ...(response ? {
+              status: response.status(),
+              responseHeaders: await response.allHeaders().catch(() => response.headers()),
+              ...(responseBody !== undefined ? { responseBody } : {}),
+            } : {}),
+            source: 'browser',
+            capturedAt,
+          })
+        } catch { /* a failed capture must not interfere with the user's browser */ }
+      }
+      try {
+        ;(page as any).on('request', requestStartHandler)
+        ;(page as any).on('requestfinished', requestFinishHandler)
+        cleaners.push(() => {
+          const off = (page as any).off ?? (page as any).removeListener
+          if (typeof off === 'function') {
+            off.call(page, 'request', requestStartHandler)
+            off.call(page, 'requestfinished', requestFinishHandler)
+          }
+        })
+      } catch (error) {
+        log.dim(`[human-observer] live request capture unavailable: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 

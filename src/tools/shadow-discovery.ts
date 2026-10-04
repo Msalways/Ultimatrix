@@ -1,95 +1,84 @@
 /**
- * shadowApiDiscovery — enumerate undocumented / shadow API endpoints
- * (OWASP BLA10 "Undefined Action / Shadow API").
+ * Mine already captured, same-origin responses for API routes.
  *
- * Crawls a target's JS bundles + common OpenAPI/doc paths + version-prefixed
- * routes to surface admin/undocumented endpoints that the published API omits.
- * Every discovered endpoint is returned as STRUCTURED data (typed shape) and
- * scope-checked, so the LLM reasons over discovered facts, not prose.
- *
- * Reuses the graph's findEndpointsInResponse observation oracle + recon scope
- * guard. No hardcoded endpoint-name vocabulary — paths come from the live
- * responses. Seed words (admin/api/internal) are DATA used only to *score*
- * relevance, never to detect a fixed list.
+ * Discovery is passive: this tool never constructs a URL to request. Route
+ * candidates must come from a captured response body (delivered client code,
+ * links, or an API schema) and retain the capture id that supplied them.
  */
 
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
-import { httpRequest } from './http-tools'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { mineJsEndpoints } from '../capture/js-miner'
 import { isUrlInScope } from '../safety/scope-guard'
-import { observeEndpoints } from '../primitives/observers'
-import { loadSkill } from '../solver/skills/loader'
 
 export const shadowApiDiscovery = createTool({
   id: 'shadowApiDiscovery',
   description:
-    'Discover shadow/undocumented API endpoints by mining JS bundles, OpenAPI specs, and version-prefixed routes. Returns structured endpoint candidates (typed), scope-checked. Use to find admin/internal paths the published API omits (BLA10).',
+    'Passively mine already captured same-origin HTML, JavaScript, and API-schema responses for endpoint candidates. Never sends HTTP requests or invents paths.',
   inputSchema: z.object({
-    baseUrl: z.string().url().describe('Target origin to enumerate from.'),
-    jsBundles: z.array(z.string()).optional().describe('Known JS bundle URLs to mine for endpoint strings.'),
-    extraSeeds: z.array(z.string()).optional().describe('Additional path seeds to probe (e.g. /admin, /internal).'),
-  }),
+    baseUrl: z.string().url().describe('Observed target origin whose captured responses may be mined.'),
+  }).strict(),
   outputSchema: z.object({
     ok: z.boolean(),
     endpoints: z.array(z.object({ path: z.string(), source: z.string(), relevant: z.boolean(), inScope: z.boolean() })),
     error: z.string().optional(),
   }),
-  execute: async (ctx) => {
-    const base = ctx.baseUrl.replace(/\/$/, '')
-    const scope = isUrlInScope(base)
+  execute: async ({ baseUrl }) => {
+    let origin: URL
+    try { origin = new URL(baseUrl) } catch { return { ok: false, endpoints: [], error: 'invalid base URL' } }
+    const scope = isUrlInScope(origin.origin)
     if (!scope.allowed) return { ok: false, endpoints: [], error: `out of scope: ${scope.reason}` }
 
+    const relevanceSignals = ['admin', 'internal', 'debug', 'manage', 'secret', 'config', 'console', 'private']
     const found = new Map<string, { path: string; source: string }>()
-    const add = (path: string, source: string) => {
-      if (!path || path.startsWith('http')) return
-      const p = path.startsWith('/') ? path : `/${path}`
-      if (!found.has(p)) found.set(p, { path: p, source })
-    }
-
-    const strategy = loadSkill('recon')?.strategy
-    const seedPaths = [...(strategy?.seedPaths ?? []), ...(ctx.extraSeeds ?? [])]
-    const versionPrefixes = strategy?.versionPrefixes ?? []
-    const relevanceSignals = strategy?.relevanceSignals ?? []
-    // Probe seeds supplied by the selected recon skill, plus target-derived additions.
-    for (const seed of seedPaths) {
+    const add = (candidate: string | undefined, source: string) => {
+      if (!candidate) return
       try {
-        const r: any = await (httpRequest as any).execute({ method: 'GET', url: `${base}${seed}`, headers: {} })
-        if (r?.ok && r.value?.body) {
-          const eps = await observeEndpoints(r.value.body as string, base)
-          eps.forEach((e: string) => add(e, seed))
-          // Swagger/OpenAPI JSON paths.
-          try {
-            const spec = JSON.parse(r.value.body as string)
-            const paths = Object.keys(spec.paths ?? {})
-            paths.forEach((p) => add(p, seed))
-          } catch { /* not a spec */ }
-        }
-      } catch { /* ignore probe failures */ }
+        const parsed = new URL(candidate, origin)
+        if (parsed.origin !== origin.origin || !isUrlInScope(parsed.toString()).allowed) return
+        const path = `${parsed.pathname}${parsed.search}`
+        if (path === '/') return
+        if (!found.has(path)) found.set(path, { path, source })
+      } catch { /* malformed strings are not endpoint evidence */ }
     }
 
-    // Mine JS bundles for path-like strings.
-    for (const bundle of ctx.jsBundles ?? []) {
-      try {
-        const r: any = await (httpRequest as any).execute({ method: 'GET', url: bundle, headers: {} })
-        if (r?.ok && r.value?.body) {
-          const eps = await observeEndpoints(r.value.body as string, base)
-          eps.forEach((e: string) => add(e, bundle))
-        }
-      } catch { /* ignore */ }
-    }
+    const captureStore = getCapturedRequestStore()
+    for (const ref of captureStore.list({ host: origin.host })) {
+      const entry = captureStore.get(ref.id)
+      const body = entry?.responseBody
+      if (!body) continue
+      let responseUrl: URL
+      try { responseUrl = new URL(ref.url) } catch { continue }
+      if (responseUrl.origin !== origin.origin) continue
 
-    // Version-prefixed variants of discovered endpoints (shadow versioning).
-    const base2 = [...found.keys()]
-    for (const p of base2) {
-      for (const vp of versionPrefixes) {
-        if (!p.startsWith(vp)) add(`${vp}${p}`, 'version-prefix')
+      const contentType = Object.entries(entry?.responseHeaders ?? {})
+        .find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.toLowerCase() ?? ''
+      if (!/(?:javascript|ecmascript|text\/html|application\/json|\+json)/.test(contentType)) continue
+
+      const captureRef = `${ref.id}:${responseUrl.pathname}`
+      for (const candidate of mineJsEndpoints(body, responseUrl.toString())) {
+        if (!candidate.inScope || !candidate.url) continue
+        add(candidate.url, `${captureRef}:client-${candidate.source}`)
       }
+
+      // An API schema is useful only when the schema itself was captured from
+      // a target-provided link or client request; its operation paths are not
+      // probed here.
+      try {
+        const document = JSON.parse(body)
+        if (document?.paths && typeof document.paths === 'object') {
+          for (const path of Object.keys(document.paths)) add(path, `${captureRef}:captured-api-schema`)
+        }
+      } catch { /* response was not JSON */ }
     }
 
-    const endpoints = [...found.entries()].map(([path, meta]) => {
-      const relevant = relevanceSignals.some((w) => path.toLowerCase().includes(w))
-      return { path, source: meta.source, relevant, inScope: isUrlInScope(`${base}${path}`).allowed }
-    })
+    const endpoints = [...found.entries()].map(([path, meta]) => ({
+      path,
+      source: meta.source,
+      relevant: relevanceSignals.some(signal => path.toLowerCase().includes(signal)),
+      inScope: isUrlInScope(new URL(path, origin).toString()).allowed,
+    }))
     return { ok: true, endpoints }
   },
 })

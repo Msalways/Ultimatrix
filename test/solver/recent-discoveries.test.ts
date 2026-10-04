@@ -65,6 +65,14 @@ vi.mock('../../src/config', () => ({
 
 import { solve } from '../../src/solver/solver'
 
+const TEST_SOLVER_CONFIG = {
+  provider: 'mock',
+  model: 'mock-model',
+  modelCapabilities: {
+    'mock/mock-model': { contextWindow: 128_000, maxOutputTokens: 8_192 },
+  },
+}
+
 function createMockAgent(textChunks: string[]) {
   let callIndex = 0
   return {
@@ -97,6 +105,7 @@ describe('Recent Discoveries — moved to getSessionContext tool', () => {
     await solve(agent1 as any, {
       origin: 'https://example.com',
       goal: 'Find vulnerabilities',
+      ultimatrixConfig: TEST_SOLVER_CONFIG as any,
     })
 
     // Simulate new endpoint discovered between turns
@@ -111,6 +120,7 @@ describe('Recent Discoveries — moved to getSessionContext tool', () => {
     await solve(agent2 as any, {
       origin: 'https://example.com',
       goal: 'Continue testing',
+      ultimatrixConfig: TEST_SOLVER_CONFIG as any,
     })
 
     const secondPrompt = agent2.stream.mock.calls[0][0] as string
@@ -125,6 +135,7 @@ describe('Recent Discoveries — moved to getSessionContext tool', () => {
     await solve(agent as any, {
       origin: 'https://example.com',
       goal: 'Find vulnerabilities',
+      ultimatrixConfig: TEST_SOLVER_CONFIG as any,
     })
 
     const prompt = agent.stream.mock.calls[0][0] as string

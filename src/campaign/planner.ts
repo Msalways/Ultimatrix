@@ -27,6 +27,7 @@ import type {
   PlanOptions,
   PrimitiveRef,
 } from './types'
+import { isTransportOrAssetUrl } from '../research/utils'
 
 const DEFAULT_ROLE = 'anonymous'
 const ANONYMOUS_ROLE = 'anonymous'
@@ -49,7 +50,7 @@ interface EndpointContext {
   node: EndpointNode
   roles: string[]
   states: string[]
-  params: string[]
+  inputs: Array<{ name: string; location: string; type?: string; required?: boolean }>
 }
 
 /** Structured, shape/typed-derived signals for a single endpoint. */
@@ -104,11 +105,17 @@ function signalMatchedTags(primitive: PrimitiveRef, signals: Set<string>): strin
   return matched
 }
 
-function endpointParams(ep: EndpointNode): string[] {
-  const fromParams = (ep.properties.params ?? []).map(p => p.name)
-  const fromHeaders = ep.properties.headers ? Object.keys(ep.properties.headers) : []
-  const set = new Set<string>([...fromParams, ...fromHeaders])
-  return [...set].filter(Boolean)
+function endpointInputs(ep: EndpointNode): EndpointContext['inputs'] {
+  const inputs = new Map<string, EndpointContext['inputs'][number]>()
+  for (const param of ep.properties.params ?? []) {
+    const location = param.in || 'query'
+    if (param.name) inputs.set(`${location}:${param.name}`, { name: param.name, location, type: param.type, required: param.required })
+  }
+  for (const name of Object.keys(ep.properties.headers ?? {})) {
+    if (STANDARD_HEADERS.has(name.toLowerCase())) continue
+    if (!inputs.has(`header:${name}`)) inputs.set(`header:${name}`, { name, location: 'header' })
+  }
+  return inputs.size ? [...inputs.values()] : [{ name: '', location: 'endpoint' }]
 }
 
 function deriveRoles(ep: EndpointNode, rbacRoles: RBACRoleNode[], includeAnonymous: boolean): string[] {
@@ -135,6 +142,12 @@ function deriveRoles(ep: EndpointNode, rbacRoles: RBACRoleNode[], includeAnonymo
   }
 
   return [...roles]
+}
+
+function actorVariants(role: string, options: PlanOptions): Array<{ actor: string; sessionRef?: string }> {
+  if (role === ANONYMOUS_ROLE) return [{ actor: role }]
+  const refs = [...new Set(options.actorSessions?.[role] ?? options.actorSessions?.authenticated ?? [])]
+  return refs.length ? refs.map(sessionRef => ({ actor: sessionRef, sessionRef })) : [{ actor: role }]
 }
 
 function deriveStates(ep: EndpointNode): string[] {
@@ -169,7 +182,15 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   const includeAnonymous = options.includeAnonymous ?? true
   const defaultRole = options.defaultRole ?? DEFAULT_ROLE
 
-  const endpoints = graphStore.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
+  const endpoints = (graphStore.queryNodes(NodeType.ENDPOINT) as EndpointNode[]).filter(ep => {
+    const method = String(ep.properties.method ?? 'GET').toUpperCase()
+    if (isTransportOrAssetUrl(ep.properties.url, method)) return false
+    // The site root is a document/navigation surface. With no observed input
+    // or state-changing method it cannot support a meaningful primitive test.
+    try {
+      return !(method === 'GET' && new URL(ep.properties.url).pathname === '/' && (ep.properties.params ?? []).length === 0)
+    } catch { return false }
+  })
   const authSchemes = graphStore.queryNodes(NodeType.AUTH_SCHEME) as AuthSchemeNode[]
   const rbacRoles = graphStore.queryNodes(NodeType.RBAC_ROLE) as RBACRoleNode[]
   const hypotheses = (graphStore.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]).filter(
@@ -193,12 +214,12 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   }
 
   const epContexts: EndpointContext[] = endpoints.map(ep => {
-    const params = endpointParams(ep)
+    const roles = deriveRoles(ep, rbacRoles, includeAnonymous)
     return {
       node: ep,
-      roles: deriveRoles(ep, rbacRoles, includeAnonymous),
+      roles: roles.length ? roles : [defaultRole],
       states: deriveStates(ep),
-      params,
+      inputs: endpointInputs(ep),
     }
   })
 
@@ -210,13 +231,14 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   const coveredEndpoints = new Set<string>()
   const coveredParams = new Set<string>()
   const coveredRoles = new Set<string>()
+  const coveredActors = new Set<string>()
   const coveredStates = new Set<string>()
   const coveredTechniques = new Set<string>()
 
   for (const ctx of epContexts) {
     const ep = ctx.node
     const url = ep.properties.url
-    const hasParams = ctx.params.length > 0
+    const hasParams = ctx.inputs[0]?.location !== 'endpoint'
     const signals = endpointSignals(ep)
 
     const hypBoost = hypotheses.filter(h => (h.properties.targetEndpoints ?? []).includes(url)).length
@@ -224,93 +246,94 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
 
     for (const role of ctx.roles) {
       if (roleFilter && !roleFilter.includes(role)) continue
-      for (const state of ctx.states) {
-        if (stateFilter && !stateFilter.includes(state)) continue
+      for (const actor of actorVariants(role, options)) {
+        for (const state of ctx.states) {
+          if (stateFilter && !stateFilter.includes(state)) continue
 
-        const relevantTechniques = primitives.filter(p => {
-          if (techniqueFilter && !techniqueFilter.includes(p.id)) return false
-          return isTechniqueRelevant(p, ep, hasParams, signals)
-        })
-        if (relevantTechniques.length === 0) continue
+          const relevantTechniques = primitives.filter(p => {
+            if (techniqueFilter && !techniqueFilter.includes(p.id)) return false
+            return isTechniqueRelevant(p, ep, hasParams, signals)
+          })
+          if (relevantTechniques.length === 0) continue
 
-        // Signal-aligned techniques get a routing boost (T6) so the campaign
-        // favors primitives whose tags match this endpoint's real surface.
-        const signalTechniqueIds = relevantTechniques
-          .filter(p => signalMatchedTags(p, signals).length > 0)
-          .map(p => p.id)
-        const signalBoost = signalTechniqueIds.length > 0 ? 3 : 0
+          // Signal-aligned techniques get a routing boost (T6) so the campaign
+          // favors primitives whose tags match this endpoint's real surface.
+          const signalTechniqueIds = relevantTechniques
+            .filter(p => signalMatchedTags(p, signals).length > 0)
+            .map(p => p.id)
+          const signalBoost = signalTechniqueIds.length > 0 ? 3 : 0
 
-        let priority = 0
-        if (role === AUTHENTICATED_ROLE || ep.properties.authType) priority += 2
-        if (hasParams) priority += 1
-        priority += Math.min(6, hypBoost * 3)
-        priority += Math.min(3, factBoost)
-        if (state !== BASELINE_STATE) priority += 1
-        if (reusedEndpoints.has(url)) priority += 1
-        if (valueOriginEndpoints.has(ep.id)) priority += 2
-        priority += signalBoost
+          let priority = 0
+          if (role === AUTHENTICATED_ROLE || ep.properties.authType) priority += 2
+          if (hasParams) priority += 1
+          priority += Math.min(6, hypBoost * 3)
+          priority += Math.min(3, factBoost)
+          if (state !== BASELINE_STATE) priority += 1
+          if (reusedEndpoints.has(url)) priority += 1
+          if (valueOriginEndpoints.has(ep.id)) priority += 2
+          priority += signalBoost
 
-        const techniqueIds = relevantTechniques.map(p => p.id)
-        const reasonBits: string[] = []
-        if (hypBoost) reasonBits.push(`${hypBoost} human hypothes(is/es) target this endpoint`)
-        if (ep.properties.authType) reasonBits.push(`auth:${ep.properties.authType}`)
-        if (hasParams) reasonBits.push(`${ctx.params.length} param(s)`)
-        if (signalTechniqueIds.length > 0) reasonBits.push(`signals: ${[...signals].slice(0, 5).join(', ')}`)
-        if (signalBoost) reasonBits.push(`${signalTechniqueIds.length} signal-aligned technique(s)`)
-
-        slices.push({
-          id: `slice:${ep.id}:${role}:${state}`,
-          endpoint: { id: ep.id, url, method: ep.properties.method },
-          params: ctx.params,
-          role,
-          state,
-          techniqueIds,
-          priority,
-          reason: reasonBits.join('; ') || undefined,
-        })
-
-        coveredEndpoints.add(ep.id)
-        ctx.params.forEach(p => coveredParams.add(`${ep.id}#${p}`))
-        coveredRoles.add(role)
-        coveredStates.add(state)
-        techniqueIds.forEach(t => coveredTechniques.add(t))
+          const reasonBits: string[] = []
+          if (hypBoost) reasonBits.push(`${hypBoost} human hypothes(is/es) target this endpoint`)
+          if (ep.properties.authType) reasonBits.push(`auth:${ep.properties.authType}`)
+          if (hasParams) reasonBits.push(`${ctx.inputs.length} input(s)`)
+          if (signalTechniqueIds.length > 0) reasonBits.push(`signals: ${[...signals].slice(0, 5).join(', ')}`)
+          if (signalBoost) reasonBits.push(`${signalTechniqueIds.length} signal-aligned technique(s)`)
+          for (const input of ctx.inputs) {
+            for (const primitive of relevantTechniques) {
+              const inputId = encodeURIComponent(`${input.location}:${input.name}`)
+              const actorId = encodeURIComponent(actor.sessionRef ?? actor.actor)
+              slices.push({
+                id: `slice:${ep.id}:${inputId}:${encodeURIComponent(role)}:${actorId}:${encodeURIComponent(state)}:${encodeURIComponent(primitive.id)}`,
+                endpoint: { id: ep.id, url, method: ep.properties.method },
+                input,
+                params: input.name ? [input.name] : [],
+                role,
+                actor: actor.actor,
+                ...(actor.sessionRef ? { sessionRef: actor.sessionRef } : {}),
+                state,
+                techniqueIds: [primitive.id],
+                domains: primitive.domains ?? [],
+                priority: priority + (signalTechniqueIds.includes(primitive.id) ? 1 : 0),
+                reason: reasonBits.join('; ') || undefined,
+              })
+              coveredEndpoints.add(ep.id)
+              if (input.name) coveredParams.add(`${ep.id}#${input.location}:${input.name}`)
+              coveredRoles.add(role)
+              coveredActors.add(actor.actor)
+              coveredStates.add(state)
+              coveredTechniques.add(primitive.id)
+            }
+          }
+        }
       }
     }
   }
 
-  // De-dupe empty-role default fallback: ensure at least the default role is
-  // represented when no roles were derived. Only RELEVANT techniques are included
-  // (auth-bound techniques must not leak onto unauthenticated endpoints).
-  if (slices.length === 0 && endpoints.length > 0) {
-    const ep = endpoints[0]
-    const signals = endpointSignals(ep)
-    const hasParams = endpointParams(ep).length > 0
-    const fallbackTechniques = primitives
-      .filter(p => isTechniqueRelevant(p, ep, hasParams, signals))
-      .map(p => p.id)
-    if (fallbackTechniques.length > 0) {
-      slices.push({
-        id: `slice:${ep.id}:${defaultRole}:${BASELINE_STATE}`,
-        endpoint: { id: ep.id, url: ep.properties.url, method: ep.properties.method },
-        params: endpointParams(ep),
-        role: defaultRole,
-        state: BASELINE_STATE,
-        techniqueIds: fallbackTechniques,
-        priority: 1,
-      })
-      coveredEndpoints.add(ep.id)
-      fallbackTechniques.forEach(t => coveredTechniques.add(t))
-    }
-  }
-
   slices.sort((a, b) => b.priority - a.priority)
-  if (options.maxSlices && options.maxSlices > 0 && slices.length > options.maxSlices) {
-    slices.length = options.maxSlices
+
+  coveredEndpoints.clear()
+  coveredParams.clear()
+  coveredRoles.clear()
+  coveredActors.clear()
+  coveredStates.clear()
+  coveredTechniques.clear()
+  for (const slice of slices) {
+    coveredEndpoints.add(slice.endpoint.id)
+    if (slice.input?.name) coveredParams.add(`${slice.endpoint.id}#${slice.input.location}:${slice.input.name}`)
+    coveredRoles.add(slice.role)
+    coveredActors.add(slice.actor ?? slice.role)
+    coveredStates.add(slice.state)
+    slice.techniqueIds.forEach(id => coveredTechniques.add(id))
   }
 
-  const totalParams = epContexts.reduce((acc, c) => acc + c.params.length, 0)
+  const totalParams = epContexts.reduce((acc, c) => acc + c.inputs.filter(input => input.name).length, 0)
   const allRoles = new Set<string>()
-  for (const c of epContexts) c.roles.forEach(r => allRoles.add(r))
+  const allActors = new Set<string>()
+  for (const c of epContexts) c.roles.forEach(r => {
+    allRoles.add(r)
+    actorVariants(r, options).forEach(actor => allActors.add(actor.actor))
+  })
   const allStates = new Set<string>()
   for (const c of epContexts) c.states.forEach(s => allStates.add(s))
 
@@ -321,6 +344,8 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     paramsCovered: coveredParams.size,
     rolesTotal: allRoles.size,
     rolesCovered: coveredRoles.size,
+    actorsTotal: allActors.size,
+    actorsCovered: coveredActors.size,
     statesTotal: allStates.size,
     statesCovered: coveredStates.size,
     techniquesTotal: primitives.length,
@@ -331,9 +356,40 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     humanHypothesesConsidered: hypotheses.length,
   }
 
+  const domains = new Set(options.domainNames ?? primitives.flatMap(primitive => primitive.domains ?? []))
+  const domainResults = [...domains].sort().map(domain => {
+    const domainPrimitives = primitives.filter(primitive => primitive.domains?.includes(domain))
+    const declaredPrimitiveIds = options.domainPrimitiveIds?.[domain] ?? domainPrimitives.map(primitive => primitive.id)
+    const domainSlices = slices.filter(slice => slice.domains?.includes(domain))
+    return {
+      domain,
+      status: declaredPrimitiveIds.length === 0
+        ? 'skipped' as const
+        : domainPrimitives.length === 0
+          ? 'blocked' as const
+        : endpoints.length === 0
+          ? 'blocked' as const
+          : domainSlices.length === 0
+            ? 'not_applicable' as const
+            : 'skipped' as const,
+      unitsPlanned: domainSlices.length,
+      unitsCompleted: 0,
+      ...(declaredPrimitiveIds.length === 0
+        ? { reason: 'No campaign primitive is mapped from the live skill registry.' }
+        : domainPrimitives.length === 0
+          ? { reason: `Unavailable campaign primitive(s): ${declaredPrimitiveIds.join(', ')}.` }
+        : endpoints.length === 0
+          ? { reason: 'No target endpoints were discovered.' }
+          : domainSlices.length === 0
+            ? { reason: "No discovered endpoint matches this domain's declared primitives." }
+            : { reason: 'Campaign units are planned and awaiting execution.' }),
+    }
+  })
+
   return {
     slices,
     coverage,
+    domains: domainResults,
     generatedAt: Date.now(),
     options,
   }
@@ -368,6 +424,18 @@ export function replanCampaign(
       slicesExecuted: 0,
       slicesConfirmed: 0,
     },
+    domains: fullPlan.domains?.map(domain => {
+      const unitsPlanned = newSlices.filter(slice => slice.domains?.includes(domain.domain)).length
+      return {
+        ...domain,
+        unitsPlanned,
+        unitsCompleted: 0,
+        status: unitsPlanned ? 'skipped' as const : 'not_applicable' as const,
+        reason: unitsPlanned
+          ? 'New coverage units are planned and awaiting execution.'
+          : 'No new endpoint, input, actor, state, or technique unit was added for this domain.',
+      }
+    }),
     generatedAt: Date.now(),
     options: freshOptions,
   }

@@ -8,6 +8,7 @@ import { redactHarJson } from '../security/secret-vault'
 import type { SkillRegistry } from '../solver/skills/registry'
 import { runSpiderRuntime, type SpiderRuntime, type SpiderRuntimeEvent, type SpiderRuntimeState } from '../spider/runtime'
 import type { WorkflowStore } from '../workflow/store'
+import type { TaskState } from '../workflow/types'
 import { WorkerPool } from '../workers/pool'
 import { createWorkerTaskCoordinator } from './worker-pool-executor'
 import type { TaskCoordinator } from './task-coordinator'
@@ -21,6 +22,8 @@ import { wrapStagehandTools } from '../browser/dialog-inject'
 import { log } from '../utils/logger'
 import { ensureContextPage, registerBrowserHandle, __browserTraceIds } from '../browser/manager'
 import type { RuntimeIdentity } from './identity'
+import type { CampaignResult } from '../campaign/types'
+import type { EvidenceGate } from '../intelligence/evidence-gate'
 
 type CaptureSession = {
   /** Drain completed entries while leaving the subscriber attached. */
@@ -92,8 +95,21 @@ export class LazySolverServices {
   // browser provider has failed, a model fallback must consume that fact
   // instead of launching the same 45s startup attempt again.
   private lastObservationState?: ObservationState
+  private coverageCampaign?: Promise<CampaignResult>
+  private coverageRunId?: string
 
   constructor(private readonly options: LazySolverServicesOptions) {}
+
+  /** One campaign per interactive run/retry sequence; later turns reuse new captures and sessions. */
+  runCoverageCampaign(gate: EvidenceGate, runId?: string): Promise<CampaignResult> {
+    if (!this.coverageCampaign || this.coverageRunId !== runId) {
+      this.coverageRunId = runId
+      this.coverageCampaign = import('../campaign/campaign-tool').then(({ runCampaignAssessment }) =>
+        runCampaignAssessment(this.options.config, gate),
+      )
+    }
+    return this.coverageCampaign
+  }
 
   setTurnObservers(observers: { onSpiderEvent?: (event: SpiderRuntimeEvent) => void; onSpiderRuntime?: (runtime: SpiderRuntime) => void }): void {
     this.onSpiderEvent = observers.onSpiderEvent
@@ -126,7 +142,7 @@ export class LazySolverServices {
   }
 
   async getBrowserTools(): Promise<Record<string, any>> {
-    return wrapStagehandTools(await this.ensureBrowser())
+    return wrapStagehandTools(await this.ensureBrowser(), () => this.flushBrowserCapture())
   }
 
   async ensureCapture(observedPage?: any): Promise<CaptureSession> {
@@ -189,6 +205,7 @@ export class LazySolverServices {
         }
       }
       await this.attachCaptureObservers(observedPage)
+      this.options.runtime?.services.passiveObserver.setCaptureFlusher(() => this.flushBrowserCapture())
       return capture
     })().then(capture => {
       this.captureValue = capture
@@ -438,7 +455,7 @@ export class LazySolverServices {
 
   private lastCaptureRequests = 0
 
-  private async persistCapture(capture: CaptureSession): Promise<number> {
+  private async persistCapture(capture: CaptureSession, runPostCrawlDiscovery = true): Promise<number> {
     const runtime = this.options.runtime
     if (!runtime) return 0
     // Drain only completed entries. The capture subscriber remains attached so
@@ -457,13 +474,19 @@ export class LazySolverServices {
     runtime.artifacts.create('har', { path, initialStatus: 'redacted', provenance: [{ source: 'capture', ref: 'network-capture' }] })
     await bridgeHARToGraph(har, this.options.target)
     // C4/C5 â€” post-crawl discovery (shadow API + js-miner), non-fatal.
-    try {
-      const { runPostCrawlDiscovery } = await import('../discovery/post-crawl')
-      await runPostCrawlDiscovery(this.options.target)
-    } catch {
-      /* discovery is best-effort */
+    if (runPostCrawlDiscovery) {
+      try {
+        const { runPostCrawlDiscovery } = await import('../discovery/post-crawl')
+        await runPostCrawlDiscovery(this.options.target)
+      } catch {
+        /* discovery is best-effort */
+      }
     }
     return this.lastCaptureRequests
+  }
+
+  private async flushBrowserCapture(): Promise<void> {
+    if (this.captureValue) await this.persistCapture(this.captureValue, false)
   }
 
   async ensureWorkers(): Promise<LazyWorkerServices> {
@@ -529,6 +552,10 @@ export class LazySolverServices {
 
   get observationState(): ObservationState | undefined {
     return this.lastObservationState
+  }
+
+  get taskStates(): ReadonlyArray<Pick<TaskState, 'taskId' | 'status'>> {
+    return this.workersValue?.taskCoordinator.listTasks().map(({ taskId, status }) => ({ taskId, status })) ?? []
   }
 
   /** Deterministic research setup is engagement-scoped and must not rerun on

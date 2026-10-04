@@ -86,3 +86,6 @@ juice-shop-current-check/
 juice-shop-iter5/
 juice-shop-pattern-run*/
 juice-shop-results/
+/.playwright-cli/
+/.ultimatrix-juice-shop-*.yaml
+/attack-results.json

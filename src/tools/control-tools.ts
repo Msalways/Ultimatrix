@@ -2,7 +2,7 @@ import { createTool } from '@mastra/core/tools'
 import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
-import { NodeType, EdgeType, buildClaimKey, type FindingNode, type ExploitProofNode, type DerivedLifecycle, validateNodeProperties } from '../graph/schema'
+import { NodeType, EdgeType, buildClaimKey, type FindingNode, type ExperimentNode, type ExploitProofNode, type DerivedLifecycle, validateNodeProperties } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
 import { generateFromFinding, type Finding } from '../generation/test-generator'
 import { TestStorage } from '../generation/test-storage'
@@ -14,6 +14,7 @@ import type { EvidenceLevel } from '../types/shared'
 import { isUrlInScope } from '../safety/scope-guard'
 import {
   verifyFindingClaim,
+  urlMatchesEndpoint,
   type EvidenceItem,
   type EvidenceItemType,
   type FindingClaim,
@@ -201,7 +202,12 @@ export function deriveBornLifecycleStatus(
   severity: string,
   evidenceLevel: EvidenceLevel,
   items: Array<{ type: string }>,
+  independentlyRetested = false,
 ): 'candidate' | 'pending_verification' | 'verified' {
+  // An endpoint-bound experiment has already passed both the typed initial
+  // oracle and a fresh independent retest before this promotion path runs.
+  if (independentlyRetested) return 'verified'
+
   // A browser effect or screenshot is the only evidence that something actually
   // happened in the application, as opposed to something being fetched. A
   // raw_request/raw_response pair, however strong it looks, is a record of
@@ -504,6 +510,27 @@ export async function promoteFindingCandidate(input: PromoteFindingInput): Promi
     effectiveSeverity,
     evidenceLevel,
     evidenceItems,
+    effectiveSeverity !== 'info' && (args.experimentIds ?? []).some(id => {
+      const experiment = store.getNode(id) as import('../graph/schema').ExperimentNode | undefined
+      if (experiment?.type !== NodeType.EXPERIMENT) return false
+      const request = experiment.properties.baselineRequest
+      if (typeof request?.url !== 'string' || !urlMatchesEndpoint(args.endpoint, request.url)) return false
+      if (args.method && (typeof request.method !== 'string' || args.method.toUpperCase() !== request.method.toUpperCase())) return false
+
+      const refsMatchFinding = (proof: import('../research/types').ProofAssertion | undefined): boolean => {
+        if (!proof?.evidenceRefs.length) return false
+        return proof.evidenceRefs.every(ref => {
+          const item = structuredLedger.get(ref)
+          return Boolean(item && urlMatchesEndpoint(args.endpoint, item.observed?.url) &&
+            (!args.method || item.observed?.method?.toUpperCase() === args.method.toUpperCase()))
+        })
+      }
+      const initial = experiment.properties.outcome
+      const retest = experiment.properties.retest?.outcome
+      return initial?.status === 'proven' && initial.proof.experimentId === id &&
+        retest?.status === 'proven' && retest.proof.experimentId === id && retest.proof.phase === 'retest' &&
+        refsMatchFinding(initial.proof) && refsMatchFinding(retest.proof)
+    }),
   )
 
   // A prior ruling on this claim outranks a fresh verdict computed from evidence
@@ -782,6 +809,7 @@ export const writeFinding = createTool({
        session: z.string().optional(),
        observed: z.record(z.string(), z.any()).optional(),
      })).optional().describe('Runtime evidence items returned by a tool, including stable ledger ids.'),
+    evidenceIds: z.array(z.string().min(1)).optional().describe('Canonical EvidenceLedger ids returned by request/capture tools. The full evidence stays in the ledger and is attached here by reference.'),
     observedStatus: z.number().optional().describe('HTTP status you observed that proves this finding. Used for structural evidence verification (no prose scanning).'),
     exploitProof: z.object({
       relation: z.string().optional().describe('The relation type this proof exploits. Discover valid relation types via getGraphSchema - do not assume a fixed list.'),
@@ -802,6 +830,11 @@ export const writeFinding = createTool({
     }).optional().describe('If supplied, persist a first-class EXPLOIT_PROOF node proving the finding is exploitable, linked to the finding via a PROVES edge. This is the exploitation-first signal - a finding with a proof is weaponized, not just reported.'),
   }),
   execute: async (args) => {
+    const { evidenceIds = [], ...findingArgs } = args
+    const missingEvidenceIds = evidenceIds.filter((id) => !coreEvidenceLedger.get(id))
+    if (missingEvidenceIds.length) {
+      return { ok: false, error: `Unknown canonical evidence id(s): ${missingEvidenceIds.join(', ')}`, missing: missingEvidenceIds }
+    }
     const explicitEvidence: CommitEvidenceInput[] = (args.evidence ?? []).map((e) => ({
       ...(e.id ? { id: e.id } : {}),
       type: e.type,
@@ -811,6 +844,18 @@ export const writeFinding = createTool({
       ...(e.session ? { session: e.session } : {}),
       ...(e.observed ? { observed: e.observed as ObservedFacts } : {}),
     }))
+    const referencedEvidence: CommitEvidenceInput[] = evidenceIds.map((id) => {
+      const item = coreEvidenceLedger.get(id)!
+      return {
+        id: item.id,
+        type: item.type,
+        data: item.data,
+        label: item.label,
+        timestamp: item.timestamp,
+        ...(item.session ? { session: item.session } : {}),
+        ...(item.observed ? { observed: item.observed } : {}),
+      }
+    })
     const bufferedEvidence: CommitEvidenceInput[] = flushEvidence(args.findingKey).map(e => ({
       ...(e.id ? { id: e.id } : {}),
       type: e.type as EvidenceItemType,
@@ -820,7 +865,7 @@ export const writeFinding = createTool({
       ...(e.session ? { session: e.session } : {}),
       ...(e.observed ? { observed: e.observed } : {}),
     }))
-    const evidenceItems = [...explicitEvidence, ...bufferedEvidence]
+    const evidenceItems = [...explicitEvidence, ...referencedEvidence, ...bufferedEvidence]
     const seenEvidenceIds = new Set<string>()
     const uniqueEvidenceItems = evidenceItems.filter((item) => {
       if (!item.id) return true
@@ -839,7 +884,7 @@ export const writeFinding = createTool({
     }
 
     return promoteFindingCandidate({
-      ...args,
+      ...findingArgs,
       source: 'llm',
       tool: 'writeFinding',
       evidence: uniqueEvidenceItems,
@@ -857,7 +902,8 @@ async function autoGenerateTest(finding: {
   description?: string
   severity: string
   confidence: number
-  evidence: Array<{ type: string; data: string; label: string; timestamp: number }>
+  experimentIds: string[]
+  evidence: Array<{ type: string; data: string; label: string; timestamp: number; observed?: ObservedFacts }>
 }): Promise<void> {
   try {
     const workspace = getGlobalWorkspace()
@@ -871,8 +917,13 @@ async function autoGenerateTest(finding: {
       category: finding.type,
       description: finding.description || `${finding.type} vulnerability at ${finding.endpoint}`,
       evidence: finding.evidence.map(e => ({
-        request: { method: finding.method || 'GET', url: finding.endpoint },
-        response: { status: 200, body: e.data },
+        request: {
+          method: e.observed?.method || finding.method || 'GET',
+          url: e.observed?.url || finding.endpoint,
+          ...(e.observed?.requestBody !== undefined ? { body: e.observed.requestBody } : {}),
+          ...(e.observed?.requestHeaders ? { headers: e.observed.requestHeaders } : {}),
+        },
+        response: { status: e.observed?.status ?? 200, body: e.observed?.responseBody ?? e.data },
         description: e.label,
       })),
       request: {
@@ -885,6 +936,7 @@ async function autoGenerateTest(finding: {
       payload: finding.payload ? { data: finding.payload } : undefined,
       param: finding.param ? { name: finding.param } : undefined,
       evidenceMarkers: finding.evidence.map(e => e.label),
+      differentialReplay: findProvenArrayGrowthReplay(finding.experimentIds, finding.endpoint),
     }
 
     const test = generateFromFinding(testFinding)
@@ -894,6 +946,49 @@ async function autoGenerateTest(finding: {
   } catch (err) {
     log.dim('Test generation skipped: ' + (err instanceof Error ? err.message : String(err)))
   }
+}
+
+function findProvenArrayGrowthReplay(
+  experimentIds: string[],
+  endpoint: string,
+): NonNullable<Finding['differentialReplay']> | undefined {
+  const sameResource = (url: string): boolean => {
+    try {
+      const actual = new URL(url)
+      const expected = new URL(endpoint)
+      return actual.origin === expected.origin && actual.pathname.replace(/\/+$/, '') === expected.pathname.replace(/\/+$/, '')
+    } catch {
+      return false
+    }
+  }
+
+  const store = getGlobalGraphStore()
+  for (const id of experimentIds) {
+    const node = store.getNode(id) as ExperimentNode | undefined
+    if (!node || node.type !== NodeType.EXPERIMENT) continue
+    const { oracle, outcome, retest } = node.properties
+    if (oracle?.type !== 'json-array-growth' || outcome?.status !== 'proven' || retest?.outcome.status !== 'proven') continue
+    if (!outcome.proof.evidenceRefs.includes(oracle.baselineEvidenceId) || !outcome.proof.evidenceRefs.includes(oracle.mutationEvidenceId)) continue
+    if (retest.outcome.proof.evidenceRefs.some(ref => outcome.proof.evidenceRefs.includes(ref))) continue
+
+    const baseline = coreEvidenceLedger.get(oracle.baselineEvidenceId)?.observed
+    const mutation = coreEvidenceLedger.get(oracle.mutationEvidenceId)?.observed
+    if (!baseline?.url || !mutation?.url || !sameResource(baseline.url) || !sameResource(mutation.url)) continue
+    return {
+      baseline: {
+        method: baseline.method || 'GET',
+        url: baseline.url,
+        ...(baseline.requestBody !== undefined ? { body: baseline.requestBody } : {}),
+      },
+      mutation: {
+        method: mutation.method || 'GET',
+        url: mutation.url,
+        ...(mutation.requestBody !== undefined ? { body: mutation.requestBody } : {}),
+      },
+      minimumArrayGrowth: oracle.minimumGrowth,
+    }
+  }
+  return undefined
 }
 
 async function replayBrowserProof(

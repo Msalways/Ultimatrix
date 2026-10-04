@@ -3,137 +3,121 @@ name: second-order-sqli
 domain: injection
 category: injection
 tier: balanced
-description: Detect stored-then-executed SQL injection where malicious input is persisted safely then later used in a vulnerable SQL context.
+description: Verify stored-then-consumed SQL injection with owner-controlled records, paired workflow evidence, and an independent replay.
 toolRefs:
   - httpRequest
   - parseResponse
-  - compareResponses
+  - compareResearchResponses
   - recordEvidence
   - writeFinding
-  - runPrimitive
   - getTargetSummary
-  - runPrimitive
-primitives: [secondOrderSqli]
+  - getCapturedHeaders
+  - listCapturedRequests
+  - planResearchExperiments
+  - executePlannedExperiment
+  - evaluateResearchExperiment
+primitives: []
 triggers:
   - second order sql injection
   - stored sql injection test
   - deferred sql execution
   - persistent input sql sink
-contextBoosts: []
+contextBoosts: [second-order-sqli, sql-injection, sqli]
 toolChains: []
-compositionRules: {}
-mitreAttack:
-  - T1190
-  - T1059
+compositionRules:
+  enhances: [sql-injection, api-security, authorization]
+requires:
+  capabilities:
+    - network.request
+    - evidence.canonical
+    - scope.enforcement
+procedure:
+  stages:
+    - id: map-flow
+      goal: Link an observed storage request to a later consumer and identify the current actor and test-owned record.
+    - id: baseline-flow
+      goal: Store a benign value and capture the consumer response for the same owned record.
+    - id: mutation-flow
+      goal: Store one controlled SQL-context mutation on a disposable test record and replay the same consumer workflow.
+    - id: retest-flow
+      goal: Repeat both workflows with a new test-owned record and independent evidence.
+verification:
+  coverage:
+    - id: observed-store-and-consumer
+      required: true
+    - id: owner-controlled-test-record
+      required: true
+    - id: matched-consumer-oracle
+      required: true
+    - id: independent-retest
+      required: true
+output:
+  schema: SecondOrderSQLiAssessment
+mitreAttack: [T1190]
 owaspRefs:
-  - A03:2021
+  - OWASP Top 10:2025 A05 Injection
+  - CWE-89
 ---
 
 # Second-Order SQL Injection
 
 ## When to Use
-Use when an application stores user input (profile fields, usernames, settings, file names) and later reuses that stored value inside a SQL query without re-validation. Classic first-order probes on the storage endpoint may show no vulnerability, so this skill targets the *consuming* endpoint.
 
-## Detection Approach
-1. **Map storage sinks.** Identify endpoints that persist attacker-controllable data: registration, profile update, preferences, comments.
-2. **Store a payload.** Submit a SQL-fragment payload (e.g. `admin'--` or a quote/comment sequence) through the storage endpoint and confirm it is saved verbatim (retrieve it back).
+Use only when observed traffic or application behavior shows that a value is stored by one workflow and later consumed by another. First-order testing of the storage request alone cannot confirm or rule this out.
 
-```http
-POST /register HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
+## Required Context
 
-username=admin'--&password=Passw0rd!&email=poc@test.local
+- Identify the exact storage request and consumer request from captured traffic or target-delivered code.
+- Identify the authenticated actor, record owner, benign stored value, consumer action, and a cleanup path.
+- Use a disposable local/staging account or an existing record owned by the test actor. Never target an administrator or another user's account.
+- If the workflow requires a persistent write and is not an isolated test environment, stop until that specific state change is authorized.
+
+## Two-Stage Experiment
+
+1. **Map provenance.** Record the storage route/input and consumer route/input. Link the two through an observed record ID or workflow edge; do not assume a fixed ID such as `1`.
+2. **Capture the control.** Store a benign value through the normal request, capture the server response and created/updated test record ID, then perform the consumer action as the same actor. Preserve request shape and session.
+3. **Mutate one test-owned value.** Change only the stored field to a minimal SQL-context probe derived from the observed value and context. Confirm storage succeeded and did not alter unrelated state.
+4. **Trigger the same consumer.** Use the same actor, record, route, and action. Capture the full response behind canonical evidence IDs. Compare with the control using a SQL-specific error signature, a supported structured result oracle, or a permitted repeated timing oracle.
+5. **Independent retest.** Repeat the baseline and mutation with a fresh disposable record and new execution evidence. Do not reuse the first record, evidence IDs, or timing samples.
+6. **Restore state.** Delete the test-owned record or restore its original benign value using the authorized cleanup request, and capture cleanup evidence.
+
+The store response itself is not proof. A SQL error from an unrelated route is not proof. A consumer response must differ from its matched control because the persisted value changed query behavior.
+
+Keep the storage and consumer evidence linked as one workflow. This outline records evidence references; it is not a request template.
+
+```json
+{
+  "recordOwner": "test actor",
+  "baseline": {
+    "storageEvidenceId": "<baseline storage>",
+    "consumerEvidenceId": "<baseline consumer>"
+  },
+  "mutation": {
+    "storageEvidenceId": "<mutation storage>",
+    "consumerEvidenceId": "<mutation consumer>"
+  },
+  "cleanupEvidenceId": "<cleanup>"
+}
 ```
 
-Storage-safe payloads to try (they must survive the storage query, which is usually parameterized or escaped):
+## Oracle and Promotion
 
-```text
-admin'--
-robert');--
-' || '
-'||'
-x' AND '1'='1
-```
+The current `database-error-differential` oracle proves only first-order request mutations: it requires the named input to change in the consumer request while every other query/body value stays stable. It cannot prove that a persisted value caused a later consumer effect when the consumer request itself is unchanged. Do not submit an ordinary second-order flow to that oracle or claim proof from a matching error string. Keep the result as a candidate until a typed workflow oracle can link storage, owned record, consumer effect, and independent retest. Use `json-array-growth` or `timing-differential` only when their typed measurements are available; they do not replace the missing storage-to-consumer provenance gate.
 
-3. **Find consumers.** Identify later actions that read the stored value and use it in a query: login-by-username, search-by-owner, display-by-id, delete-by-name.
+If the current graph cannot represent the storage-plus-consumer workflow as one experiment with an independent retest, record a candidate with the missing proof and do not call `writeFinding` for a confirmed finding. Keep storage and consumer evidence IDs together for later workflow support.
 
-4. **Trigger the sink.** Perform the consuming action and observe SQL-error leakage, timing differences, or logic changes via `compareResponses`.
+## Boundaries
 
-```http
-POST /login HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
+- Do not test account takeover by impersonating a real user, changing a real user's password, or assigning privileged names/roles.
+- Do not extract credentials, secrets, or rows that do not belong to the test actor.
+- Do not use stacked statements, destructive SQL, long sleeps, file access, or database-to-OS escalation.
+- If a probe causes an unexpected state change, stop and restore the test fixture before continuing.
 
-username=admin'--&password=anything
-```
+## Report
 
-If the consumer builds `SELECT * FROM users WHERE username='admin'--' AND password='anything'`, the comment truncates the password check and authenticates as `admin` — a stored authentication bypass.
+State the storage endpoint/input, consumer endpoint/action, actor and owned record, baseline/mutation oracle, fresh retest outcome, cleanup result, canonical evidence IDs, and exact demonstrated impact. Mark unresolved consumers and unsupported oracles as unknown.
 
-5. **Confirm with differential.** Repeat with a benign stored value vs the payloaded value; a divergent response indicates the stored value altered query semantics.
+## References
 
-```http
-POST /profile/update HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
-
-display_name=benignvalue          ← baseline: 200, normal page
-
-display_name=x' AND '1'='1        ← payload: compare status/length/content/error text
-```
-
-6. **Switch logic.** If the storage endpoint escapes but a different consumer does not, focus exploitation on that consumer. If all consumers re-validate, record as not-vulnerable.
-
-**Extraction via second-order concatenation** — store a value that appends query output to itself, then read it back on any page that displays the stored field:
-
-```http
-POST /profile/update HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
-
-username='||(SELECT password FROM users WHERE username='admin')||'
-```
-
-When the consumer runs `SELECT * FROM users WHERE username='<stored>'` and the profile page renders the username, the concatenated password appears in the rendered value.
-
-**Time-based confirmation at the consumer:**
-
-```text
-'||(SELECT CASE WHEN (SELECT SUBSTRING(password,1,1) FROM users LIMIT 1)='a' THEN pg_sleep(3) ELSE pg_sleep(0) END)||'
-```
-
-
-## Pitfalls
-- Only testing the storage endpoint and declaring safe — the vulnerability lives at consumption.
-- Forgetting the payload must survive any display escaping (HTML-encoding is irrelevant to SQL context).
-- Using a payload that breaks the storage query instead of the later one, misattributing the error.
-- Assuming parameterized storage implies parameterized consumption.
-
-## Verification & Impact
-- **Confirmed:** A stored value, when later consumed, changes SQL behavior (error, auth bypass, extra rows).
-- **Suspected:** Unexpected response variance on the consuming action with stored input.
-- Document the storage endpoint, the consuming endpoint, and the data flow. Use `writeFinding` with evidence from both stages.
-
-**Classic full flow — stored comment truncation on password change:**
-
-```text
-1. Register:  username = administrator'-- , password = AttackerPw1!
-2. Login:     POST /login  username=administrator'-- &password=AttackerPw1!   → session as "administrator"
-3. Change password: POST /change-password  new_password=Pwned123!&confirm=Pwned123!
-4. Consumer runs: UPDATE users SET password='Pwned123!' WHERE username='administrator'--'
-5. Real administrator account now has the attacker-chosen password → auth bypass proven.
-```
-
-## Key Concepts
-| Term | Meaning |
-|------|---------|
-| Storage sink | Where input is persisted |
-| Consuming sink | Where stored value enters a query |
-| Deferred execution | Injection fires on later use |
-
-## Primitive Execution
-
-The attack classes above are executable through the primitive registry. Invoke each
-primitive by its id below using the run-primitive execution tool instead of re-firing
-payloads manually; confirmed results pass through the evidence gate and commit as
-findings with exploit proofs automatically.
-
-| Primitive id | Coverage |
-|---|---|
-| `secondOrderSqli` | stored payload firing in a later query |
+- [PortSwigger: Second-order SQL injection](https://portswigger.net/web-security/sql-injection#second-order-sql-injection)
+- [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)

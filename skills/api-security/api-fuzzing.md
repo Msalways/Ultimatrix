@@ -3,7 +3,7 @@ name: api-fuzzing
 domain: api-security
 category: api-security
 tier: balanced
-description: Fuzz APIs with schema-aware mutation, parameter tampering, inventory discovery, and rate-limit bypass to surface hidden or fragile endpoints.
+description: Assess observed APIs with schema-aware input mutation, authorization checks, and bounded response comparisons.
 toolRefs:
   - httpRequest
   - parseResponse
@@ -14,46 +14,39 @@ toolRefs:
   - getTargetSummary
 triggers:
   - api fuzzing schema aware
-  - api endpoint discovery inventory
+  - api inventory from observed routes
   - parameter mutation testing
-  - api rate limit bypass
+  - api rate limit assessment
 contextBoosts: []
 toolChains: []
 compositionRules: {}
 mitreAttack:
   - T1190
-  - T1083
   - T1078
 owaspRefs:
-  - A01:2021
-  - A04:2021
-  - A05:2021
+  - API1:2023 Broken Object Level Authorization
+  - API3:2023 Broken Object Property Level Authorization
+  - API4:2023 Unrestricted Resource Consumption
+  - API5:2023 Broken Function Level Authorization
+  - API9:2023 Improper Inventory Management
 ---
 
 # API Fuzzing & Inventory Discovery
 
 ## When to Use
-Use against REST/JSON/gRPC-ish HTTP APIs, especially when an OpenAPI/Swagger spec is available or inferable. Targets: undiscovered endpoints, parameter-handling bugs, authz gaps, and weak rate limiting.
+Use against REST/JSON/gRPC-ish HTTP APIs when routes come from captured traffic, delivered client code, or target-provided links/specifications. Assess input handling, authorization, inventory gaps, and resource limits on that observed surface.
 
 ## Detection Approach
-1. **Build the inventory.** Enumerate endpoints from specs, JS bundles, and `findEndpointsInResponse` on app pages. Record methods and expected parameters.
+1. **Build the inventory.** Enumerate endpoints from captured requests, target-linked specs, delivered JS bundles, and `findEndpointsInResponse` on app pages. Record methods and expected parameters with a source reference. Never invent routes with a wordlist.
 
 ```bash
-# Extract API paths from JavaScript bundles
-curl -sS https://target.com/static/app.js | grep -oE '"/(api|v[0-9])/[a-zA-Z0-9/_-]+"'
+# Use the exact JavaScript bundle URL captured from the target page
+curl -sS "$OBSERVED_BUNDLE_URL" | grep -oE '"/(api|v[0-9])/[a-zA-Z0-9/_-]+"'
 
-# Parameter mining with arjun (GET + POST)
-arjun -u https://target.com/api/v1/users -m GET
-arjun -u https://target.com/api/v1/users -m POST
-
-# Route discovery with a dedicated API wordlist
-ffuf -u https://target.com/api/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/objects.txt \
-     -mc all -fc 404 -t 25
-
-# Pull every path+operation from an exposed spec
-curl -sS https://target.com/openapi.json | jq -r '.paths | to_entries[] |
+# Pull every path+operation from a target-linked spec URL captured as evidence
+curl -sS "$OBSERVED_SPEC_URL" | jq -r '.paths | to_entries[] |
   .key as $p | .value | keys[] | "\(.ascii_upcase) $p"' 2>/dev/null || \
-curl -sS https://target.com/openapi.json | jq -r '.paths | keys[]'
+curl -sS "$OBSERVED_SPEC_URL" | jq -r '.paths | keys[]'
 ```
 
 2. **Schema-aware mutation.** For each parameter, substitute boundary and malformed values (oversized strings, negative numbers, nested objects, unexpected types) and observe error vs handled responses via `compareResponses`.
@@ -61,69 +54,39 @@ curl -sS https://target.com/openapi.json | jq -r '.paths | keys[]'
 ```json
 {"id": -1}
 {"id": 99999999999999999999}
-{"id": "1 OR 1=1"}
-{"id": {"$ne": null}}
+{"id": {"unexpected": "value"}}
 {"id": [1, 2, 3]}
 {"id": {"nested": {"deep": true}}}
 {"amount": 0.000000001}
 {"amount": 1e309}
 {"name": ""}
 {"name": "A"}
-{"email": "a@b.c", "extra_field": {"role": "admin"}}
+{"email": "a@b.c", "extra_field": "unexpected"}
 ```
 
 ```bash
-# Type-confusion fuzz: send each declared-string param as number/array/object/null
-ffuf -u https://target.com/api/v1/orders -X POST \
-     -H 'Content-Type: application/json' -H 'Authorization: Bearer <token>' \
-     -w mutations.txt -fr '"error":null' -t 10
+# Replay one captured request at a time. Keep its actor, route, content type,
+# and unrelated fields; change only one observed input per experiment.
 ```
 
-3. **Discover hidden routes.** Probe common API path patterns and version prefixes (`/api/v1`, `/internal`, `/admin`) and watch for non-404s.
+3. **Expand the inventory from evidence.** Follow routes linked from captured responses, target-delivered client code, or a target-provided API specification. Preserve the source reference for each route and method. Do not probe conventional path lists, guessed version prefixes, or wordlists.
 
-```bash
-wfuzz -z file,/usr/share/seclists/Discovery/Web-Content/Api-Security/api-endpoints-prefix.txt \
-      --hc 404 https://target.com/FUZZ
+4. **Test authz on an observed route.** Replay the captured request with an authorized lower-privilege actor or no actor, preserving the observed method, path, and resource identifier. Do not invent an administrative route or substitute a victim-owned identifier.
 
-for p in /api/internal /api/admin /actuator /debug /metrics /health \
-         /api/v0 /api/beta /api/graphql /rpc; do
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "https://target.com$p")
-  [ "$code" != "404" ] && echo "$p → $code"
-done
-```
+Compare the captured request as the owner, as an authorized lower-privilege actor, and without credentials when the route is expected to require authentication. Use a test-owned object or a route observed to operate on the current actor's object. Record each actor and keep the resource identifier constant.
 
-4. **Test authz via role swap.** Replay requests with removed/downgraded tokens to find endpoints that skip authorization checks.
+5. **Assess rate limits.** Repeat only an observed, low-impact request at a bounded pace. Record when throttling begins and the response. Stop at the first limit, instability, or unexpected cost. Do not rotate spoofed client IP headers or run concurrency against a live service.
 
-```http
-GET /api/v1/admin/stats HTTP/1.1
-Authorization: Bearer <regular-user-token>
-
-GET /api/v1/admin/stats HTTP/1.1
-
-GET /api/v1/admin/stats HTTP/1.1
-Authorization: Bearer <expired-token>
-```
-
-5. **Test rate-limit bypass.** Repeat a throttled action while varying headers (`X-Forwarded-For`, client identifiers) and request shape to see if limits are keyed on a spoofable value.
-
-```bash
-# Confirm the limit first, then vary the spoofable key per request
-for i in $(seq 1 60); do
-  curl -sS -o /dev/null -w "%{http_code} " https://target.com/api/v1/items \
-       -H "X-Forwarded-For: 10.1.$((i/250)).$((i%250+1))"
-done; echo
-```
-
-6. **Switch logic.** If spec-driven fuzzing saturates, pivot to response-driven discovery (follow links/IDs in responses). If rate-limit holds, document as resilient.
+6. **Switch logic.** Follow links, identifiers, and resource relationships returned by observed responses. If rate limiting engages, document the threshold and stop.
 
 ## Pitfalls
-- Fuzzing without an inventory — you miss unlinked endpoints.
+- Treating the observed inventory as complete; mark unexplored route families as unknown and expand only from target evidence.
 - Treating 500s as vulnerabilities without confirming exploitability.
-- Assuming rate-limit on one header means global protection.
+- Assuming a rate-limit result for one actor and workflow proves the control is consistent everywhere.
 - Ignoring that some "errors" are expected validation, not bugs.
 
 ## Verification & Impact
-- **Confirmed:** Hidden endpoint reachable, parameter mutation triggers real fault/behavior change, or authz/rate-limit bypass demonstrated.
+- **Confirmed:** An evidence-sourced operation demonstrates unauthorized object/function access, a reproducible input-handling fault, or a resource-limit failure with measured impact.
 - **Suspected:** Inconsistent error handling or throttling anomalies.
 - Document endpoint, payload shape, and consequence. Use `writeFinding` with request/response evidence.
 
@@ -132,49 +95,31 @@ done; echo
 |------|---------|
 | Schema-aware fuzz | Mutate per declared type |
 | Inventory | Map of all reachable endpoints |
-| Rate-limit key | Value the limiter counts on |
+| Rate-limit key | Actor or request property the observed limiter uses |
 
 ---
 
 ## Cheat Sheet — API Fuzzing Payloads
-
-### Parameter Discovery
-
-```bash
-arjun -u https://target.com/api/v1/users -m GET
-arjun -u https://target.com/api/v1/users -m POST
-ffuf -u https://target.com/api/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/objects.txt -mc all -fc 404
-```
 
 ### Type Confusion
 
 ```json
 {"id": -1}
 {"id": 99999999999999999999}
-{"id": "1 OR 1=1"}
-{"id": {"$ne": null}}
 {"id": [1, 2, 3]}
 {"amount": 1e309}
 {"name": ""}
 ```
 
-### Rate Limit Bypass
+### Rate Limit Assessment
 
-```bash
-# X-Forwarded-For rotation
-for i in $(seq 1 60); do
-  curl -sS -o /dev/null -w "%{http_code} " -H "X-Forwarded-For: 10.1.$((i/250)).$((i%250+1))" https://target.com/api/v1/items
-done
+Use a low request budget against an observed operation. Record the threshold, status, retry guidance, and actor or key associated with the limit. Do not rotate spoofed client-IP headers or use concurrent load to evade the control.
 
-# Other headers to vary
-X-Real-IP, X-Originating-IP, X-Client-IP, True-Client-IP
-```
+### Route Provenance
 
-### Hidden Endpoint Discovery
+Add routes only when found in captured requests, target-delivered code, responses, or target-provided specifications. Keep the source reference so each test can explain why the route was in scope.
 
-```bash
-for p in /api/internal /api/admin /actuator /debug /metrics /health /api/v0 /api/beta /api/graphql; do
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "https://target.com$p")
-  [ "$code" != "404" ] && echo "$p → $code"
-done
-```
+## Knowledge Sources
+
+- [OWASP API Security Top 10 2023](https://api-security.owasp.org/editions/2023/en/0x00-header/) — current API risk taxonomy, including authorization, resource consumption, and inventory management.
+- [OWASP REST Assessment Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/REST_Assessment_Cheat_Sheet.html) — per-operation authorization and bounded rate-limit assessment guidance.

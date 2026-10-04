@@ -14,6 +14,8 @@ const acceptanceSchema = z.discriminatedUnion('type', [
 const taskSchema = z.object({
   taskId: z.string().min(1),
   objective: z.string().min(1),
+  kind: z.enum(['route_mapping', 'workflow_transitions', 'entity_relationships', 'actor_access', 'security_test']).optional(),
+  resourceClaims: z.array(z.string().min(1).max(160)).optional().describe('Shared workflow/session/endpoint resource IDs. Required for workflow_transitions, actor_access, and security_test tasks; tasks claiming the same ID are serialized.'),
   skillId: z.string().min(1),
   parentTaskId: z.string().optional(),
   dependencyTaskIds: z.array(z.string()).default([]),
@@ -35,11 +37,15 @@ export function createRunTaskGraphTool(
   coordinator: TaskCoordinator,
   skills: SkillRegistry,
   modelSelector?: ModelSelector,
+  maxParallelCap = 3,
 ) {
+  const effectiveParallelCap = Number.isInteger(maxParallelCap) && maxParallelCap > 0 ? Math.min(maxParallelCap, 3) : 3
   const compactResult = (result: Awaited<ReturnType<TaskGraphRunner['run']>>) => ({
     ...result,
     tasks: result.tasks.map((task) => ({
       taskId: task.taskId,
+      kind: task.kind,
+      resourceClaims: task.resourceClaims,
       status: task.status,
       workerId: task.workerId,
       modelId: task.modelId,
@@ -54,10 +60,10 @@ export function createRunTaskGraphTool(
   })
   return createTool({
     id: 'runTaskGraph',
-    description: 'Execute a typed dependency graph of worker tasks. Use dependencies for ordering and acceptance criteria for runtime-verifiable completion. Returns structured replan reasons when work is partial, blocked, or failed.',
+    description: 'Execute typed research tasks. entity_relationships analyzes supplied graph evidence and can run independently up to three at a time. route_mapping, workflow_transitions, actor_access, and security_test require resourceClaims so work sharing a browser session, actor, endpoint, or state is serialized. Every typed task needs observed contextRefs or a prerequisite. maxParallel is capped by config and by three.',
     inputSchema: z.object({
       tasks: z.array(taskSchema).max(50).default([]),
-      maxParallel: z.number().int().min(1).max(20).default(1),
+      maxParallel: z.number().int().min(1).max(20).optional(),
       resumeTaskIds: z.array(z.string().min(1)).optional().describe('Resume persisted tasks by exact ID. Use an empty array to resume all persisted tasks.'),
       resumeWaitingTask: z.object({
         taskId: z.string().min(1),
@@ -68,6 +74,8 @@ export function createRunTaskGraphTool(
       status: z.enum(['completed', 'needs_replan', 'cancelled', 'invalid']),
       tasks: z.array(z.object({
         taskId: z.string(),
+        kind: z.enum(['route_mapping', 'workflow_transitions', 'entity_relationships', 'actor_access', 'security_test']).optional(),
+        resourceClaims: z.array(z.string()).optional(),
         status: z.string(),
         workerId: z.string().optional(),
         modelId: z.string().optional(),
@@ -90,12 +98,13 @@ export function createRunTaskGraphTool(
     }),
     execute: async ({ tasks, maxParallel, resumeTaskIds, resumeWaitingTask }, context) => {
       const runner = new TaskGraphRunner(coordinator, skills)
+      const parallel = Math.min(maxParallel ?? effectiveParallelCap, effectiveParallelCap)
       if (resumeWaitingTask) {
         await coordinator.resumeWaiting(resumeWaitingTask.taskId, resumeWaitingTask.contextRef)
-        return compactResult(await runner.resume([resumeWaitingTask.taskId], maxParallel, (context as any)?.abortSignal))
+        return compactResult(await runner.resume([resumeWaitingTask.taskId], parallel, (context as any)?.abortSignal))
       }
-      if (resumeTaskIds) return compactResult(await runner.resume(resumeTaskIds.length > 0 ? resumeTaskIds : undefined, maxParallel, (context as any)?.abortSignal))
-      const initialProposal = { tasks, maxParallel } as TaskGraphProposal
+      if (resumeTaskIds) return compactResult(await runner.resume(resumeTaskIds.length > 0 ? resumeTaskIds : undefined, parallel, (context as any)?.abortSignal))
+      const initialProposal = { tasks, maxParallel: parallel } as TaskGraphProposal
       const initialValidation = validateTaskGraph(initialProposal, coordinator, skills)
       if (!initialValidation.valid) return runner.run(initialProposal, (context as any)?.abortSignal)
 
@@ -110,7 +119,7 @@ export function createRunTaskGraphTool(
         }, 'worker')
         return { ...task, modelId: selection.modelId, provider: selection.provider, tier: selection.tier }
       })
-      const result = await runner.run({ tasks: routedTasks, maxParallel } as TaskGraphProposal, (context as any)?.abortSignal)
+      const result = await runner.run({ tasks: routedTasks, maxParallel: parallel } as TaskGraphProposal, (context as any)?.abortSignal)
       return compactResult(result)
     },
   })

@@ -114,6 +114,17 @@ export interface StreamStatusMessage {
   timestamp: number
 }
 
+export interface InteractionMessage {
+  id: string
+  type: 'interaction'
+  kind: 'question' | 'browser-handoff' | 'approval'
+  requestId: string
+  question: string
+  options?: string[]
+  context?: { url?: string; title?: string; screenshot?: string }
+  timestamp: number
+}
+
 export type StreamMessage =
   | ChatMessage
   | ToolCallMessage
@@ -126,6 +137,7 @@ export type StreamMessage =
   | SummaryMessage
   | ErrorMessage
   | StreamStatusMessage
+  | InteractionMessage
 
 interface ChatState {
   messages: StreamMessage[]

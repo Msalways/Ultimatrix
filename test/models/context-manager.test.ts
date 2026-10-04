@@ -59,6 +59,11 @@ describe('ContextBudgetManager', () => {
       expect(long).toBeGreaterThan(short)
     })
 
+    it('does not undercount a large value without whitespace', () => {
+      const mgr = new ContextBudgetManager(SMALL_MODEL_CAPS)
+      expect(mgr.estimateTokens('x'.repeat(20_000))).toBeGreaterThanOrEqual(5_000)
+    })
+
     it('handles code-heavy text with more overhead', () => {
       const mgr = new ContextBudgetManager(SMALL_MODEL_CAPS)
       const plain = mgr.estimateTokens('hello world test sentence here')

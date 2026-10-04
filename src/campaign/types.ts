@@ -21,6 +21,7 @@ export interface PrimitiveRef {
   id: string
   description?: string
   tags?: string[]
+  domains?: string[]
 }
 
 export interface EvidenceItem {
@@ -47,6 +48,7 @@ export interface PrimitiveResult {
   evidence?: EvidenceItem[]
   /** Optional token accounting for budget enforcement (trackTokens). */
   tokensUsed?: number
+  coverageStatus?: CoverageStatus
 }
 
 // ─── Campaign slice (unit of work) ─────────────────────────────────
@@ -54,11 +56,39 @@ export interface PrimitiveResult {
 export interface CampaignSlice {
   id: string
   endpoint: { id: string; url: string; method: string }
+  /** One concrete input. A slice never claims neighboring inputs were tested. */
+  input?: { name: string; location: string; type?: string; required?: boolean }
   params: string[]
   role: string
+  actor?: string
+  sessionRef?: string
   state: string
   techniqueIds: string[]
+  domains?: string[]
   priority: number
+  reason?: string
+}
+
+export type CoverageStatus = 'tested' | 'confirmed' | 'candidate' | 'blocked' | 'skipped' | 'not_applicable'
+
+export interface CoverageUnitResult {
+  id: string
+  domain: string
+  endpoint: string
+  input: { name: string; location: string }
+  actor: string
+  sessionRef?: string
+  state: string
+  technique: string
+  status: CoverageStatus
+  reason?: string
+}
+
+export interface DomainCoverageResult {
+  domain: string
+  status: CoverageStatus
+  unitsPlanned: number
+  unitsCompleted: number
   reason?: string
 }
 
@@ -69,6 +99,8 @@ export interface CoverageStats {
   paramsCovered: number
   rolesTotal: number
   rolesCovered: number
+  actorsTotal: number
+  actorsCovered: number
   statesTotal: number
   statesCovered: number
   techniquesTotal: number
@@ -82,11 +114,17 @@ export interface CoverageStats {
 export interface PlanOptions {
   /** Available primitives/techniques to plan against. */
   primitives: PrimitiveRef[]
+  /** Current domains from the live skill registry. */
+  domainNames?: string[]
+  /** Primitive ids declared by skills, including unavailable runtime ids. */
+  domainPrimitiveIds?: Record<string, string[]>
   /** Fallback role used when an endpoint has no discernible auth context. */
   defaultRole?: string
   /** Include an anonymous (unauthenticated) role for unauthenticated endpoints. */
   includeAnonymous?: boolean
-  /** Hard cap on produced slices (highest priority first). */
+  /** Engagement-scoped sessions keyed by role; authenticated is the fallback. */
+  actorSessions?: Record<string, string[]>
+  /** Per-run execution cap; unfinished units remain eligible for a later run. */
   maxSlices?: number
   roleFilter?: string[]
   stateFilter?: string[]
@@ -96,6 +134,7 @@ export interface PlanOptions {
 export interface CampaignPlan {
   slices: CampaignSlice[]
   coverage: CoverageStats
+  domains?: DomainCoverageResult[]
   generatedAt: number
   options: PlanOptions
 }
@@ -110,6 +149,11 @@ export interface SliceExecContext {
   evidenceGate?: EvidenceGate
   /** Provider key for the rate limiter (defaults to config.provider). */
   provider: string
+  consumeRequest?: () => boolean
+  hasRequestBudget?: () => boolean
+  remainingMs?: () => number
+  /** Stops remaining units when the shared engagement wire budget is exhausted. */
+  onTargetBudgetReached?: () => void
 }
 
 export type PrimitiveRunner = (
@@ -158,8 +202,10 @@ export interface CampaignExecutorOptions {
   onSliceComplete?: (outcome: SliceOutcome) => void | Promise<void>
   /** Provider key for rate limiting. Defaults to config.provider. */
   provider?: string
-  /** Bounded concurrency for slice execution. Defaults to rateLimit.maxConcurrent. */
+  /** Requested slice concurrency; stateful campaign slices are currently serialized. */
   maxConcurrency?: number
+  maxRequests?: number
+  maxDurationMs?: number
   /** Optional slice routing for multi-model fan-out (Phase 4). */
   modelSelector?: import('../models/selector').ModelSelector
 }
@@ -169,6 +215,11 @@ export interface CampaignResult {
   coverage: CoverageStats
   budgetExceeded: boolean
   slicesRun: number
+  status: 'complete' | 'partial'
+  requestsUsed: number
+  remainingSlices: CampaignSlice[]
+  domains: DomainCoverageResult[]
+  units: CoverageUnitResult[]
 }
 
 export type WriteFindingTool = {

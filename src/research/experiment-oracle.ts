@@ -22,6 +22,131 @@ function responseContains(item: EvidenceItem, marker: string): boolean {
   return Object.values(headers).some(value => typeof value === 'string' && value.includes(marker))
 }
 
+function responseArraySize(item: EvidenceItem): number | undefined {
+  const status = item.observed?.status
+  if (status == null || status < 200 || status >= 300) return undefined
+  try {
+    const value: unknown = JSON.parse(item.observed?.responseBody ?? item.data)
+    if (Array.isArray(value)) return value.length
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>
+      for (const key of ['data', 'products', 'results', 'items']) {
+        if (Array.isArray(record[key])) return (record[key] as unknown[]).length
+      }
+    }
+  } catch { /* non-JSON response cannot satisfy a structured result oracle */ }
+  return undefined
+}
+
+const SQL_ERROR_SIGNATURES = [
+  'you have an error in your sql syntax',
+  'syntax error at or near',
+  'syntax error in sql statement',
+  'unclosed quotation mark after the character string',
+  'unterminated quoted string',
+  'sqlite_error',
+  'sqlite3::syntaxerror',
+  'ora-00933',
+  'ora-00936',
+  'ora-01756',
+  'incorrect syntax near',
+  'sqlstate[42000]',
+  'psqlexception',
+]
+
+function hasDatabaseError(item: EvidenceItem): boolean {
+  const body = (item.observed?.responseBody ?? item.data).toLowerCase()
+  return SQL_ERROR_SIGNATURES.some(signature => body.includes(signature))
+}
+
+function sameObservedRoute(a: EvidenceItem, b: EvidenceItem): boolean {
+  const methodA = a.observed?.method?.toUpperCase()
+  const methodB = b.observed?.method?.toUpperCase()
+  if (!methodA || methodA !== methodB || !a.observed?.url || !b.observed?.url) return false
+  try {
+    const urlA = new URL(a.observed.url)
+    const urlB = new URL(b.observed.url)
+    return urlA.origin === urlB.origin && urlA.pathname.replace(/\/+$/, '') === urlB.pathname.replace(/\/+$/, '')
+  } catch {
+    return false
+  }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'undefined'
+}
+
+function sortedPairsWithout(params: URLSearchParams, parameter: string): string[] {
+  return [...params.entries()]
+    .filter(([key]) => key !== parameter)
+    .map(([key, value]) => JSON.stringify([key, value]))
+    .sort()
+}
+
+/** Require the selected observed input to be the only query/body value changed. */
+function changedOnlyObservedInput(
+  baseline: EvidenceItem,
+  mutation: EvidenceItem,
+  inputLocation: 'query' | 'json' | 'form',
+  parameter: string,
+): boolean {
+  if (!parameter.trim()) return false
+  try {
+    if (inputLocation === 'query') {
+      const before = new URL(baseline.observed?.url ?? '').searchParams
+      const after = new URL(mutation.observed?.url ?? '').searchParams
+      const beforeValues = before.getAll(parameter).sort()
+      const afterValues = after.getAll(parameter).sort()
+      return beforeValues.length > 0 && afterValues.length > 0
+        && stableJson(beforeValues) !== stableJson(afterValues)
+        && stableJson(sortedPairsWithout(before, parameter)) === stableJson(sortedPairsWithout(after, parameter))
+    }
+
+    const beforeBody = baseline.observed?.requestBody
+    const afterBody = mutation.observed?.requestBody
+    if (beforeBody == null || afterBody == null) return false
+
+    if (inputLocation === 'form') {
+      const before = new URLSearchParams(beforeBody)
+      const after = new URLSearchParams(afterBody)
+      const beforeValues = before.getAll(parameter).sort()
+      const afterValues = after.getAll(parameter).sort()
+      return beforeValues.length > 0 && afterValues.length > 0
+        && stableJson(beforeValues) !== stableJson(afterValues)
+        && stableJson(sortedPairsWithout(before, parameter)) === stableJson(sortedPairsWithout(after, parameter))
+    }
+
+    const before = JSON.parse(beforeBody) as unknown
+    const after = JSON.parse(afterBody) as unknown
+    if (!before || typeof before !== 'object' || Array.isArray(before)
+      || !after || typeof after !== 'object' || Array.isArray(after)) return false
+    const beforeRecord = before as Record<string, unknown>
+    const afterRecord = after as Record<string, unknown>
+    if (!Object.prototype.hasOwnProperty.call(beforeRecord, parameter)
+      || !Object.prototype.hasOwnProperty.call(afterRecord, parameter)
+      || stableJson(beforeRecord[parameter]) === stableJson(afterRecord[parameter])) return false
+    const beforeOther = { ...beforeRecord }
+    const afterOther = { ...afterRecord }
+    delete beforeOther[parameter]
+    delete afterOther[parameter]
+    return stableJson(beforeOther) === stableJson(afterOther)
+  } catch {
+    return false
+  }
+}
+
+function sameObservedActor(a: EvidenceItem, b: EvidenceItem): boolean {
+  const actorA = a.observed?.actorFingerprint
+  const actorB = b.observed?.actorFingerprint
+  if (actorA || actorB) return !!actorA && actorA === actorB
+  return a.session === b.session
+}
+
 export function evaluateExperimentOracle(
   experimentId: string,
   oracle: EvidenceOracle,
@@ -41,6 +166,31 @@ export function evaluateExperimentOracle(
       const baseline = byId.get(oracle.baselineEvidenceId)!
       const mutation = byId.get(oracle.mutationEvidenceId)!
       proven = oracle.marker.length > 0 && !responseContains(baseline, oracle.marker) && responseContains(mutation, oracle.marker)
+      break
+    }
+    case 'json-array-growth': {
+      const baselineSize = responseArraySize(byId.get(oracle.baselineEvidenceId)!)
+      const mutationSize = responseArraySize(byId.get(oracle.mutationEvidenceId)!)
+      if (baselineSize == null || mutationSize == null) {
+        return { status: 'inconclusive', reason: 'Both responses must be successful JSON collections for a result-growth oracle', evidenceRefs: refs }
+      }
+      proven = Number.isInteger(oracle.minimumGrowth) && oracle.minimumGrowth > 0
+        && mutationSize >= baselineSize + oracle.minimumGrowth
+      break
+    }
+    case 'database-error-differential': {
+      const baseline = byId.get(oracle.baselineEvidenceId)!
+      const mutation = byId.get(oracle.mutationEvidenceId)!
+      if (!sameObservedRoute(baseline, mutation)) {
+        return { status: 'inconclusive', reason: 'Database-error evidence must use the same observed HTTP method and route', evidenceRefs: refs }
+      }
+      if (!changedOnlyObservedInput(baseline, mutation, oracle.inputLocation, oracle.parameter)) {
+        return { status: 'inconclusive', reason: 'Database-error evidence must change only the named observed input', evidenceRefs: refs }
+      }
+      if (!sameObservedActor(baseline, mutation)) {
+        return { status: 'inconclusive', reason: 'Database-error evidence must use the same observed actor', evidenceRefs: refs }
+      }
+      proven = !hasDatabaseError(baseline) && hasDatabaseError(mutation)
       break
     }
     case 'cross-identity': {

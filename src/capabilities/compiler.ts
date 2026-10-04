@@ -69,7 +69,7 @@ const CAPABILITY_TOOL_MAP: Record<string, string[]> = {
   'graph.query': ['queryGraph', 'getGraphSchema', 'getEndpointsWithParams'],
   'graph.update': ['updateGraph'],
   'skill.discovery': ['listSkills', 'searchSkills', 'loadSkillReference'],
-  'browser.interact': ['stagehand_navigate', 'stagehand_act', 'stagehand_extract'],
+  'browser.interact': ['stagehand_navigate', 'stagehand_act', 'browserInteract', 'stagehand_extract'],
   'browser.observe': ['stagehand_observe', 'stagehand_screenshot'],
 }
 

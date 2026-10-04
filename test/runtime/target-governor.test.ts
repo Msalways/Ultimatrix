@@ -45,4 +45,32 @@ describe('TargetTransportGovernor', () => {
     ;(await governor.acquire('https://paced.example/x'))()
     expect(governor.stats('https://paced.example/x').nextAvailableInMs).toBeGreaterThan(0)
   })
+
+  it('enforces a hard engagement request cap across origins', async () => {
+    const governor = new TargetTransportGovernor({ requestsPerMinute: 100, maxConcurrent: 2, maxRequests: 2 })
+    await governor.run('https://a.example/one', async () => undefined)
+    await governor.run('https://b.example/two', async () => undefined)
+    await expect(governor.acquire('https://a.example/three')).rejects.toThrow(/request budget reached \(2\/2\)/)
+    expect(governor.stats('https://a.example/').requestsUsed).toBe(2)
+  })
+
+  it('aborts a queued resource claim without sending or reserving a request', async () => {
+    const governor = new TargetTransportGovernor({ requestsPerMinute: 100, maxConcurrent: 1, maxRequests: 5, minIntervalMs: 0 })
+    const release = await governor.acquire('https://target.example/first')
+    const controller = new AbortController()
+    const pending = governor.acquire('https://target.example/queued', 'http-tool', controller.signal)
+    controller.abort(new Error('turn deadline'))
+
+    await expect(pending).rejects.toThrow('turn deadline')
+    release()
+    expect(governor.stats('https://target.example/').requestsUsed).toBe(1)
+    expect(governor.stats('https://target.example/').active).toBe(0)
+  })
+
+  it('caps repeated exact URLs in the model HTTP lane without constraining browser traffic', async () => {
+    const governor = new TargetTransportGovernor({ requestsPerMinute: 100, maxConcurrent: 2, maxRequests: 10, maxRequestsPerUrl: 2 })
+    for (let index = 0; index < 4; index++) await governor.run('https://target.example/', async () => undefined)
+    for (let index = 0; index < 2; index++) (await governor.acquire('https://target.example/', 'http-tool'))()
+    await expect(governor.acquire('https://target.example/', 'http-tool')).rejects.toThrow(/Repeated-request budget/)
+  })
 })

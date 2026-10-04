@@ -17,6 +17,8 @@ import { appendDelta, createRenderModel, reduceMessage, type RenderModel } from 
 import { ChatStream } from './output/layout'
 import { ChatBox } from './output/chatbox'
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
+import { getEngagementServices } from './runtime/engagement-context'
 
 import { setLogSink, type LogSink } from './utils/logger'
 import { logSolveSummary } from './utils/solver-summary'
@@ -329,7 +331,7 @@ function renderMarkdownPlain(text: string): string {
   }
 }
 
-export async function main(targetUrl?: string, _opts: { plain?: boolean; approvedOrigins?: string[] } = {}) {
+export async function main(targetUrl?: string, _opts: { plain?: boolean; approvedOrigins?: string[]; interactionMode?: 'ask' | 'run' } = {}) {
   const lifecycle = new SessionLifecycle()
   /** Tracks the most recent turn's renderer so /reasoning can re-toggle it. */
   let lastRenderMsg: SolverRenderer | undefined
@@ -685,6 +687,9 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
         attemptedModels.add(modelKey(seedRoute.provider, seedRoute.model))
       } catch { /* routing unavailable — fallback walk still applies */ }
       let brain = resources.solverBrain!
+      const interactionBroker = getEngagementServices()?.interactionBroker
+      const interactionRunId = `cli-${randomUUID()}`
+      interactionBroker?.beginRun(interactionRunId)
       // Turn-level findings baseline (taken once, before attempt 1) so a
       // retry's done card cannot report newFindings 0 for findings its own
       // failed attempt recorded. Best-effort: absence preserves behavior.
@@ -699,6 +704,8 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
             result = await solve(brain, {
               origin: target || 'conversation',
               goal: line,
+              interactionRunId,
+              interactionMode: _opts.interactionMode,
               model: config.model,
               memory: { thread: threadId, resource: resourceId },
               blackboard: resources.coreServices.blackboard,
@@ -795,6 +802,7 @@ export async function main(targetUrl?: string, _opts: { plain?: boolean; approve
           break
         }
       } finally {
+        interactionBroker?.endRun(interactionRunId)
         lifecycle.markTurnComplete()
       }
 

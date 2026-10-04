@@ -44,7 +44,72 @@ describe('ContextWindowRegistry', () => {
 
     it('returns null when modelCapabilities is undefined', () => {
       const registry = new ContextWindowRegistry(makeConfig())
-      expect(registry.resolve('openai/gpt-4o')).toBeNull()
+      expect(registry.resolve('unknown-provider/unknown-model')).toBeNull()
+    })
+
+    it('resolves bundled model metadata when config has no override', () => {
+      const registry = new ContextWindowRegistry({ ...makeConfig(), provider: 'nvidia' })
+      expect(registry.resolve('nvidia/nemotron-3-ultra-550b-a55b')).toEqual({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 32_768,
+        reservedMargin: 1024,
+      })
+      expect(registry.resolve('nvidia/nemotron-3.5-lightning-30b-a3b')).toEqual({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 32_768,
+        reservedMargin: 1024,
+      })
+      expect(registry.resolve('nemotron-3.5-lightning-30b-a3b')?.contextWindow).toBe(1_000_000)
+    })
+
+    it('lets explicit model capabilities override the bundled profile', () => {
+      const registry = new ContextWindowRegistry({
+        ...makeConfig({
+          'nvidia/nemotron-3.5-lightning-30b-a3b': {
+            contextWindow: 64000,
+            maxOutputTokens: 4096,
+            strengths: ['reasoning'],
+            supportsStreaming: true,
+            supportsStructuredOutput: false,
+          },
+        }),
+        provider: 'nvidia',
+      })
+      expect(registry.resolve('nvidia/nemotron-3.5-lightning-30b-a3b')).toMatchObject({
+        contextWindow: 64000,
+        maxOutputTokens: 4096,
+      })
+    })
+
+    it('resolves route-qualified capabilities for nested OpenRouter model slugs', () => {
+      const registry = new ContextWindowRegistry({
+        ...makeConfig({
+          'openrouter/nvidia/nemotron-3.5-lightning:free': {
+            contextWindow: 1_000_000,
+            maxOutputTokens: 65_536,
+            strengths: ['reasoning'],
+            supportsStreaming: true,
+            supportsStructuredOutput: false,
+          },
+        }),
+        provider: 'openrouter',
+      })
+
+      expect(registry.resolve('nvidia/nemotron-3.5-lightning:free')).toEqual({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 65_536,
+        reservedMargin: 1024,
+      })
+    })
+
+    it('resolves bundled context metadata for the OpenRouter free Nemotron route', () => {
+      const registry = new ContextWindowRegistry({ ...makeConfig(), provider: 'openrouter' })
+
+      expect(registry.resolve('nvidia/nemotron-3-ultra-550b-a55b:free')).toEqual({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 65_536,
+        reservedMargin: 1024,
+      })
     })
 
     it('uses reservedMargin from config when specified', () => {

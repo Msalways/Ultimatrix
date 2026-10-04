@@ -51,6 +51,9 @@ export type TaskLifecycleStatus =
   | 'budget_exceeded'
   | 'budget_unverifiable'
 
+/** Typed research phases distinguish read-only learning from stateful tests. */
+export type ResearchTaskKind = 'route_mapping' | 'workflow_transitions' | 'entity_relationships' | 'actor_access' | 'security_test'
+
 export type TaskAcceptanceCriterion =
   | {
       id: string
@@ -84,7 +87,7 @@ export interface TaskRetryPolicy {
   backoffMs: number
 }
 
-export type TaskAttemptStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' | 'budget_exceeded' | 'budget_unverifiable'
+export type TaskAttemptStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'blocked' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' | 'budget_exceeded' | 'budget_unverifiable'
 
 export interface TaskUsage {
   inputTokens: number
@@ -121,22 +124,31 @@ export interface TaskDependencyContext {
   taskId: string
   status: TaskLifecycleStatus | 'missing'
   summary?: string
+  resultRef?: string
   evidenceRefs: string[]
+  omittedEvidenceRefs?: number
   graphRefs: string[]
+  omittedGraphRefs?: number
 }
 
 export interface TaskContextCheckpoint {
   checkpointId: string
   createdAt: number
   contextRefs: string[]
+  omittedContextRefs?: number
   dependencies: TaskDependencyContext[]
+  omittedDependencies?: number
   priorAttempts: Array<{ attemptId: string; status: TaskAttemptStatus; summary?: string }>
+  omittedPriorAttempts?: number
 }
 
 /** Durable assignment state. Unlike WorkerState, this survives worker replacement and retries. */
 export interface TaskState {
   taskId: string
   objective: string
+  kind?: ResearchTaskKind
+  /** Opaque workflow-local resources that must not be used concurrently. */
+  resourceClaims?: string[]
   skillId?: string
   parentTaskId?: string
   dependencyTaskIds: string[]

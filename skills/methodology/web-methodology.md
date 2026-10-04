@@ -78,3 +78,11 @@ For each confirmed vulnerability:
 - Do not skip auth context — always load captured headers first
 - Do not trust client-side validation — test server-side independently
 - Do not report unverified findings as confirmed
+
+Capture a read-only baseline response before testing the discovered application surface:
+
+```http
+GET / HTTP/1.1
+Host: app.example.test
+Accept: text/html
+```

@@ -10,6 +10,7 @@
  */
 
 import { createAgent } from '../mastra'
+import { DEFAULTS } from '../config'
 import type { UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
@@ -207,7 +208,7 @@ function makeMember(config: UltimatrixConfig, role: CouncilMemberRole, deps: Cou
   const extraTools: Record<string, any> = role === 'operator' ? {
     spawnWorker: createSpawnWorkerTool(config, deps.skillRegistry, deps.taskCoordinator, deps.modelSelector),
     spawnSwarm: createSpawnSwarmTool(config, deps.skillRegistry, deps.taskCoordinator, deps.modelSelector),
-    runTaskGraph: createRunTaskGraphTool(deps.taskCoordinator, deps.skillRegistry, deps.modelSelector),
+    runTaskGraph: createRunTaskGraphTool(deps.taskCoordinator, deps.skillRegistry, deps.modelSelector, config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel),
     executeDirect: createExecuteDirectTool(config, deps.skillRegistry),
   } : {}
   Object.assign(extraTools, createExtensionTools(deps.extensionRegistry))

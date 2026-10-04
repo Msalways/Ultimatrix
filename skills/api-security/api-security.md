@@ -45,34 +45,20 @@ No auth observed   → probe unauthenticated access to "protected" routes first
 
 ## API Discovery
 
-### OpenAPI/Swagger Enumeration
+### OpenAPI/Swagger Analysis
 
-Check for exposed API documentation before testing:
-
-Parse discovered schemas to extract all endpoints, parameters, and models. Every endpoint in the schema is a testing target.
+Analyze a specification only after its URL is observed in captured traffic, delivered client code, or a link supplied by the target. Do not guess documentation paths. Parse the captured/linked schema to extract endpoints, parameters, and models; each operation remains a candidate until its route and method are grounded in that schema.
 
 ```bash
-# Probe common spec locations
-for p in /openapi.json /swagger.json /api-docs /v2/swagger.json \
-         /v3/api-docs /swagger/index.html /api/openapi.yaml; do
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "https://target.com$p")
-  [ "$code" != "404" ] && echo "$p → $code"
-done
-
-# Pull the spec and enumerate every path + method
-curl -sS https://target.com/openapi.json | jq -r '.paths | keys[]'
-curl -sS https://target.com/openapi.json | jq -r '.paths | to_entries[] |
+# Use only a spec URL copied from the captured link/request that established it.
+curl -sS "$OBSERVED_SPEC_URL" | jq -r '.paths | keys[]'
+curl -sS "$OBSERVED_SPEC_URL" | jq -r '.paths | to_entries[] |
   .key as $p | .value | keys[] | "\($p) \(.)"'
 ```
 
-### Common API Paths
+### API Surface Discovery
 
-Systematically probe these paths for hidden or undocumented endpoints:
-
-```bash
-ffuf -u https://target.com/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt \
-     -mc all -fc 404 -H "Authorization: Bearer <token>" -t 20
-```
+Do not use a path wordlist to invent routes. Expand only from captured requests, target-provided links, delivered client code, or an explicitly approved route list. If none is available, report that route discovery is incomplete rather than probing conventional paths.
 
 ### Version Detection
 
@@ -439,7 +425,7 @@ Activate on REST/JSON APIs: endpoints accepting object IDs, multiple user roles,
 
 ## Detection Approach
 
-First discover the surface: probe for Swagger/OpenAPI and common versioned paths (`/api/v1`, `/v2`), then enumerate endpoints from the schema and JS bundles. For BOLA, capture User A's request to a resource, then replay with User B's token (and without a token) — if A's data returns in B's session, horizontal BOLA is confirmed; admin endpoints from a regular user = vertical. For mass assignment, add unexpected model fields (`role`, `isAdmin`) to the request body and check whether they persist in the response. For rate limiting, measure the actual threshold (100+ requests) before claiming bypass, trying IP rotation/parameter pollution/chunked only after confirming a limit exists. For versioning/method tampering, compare deprecated vs current and override-header vs raw method behavior. Always verify status AND body — a 200 with a generic response is not proof.
+First discover the surface from captured requests, linked schemas, and delivered client code. For BOLA, capture User A's request to a resource, then replay with User B's token (and without a token) — if A's data returns in B's session, horizontal BOLA is confirmed; admin endpoints from a regular user = vertical. For mass assignment, add unexpected model fields (`role`, `isAdmin`) to the request body and check whether they persist in the response. For rate limiting, measure the actual threshold before claiming bypass. Compare API versions only when both versions are observed. Always verify status AND body — a 200 with a generic response is not proof.
 
 ## Pitfalls
 
@@ -448,7 +434,7 @@ First discover the surface: probe for Swagger/OpenAPI and common versioned paths
 - Assuming rate limiting is absent after only 10 requests — measure with 100+.
 - Treating a 200 as vulnerable without checking the body for real cross-user data.
 - Treating a 403 as "secure" — it may mean a missing endpoint, not strong authz.
-- Assuming a version endpoint exists without probing common patterns.
+- Assuming a version endpoint exists without target-provided evidence.
 
 ## Verification & Impact
 

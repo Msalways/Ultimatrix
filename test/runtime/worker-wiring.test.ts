@@ -12,7 +12,7 @@ vi.mock('../../src/graph/store', () => ({
 
 import { createSpawnWorkerTool } from '../../src/manager/tools/spawn-worker'
 import { createSpawnSwarmTool } from '../../src/manager/tools/spawn-swarm'
-import { createWorkerTaskCoordinator } from '../../src/runtime/worker-pool-executor'
+import { createWorkerPoolExecutor, createWorkerTaskCoordinator } from '../../src/runtime/worker-pool-executor'
 import { WorkflowStore } from '../../src/workflow/store'
 import type { UltimatrixConfig } from '../../src/config'
 import { WorkerPool } from '../../src/workers/pool'
@@ -68,6 +68,71 @@ describe('production worker tool wiring', () => {
     expect(result.workerId).toBe('worker-managed')
     expect(receivedSignal).toBe(controller.signal)
     expect(pool.list()).toEqual([])
+  })
+
+  it('blocks dispatch when required worker context does not fit the model window', async () => {
+    const executeManaged = vi.fn()
+    const executor = createWorkerPoolExecutor({
+      validateWorkerContext: () => ({ fits: false, totalInputTokens: 9000 }),
+      executeManaged,
+    } as any) as any
+    const result = await executor({
+      taskId: 'context-overflow', objective: 'inspect observed endpoint', skillId: 'recon',
+      contextRefs: [], dependencyTaskIds: [], evidenceRefs: [], graphRefs: [], budget: {},
+      contextCheckpoints: [{ contextRefs: [], dependencies: [], priorAttempts: [] }],
+    }, new AbortController().signal, {})
+
+    expect(result.status).toBe('blocked')
+    expect(result.summary).toContain('required context does not fit or cannot be validated for model')
+    expect(executeManaged).not.toHaveBeenCalled()
+  })
+
+  it('sizes the complete task packet against the selected model and blocks unknown capacity', () => {
+    const sizingConfig = {
+      provider: 'groq',
+      model: 'small',
+      target: config.target,
+      modelCapabilities: {
+        'groq/small': { contextWindow: 8192, maxOutputTokens: 1024 },
+        'groq/large': { contextWindow: 16384, maxOutputTokens: 1024 },
+      },
+    } as UltimatrixConfig
+    const skillRegistry = {
+      load: () => ({ instructions: 'Use evidence-backed research steps.', fragments: [] }),
+    } as any
+    const pool = new WorkerPool(sizingConfig, skillRegistry)
+    const task = {
+      skillId: 'recon',
+      task: 'Map observed routes',
+      context: { graph: [{ id: 'endpoint-1', description: 'x'.repeat(24_000) }] },
+    }
+
+    const small = pool.validateWorkerContext({ ...task, modelId: 'groq/small' }, '')
+    const large = pool.validateWorkerContext({ ...task, modelId: 'groq/large' }, '')
+    const unknown = pool.validateWorkerContext({ ...task, modelId: 'groq/unknown' }, '')
+
+    expect(small?.fits).toBe(false)
+    expect(large?.fits).toBe(true)
+    expect(small?.breakdown.system).toBeGreaterThan(5000)
+    expect(small?.breakdown.system).toBe(large?.breakdown.system)
+    expect(unknown).toMatchObject({ fits: false, severity: 'critical' })
+    expect(unknown?.reason).toContain('No context-window and output limit metadata')
+  })
+
+  it('blocks dispatch when the durable checkpoint had to omit required refs', async () => {
+    const validateWorkerContext = vi.fn()
+    const executeManaged = vi.fn()
+    const executor = createWorkerPoolExecutor({ validateWorkerContext, executeManaged } as any)
+    const result = await executor({
+      taskId: 'omitted-context', objective: 'inspect observed endpoint', skillId: 'recon',
+      contextRefs: [], dependencyTaskIds: [], evidenceRefs: [], graphRefs: [], budget: {},
+      contextCheckpoints: [{ contextRefs: [], omittedContextRefs: 75, dependencies: [], priorAttempts: [] }],
+    }, new AbortController().signal, {})
+
+    expect(result.status).toBe('blocked')
+    expect(result.summary).toContain('75 context reference(s) omitted from checkpoint')
+    expect(validateWorkerContext).not.toHaveBeenCalled()
+    expect(executeManaged).not.toHaveBeenCalled()
   })
 
   it('routes spawnWorker through managed execution and persists the actual attempt', async () => {

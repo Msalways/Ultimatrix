@@ -5,6 +5,9 @@ import { getGlobalObserver } from '../capture/human-observer'
 import { captureScreenshot, getActivePage } from '../browser/manager'
 import { getGlobalWorkspace } from '../workspace'
 import { log } from '../utils/logger'
+import { getEngagementServices } from '../runtime/engagement-context'
+import { redactString } from '../security/secret-vault'
+import { persistOperatorWorkflow } from './flow-tools'
 
 const ASK_USER_TIMEOUT_MS = 300_000 // 5 minutes
 
@@ -15,9 +18,10 @@ const ASK_USER_TIMEOUT_MS = 300_000 // 5 minutes
  * or close (fail-safe: never auto-approve).
  */
 export async function askUserConfirm(question: string, timeoutMs = ASK_USER_TIMEOUT_MS): Promise<boolean> {
-  // F26 FIX: In 'run' mode, auto-approve HITL confirmations.
-  if (interactionMode === 'run') return true
-  const answer = consoleInputResolver ? await consoleInputResolver(question) : await waitForInput(timeoutMs)
+  const broker = getEngagementServices()?.interactionBroker
+  const answer = broker?.isActive()
+    ? await broker.request({ kind: 'approval', question }, timeoutMs)
+    : consoleInputResolver ? await consoleInputResolver(question) : await waitForInput(timeoutMs)
   if (!answer || answer === '__TIMEOUT__') return false
   return answer.trim().toLowerCase().startsWith('y')
 }
@@ -56,18 +60,19 @@ export function setConsoleInputResolver(fn: ((question: string) => Promise<strin
 }
 
 /**
- * F26 FIX: Interaction mode controls HITL behavior.
- * When mode is 'run', askUser/askUserConfirm auto-approve without waiting.
- * When mode is 'ask' (or unset), human input is required.
+ * Interaction mode is engagement-scoped and controls experiment planning.
+ * It never grants approval: sensitive actions still wait for an operator.
  */
 let interactionMode: 'ask' | 'run' | undefined
 
 export function setInteractionMode(mode: 'ask' | 'run' | undefined): void {
-  interactionMode = mode
+  const services = getEngagementServices()
+  if (services) services.interactionMode = mode
+  else interactionMode = mode
 }
 
 export function getInteractionMode(): 'ask' | 'run' | undefined {
-  return interactionMode
+  return getEngagementServices()?.interactionMode ?? interactionMode
 }
 
 /** True when the console owns input (readline-free path is active). */
@@ -76,11 +81,6 @@ export function isConsoleInputActive(): boolean {
 }
 
 export function waitForInput(timeoutMs = ASK_USER_TIMEOUT_MS, question = ''): Promise<string> {
-  // F26 FIX: In 'run' mode, auto-approve without waiting for human input.
-  // The LLM proceeds autonomously; HITL prompts resolve immediately.
-  if (interactionMode === 'run') {
-    return Promise.resolve('y')
-  }
   if (consoleInputResolver) {
     return consoleInputResolver(question).catch(() => '')
   }
@@ -137,6 +137,7 @@ export const askUser = createTool({
 
     if (waitForBrowserAction) {
       const observer = getGlobalObserver()
+      const handoffStartedAt = Date.now()
       observer.startSnapshot()
 
       const banner = [
@@ -160,9 +161,21 @@ export const askUser = createTool({
         }
       }
 
-      const answer = await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
+      const broker = getEngagementServices()?.interactionBroker
+      const pageContext = {
+        url: page ? page.url() : '',
+        title: page ? await page.title().catch(() => '') : '',
+        screenshot: screenshotPath,
+      }
+      const answer = broker?.isActive()
+        ? await broker.request({ kind: 'browser-handoff', question: fullQuestion, options, context: pageContext })
+        : await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
 
       const humanActions = observer.getActionsSinceSnapshot()
+      const workflowId = await persistOperatorWorkflow(handoffStartedAt, Date.now(), humanActions).catch(error => {
+        log.error(`Could not persist operator workflow: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      })
 
       let afterScreenshot: string | null = null
       if (page) {
@@ -179,10 +192,11 @@ export const askUser = createTool({
           humanActions: humanActions.map(a => ({
             type: a.type,
             selector: a.selector,
-            value: a.value,
+          value: a.value ? redactString(a.value) : a.value,
             url: a.url,
           })),
           humanActionCount: humanActions.length,
+          ...(workflowId ? { workflowId } : {}),
           pageUrl,
           pageTitle,
           screenshot: screenshotPath,
@@ -192,7 +206,19 @@ export const askUser = createTool({
       }
     }
 
-    const answer = await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
+    const broker = getEngagementServices()?.interactionBroker
+    const answer = broker?.isActive()
+      ? await broker.request({
+          kind: 'question',
+          question: fullQuestion,
+          options,
+          context: {
+            url: page ? page.url() : '',
+            title: page ? await page.title().catch(() => '') : '',
+            screenshot: screenshotPath,
+          },
+        })
+      : await waitForInput(ASK_USER_TIMEOUT_MS, fullQuestion)
 
     const pageUrl = page ? page.url() : ''
     const pageTitle = page ? await page.title().catch(() => '') : ''

@@ -1,6 +1,7 @@
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { TaskAcceptanceCriterion, TaskAcceptanceResult, TaskState } from '../workflow/types'
 import type { TaskCoordinator, TaskRequest } from './task-coordinator'
+import { taskResourceClaims } from './task-resources'
 
 export interface TaskProposal extends Omit<TaskRequest, 'signal' | 'onWorkerAssigned'> {
   taskId: string
@@ -13,7 +14,7 @@ export interface TaskGraphProposal {
 
 export interface TaskGraphValidationError {
   taskId?: string
-  code: 'empty_graph' | 'duplicate_id' | 'existing_id' | 'missing_dependency' | 'self_dependency' | 'cycle' | 'unknown_skill' | 'invalid_parallelism' | 'invalid_task'
+  code: 'empty_graph' | 'duplicate_id' | 'duplicate_work' | 'existing_id' | 'missing_dependency' | 'self_dependency' | 'cycle' | 'unknown_skill' | 'invalid_parallelism' | 'invalid_task'
   message: string
 }
 
@@ -40,18 +41,31 @@ export function validateTaskGraph(
 ): TaskGraphValidationResult {
   const errors: TaskGraphValidationError[] = []
   if (proposal.tasks.length === 0) errors.push({ code: 'empty_graph', message: 'Task graph must contain at least one task' })
-  const maxParallel = proposal.maxParallel ?? 1
+  const maxParallel = proposal.maxParallel ?? 3
   if (!Number.isInteger(maxParallel) || maxParallel < 1) {
     errors.push({ code: 'invalid_parallelism', message: 'maxParallel must be a positive integer' })
   }
 
   const ids = new Set<string>()
+  const workKeys = new Set<string>()
   for (const task of proposal.tasks) {
     if (ids.has(task.taskId)) errors.push({ taskId: task.taskId, code: 'duplicate_id', message: `Duplicate task ID: ${task.taskId}` })
     ids.add(task.taskId)
     if (coordinator.getTask(task.taskId)) errors.push({ taskId: task.taskId, code: 'existing_id', message: `Task ID already exists: ${task.taskId}` })
     if (!task.skillId || !skills.has(task.skillId)) errors.push({ taskId: task.taskId, code: 'unknown_skill', message: `Unknown skill: ${task.skillId ?? '(missing)'}` })
     if (!task.objective.trim()) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Task ${task.taskId} requires an objective` })
+    if (task.kind && task.kind !== 'entity_relationships' && !task.resourceClaims?.length) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Task ${task.taskId} requires resourceClaims because it may share application state or a session` })
+    if (task.kind && (task.contextRefs?.length ?? 0) === 0 && (task.dependencyTaskIds?.length ?? 0) === 0) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Research task ${task.taskId} requires observed graph context or a prerequisite task` })
+    if (task.resourceClaims?.some(claim => !claim.trim() || claim.length > 160)) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Task ${task.taskId} has an invalid resource claim` })
+    const workKey = JSON.stringify({
+      kind: task.kind ?? 'general',
+      skillId: task.skillId,
+      objective: task.objective.trim().replace(/\s+/g, ' ').toLowerCase(),
+      contextRefs: [...new Set(task.contextRefs ?? [])].sort(),
+      resourceClaims: [...new Set(task.resourceClaims ?? [])].sort(),
+    })
+    if (workKeys.has(workKey)) errors.push({ taskId: task.taskId, code: 'duplicate_work', message: `Task ${task.taskId} duplicates an existing task objective, skill, and context` })
+    workKeys.add(workKey)
     if (task.timeoutMs !== undefined && (!Number.isFinite(task.timeoutMs) || task.timeoutMs <= 0)) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Task ${task.taskId} has invalid timeoutMs` })
     if (task.tokenLimit !== undefined && (!Number.isFinite(task.tokenLimit) || task.tokenLimit <= 0)) errors.push({ taskId: task.taskId, code: 'invalid_task', message: `Task ${task.taskId} has invalid tokenLimit` })
   }
@@ -110,10 +124,10 @@ export class TaskGraphRunner {
 
     await this.coordinator.planBatch(proposal.tasks)
 
-    return this.runPersisted(proposal.tasks.map((task) => task.taskId), proposal.maxParallel ?? 1, signal)
+    return this.runPersisted(proposal.tasks.map((task) => task.taskId), Math.min(proposal.maxParallel ?? 3, 3), signal)
   }
 
-  async resume(taskIds?: string[], maxParallel = 1, signal?: AbortSignal): Promise<TaskGraphRunResult> {
+  async resume(taskIds?: string[], maxParallel = 3, signal?: AbortSignal): Promise<TaskGraphRunResult> {
     await this.coordinator.recoverInterrupted()
     const selected = taskIds ?? this.coordinator.listTasks().map((task) => task.taskId)
     const unknownSkills = selected
@@ -122,7 +136,7 @@ export class TaskGraphRunner {
     for (const task of unknownSkills) {
       if (task.status === 'planned') await this.coordinator.blockPlanned(task.taskId, `Skill unavailable on resume: ${task.skillId}`)
     }
-    return this.runPersisted(selected, maxParallel, signal)
+    return this.runPersisted(selected, Math.min(maxParallel, 3), signal)
   }
 
   private async runPersisted(taskIds: string[], maxParallel: number, signal?: AbortSignal): Promise<TaskGraphRunResult> {
@@ -149,14 +163,22 @@ export class TaskGraphRunner {
       const ready = [...pending]
         .map((taskId) => this.coordinator.getTask(taskId)!)
         .filter((task) => task.dependencyTaskIds.every((dependencyId) => this.coordinator.getTask(dependencyId)?.status === 'completed'))
-        .slice(0, maxParallel)
+      const selected: TaskState[] = []
+      const claimed = new Set<string>()
+      for (const task of ready) {
+        const claims = taskResourceClaims(task)
+        if (claims.some(claim => claimed.has(claim))) continue
+        selected.push(task)
+        for (const claim of claims) claimed.add(claim)
+        if (selected.length >= maxParallel) break
+      }
 
-      if (ready.length === 0) {
+      if (selected.length === 0) {
         if (changed) continue
         throw new Error('Validated task graph reached an unschedulable state')
       }
 
-      await Promise.all(ready.map(async (task) => {
+      await Promise.all(selected.map(async (task) => {
         const completed = await this.coordinator.executePlanned(task.taskId, { signal })
         if (completed.status === 'completed' && completed.acceptanceCriteria.length > 0) {
           await this.coordinator.recordAcceptance(completed.taskId, evaluateTaskAcceptance(completed))

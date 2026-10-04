@@ -189,12 +189,36 @@ export function generateHypotheses(
   // Endpoint-native hypotheses close the extraction gap: a route can be
   // actionable even when entity/workflow extraction has not recognized its
   // domain model yet. Signals come from captured request structure only.
+  const sqlInjectionRoutes = new Set<string>()
   for (const endpoint of endpoints.values()) {
     if (!isHighValueEndpoint(endpoint)) continue
     const props = endpoint.properties
     const idSignal = hasIdSignal(endpoint, new Set())
     const authSignal = hasAuthSignal(endpoint)
     const inputSignal = (Array.isArray(props.params) && props.params.length > 0) || Boolean(props.bodySchema)
+    const queryInputs = (props.params ?? [])
+      .filter(param => param.in === 'query')
+      .map(param => param.name)
+    const hasCapturedRoute = Array.isArray((props as Record<string, any>).tags)
+      && (props as Record<string, any>).tags.includes('har-capture')
+    const routeKey = `${String(props.method).toUpperCase()}:${endpointKey(props.url) ?? props.url}`
+    if (hasCapturedRoute && String(props.method).toUpperCase() === 'GET' && queryInputs.length > 0 && !sqlInjectionRoutes.has(routeKey)) {
+      sqlInjectionRoutes.add(routeKey)
+      hypotheses.push({
+        id: stableId('hypothesis', ['sql-injection', endpoint.id, queryInputs.join(',')]),
+        title: 'Observed query input may alter database query behavior',
+        kind: 'sql_injection',
+        reason: 'A target response exposed a string query input. Compare a benign UI-captured value against a bounded boolean SQL expression and require a stable collection-size oracle before promotion.',
+        targetEndpoints: [endpoint.id],
+        targetParams: queryInputs,
+        relatedWorkflowIds: [],
+        relatedEntityIds: [],
+        requiredSetup: ['Capture a non-empty benign input through the target UI', 'Anonymous baseline and independent retest'],
+        risk: 'medium',
+        confidence: 0.5,
+        status: 'open',
+      })
+    }
     if (idSignal && authSignal) {
       hypotheses.push({
         id: stableId('hypothesis', ['endpoint-access-control', endpoint.id]),

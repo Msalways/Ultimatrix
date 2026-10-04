@@ -10,11 +10,10 @@ beforeEach(() => {
 })
 
 describe('skill -> tool wiring (data-driven, no prompt hardcoding)', () => {
-  it('active-testing skills declare runPrimitive', () => {
+  it('primitive-driven testing skills declare runPrimitive', () => {
     const ids = [
       'exploitation',
       'vuln-discovery',
-      'second-order-sqli',
       'ssti',
       'nosql-injection',
       'command-injection-advanced',
@@ -27,6 +26,16 @@ describe('skill -> tool wiring (data-driven, no prompt hardcoding)', () => {
       const skill = initSkillIndex().get(id)
       expect(skill, `skill ${id} should exist`).toBeDefined()
       expect(skill!.toolRefs, `skill ${id} toolRefs`).toContain('runPrimitive')
+    }
+  })
+
+  it('SQLi research skills declare the evidence-gated experiment path', () => {
+    for (const id of ['sql-injection', 'second-order-sqli']) {
+      const skill = initSkillIndex().get(id)
+      expect(skill, `skill ${id} should exist`).toBeDefined()
+      for (const tool of ['listCapturedRequests', 'planResearchExperiments', 'executePlannedExperiment', 'evaluateResearchExperiment', 'writeFinding']) {
+        expect(skill!.toolRefs, `skill ${id} toolRefs`).toContain(tool)
+      }
     }
   })
 

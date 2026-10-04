@@ -269,12 +269,14 @@ function coverageForSlices(
   const endpoints = new Set<string>()
   const params = new Set<string>()
   const roles = new Set<string>()
+  const actors = new Set<string>()
   const states = new Set<string>()
   const techniques = new Set<string>()
   for (const s of slices) {
     endpoints.add(s.endpoint.id)
-    s.params.forEach(p => params.add(`${s.endpoint.id}#${p}`))
+    if (s.input?.name) params.add(`${s.endpoint.id}#${s.input.location}:${s.input.name}`)
     roles.add(s.role)
+    actors.add(s.actor ?? s.role)
     states.add(s.state)
     s.techniqueIds.forEach(t => techniques.add(t))
   }
@@ -283,6 +285,7 @@ function coverageForSlices(
     endpointsCovered: endpoints.size,
     paramsCovered: params.size,
     rolesCovered: roles.size,
+    actorsCovered: actors.size,
     statesCovered: states.size,
     techniquesPlanned: techniques.size,
     slicesPlanned: slices.length,
@@ -349,6 +352,18 @@ function buildRetestPlan(graphStore: GraphStore, options?: RetestPlanOptions): R
   const plan: CampaignPlan = {
     slices: filtered,
     coverage: coverageForSlices(filtered, basePlan.coverage),
+    domains: basePlan.domains?.map(domain => {
+      const unitsPlanned = filtered.filter(slice => slice.domains?.includes(domain.domain)).length
+      return {
+        ...domain,
+        unitsPlanned,
+        unitsCompleted: 0,
+        status: unitsPlanned ? 'skipped' as const : 'not_applicable' as const,
+        reason: unitsPlanned
+          ? 'Retest units are planned and awaiting execution.'
+          : 'No changed or backlogged unit was selected for this domain in the retest.',
+      }
+    }),
     generatedAt: Date.now(),
     options: { primitives, ...options },
   }

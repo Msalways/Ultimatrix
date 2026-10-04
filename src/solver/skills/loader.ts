@@ -66,8 +66,6 @@ export interface SkillContract {
 }
 
 export interface SkillStrategy {
-  seedPaths?: string[]
-  versionPrefixes?: string[]
   relevanceSignals?: string[]
 }
 
@@ -153,8 +151,6 @@ function parseSkillMeta(filePath: string, domain: string): SkillMeta | null {
     const rawStrategy = meta.strategy && typeof meta.strategy === 'object' && !Array.isArray(meta.strategy)
       ? meta.strategy as Record<string, unknown> : undefined
     const strategy: SkillStrategy | undefined = rawStrategy ? {
-      ...(Array.isArray(rawStrategy.seedPaths) ? { seedPaths: rawStrategy.seedPaths.filter((v): v is string => typeof v === 'string') } : {}),
-      ...(Array.isArray(rawStrategy.versionPrefixes) ? { versionPrefixes: rawStrategy.versionPrefixes.filter((v): v is string => typeof v === 'string') } : {}),
       ...(Array.isArray(rawStrategy.relevanceSignals) ? { relevanceSignals: rawStrategy.relevanceSignals.filter((v): v is string => typeof v === 'string') } : {}),
     } : undefined
 

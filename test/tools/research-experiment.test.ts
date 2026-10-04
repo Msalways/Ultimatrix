@@ -100,6 +100,13 @@ describe('automatic experiment mutations', () => {
     const mutation = automaticMutation('open_redirect', { url: 'https://target.test/r?url=BASELINEVALUE' }, ['url'])
     expect(mutation.url).toMatch(/^https:\/\/target\.test\/r\?url=https%3A%2F%2Fmarker-[0-9a-f]{12}\.example\.com%2F$/)
   })
+
+  it('changes only the observed query field for a bounded SQLi probe', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    expect(automaticMutation('sql_injection', { url: 'https://target.test/search?q=apple&lang=en' }, ['q'])).toEqual({
+      url: "https://target.test/search?q=%27+OR+1%3D1+OR+%27x%27%3D%27x&lang=en",
+    })
+  })
 })
 
 describe('planned experiment approval boundary', () => {  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
@@ -113,6 +120,48 @@ describe('planned experiment approval boundary', () => {  it('blocks active meth
     const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
     expect(result).toMatchObject({ ok: false, code: 'APPROVAL_REQUIRED' })
     setInteractionMode(undefined)
+  })
+})
+
+describe('planned experiment cancellation', () => {
+  it('forwards the solver abort signal to baseline and mutation replays', async () => {
+    const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+    const { getCapturedRequestStore } = await import('../../src/capture/captured-request-store')
+    const { replayCapturedRequest } = await import('../../src/tools/replay-tools')
+    const disclosureHypothesis = {
+      id: 'hypothesis:disclosure-1',
+      type: 'Hypothesis',
+      properties: { kind: 'information_disclosure', status: 'open' },
+    }
+    const realGetNode = store.getNode
+    const captured = getCapturedRequestStore()
+    captured.clear()
+    captured.record({ method: 'GET', url: 'https://target.test/api/profile', status: 200, source: 'browser' })
+    ;(store as any).getNode = vi.fn((id: string) => id === disclosureHypothesis.id ? disclosureHypothesis : experiment)
+    experiment.properties = {
+      status: 'planned',
+      hypothesisId: disclosureHypothesis.id,
+      baselineRequest: { method: 'GET', url: 'https://target.test/api/profile' },
+    }
+    const replaySpy = vi.spyOn(replayCapturedRequest, 'execute')
+      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 200, response: { body: 'profile' } } } as any)
+      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 200, response: { body: 'profile' } } } as any)
+    const controller = new AbortController()
+
+    try {
+      await executePlannedExperiment.execute(
+        { experimentId: experiment.id } as any,
+        { abortSignal: controller.signal } as any,
+      )
+
+      expect(replaySpy).toHaveBeenCalledTimes(2)
+      expect(replaySpy.mock.calls[0][1]).toMatchObject({ abortSignal: controller.signal })
+      expect(replaySpy.mock.calls[1][1]).toMatchObject({ abortSignal: controller.signal })
+    } finally {
+      replaySpy.mockRestore()
+      captured.clear()
+      ;(store as any).getNode = realGetNode
+    }
   })
 })
 

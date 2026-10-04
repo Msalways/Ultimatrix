@@ -13,6 +13,7 @@ import {
 } from '../../src/capture/captured-request-store'
 import { listCapturedRequests, replayCapturedRequest } from '../../src/tools/replay-tools'
 import { httpRequest } from '../../src/tools/http-tools'
+import { setConsoleInputResolver } from '../../src/tools/interaction-tools'
 import { getGlobalWorkspace } from '../../src/workspace'
 import type { HarEntry } from '../../src/capture/har-parser'
 
@@ -42,12 +43,15 @@ function realRequestCalls(spy: ReturnType<typeof vi.fn>): unknown[][] {
 
 beforeEach(() => {
   getCapturedRequestStore().clear()
+  // Replay tests explicitly approve state-changing requests; production defaults closed.
+  setConsoleInputResolver(async () => 'yes')
   try {
     getGlobalWorkspace().setTarget('https://target.example', { name: 't' })
   } catch { /* workspace already configured */ }
 })
 
 afterEach(() => {
+  setConsoleInputResolver(null)
   globalThis.fetch = realFetch
   vi.restoreAllMocks()
 })
@@ -119,6 +123,18 @@ describe('listCapturedRequests tool', () => {
 })
 
 describe('replayCapturedRequest tool', () => {
+  it('does not replay a state-changing request without operator approval', async () => {
+    getCapturedRequestStore().record({ method: 'POST', url: 'https://target.example/api/orders', body: '{"total":100}' })
+    const fetchSpy = vi.fn()
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    setConsoleInputResolver(async () => 'no')
+
+    const res = await replayCapturedRequest.execute({ entryId: 'cap-1' })
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('APPROVAL_REQUIRED')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('rejects unknown entry ids without sending anything', async () => {
     const fetchSpy = vi.fn()
     globalThis.fetch = fetchSpy as unknown as typeof fetch
@@ -147,6 +163,27 @@ describe('replayCapturedRequest tool', () => {
     expect(res.value.originalStatus).toBe(200)
     expect(res.value.replayedStatus).toBe(200)
     expect(res.value.statusDelta).toBe('200 \u2192 200');
+  })
+
+  it('forwards the agent abort signal through replay to the HTTP request', async () => {
+    getCapturedRequestStore().record({ method: 'GET', url: 'https://target.example/api/items', status: 200 })
+    const controller = new AbortController()
+    const fetchSpy = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      setTimeout(() => controller.abort(new Error('turn deadline')), 10)
+      await new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('request aborted')), { once: true })
+      })
+      return new Response('', { status: 200 })
+    })
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+
+    const result = await replayCapturedRequest.execute(
+      { entryId: 'cap-1' } as any,
+      { abortSignal: controller.signal } as any,
+    )
+
+    expect(result).toMatchObject({ ok: false })
+    expect(result.error).toMatch(/abort/i)
   })
 
   it('applies structural mutations: header set/remove + body swap + url override', async () => {

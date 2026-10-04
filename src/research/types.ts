@@ -16,6 +16,7 @@ export type HypothesisKind =
   | 'workflow_bypass'
   | 'information_disclosure'
   | 'reflected_injection'
+  | 'sql_injection'
   | 'open_redirect'
   | 'replay'
   | 'state_confusion'
@@ -96,6 +97,8 @@ export interface ResearchExperiment {
 
 export type EvidenceOracle =
   | { type: 'unique-marker'; baselineEvidenceId: string; mutationEvidenceId: string; marker: string }
+  | { type: 'json-array-growth'; baselineEvidenceId: string; mutationEvidenceId: string; minimumGrowth: number }
+  | { type: 'database-error-differential'; baselineEvidenceId: string; mutationEvidenceId: string; inputLocation: 'query' | 'json' | 'form'; parameter: string }
   | { type: 'cross-identity'; victimEvidenceId: string; attackerEvidenceId: string; victimActorRef: string; attackerActorRef: string; marker: string }
   | { type: 'state-transition'; beforeEvidenceId: string; afterEvidenceId: string; stateKey: string; beforeValue: string; afterValue: string }
   | { type: 'oast-callback'; evidenceId: string; correlationToken: string }

@@ -10,7 +10,7 @@ import {
   emitSpiderStart,
   emitScopeProposed,
 } from '../events/emitter'
-import { deriveScopeFromTarget, isUrlInScope, isCategoryAuthorized, approveScopeOrigin, enforceAction } from '../safety/scope-guard'
+import { bindScopeToTarget, isUrlInScope, isCategoryAuthorized, approveScopeOrigin, enforceAction } from '../safety/scope-guard'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { log } from '../utils/logger'
 import { getGlobalDecisionLedger } from '../security/decision-ledger'
@@ -142,7 +142,7 @@ export class EngagementBoundary {
     private workflowId?: string,
   ) {
     this.target = target
-    this.scopeConfig = config.scope ?? deriveScopeFromTarget(target)
+    this.scopeConfig = bindScopeToTarget(target, config.scope)
     this.allowedOrigins = this.scopeConfig?.allowedDomains ?? []
     this.allowedCategories = config.scope?.allowedCategories ?? []
     this.externalToolsEnabled = config.externalTools?.enabled === true
@@ -608,8 +608,11 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
   emitSpiderStart(target, maxPages, maxDurationMs)
 
   try {
-    await groundLandingPage(runtime, options, browser)
+    await groundLandingPage(runtime, options, browser, deadlineController.signal, deadline - Date.now())
   } catch (err) {
+    if (deadlineController.signal.aborted) {
+      return finalize(options.signal?.aborted ? 'aborted' : 'max_duration')
+    }
     const message = err instanceof Error ? err.message : String(err)
     log.error(message)
     emitSpiderError(target, message)
@@ -734,20 +737,26 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
   }
 }
 
-async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptions, browser: unknown): Promise<void> {
+async function groundLandingPage(
+  runtime: SpiderRuntime,
+  options: SpiderRunOptions,
+  browser: unknown,
+  signal: AbortSignal,
+  remainingMs: number,
+): Promise<void> {
   const page = getStagehandPage(browser)
   let finalUrl: string
   let status = 0
 
   if (page?.goto) {
     enforceAction('browser_action', { toolId: 'spider.groundLandingPage' })
-    const release = await getTargetTransportGovernor().acquire(options.target)
+    const release = await getTargetTransportGovernor().acquire(options.target, 'default', signal)
     let response: any
     try {
-      response = await page.goto(options.target, {
+      response = await runNavigationWithAbort(() => page.goto(options.target, {
         waitUntil: 'domcontentloaded',
-        timeout: options.config.timeout ?? DEFAULTS.timeout,
-      })
+        timeout: Math.max(1, Math.min(options.config.timeout ?? DEFAULTS.timeout, remainingMs)),
+      }), page, signal)
     } finally {
       release()
     }
@@ -760,7 +769,7 @@ async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptio
       throw new Error('Target grounding failed: browser has no page.goto or stagehand_navigate tool')
     }
     enforceAction('browser_action', { toolId: 'spider.groundLandingPage' })
-    const result = await navigate.execute({ url: options.target }, { page })
+    const result: any = await runNavigationWithAbort(() => navigate.execute({ url: options.target }, { page }), page, signal)
     if (result?.success === false) throw new Error(String(result.error ?? 'stagehand_navigate failed'))
     finalUrl = String(result?.url ?? options.target)
   }
@@ -819,6 +828,38 @@ async function groundLandingPage(runtime: SpiderRuntime, options: SpiderRunOptio
   for (const form of forms.slice(0, 50)) {
     runtime.recordForm(finalUrl, form.selector, form.method, form.action)
   }
+}
+
+async function runNavigationWithAbort<T>(operation: () => Promise<T>, page: any, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  let onAbort: (() => void) | undefined
+  const navigation = Promise.resolve().then(operation)
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Spider navigation aborted'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
+  try {
+    return await Promise.race([navigation, aborted])
+  } catch (error) {
+    if (signal.aborted) await stopPageNavigation(page)
+    throw error
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
+async function stopPageNavigation(page: any): Promise<void> {
+  const stop = typeof page?.mainSession?.send === 'function'
+    ? () => page.mainSession.send('Page.stopLoading')
+    : typeof page?.evaluate === 'function'
+      ? () => page.evaluate(() => window.stop())
+      : undefined
+  if (!stop) return
+  await Promise.race([
+    Promise.resolve().then(stop).catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, 250)),
+  ])
 }
 
 /** Query-parameter names of a URL (empty when the link has no query string). */

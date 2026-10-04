@@ -312,6 +312,11 @@ export interface ScopeConfig {
   allowedPaths?: string[]
   /** Protocols allowed. Default: ['https']. */
   allowedProtocols?: string[]
+  /** When enabled, HTTP tools may request only routes present in captured traffic,
+   * target-provided graph resources, or the exact start URL supplied by the operator. */
+  requireObservedRoutes?: boolean
+  /** Exact start URL supplied by the operator; permits the initial baseline fetch. */
+  authorizedStartUrl?: string
   /** Action categories permitted against in-scope targets. Absent/empty = legacy
    *  allow-all, EXCEPT `external_tool` which always requires explicit opt-in. */
   allowedCategories?: AuthorizationCategory[]
@@ -323,12 +328,16 @@ export interface ScopeConfig {
 }
 
 export interface CampaignConfig {
-  /** Auto plan + run a coverage campaign at the start of a solver goal. */
+  /** Auto plan + run coverage during explicit solve runs. Defaults to true. */
   auto?: boolean
-  /** Cap on number of slices to execute (highest priority first). */
+    /** Per-run cap on campaign coverage units (highest priority first). */
   maxSlices?: number
   /** Bounded concurrency for slice execution. */
   maxConcurrency?: number
+  /** Maximum real HTTP requests made by the campaign. Defaults to 100. */
+  maxRequests?: number
+  /** Campaign wall-clock limit in milliseconds. Defaults to five minutes. */
+  maxDurationMs?: number
 }
 
 export interface OastConfig {
@@ -435,10 +444,15 @@ export type ProviderRateLimits = Record<string, RateLimitConfig>
 // ─── Single source of truth for defaults ───────────────────────────
 
 export const DEFAULTS = {
+  campaign: {
+    auto: true,
+    maxRequests: 100,
+    maxDurationMs: 300_000,
+  },
   solver: {
     maxToolCalls: 50,
     maxDurationMs: 300_000,
-    maxParallel: 1,
+    maxParallel: 3,
     maxRounds: 5,
     maxActiveChainSteps: 3,
   },

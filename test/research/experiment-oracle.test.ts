@@ -33,6 +33,68 @@ describe('evaluateExperimentOracle', () => {
     expect(evaluateExperimentOracle('exp', oracle, [base, mutCap]).status).toBe('proven')
   })
 
+  it('proves only successful structured collection growth and leaves parse failures inconclusive', () => {
+    const oracle = { type: 'json-array-growth' as const, baselineEvidenceId: 'base', mutationEvidenceId: 'mut', minimumGrowth: 5 }
+    const base = evidence('base', '[{}, {}, {}]', { status: 200 })
+    const mutation = evidence('mut', '[{}, {}, {}, {}, {}, {}, {}, {}]', { status: 200 })
+    expect(evaluateExperimentOracle('exp', oracle, [base, mutation]).status).toBe('proven')
+    expect(evaluateExperimentOracle('exp', oracle, [base, evidence('mut', 'SQL error', { status: 500 })])).toMatchObject({ status: 'inconclusive' })
+    expect(evaluateExperimentOracle('exp', { ...oracle, minimumGrowth: 6 }, [base, mutation]).status).toBe('disproven')
+  })
+
+  it('proves a SQL-specific error only when the named observed input alone changed on the same route and actor', () => {
+    const oracle = {
+      type: 'database-error-differential' as const,
+      baselineEvidenceId: 'base',
+      mutationEvidenceId: 'mut',
+      inputLocation: 'query' as const,
+      parameter: 'q',
+    }
+    const baseline = evidence('base', '[]', { method: 'GET', url: 'https://app.test/search?q=apple', status: 200 })
+    const mutation = evidence('mut', 'SQLITE_ERROR: near quote: syntax error', { method: 'GET', url: 'https://app.test/search?q=%27', status: 500 })
+    expect(evaluateExperimentOracle('exp', oracle, [baseline, mutation]).status).toBe('proven')
+    expect(evaluateExperimentOracle('exp', oracle, [
+      baseline,
+      evidence('mut', 'SQLITE_ERROR: near quote: syntax error', { method: 'GET', url: 'https://app.test/other?q=%27', status: 500 }),
+    ])).toMatchObject({ status: 'inconclusive' })
+    expect(evaluateExperimentOracle('exp', oracle, [
+      baseline,
+      evidence('mut', 'SQLITE_ERROR: near quote: syntax error', { method: 'GET', url: 'https://app.test/search?q=%27&page=2', status: 500 }),
+    ])).toMatchObject({ status: 'inconclusive' })
+    expect(evaluateExperimentOracle('exp', oracle, [
+      baseline,
+      evidence('mut', 'SQLITE_ERROR: near quote: syntax error', {
+        method: 'GET', url: 'https://app.test/search?q=%27', status: 500, actorFingerprint: 'different-actor',
+      }),
+    ])).toMatchObject({ status: 'inconclusive' })
+    expect(evaluateExperimentOracle('exp', oracle, [
+      evidence('base', 'syntax error in SQL statement', { method: 'GET', url: 'https://app.test/search?q=apple', status: 500 }), mutation,
+    ]).status).toBe('disproven')
+  })
+
+  it('checks JSON and form input changes without accepting unrelated body mutations', () => {
+    const jsonOracle = {
+      type: 'database-error-differential' as const,
+      baselineEvidenceId: 'base', mutationEvidenceId: 'mut', inputLocation: 'json' as const, parameter: 'query',
+    }
+    const jsonBaseline = evidence('base', '[]', {
+      method: 'POST', url: 'https://app.test/search', requestBody: '{"query":"apple","limit":10}',
+    })
+    const jsonMutation = evidence('mut', 'syntax error at or near quote', {
+      method: 'POST', url: 'https://app.test/search', requestBody: '{"query":"quote","limit":10}',
+    })
+    expect(evaluateExperimentOracle('exp', jsonOracle, [jsonBaseline, jsonMutation]).status).toBe('proven')
+
+    const formOracle = { ...jsonOracle, inputLocation: 'form' as const, parameter: 'q' }
+    const formBaseline = evidence('base', '[]', {
+      method: 'POST', url: 'https://app.test/search', requestBody: 'q=apple&limit=10',
+    })
+    const formMutation = evidence('mut', 'syntax error at or near quote', {
+      method: 'POST', url: 'https://app.test/search', requestBody: 'q=quote&limit=10',
+    })
+    expect(evaluateExperimentOracle('exp', formOracle, [formBaseline, formMutation]).status).toBe('proven')
+  })
+
   it('returns inconclusive when referenced evidence is missing', () => {
     const outcome = evaluateExperimentOracle('exp', {
       type: 'oast-callback', evidenceId: 'callback', correlationToken: 'token-1',

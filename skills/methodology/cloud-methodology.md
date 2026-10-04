@@ -80,6 +80,12 @@ For each confirmed finding:
 ## Anti-Patterns
 
 - Do not assume cloud services are secure by default
+
+For an explicitly authorized cloud profile, capture the active identity before assessing permissions:
+
+```sh
+aws sts get-caller-identity --profile <authorized-test-profile>
+```
 - Do not skip metadata endpoint testing (SSRF → credentials)
 - Do not ignore cross-service trust relationships
 - Do not test production accounts without explicit authorization

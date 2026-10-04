@@ -33,7 +33,7 @@ export function AdvancedTab() {
       <ConfigSection title="Campaign" description="Autonomous coverage planning">
         <div className="space-y-3">
           <ConfigToggle
-            checked={campaign.auto ?? false}
+            checked={campaign.auto ?? true}
             onChange={(v) => update({ campaign: { ...campaign, auto: v } })}
             label="Auto-plan campaigns"
           />
@@ -46,9 +46,24 @@ export function AdvancedTab() {
           </ConfigField>
           <ConfigField label="Max Concurrency">
             <ConfigNumber
-              value={campaign.maxConcurrency ?? 3}
+              value={campaign.maxConcurrency ?? 2}
               onChange={(v) => update({ campaign: { ...campaign, maxConcurrency: v } })}
               min={1}
+            />
+          </ConfigField>
+          <ConfigField label="Max HTTP Requests">
+            <ConfigNumber
+              value={campaign.maxRequests ?? 100}
+              onChange={(v) => update({ campaign: { ...campaign, maxRequests: v } })}
+              min={1}
+            />
+          </ConfigField>
+          <ConfigField label="Max Duration (ms)">
+            <ConfigNumber
+              value={campaign.maxDurationMs ?? 300000}
+              onChange={(v) => update({ campaign: { ...campaign, maxDurationMs: v } })}
+              min={1000}
+              step={1000}
             />
           </ConfigField>
         </div>

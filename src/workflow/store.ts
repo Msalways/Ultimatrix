@@ -114,6 +114,8 @@ function coerceTask(value: unknown): TaskState | null {
     ...task,
     taskId: task.taskId,
     objective: task.objective,
+    kind: ['route_mapping', 'workflow_transitions', 'entity_relationships', 'actor_access', 'security_test'].includes(task.kind ?? '') ? task.kind : undefined,
+    resourceClaims: Array.isArray(task.resourceClaims) ? task.resourceClaims.filter((claim): claim is string => typeof claim === 'string' && claim.trim().length > 0 && claim.length <= 160) : undefined,
     dependencyTaskIds: Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [],
     contextRefs: Array.isArray(task.contextRefs) ? task.contextRefs : [],
     requiredCapabilities: Array.isArray(task.requiredCapabilities) ? task.requiredCapabilities : [],

@@ -29,18 +29,28 @@ const responseLikeSchema = z.object({
   url: z.string().optional(),
 })
 
+const evidenceIdSchema = z.string().min(1).describe('Canonical ID returned by a capture or request tool; graph Fact and Endpoint IDs are not evidence IDs.')
+
 const evidenceOracleSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('unique-marker'), baselineEvidenceId: z.string(), mutationEvidenceId: z.string(), marker: z.string().min(1) }),
-  z.object({ type: z.literal('cross-identity'), victimEvidenceId: z.string(), attackerEvidenceId: z.string(), victimActorRef: z.string(), attackerActorRef: z.string(), marker: z.string().min(1) }),
-  z.object({ type: z.literal('state-transition'), beforeEvidenceId: z.string(), afterEvidenceId: z.string(), stateKey: z.string(), beforeValue: z.string(), afterValue: z.string() }),
-  z.object({ type: z.literal('oast-callback'), evidenceId: z.string(), correlationToken: z.string().min(1) }),
-  z.object({ type: z.literal('timing-differential'), baselineEvidenceIds: z.array(z.string()).min(1), mutationEvidenceIds: z.array(z.string()).min(1), minSamples: z.number().int().positive(), minDeltaMs: z.number().nonnegative() }),
-  z.object({ type: z.literal('browser-effect'), evidenceId: z.string(), effectKey: z.string(), expectedValue: z.string() }),
+  z.object({ type: z.literal('unique-marker'), baselineEvidenceId: evidenceIdSchema, mutationEvidenceId: evidenceIdSchema, marker: z.string().min(1) }),
+  z.object({ type: z.literal('json-array-growth'), baselineEvidenceId: evidenceIdSchema, mutationEvidenceId: evidenceIdSchema, minimumGrowth: z.number().int().positive() }),
+  z.object({
+    type: z.literal('database-error-differential'),
+    baselineEvidenceId: evidenceIdSchema,
+    mutationEvidenceId: evidenceIdSchema,
+    inputLocation: z.enum(['query', 'json', 'form']),
+    parameter: z.string().trim().min(1),
+  }),
+  z.object({ type: z.literal('cross-identity'), victimEvidenceId: evidenceIdSchema, attackerEvidenceId: evidenceIdSchema, victimActorRef: z.string(), attackerActorRef: z.string(), marker: z.string().min(1) }),
+  z.object({ type: z.literal('state-transition'), beforeEvidenceId: evidenceIdSchema, afterEvidenceId: evidenceIdSchema, stateKey: z.string(), beforeValue: z.string(), afterValue: z.string() }),
+  z.object({ type: z.literal('oast-callback'), evidenceId: evidenceIdSchema, correlationToken: z.string().min(1) }),
+  z.object({ type: z.literal('timing-differential'), baselineEvidenceIds: z.array(evidenceIdSchema).min(1), mutationEvidenceIds: z.array(evidenceIdSchema).min(1), minSamples: z.number().int().positive(), minDeltaMs: z.number().nonnegative() }),
+  z.object({ type: z.literal('browser-effect'), evidenceId: evidenceIdSchema, effectKey: z.string(), expectedValue: z.string() }),
 ])
 
-async function executeTool(tool: any, args: Record<string, unknown>): Promise<any> {
+async function executeTool(tool: any, args: Record<string, unknown>, context: { abortSignal?: AbortSignal } = {}): Promise<any> {
   if (!tool || typeof tool.execute !== 'function') return { ok: false, error: 'required research tool unavailable' }
-  return tool.execute(args, {} as never)
+  return tool.execute(args, context as never)
 }
 
 export const buildResearchMap = createTool({
@@ -188,6 +198,18 @@ export function automaticMutation(
       }
     } catch { /* fall through to the auth-boundary differential */ }
   }
+  if (kind === 'sql_injection') {
+    try {
+      const url = new URL(request.url)
+      const names = (targetParams ?? []).filter(name => url.searchParams.has(name))
+      if (names.length === 0) return {}
+      const selected = names[0]
+      // One small, bounded tautology mutation: no stacked statements, writes,
+      // sleep primitive, or out-of-band callback.
+      url.searchParams.set(selected, "' OR 1=1 OR 'x'='x")
+      return { url: url.toString() }
+    } catch { return {} }
+  }
 
   if (kind === 'mass_assignment' && request.body) {
     try {
@@ -249,21 +271,22 @@ export const executePlannedExperiment = createTool({
   inputSchema: z.object({
     experimentId: z.string(),
     entryId: z.string().optional().describe('Captured request id; if omitted, match the experiment baseline method and URL.'),
+    phase: z.enum(['initial', 'retest']).optional().default('initial').describe('Use retest only after the initial typed oracle is proven; both legs replay as fresh traffic.'),
     mutation: replayMutationSchema.optional().describe('Structural mutation selected by the active skill. Omit for a generic auth-boundary differential.'),
     assertion: z.object({ markers: z.array(z.string()).optional(), jsonFields: z.array(z.string()).optional() }).optional(),
   }),
-  execute: async ({ experimentId, entryId, mutation, assertion }) => {
+  execute: async ({ experimentId, entryId, phase, mutation, assertion }, context) => {
+    const executionPhase = phase ?? 'initial'
+    const toolContext = { abortSignal: context?.abortSignal }
     const store = getGlobalGraphStore()
     const node = store.getNode(experimentId) as ExperimentNode | undefined
     if (!node || node.type !== NodeType.EXPERIMENT) return { ok: false, error: `Experiment not found: ${experimentId}` }
-    if (!['planned', 'blocked', 'rejected'].includes(node.properties.status)) {
+    if (executionPhase === 'initial' && !['planned', 'blocked', 'rejected'].includes(node.properties.status)) {
       return { ok: false, error: `Experiment ${experimentId} is not executable in status ${node.properties.status}` }
     }
-
-    // This tool is callable from several registries, so it enforces the
-    // execution approval boundary internally instead of relying on a brain
-    // wrapper. Safe idempotent baselines remain available in collaborative
-    // mode; active experiments require an explicit run-mode decision.
+    if (executionPhase === 'retest' && node.properties.outcome?.status !== 'proven') {
+      return { ok: false, error: `Experiment ${experimentId} needs a proven initial oracle before a fresh retest` }
+    }
     const plannedMethod = String(node.properties.baselineRequest?.method ?? 'GET').toUpperCase()
     const mutationMethod = String(mutation?.method ?? plannedMethod).toUpperCase()
     const safeMethods = ['GET', 'HEAD', 'OPTIONS']
@@ -277,6 +300,8 @@ export const executePlannedExperiment = createTool({
       }
     }
 
+    // Every experiment leg is dispatched through replayCapturedRequest or
+    // httpRequest, whose shared HTTP boundary asks before state-changing work.
     const hypothesis = node.properties.hypothesisId
       ? store.getNode(node.properties.hypothesisId) as { properties?: { kind?: string; targetParams?: string[] } } | undefined
       : undefined
@@ -308,7 +333,7 @@ export const executePlannedExperiment = createTool({
       const wantedMethod = (baseline.method ?? '').toUpperCase()
       let baselineUrl: URL | undefined
       try { baselineUrl = new URL(baseline.url) } catch { /* captured matcher below will simply miss invalid URLs */ }
-      selected = capturedStore.list({ limit: 200 }).map(ref => capturedStore.get(ref.id)).find(entry => {
+      const matching = capturedStore.list({ limit: 200 }).map(ref => capturedStore.get(ref.id)).filter((entry): entry is CapturedRequest => {
         if (!entry || (wantedMethod && entry.method.toUpperCase() !== wantedMethod)) return false
         if (entry.url === baseline.url) return true
         if (!baselineUrl) return false
@@ -316,7 +341,26 @@ export const executePlannedExperiment = createTool({
           const candidateUrl = new URL(entry.url)
           return candidateUrl.origin === baselineUrl.origin && candidateUrl.pathname === baselineUrl.pathname
         } catch { return false }
-      }) ?? null
+      })
+      if (hypothesisKind === 'sql_injection' && hypothesisParams?.length) {
+        // The baseline must be an actual non-empty benign input sent through
+        // the UI. An empty default search cannot establish a useful contrast.
+        selected = matching.filter(entry => entry.source !== 'tool').reverse().find(entry => {
+          try {
+            const query = new URL(entry.url).searchParams
+            return hypothesisParams.some(name => (query.get(name) ?? '').trim().length > 0)
+          } catch { return false }
+        }) ?? null
+        if (!selected) {
+          node.properties.status = 'blocked'
+          node.properties.resultSummary = `blocked: SQL injection experiment requires a non-empty benign value in observed query input(s) ${hypothesisParams.join(', ')} from a captured UI request.`
+          node.updatedAt = Date.now()
+          await store.save()
+          return { ok: false, code: 'BASELINE_INPUT_REQUIRED', error: node.properties.resultSummary, requiredEvidence: 'browser-captured non-empty input on the observed route' }
+        }
+      } else {
+        selected = matching.find(entry => entry.url === baseline.url) ?? matching[0] ?? null
+      }
     }
     // A graph baseline can legitimately predate capture (for example a
     // discovered static asset). Acquire it through the normal scoped HTTP
@@ -329,7 +373,7 @@ export const executePlannedExperiment = createTool({
         ...(baseline.headers ? { headers: baseline.headers } : {}),
         ...(baseline.body !== undefined ? { body: baseline.body } : {}),
         timeoutMs: 10_000,
-      })
+      }, toolContext)
       if (acquired?.ok) {
         selected = capturedStore.list({ limit: 200 }).map(ref => capturedStore.get(ref.id)).reverse().find(entry =>
           !!entry && entry.url === baseline.url && entry.method.toUpperCase() === String(baseline.method).toUpperCase(),
@@ -337,8 +381,21 @@ export const executePlannedExperiment = createTool({
       }
     }
     if (!selected) return { ok: false, error: 'No captured request matches this experiment baseline and baseline acquisition failed.' }
+    if (hypothesisKind === 'sql_injection' && hypothesisParams?.length) {
+      const hasObservedBenignValue = selected.source !== 'tool' && hypothesisParams.some(name => {
+        try { return (new URL(selected!.url).searchParams.get(name) ?? '').trim().length > 0 } catch { return false }
+      })
+      if (!hasObservedBenignValue) {
+        node.properties.status = 'blocked'
+        node.properties.resultSummary = `blocked: SQL injection experiment requires a non-empty benign value in observed query input(s) ${hypothesisParams.join(', ')} from a captured UI request.`
+        node.updatedAt = Date.now()
+        await store.save()
+        return { ok: false, code: 'BASELINE_INPUT_REQUIRED', error: node.properties.resultSummary, requiredEvidence: 'browser-captured non-empty input on the observed route' }
+      }
+    }
 
     node.properties.status = 'running'
+    node.properties.baselineRequest = { method: selected.method, url: selected.url, headers: selected.headers, ...(selected.body !== undefined ? { body: selected.body } : {}) }
     node.updatedAt = Date.now()
     await store.save()
 
@@ -358,8 +415,8 @@ export const executePlannedExperiment = createTool({
       ? actorSessions[0]
       : undefined
     const baseResult = victimActor
-      ? await executeTool(requestAsActor, { capturedRequestId: selected.id, actorId: victimActor, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
-      : await executeTool(replayCapturedRequest, { entryId: selected.id, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
+      ? await executeTool(requestAsActor, { capturedRequestId: selected.id, actorId: victimActor, timeoutMs: appliedMutation.timeoutMs ?? 10_000 }, toolContext)
+      : await executeTool(replayCapturedRequest, { entryId: selected.id, timeoutMs: appliedMutation.timeoutMs ?? 10_000 }, toolContext)
     if (!baseResult?.ok) {
       node.properties.status = 'blocked'
       node.properties.resultSummary = `baseline replay failed: ${baseResult?.error ?? 'unknown error'}`
@@ -377,8 +434,8 @@ export const executePlannedExperiment = createTool({
           ...(appliedMutation.method ? { method: appliedMutation.method } : {}),
           ...(appliedMutation.body !== undefined ? { body: appliedMutation.body } : {}),
           timeoutMs: appliedMutation.timeoutMs ?? 10_000,
-        })
-      : await executeTool(replayCapturedRequest, { entryId: selected.id, ...appliedMutation, timeoutMs: appliedMutation.timeoutMs ?? 10_000 })
+        }, toolContext)
+      : await executeTool(replayCapturedRequest, { entryId: selected.id, ...appliedMutation, timeoutMs: appliedMutation.timeoutMs ?? 10_000 }, toolContext)
     if (!mutatedResult?.ok) {
       node.properties.status = 'blocked'
       node.properties.resultSummary = `mutation replay failed: ${mutatedResult?.error ?? 'unknown error'}`
@@ -430,7 +487,7 @@ export const executePlannedExperiment = createTool({
     await store.save()
 
     let candidate: FindingCandidate | undefined
-    if (differential.interesting) {
+    if (differential.interesting && executionPhase === 'initial') {
       candidate = candidateFromExperiment({ id: node.id, ...node.properties } as ResearchExperiment, differential, [
         `baseline:${selected.id}:${baselineResponse.status}`,
         `mutation:${selected.id}:${mutatedResponse.status}`,
@@ -440,7 +497,29 @@ export const executePlannedExperiment = createTool({
       upsertCandidate(store, candidate)
       await store.save()
     }
-    return { ok: true, value: { experimentId, entryId: selected.id, ...(alternateActor ? { alternateActor } : {}), mutation: appliedMutation, baseline: baselineResponse, mutated: mutatedResponse, differential, candidate: candidate ? { id: candidate.id, status: candidate.status } : undefined } }
+    const compactEvidence = (items: typeof baselineEvidence) => items.map(item => {
+      let collectionSize: number | undefined
+      try {
+        const parsed: unknown = JSON.parse(item.observed?.responseBody ?? item.data)
+        if (Array.isArray(parsed)) collectionSize = parsed.length
+        else if (parsed && typeof parsed === 'object') {
+          const record = parsed as Record<string, unknown>
+          for (const key of ['data', 'products', 'results', 'items']) {
+            if (Array.isArray(record[key])) { collectionSize = (record[key] as unknown[]).length; break }
+          }
+        }
+      } catch { /* response remains available by evidence id */ }
+      return { id: item.id, url: item.observed?.url, status: item.observed?.status, responseBytes: item.data.length, ...(collectionSize !== undefined ? { collectionSize } : {}) }
+    })
+    return { ok: true, value: {
+      experimentId, phase: executionPhase, entryId: selected.id,
+      ...(alternateActor ? { alternateActor } : {}),
+      mutation: appliedMutation,
+      baselineEvidence: compactEvidence(baselineEvidence),
+      mutationEvidence: compactEvidence(mutationEvidence),
+      differential,
+      candidate: candidate ? { id: candidate.id, status: candidate.status } : undefined,
+    } }
   },
 })
 
@@ -467,7 +546,7 @@ export const compareResearchResponses = createTool({
 
 export const evaluateResearchExperiment = createTool({
   id: 'evaluateResearchExperiment',
-  description: 'Evaluate a model-designed typed experiment oracle against recorded evidence and persist a proven, disproven, or inconclusive outcome.',
+  description: 'Evaluate a typed experiment oracle against recorded evidence and persist a proven, disproven, or inconclusive outcome. Use the canonical evidenceId returned by each request/capture result; graph Fact IDs do not resolve to raw request/response evidence.',
   inputSchema: z.object({
     experimentId: z.string(),
     oracle: evidenceOracleSchema,

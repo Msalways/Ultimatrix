@@ -12,7 +12,7 @@ triggers: ["api", "rest api", "graphql", "websocket", "grpc", "api security"]
 ## Phase 1: API Discovery & Documentation
 
 1. **Endpoint inventory** — Read all Endpoint nodes from graph. Map base URLs, versioning patterns, naming conventions.
-2. **Documentation sources** — Check for OpenAPI/Swagger specs, GraphQL introspection, WSDL, API docs pages.
+2. **Documentation sources** — Follow OpenAPI/Swagger, GraphQL, WSDL, or API documentation URLs only when target-provided links, delivered client code, or captured traffic identify them. Never guess conventional documentation paths.
 3. **Content-type analysis** — Map which endpoints accept JSON, XML, form-data, multipart. Test content-type switching attacks.
 4. **Versioning** — Identify API versions. Test deprecated endpoints (often less protected).
 
@@ -65,3 +65,11 @@ For each confirmed finding:
 - Do not skip auth testing on "public" endpoints
 - Do not assume JSON-only — test XML, form-data, URL-encoded
 - Do not ignore GraphQL-specific attack surface
+
+When a target-provided link or captured request identifies a documentation URL, record its source and make a read-only request to that exact URL before selecting endpoint-specific tests:
+
+```http
+GET <observed-spec-path> HTTP/1.1
+Host: api.example.test
+Accept: application/json
+```

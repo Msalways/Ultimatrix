@@ -47,8 +47,35 @@ vi.mock('../../src/graph/store', () => ({
   NodeType: { FINDING: 'FINDING' },
 }))
 
-import { solve } from '../../src/solver/solver'
+import { solve as solveCore } from '../../src/solver/solver'
 import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
+import { resolveModelRef } from '../../src/models/routing'
+
+const TEST_MODEL_CAPABILITY = {
+  contextWindow: 128000,
+  maxOutputTokens: 8192,
+  strengths: ['reasoning'],
+  supportsStreaming: true,
+  supportsStructuredOutput: false,
+}
+
+async function solve(agent: any, params: any) {
+  const supplied = params.ultimatrixConfig ?? {}
+  const config = {
+    ...supplied,
+    provider: supplied.provider ?? 'mock',
+    model: supplied.model ?? 'mock-model',
+  }
+  const modelRef = resolveModelRef(config as any, { role: 'brain' })
+  const modelCapabilities = {
+    ...supplied.modelCapabilities,
+    [modelRef.modelId]: supplied.modelCapabilities?.[modelRef.modelId] ?? TEST_MODEL_CAPABILITY,
+  }
+  return solveCore(agent, {
+    ...params,
+    ultimatrixConfig: { ...config, modelCapabilities } as any,
+  })
+}
 function itEngagement(name: string, fn: () => Promise<void>) {
   it(name, async () => {
     await runInEngagementContext(async () => {
@@ -145,6 +172,50 @@ describe('solve', () => {
     h.runActiveChainingMock.mockClear()
     h.exploitLoopMock.mockClear()
     h.graphStoreMock.hasFinding = false
+  })
+
+  itEngagement('blocks unknown models before invoking the model', async () => {
+    const agent = createMockAgent(['This must not run.'])
+    const messages: any[] = []
+    const result = await solveCore(agent as any, {
+      origin: 'https://example.com',
+      goal: 'inspect the target',
+      ultimatrixConfig: { provider: 'unknown-provider', model: 'unknown-model' } as any,
+      onMessage: (message) => messages.push(message),
+    })
+
+    expect(agent.stream).not.toHaveBeenCalled()
+    expect(result.reason).toBe('context_blocked')
+    expect(messages).toContainEqual(expect.objectContaining({
+      kind: 'event',
+      event: 'context.blocked',
+      status: 'error',
+    }))
+  })
+
+  itEngagement('blocks a goal when goal-budget construction would truncate it', async () => {
+    const agent = createMockAgent(['This must not run.'])
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'required-evidence '.repeat(5000),
+      ultimatrixConfig: {
+        provider: 'mock',
+        model: 'small-context-model',
+        modelCapabilities: {
+          'mock/small-context-model': {
+            contextWindow: 8192,
+            maxOutputTokens: 2048,
+            strengths: ['reasoning'],
+            supportsStreaming: true,
+            supportsStructuredOutput: false,
+          },
+        },
+      },
+    })
+
+    expect(agent.stream).not.toHaveBeenCalled()
+    expect(result.reason).toBe('context_blocked')
+    expect(result.error).toContain('goal context exceeded its budget')
   })
 
   itEngagement('creates plan and executes tasks sequentially', async () => {
@@ -581,6 +652,47 @@ describe('solve', () => {
     expect(prompt).not.toContain('Turn decision')
     expect(prompt).not.toContain('use_capability')
   })
+  itEngagement('attaches truthful assessment details to run-mode results', async () => {
+    const agent = createMockAgent(['Surface mapping is complete.'])
+    const campaign = {
+      findings: [],
+      coverage: {
+        endpointsTotal: 1, endpointsCovered: 1, paramsTotal: 1, paramsCovered: 1,
+        rolesTotal: 1, rolesCovered: 1, actorsTotal: 1, actorsCovered: 1,
+        statesTotal: 1, statesCovered: 1, techniquesTotal: 1, techniquesPlanned: 1,
+        slicesPlanned: 1, slicesExecuted: 1, slicesConfirmed: 0, humanHypothesesConsidered: 0,
+      },
+      budgetExceeded: false,
+      slicesRun: 1,
+      status: 'complete',
+      requestsUsed: 2,
+      remainingSlices: [],
+      domains: [],
+      units: [],
+    }
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'assess the observed target',
+      interactionMode: 'run',
+      lazyServices: {
+        observationState: { status: 'completed', result: { requests: 4, url: 'https://example.com' } },
+        crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 2, frontier: [] },
+        researchBootstrapState: 'completed',
+        taskStates: [],
+        runCoverageCampaign: vi.fn().mockResolvedValue(campaign),
+      },
+    })
+
+    expect(result.assessmentStatus).toBe('complete')
+    expect(result.assessmentReport).toMatchObject({
+      status: 'complete',
+      discovery: { observedRequests: 4, crawl: { stopReason: 'frontier_exhausted', pagesSeen: 2, frontierRemaining: 0 } },
+      testedCoverage: { status: 'complete', planned: 1, executed: 1, requestsUsed: 2 },
+      blockers: [],
+    })
+    expect(result.answer?.assessmentStatus).toBe('complete')
+    expect(result.answer?.assessmentReport).toEqual(result.assessmentReport)
+  })
   itEngagement('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
     // Real provider behavior (e.g. nvidia): the model streams reasoning/scratch
     // AND an echoed answer through `text-delta`, but the SDK normalizes the true
@@ -831,5 +943,34 @@ describe('solve', () => {
     })
     expect(result.reason).toBe('model_failed')
     expect(result.error ?? '').toMatch(/transport failed/i)
+  })
+
+  itEngagement('returns at the hard deadline when a stream iterator never settles', async () => {
+    const pending = new Promise<IteratorResult<any>>(() => {})
+    const agent = {
+      instructions: undefined as any,
+      tools: undefined as any,
+      stream: vi.fn().mockResolvedValue({
+        fullStream: {
+          [Symbol.asyncIterator]: () => ({
+            next: () => pending,
+            return: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+          }),
+        },
+        toolCalls: [],
+        text: new Promise<string>(() => {}),
+        reasoningText: new Promise<string>(() => {}),
+      }),
+    }
+    const started = Date.now()
+
+    const result = await solve(agent as any, {
+      origin: 'https://example.com',
+      goal: 'Stop when the hard deadline is reached',
+      config: { maxDurationMs: 50, progressTimeoutMs: 1000 },
+    })
+
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(result.durationMs).toBeLessThan(1000)
   })
 })

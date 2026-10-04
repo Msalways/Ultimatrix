@@ -17,7 +17,8 @@ import { getGlobalReactionObserver } from '../browser/reaction-observer'
 import { emitBrowserHumanAction, emitSessionInit, emitSessionComplete, getGlobalEmitter } from '../events/emitter'
 import { startOastServer, stopOastServer, setOastConfig } from '../oast/server'
 import { createMemoryStore, createMemory } from '../workers/registry'
-import { userInputEmitter, uiInputEmitter, setReadlineInterface, setConsoleInputResolver, setInteractionMode, uiGoalEmitter } from '../tools/interaction-tools'
+import { userInputEmitter, uiInputEmitter, setReadlineInterface, setConsoleInputResolver, setInteractionMode, uiGoalEmitter, waitForInput } from '../tools/interaction-tools'
+import { getEngagementServices } from '../runtime/engagement-context'
 import { detectChains } from '../intelligence/chaining'
 import type { FindingNode } from '../graph/schema'
 import { getGlobalGraphStore } from '../graph/store'
@@ -29,7 +30,7 @@ import { ReplInputQueue } from './repl-input'
 import { resolve } from 'node:path'
 import { ForensicLog } from '../logging/forensic-log'
 import { setForensicLog } from '../tools/report-tools'
-import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget, isAllowAny, enforceAction, isUrlInScope } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, bindScopeToTarget, isAllowAny, enforceAction, isUrlInScope } from '../safety/scope-guard'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { mkdirSync, existsSync } from 'node:fs'
@@ -307,7 +308,7 @@ export class SessionLifecycle {
     // Activate scope guard from config.
     // If no explicit scope, derive one from config.target so tools are not
     // hard-rejected out of the box.
-    const scopeConfig = this.runtime?.services.scopeConfig ?? config.scope ?? (config.target ? deriveScopeFromTarget(config.target) : null)
+    const scopeConfig = config.target ? bindScopeToTarget(config.target, this.runtime?.services.scopeConfig ?? config.scope) : null
     setScopeConfig(scopeConfig)
     // External-tool policy is opt-in only (deny by default) — ambient for the
     // adapter chokepoint in buildAdapterTool.
@@ -389,6 +390,20 @@ export class SessionLifecycle {
       }
       userInputEmitter.on('askUser-question', onAskUser)
       this.registerCleanup(async () => { userInputEmitter.removeListener('askUser-question', onAskUser) })
+    }
+
+    const broker = getEngagementServices()?.interactionBroker
+    if (broker) {
+      const onRequest = async (request: import('../runtime/interaction-broker').OperatorInteractionRequest) => {
+        const prompt = request.kind === 'browser-handoff'
+          ? `${request.question}\nPerform the requested action in the browser, then reply when finished.`
+          : request.question
+        if (!this._resources.consoleMode) process.stdout.write(`\n${prompt}\n> `)
+        const answer = await waitForInput(300_000, prompt)
+        broker.reply(request.runId, request.requestId, answer)
+      }
+      broker.on('request', onRequest)
+      this.registerCleanup(async () => { broker.off('request', onRequest) })
     }
 
     this.setupSIGINT()

@@ -1,7 +1,6 @@
 import type { MastraMemory } from '@mastra/core/memory'
 import { Agent } from '@mastra/core/agent'
 import { createTool } from '@mastra/core/tools'
-import { TokenLimiterProcessor } from '@mastra/core/processors'
 import { z } from 'zod'
 import { resolveModel } from '../models/factory'
 import { resolveModelRef } from '../models/routing'
@@ -64,7 +63,8 @@ const BROWSER_DESCRIPTORS: Record<string, string> = {
   stagehand_navigate: 'Navigate the authorized browser session to a URL.',
   stagehand_act: 'Perform one described action in the authorized browser session.',
   stagehand_extract: 'Extract structured information from the current browser page.',
-  stagehand_observe: 'Observe actionable elements on the current browser page.',
+  stagehand_observe: 'Read visible page text and actionable DOM controls from the current browser without a secondary model call. Its returned locators are grounded in the current page.',
+  browserInteract: 'Perform one deterministic click, fill, or key press on exactly one visible control described by the latest page inspection. Fill and press are separate actions; inspect again after each action.',
   stagehand_screenshot: 'Capture a screenshot of the current browser page.',
   stagehand_tabs: 'Inspect or change tabs in the current browser session.',
 }
@@ -117,6 +117,7 @@ export const BOOTSTRAP_TOOL_IDS = new Set([
   'queryGraph',
   'getGraphSchema',
   'getWorkflowAround',
+  'observeHumanActions',
   'getSessionContext',
   'detectAuthFlows',
   'testSessionValid',
@@ -170,7 +171,7 @@ const METHODOLOGY_GATE_TOOLS = new Set([
   'httpRequest', 'listCapturedRequests', 'replayCapturedRequest', 'writeFinding',
   'executePlannedExperiment',
   'stagehand_navigate', 'stagehand_act', 'stagehand_extract', 'stagehand_observe',
-  'stagehand_screenshot', 'stagehand_tabs',
+  'browserInteract', 'stagehand_screenshot', 'stagehand_tabs',
   'detectAuthFlows', 'testSessionValid',
 ])
 
@@ -431,7 +432,24 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       }, async () => {
         const tool = (await options.lazyServices!.getBrowserTools())[id]
         if (!tool) throw new Error(`Browser provider does not supply ${id}`)
-        return sanitizeTool(tool, provider)
+        const sanitized = sanitizeTool(tool, provider)
+        if (!METHODOLOGY_GATE_TOOLS.has(id)) return sanitized
+        const execute = sanitized.execute
+        return {
+          ...sanitized,
+          description: `${String(sanitized.description ?? description)} (requires methodology setup before active testing)`,
+          execute: async (...args: any[]) => {
+            if (!(methodologyLoaded && researchMapBuilt && experimentPlanned) && !isPassiveInvocation(id, args)) {
+              return {
+                ok: false,
+                code: 'METHODOLOGY_REQUIRED',
+                error: 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
+                next: ['load applicable skill body', 'build research map', 'plan research experiment'],
+              }
+            }
+            return execute(...args)
+          },
+        }
       })
     }
 
@@ -656,7 +674,6 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     target: config.target,
     tools: filteredCurrentTools,
     instructions: brainInstructions,
-    inputProcessors: [new TokenLimiterProcessor({ limit: Math.floor(contextWindow * 0.7), trimMode: 'contiguous' })],
     // No blind transport retries. A terminal condition (bad/expired key, 403,
     // unsupported model) can never succeed on retry, and Mastra's default of 2
     // retries delays that verdict by a minute or more of backoff. Rate limiting

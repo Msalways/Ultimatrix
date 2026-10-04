@@ -13,5 +13,5 @@ export async function interactCommand(args: string[]): Promise<void> {
     }
   }
 
-  await main(target, { plain, approvedOrigins })
+  await main(target, { plain, approvedOrigins, ...(target ? { interactionMode: 'run' as const } : {}) })
 }

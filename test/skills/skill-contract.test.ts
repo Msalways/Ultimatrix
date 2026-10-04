@@ -49,6 +49,8 @@ describe('Skill Contract (Phase A)', () => {
         'webhook-ssrf',
         'web-message-boundaries',
         'http-desync',
+        'sql-injection',
+        'second-order-sqli',
       ])
       const nonContractSkills = skills.filter(s => !contractedIds.has(s.id))
       for (const skill of nonContractSkills) {
@@ -73,6 +75,35 @@ describe('Skill Contract (Phase A)', () => {
       const skill = loadSkill('exploitation')
       expect(skill).not.toBeNull()
       expect(skill!.contract).toBeUndefined()
+    })
+
+    it('SQL injection playbooks carry proof-gated contracts and pass import validation', () => {
+      const expectedStages: Record<string, string[]> = {
+        'sql-injection': ['map', 'baseline', 'mutate', 'retest', 'report'],
+        'second-order-sqli': ['map-flow', 'baseline-flow', 'mutation-flow', 'retest-flow'],
+      }
+
+      for (const [id, stages] of Object.entries(expectedStages)) {
+        const skill = loadSkill(id)
+        expect(skill, `${id} should load`).not.toBeNull()
+        expect(skill!.contract?.procedure.map(stage => stage.id)).toEqual(stages)
+        expect(skill!.contract?.coverage.every(item => item.required)).toBe(true)
+
+        const path = join(process.cwd(), 'skills', 'injection', `${id}.md`)
+        const validation = validateSkillFile(path, `${id}.md`)
+        expect(validation.valid, `${id}: ${validation.errors.join('; ')}`).toBe(true)
+      }
+    })
+
+    it('API assessment skill passes import validation after route-provenance updates', () => {
+      const id = 'api-fuzzing'
+      const skill = loadSkill(id)
+      expect(skill).not.toBeNull()
+      expect(skill!.toolRefs).toContain('findEndpointsInResponse')
+
+      const path = join(process.cwd(), 'skills', 'api-security', `${id}.md`)
+      const validation = validateSkillFile(path, `${id}.md`)
+      expect(validation.valid, `${id}: ${validation.errors.join('; ')}`).toBe(true)
     })
   })
 

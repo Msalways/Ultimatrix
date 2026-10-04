@@ -7,7 +7,7 @@ import { createMemory, createMemoryStore } from '../workers/registry'
 import { createEngineServices } from '../session/engine-setup'
 import { solve, type SolveResult } from '../solver/solver'
 import { createSolverRenderer } from '../session'
-import { setExternalToolsConfig, setScopeConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { setExternalToolsConfig, setScopeConfig, bindScopeToTarget } from '../safety/scope-guard'
 import { verifyPendingFindings } from '../tools/control-tools'
 import { redactObject } from '../security/secret-vault'
 import { generateCaseFile, type CaseFile } from '../report/case-file'
@@ -23,6 +23,9 @@ export interface SolveCommandResult {
   workflowRef: string
   caseFile: CaseFile
   durationMs: number
+  assessmentStatus?: SolveResult['assessmentStatus']
+  assessmentReport?: SolveResult['assessmentReport']
+  campaign?: SolveResult['campaign']
 }
 
 export async function solveCommand(
@@ -41,7 +44,7 @@ export async function solveCommand(
 
   try {
     return await runtime.run(async () => {
-      setScopeConfig(runtime.services.scopeConfig ?? config.scope ?? deriveScopeFromTarget(target))
+      setScopeConfig(bindScopeToTarget(target, runtime.services.scopeConfig ?? config.scope))
       setExternalToolsConfig(config.externalTools ?? null)
       const runtimeConfig = runtime.config
       if (!options.quiet) showDisclaimer(target)
@@ -95,7 +98,7 @@ export async function solveCommand(
           evidence: engine.sessionEvidence,
           loopDetector: engine.sessionLoopDetector,
           reflexion: engine.sessionReflexion,
-          ultimatrixConfig: config,
+          ultimatrixConfig: runtimeConfig,
           workflow: runtime.workflow,
           lazyServices: engine.lazyServices,
           turnStartFindings,
@@ -167,7 +170,14 @@ export async function solveCommand(
       if (failed) {
         throw new Error(result.error ?? `Solve did not complete: ${result.reason}`)
       }
-      return { workflowRef: runtime.workflow.state.workflowId, caseFile, durationMs: result.durationMs }
+      return {
+        workflowRef: runtime.workflow.state.workflowId,
+        caseFile,
+        durationMs: result.durationMs,
+        assessmentStatus: result.assessmentStatus,
+        assessmentReport: result.assessmentReport,
+        campaign: result.campaign,
+      }
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

@@ -110,6 +110,23 @@ export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesi
         tools: ['httpRequest', 'replayCapturedRequest', 'compareResearchResponses', 'recordFindingCandidate'],
         status: 'planned',
       })
+    } else if (hypothesis.kind === 'sql_injection') {
+      const inputs = Array.isArray(hypothesis.targetParams) && hypothesis.targetParams.length > 0
+        ? hypothesis.targetParams.join(', ')
+        : 'observed string query inputs'
+      experiments.push({
+        id: stableId('experiment', [hypothesis.id, 'boolean-query-differential']),
+        hypothesisId: hypothesis.id,
+        title: 'Compare observed search input with a bounded boolean SQL expression',
+        setup: ['Capture a non-empty benign value through the target UI', 'Use the same captured route and actor for all requests'],
+        baselineRequest,
+        mutation: `Change only observed query input ${inputs} to a bounded boolean expression; compare successful structured result counts.`,
+        expectedSecureBehavior: 'The input is treated as data: the result shape and count do not expand because SQL boolean syntax was supplied.',
+        insecureSignal: 'A boolean expression changes the query result set beyond the observed benign baseline and the effect holds on a fresh independent retest.',
+        requiredActors: ['anonymous'],
+        tools: ['executePlannedExperiment', 'evaluateResearchExperiment', 'writeFinding'],
+        status: 'planned',
+      })
     } else if (hypothesis.kind === 'open_redirect') {
       const destinations = Array.isArray(hypothesis.targetParams) && hypothesis.targetParams.length > 0
         ? hypothesis.targetParams.join(', ')

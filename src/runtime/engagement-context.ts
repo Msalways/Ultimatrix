@@ -23,6 +23,8 @@ import type { ProviderAwareLimiter } from '../models/provider-limiter'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { ObservedFacts } from '../intelligence/evidence-ledger'
 import type { TargetTransportGovernor } from './target-governor'
+import type { InteractionBroker } from './interaction-broker'
+import type { CapturedRequestStore } from '../capture/captured-request-store'
 
 let _testFallback: EngagementServices | null = null
 
@@ -76,6 +78,13 @@ export interface EngagementServices {
   providerLimiters: Map<string, ProviderAwareLimiter>
   /** Shared wire-level target limiter; absent only in legacy-shaped test doubles. */
   targetGovernor?: TargetTransportGovernor
+  /** Shared operator interaction channel for this engagement. */
+  interactionBroker?: InteractionBroker
+  /** Live browser and tool traffic captured for this engagement. */
+  capturedRequests?: CapturedRequestStore
+  /** Campaign-local cap checked by the shared HTTP transport before every fetch attempt. */
+  campaignRequestBudget?: () => boolean
+  interactionMode?: 'ask' | 'run'
   findingState: FindingRuntimeState
   scopeConfig: ScopeConfig | null
   externalTools: ExternalToolsConfig | null

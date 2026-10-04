@@ -13,6 +13,15 @@ function config(): any {
 }
 
 describe('browser transport policy', () => {
+  it('governs network requests for strict evidence-bound sessions outside bounty mode', async () => {
+    const context = { route: vi.fn(async () => undefined), unroute: vi.fn().mockResolvedValue(undefined) }
+    const browser: any = { providerName: 'camofox', context }
+    const strictConfig = { scope: { requireObservedRoutes: true, allowedDomains: ['target.example'], enforcement: 'hard' } } as any
+    const cleanup = await attachBrowserTransportPolicy(browser, strictConfig)
+    expect(context.route).toHaveBeenCalledWith('**/*', expect.any(Function))
+    await cleanup()
+  })
+
   it('blocks out-of-scope Playwright requests before continuation', async () => {
     const handlers: Record<string, any> = {}
     const context = {
@@ -53,5 +62,29 @@ describe('browser transport policy', () => {
     await cleanup()
     expect(connection.off).toHaveBeenCalledWith('Fetch.requestPaused', expect.any(Function))
     expect(connection.send).toHaveBeenCalledWith('Fetch.disable')
+  })
+
+  it('awaits Stagehand activePage before attaching target-scoped Fetch interception', async () => {
+    const handlers: Record<string, (params: any) => void> = {}
+    const activeConnection = {
+      on: vi.fn((event: string, handler: any) => { handlers[event] = handler }),
+      off: vi.fn(),
+      send: vi.fn().mockResolvedValue(undefined),
+    }
+    const rootConnection = { on: vi.fn(), off: vi.fn(), send: vi.fn().mockResolvedValue(undefined) }
+    const stagehand = {
+      context: {
+        activePage: vi.fn().mockResolvedValue({ mainSession: activeConnection }),
+        conn: rootConnection,
+      },
+    }
+    const browser: any = { requireStagehand: () => stagehand }
+
+    const cleanup = await attachBrowserTransportPolicy(browser, config())
+
+    expect(stagehand.context.activePage).toHaveBeenCalledOnce()
+    expect(activeConnection.send).toHaveBeenCalledWith('Fetch.enable', { patterns: [{ urlPattern: '*' }] })
+    expect(rootConnection.send).not.toHaveBeenCalled()
+    await cleanup()
   })
 })

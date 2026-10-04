@@ -18,7 +18,7 @@ import { createEngineServices, type EngineServices } from '../session/engine-set
 import { createMemory, createMemoryStore } from '../workers/registry'
 import { startDialogWatcher } from '../browser/dialog-watcher'
 import { setOastConfig } from '../oast/server'
-import { setScopeConfig, setExternalToolsConfig, deriveScopeFromTarget } from '../safety/scope-guard'
+import { setScopeConfig, setExternalToolsConfig, bindScopeToTarget } from '../safety/scope-guard'
 import { emitBrowserHumanAction, type TypedEventEmitter } from '../events/emitter'
 import type { SpiderRuntime, SpiderRuntimeState } from '../spider/runtime'
 import { spiderEventToPhase } from '../spider/render'
@@ -113,7 +113,7 @@ export class WebEngine {
     this.forensicLog = this.runtime!.forensicLog
 
     // Scope guard — same as CLI
-    const scopeConfig = this.runtime?.services.scopeConfig ?? this.config.scope ?? (opts.target ? deriveScopeFromTarget(opts.target) : null)
+    const scopeConfig = opts.target ? bindScopeToTarget(opts.target, this.runtime?.services.scopeConfig ?? this.config.scope) : null
     setScopeConfig(scopeConfig)
     // External-tool policy: opt-in only (deny by default)
     setExternalToolsConfig(this.config.externalTools ?? null)
@@ -154,6 +154,7 @@ export class WebEngine {
   async solve(params: {
     goal: string
     interactionMode?: 'ask' | 'run'
+    interactionRunId?: string
     solverConfig?: SolverConfig
     onMessage?: (msg: SolverStreamMessage) => void
     onPhase?: (event: PhaseEvent) => void
@@ -165,6 +166,7 @@ export class WebEngine {
   private async solveOwned(params: {
     goal: string
     interactionMode?: 'ask' | 'run'
+    interactionRunId?: string
     solverConfig?: SolverConfig
     onMessage?: (msg: SolverStreamMessage) => void
     onPhase?: (event: PhaseEvent) => void
@@ -182,22 +184,72 @@ export class WebEngine {
         onSpiderRuntime: runtime => { this._spiderRuntime = runtime },
       })
 
-      const result = await solve(this.engineServices.solverBrain!, {
-        origin: this.target,
-        goal: params.goal,
-        interactionMode: params.interactionMode,
-        config: params.solverConfig,
-        ultimatrixConfig: this.config,
-        blackboard: this.engineServices.sessionBlackboard,
-        evidence: this.engineServices.sessionEvidence,
-        loopDetector: this.engineServices.sessionLoopDetector,
-        reflexion: this.engineServices.sessionReflexion,
-        onMessage: params.onMessage,
-        onPhase: params.onPhase,
-        memory: { thread: this.runtimeIdentity.threadId, resource: this.runtimeIdentity.resourceId },
-        signal: abortController.signal,
-        workflow: this._workflow,
-      })
+      const startedAt = Date.now()
+      let goal = params.goal
+      let result: SolveResult | undefined
+      let totalSteps = 0
+      let totalToolCalls = 0
+      let totalTokens = 0
+      let totalNewFindings = 0
+      let totalInputTokens = 0
+      let totalOutputTokens = 0
+      const broker = this.runtime?.services.interactionBroker
+      let steeredTurns = 0
+      for (;;) {
+        const remainingMs = params.solverConfig?.maxDurationMs
+          ? Math.max(1, params.solverConfig.maxDurationMs - (Date.now() - startedAt))
+          : undefined
+        result = await solve(this.engineServices.solverBrain!, {
+          origin: this.target,
+          goal,
+          interactionMode: params.interactionMode,
+          interactionRunId: params.interactionRunId,
+          config: { ...params.solverConfig, ...(remainingMs ? { maxDurationMs: remainingMs } : {}) },
+          ultimatrixConfig: this.config,
+          blackboard: this.engineServices.sessionBlackboard,
+          evidence: this.engineServices.sessionEvidence,
+          loopDetector: this.engineServices.sessionLoopDetector,
+          reflexion: this.engineServices.sessionReflexion,
+          onMessage: params.onMessage,
+          onPhase: params.onPhase,
+          memory: { thread: this.runtimeIdentity.threadId, resource: this.runtimeIdentity.resourceId },
+          signal: abortController.signal,
+          workflow: this._workflow,
+        })
+        totalSteps += result.steps
+        totalToolCalls += result.toolCalls
+        totalTokens += result.tokensUsed
+        totalNewFindings += result.newFindings
+        totalInputTokens += result.answer?.usage?.inputTokens ?? 0
+        totalOutputTokens += result.answer?.usage?.outputTokens ?? 0
+        if (!params.interactionRunId || !broker) break
+        const directions = broker.takeSteering(params.interactionRunId)
+        if (directions.length === 0) break
+        if (steeredTurns >= 5) {
+          params.onMessage?.({ kind: 'event', event: 'operator.steering.limit', label: 'Operator steering limit reached for this run.', status: 'warn' })
+          break
+        }
+        steeredTurns++
+        goal = `${params.goal}\n\nOperator direction received during this run:\n${directions.map((d) => `- ${d}`).join('\n')}`
+      }
+      if (!result) throw new Error('Solver returned no result')
+      const durationMs = Date.now() - startedAt
+      result = {
+        ...result,
+        steps: totalSteps,
+        toolCalls: totalToolCalls,
+        tokensUsed: totalTokens,
+        newFindings: totalNewFindings,
+        durationMs,
+        answer: result.answer ? {
+          ...result.answer,
+          steps: totalSteps,
+          toolCalls: totalToolCalls,
+          newFindings: totalNewFindings,
+          durationMs,
+          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+        } : undefined,
+      }
       this._spiderState = this.engineServices.lazyServices?.crawlState
 
       // Graph auto-save after each solve
@@ -212,6 +264,29 @@ export class WebEngine {
 
   abort(): void {
     this._abortController?.abort()
+  }
+
+  beginInteractionRun(runId: string): void {
+    this.runtime?.services.interactionBroker?.beginRun(runId)
+  }
+
+  endInteractionRun(runId: string): void {
+    this.runtime?.services.interactionBroker?.endRun(runId)
+  }
+
+  submitOperatorReply(runId: string, requestId: string, answer: string): boolean {
+    return this.runtime?.services.interactionBroker?.reply(runId, requestId, answer) ?? false
+  }
+
+  submitOperatorDirection(runId: string, message: string): boolean {
+    return this.runtime?.services.interactionBroker?.steer(runId, message) ?? false
+  }
+
+  onInteractionRequest(listener: (request: import('../runtime/interaction-broker').OperatorInteractionRequest) => void): () => void {
+    const broker = this.runtime?.services.interactionBroker
+    if (!broker) return () => {}
+    broker.on('request', listener)
+    return () => broker.off('request', listener)
   }
 
   /**
@@ -373,7 +448,7 @@ export class WebEngine {
       })
 
       // Update scope guard
-      const scopeConfig = this.runtime?.services.scopeConfig ?? this.config.scope ?? (this.target ? deriveScopeFromTarget(this.target) : null)
+      const scopeConfig = this.target ? bindScopeToTarget(this.target, this.runtime?.services.scopeConfig ?? this.config.scope) : null
       setScopeConfig(scopeConfig)
       // Update external-tool policy (opt-in only)
       setExternalToolsConfig(this.config.externalTools ?? null)

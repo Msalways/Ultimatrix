@@ -87,7 +87,7 @@ export const requestAsActor = createTool({
     }).optional(),
     error: z.string().optional(),
   }),
-  execute: async ({ capturedRequestId, actorId, url, method, body, headers, timeoutMs }) => {
+  execute: async ({ capturedRequestId, actorId, url, method, body, headers, timeoutMs }, context) => {
     const store = getCapturedRequestStore()
     const captured = store.get(capturedRequestId)
     if (!captured) {
@@ -160,7 +160,7 @@ Use storeSession to create an actor first, or pass "unauthenticated" for no auth
         ...(finalBody !== undefined ? { body: finalBody } : {}),
         timeoutMs: timeoutMs ?? 10000,
       },
-      {} as Parameters<typeof httpRequest.execute>[1],
+      context as Parameters<typeof httpRequest.execute>[1],
     )) as HttpResult
 
     if (!result.ok) {

@@ -32,6 +32,12 @@ export interface Finding {
   evidenceMarkers?: string[]
   /** Required for reportability. Missing or failed proof is excluded from reports. */
   proofCheck?: ProofCheckResult
+  /** A proven request pair and oracle for replayable differential findings. */
+  differentialReplay?: {
+    baseline: { method: string; url: string; body?: string }
+    mutation: { method: string; url: string; body?: string }
+    minimumArrayGrowth: number
+  }
 }
 
 export interface Evidence {
@@ -92,10 +98,12 @@ function generateTestCode(finding: Finding): string {
   lines.push('')
 
   // Add setup steps based on evidence
-  if (finding.evidence.length > 0) {
+  if (finding.differentialReplay) {
+    lines.push(...generateArrayGrowthReplay(finding.differentialReplay))
+  } else if (finding.evidence.length > 0) {
     lines.push(`  // Reproduce the attack`)
-    for (const evidence of finding.evidence) {
-      lines.push(...generateEvidenceSteps(evidence))
+    for (const [index, evidence] of finding.evidence.entries()) {
+      lines.push(...generateEvidenceSteps(evidence, index === 0 ? 'response' : `response${index + 1}`))
     }
   } else {
     // Generate from the finding's request directly
@@ -104,15 +112,15 @@ function generateTestCode(finding: Finding): string {
 
   lines.push('')
   
-  // Generate category-specific assertions
-  lines.push(...generateAssertionCode(finding))
+  // A differential replay already emits its proof oracle.
+  if (!finding.differentialReplay) lines.push(...generateAssertionCode(finding))
 
   lines.push(`})`)
 
   return lines.join('\n')
 }
 
-function generateEvidenceSteps(evidence: Evidence): string[] {
+function generateEvidenceSteps(evidence: Evidence, responseName: string): string[] {
   const lines: string[] = []
   const indent = '  '
 
@@ -128,18 +136,52 @@ function generateEvidenceSteps(evidence: Evidence): string[] {
 
   // Make the request
   if (method === 'get' || method === 'delete') {
-    lines.push(`${indent}const response = await page.request.${method}('${escapeQuotes(evidence.request.url)}')`)
+    lines.push(`${indent}const ${responseName} = await page.request.${method}('${escapeQuotes(evidence.request.url)}')`)
   } else {
     const body = evidence.request.body ? `, { data: ${evidence.request.body} }` : ''
-    lines.push(`${indent}const response = await page.request.${method}('${escapeQuotes(evidence.request.url)}'${body})`)
+    lines.push(`${indent}const ${responseName} = await page.request.${method}('${escapeQuotes(evidence.request.url)}'${body})`)
   }
 
   // Check response
   if (evidence.response) {
-    lines.push(`${indent}expect(response.status()).toBe(${evidence.response.status})`)
+    lines.push(`${indent}expect(${responseName}.status()).toBe(${evidence.response.status})`)
   }
 
   return lines
+}
+
+function generateArrayGrowthReplay(replay: NonNullable<Finding['differentialReplay']>): string[] {
+  const lines = [
+    `  // Replay the proven benign request and mutation against the same endpoint`,
+    ...generateReplayRequest(replay.baseline, 'baselineResponse'),
+    ...generateReplayRequest(replay.mutation, 'mutationResponse'),
+    `  expect(baselineResponse.ok()).toBeTruthy()`,
+    `  expect(mutationResponse.ok()).toBeTruthy()`,
+    `  const baselineBody = await baselineResponse.json()`,
+    `  const mutationBody = await mutationResponse.json()`,
+    `  const getItems = (body: unknown): unknown[] | undefined => {`,
+    `    if (Array.isArray(body)) return body`,
+    `    if (body && typeof body === 'object') {`,
+    `      for (const key of ['data', 'products', 'results', 'items']) {`,
+    `        const value = (body as Record<string, unknown>)[key]`,
+    `        if (Array.isArray(value)) return value`,
+    `      }`,
+    `    }`,
+    `    return undefined`,
+    `  }`,
+    `  const baselineItems = getItems(baselineBody)`,
+    `  const mutationItems = getItems(mutationBody)`,
+    `  expect(baselineItems).toBeDefined()`,
+    `  expect(mutationItems).toBeDefined()`,
+    `  expect(mutationItems!.length - baselineItems!.length).toBeGreaterThanOrEqual(${replay.minimumArrayGrowth})`,
+  ]
+  return lines
+}
+
+function generateReplayRequest(request: { method: string; url: string; body?: string }, name: string): string[] {
+  const method = request.method.toLowerCase()
+  const body = request.body === undefined ? '' : `, { data: ${JSON.stringify(request.body)} }`
+  return [`  const ${name} = await page.request.${method}('${escapeQuotes(request.url)}'${body})`]
 }
 
 function _generateCategoryAssertions(finding: Finding): string[] {

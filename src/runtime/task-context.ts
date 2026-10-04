@@ -23,26 +23,35 @@ export function buildTaskContextCheckpoint(
   createdAt: number,
 ): TaskContextCheckpoint {
   const byId = new Map(tasks.map((item) => [item.taskId, item]))
+  const uniqueContextRefs = [...new Set(task.contextRefs)]
+  const priorAttempts = task.attemptHistory.slice(-MAX_PRIOR_ATTEMPTS)
   return {
     checkpointId: `${task.taskId}:context:${attemptNumber}`,
     createdAt,
-    contextRefs: boundedRefs(task.contextRefs),
+    contextRefs: boundedRefs(uniqueContextRefs),
+    ...(uniqueContextRefs.length > MAX_REFS ? { omittedContextRefs: uniqueContextRefs.length - MAX_REFS } : {}),
     dependencies: task.dependencyTaskIds.slice(0, MAX_DEPENDENCIES).map((taskId) => {
       const dependency = byId.get(taskId)
-      return dependency
-        ? {
-            taskId,
-            status: dependency.status,
-            summary: compactSummary(dependency.resultSummary, DEPENDENCY_SUMMARY_TOKENS),
-            evidenceRefs: boundedRefs(dependency.evidenceRefs),
-            graphRefs: boundedRefs(dependency.graphRefs),
-          }
-        : { taskId, status: 'missing', evidenceRefs: [], graphRefs: [] }
+      if (!dependency) return { taskId, status: 'missing', evidenceRefs: [], graphRefs: [] }
+      const evidenceRefs = [...new Set(dependency.evidenceRefs)]
+      const graphRefs = [...new Set(dependency.graphRefs)]
+      return {
+        taskId,
+        status: dependency.status,
+        summary: compactSummary(dependency.resultSummary, DEPENDENCY_SUMMARY_TOKENS),
+        ...(dependency.resultRef ? { resultRef: dependency.resultRef } : {}),
+        evidenceRefs: boundedRefs(evidenceRefs),
+        ...(evidenceRefs.length > MAX_REFS ? { omittedEvidenceRefs: evidenceRefs.length - MAX_REFS } : {}),
+        graphRefs: boundedRefs(graphRefs),
+        ...(graphRefs.length > MAX_REFS ? { omittedGraphRefs: graphRefs.length - MAX_REFS } : {}),
+      }
     }),
-    priorAttempts: task.attemptHistory.slice(-MAX_PRIOR_ATTEMPTS).map((attempt) => ({
+    ...(task.dependencyTaskIds.length > MAX_DEPENDENCIES ? { omittedDependencies: task.dependencyTaskIds.length - MAX_DEPENDENCIES } : {}),
+    priorAttempts: priorAttempts.map((attempt) => ({
       attemptId: attempt.attemptId,
       status: attempt.status,
       summary: compactSummary(attempt.resultSummary, ATTEMPT_SUMMARY_TOKENS),
     })),
+    ...(task.attemptHistory.length > MAX_PRIOR_ATTEMPTS ? { omittedPriorAttempts: task.attemptHistory.length - MAX_PRIOR_ATTEMPTS } : {}),
   }
 }

@@ -14,10 +14,12 @@ import { UsageTracker } from '../usage/tracker'
 import { ForensicLog } from '../logging/forensic-log'
 import { EngagementBoundary } from '../spider/runtime'
 import { resolveBrowserProvider, type BrowserProvider, type BrowserSession } from '../browser/provider'
-import { deriveScopeFromTarget } from '../safety/scope-guard'
+import { bindScopeToTarget } from '../safety/scope-guard'
 import { enforceBountyPolicy } from '../safety/bounty-policy'
 import { runWithEngagementServices, type EngagementServices } from './engagement-context'
 import { TargetTransportGovernor } from './target-governor'
+import { InteractionBroker } from './interaction-broker'
+import { CapturedRequestStore } from '../capture/captured-request-store'
 import { HumanObserver } from '../capture/human-observer'
 import { ReactionObserver } from '../browser/reaction-observer'
 import { DialogWatcher } from '../browser/dialog-watcher'
@@ -165,6 +167,20 @@ export class EngagementRuntime {
           this.browserPolicyCleanup = undefined
         }
         if (this.browserSession) await this.browser.close(this.browserSession.sessionId)
+        const targetBudget = this.services.targetGovernor?.stats(this.target)
+        if (targetBudget) {
+          this.services.forensicLog.log({
+            type: 'budget-status',
+            agent: 'engagement-runtime',
+            args: {
+              budget: 'target-http-requests',
+              origin: targetBudget.origin,
+              requestsUsed: targetBudget.requestsUsed,
+              maxRequests: targetBudget.maxRequests,
+              requestsInWindow: targetBudget.requestsInWindow,
+            },
+          })
+        }
         this.services.events.removeAllListeners()
         this.services.toolEvents.removeAllListeners()
       })
@@ -243,9 +259,13 @@ export async function createEngagementRuntime(
     targetGovernor: new TargetTransportGovernor({
       requestsPerMinute: effectiveConfig.rateLimit?.requestsPerMinute ?? DEFAULTS.rateLimit.requestsPerMinute,
       maxConcurrent: effectiveConfig.rateLimit?.maxConcurrent ?? DEFAULTS.rateLimit.maxConcurrent,
+      maxRequests: effectiveConfig.campaign?.maxRequests ?? DEFAULTS.campaign.maxRequests,
+      maxRequestsPerUrl: 5,
     }),
+    interactionBroker: new InteractionBroker(),
+    capturedRequests: new CapturedRequestStore(),
     findingState: { evidenceBuffer: new Map(), evidenceGate: null },
-    scopeConfig: effectiveConfig.scope ?? deriveScopeFromTarget(target),
+    scopeConfig: bindScopeToTarget(target, effectiveConfig.scope),
     externalTools: effectiveConfig.externalTools ?? null,
     allowAny,
     // Publish the resolved profile to the engagement container so every tool

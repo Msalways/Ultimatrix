@@ -124,17 +124,12 @@ Probe for commonly exposed sensitive files:
 - `package.json`, `composer.json`, `Gemfile` — dependency lists (may reveal versions)
 - `.git/`, `.svn/`, `.hg/` — version control metadata (can leak full source)
 - `robots.txt`, `sitemap.xml` — disallowed paths reveal admin panels
-- `/swagger.json`, `/openapi.json` — API documentation
 - `/server-status`, `/server-info` — Apache server info
 - `/wp-config.php.bak`, `/config.php.bak` — backup config files
 
 ```bash
-# Quick sweep of high-value paths
-for p in .env .env.local .env.production package.json composer.json robots.txt \
-         swagger.json openapi.json server-status wp-config.php.bak config.php.bak; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "https://TARGET.com/$p")
-  [ "$code" = "200" ] && echo "[EXPOSED] /$p"
-done
+# Fetch sensitive files only when a target-provided link, delivered client code,
+# captured request, or explicit operator instruction identifies the exact URL.
 
 # .git exposure -> full source recovery
 curl -s -o /dev/null -w '%{http_code}\n' https://TARGET.com/.git/HEAD
@@ -197,11 +192,11 @@ If a tool call fails, say so honestly — do not invent a success.
 
 ## Trigger Conditions
 
-Activate during any assessment as a continuous recon/disclosure pass: on every page fetch, JavaScript bundle, error response, and API response. Trigger specifically when responses expose headers revealing tech/version, HTML comments/hidden fields, embedded config objects (`window.__NEXT_DATA__`), API keys/secrets in JS, debug endpoints, or verbose stack traces. Also trigger when probing common exposed files (`.env`, `.git`, `robots.txt`, `swagger.json`). Do not treat disclosure as out of scope for any other skill — it is cross-cutting.
+Activate during any assessment as a continuous recon/disclosure pass: on every page fetch, JavaScript bundle, error response, and API response. Trigger specifically when responses expose headers revealing tech/version, HTML comments/hidden fields, embedded config objects (`window.__NEXT_DATA__`), API keys/secrets in JS, debug endpoints, or verbose stack traces. Inspect sensitive files only when their exact URL is supplied by the target or explicitly authorized by the operator. Do not treat disclosure as out of scope for any other skill — it is cross-cutting.
 
 ## Detection Approach
 
-Reason systematically across channels. Start with response headers (capture all) — `Server`, `X-Powered-By`, debug tokens, and absent `Strict-Transport-Security`. Then fetch and fully read the HTML source for comments, hidden inputs, and inline config. Next, enumerate and fetch every JS bundle and grep for key patterns (`sk_live_`, `AKIA`, `ghp_`, internal `/admin`/`/internal` URLs, source-map references). Trigger errors with malformed/invalid input to surface stack traces and SQL structure. Probe well-known sensitive paths. Finally, review API responses for over-broad fields. Escalate each finding by confirming the data is real and sensitive (not a placeholder), then route to the relevant exploitation skill (e.g., discovered endpoint → web-pentest; key → note for credential use).
+Reason systematically across channels. Start with response headers (capture all) — `Server`, `X-Powered-By`, debug tokens, and absent `Strict-Transport-Security`. Then read captured HTML for comments, hidden inputs, and inline config. Inspect JS bundles and source-map references already linked or requested by the target. Trigger bounded errors only through an observed route and input. Review captured API responses for over-broad fields. Escalate each finding by confirming the data is real and sensitive (not a placeholder), then route to the relevant exploitation skill (e.g., discovered endpoint → web-pentest; key → note for credential use).
 
 ## Pitfalls
 

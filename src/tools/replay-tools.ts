@@ -2,7 +2,7 @@
  * Replay tools (P3.1) — captured-traffic query + replay with mutations.
  *
  * listCapturedRequests: compact, filterable index of everything the session
- *   actually sent (httpRequest calls + ingested HAR entries).
+ *   actually sent (httpRequest calls, live browser traffic + HAR entries).
  * replayCapturedRequest: re-fires a captured request by id with structural
  *   mutations (headers/body/url/method), routed through the httpRequest tool
  *   so scope guard, robots.txt, rate limiting, backoff, evidence recording,
@@ -21,7 +21,7 @@ const MUTABLE_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const
 export const listCapturedRequests = createTool({
   id: 'listCapturedRequests',
   description:
-    'List requests captured this session (outbound HTTP tool traffic + ingested HAR entries). Filter by method/host/path substring to find an entry id, then replay it with mutations. Returns compact refs only.',
+    'List requests captured this session (outbound HTTP tool traffic, live browser traffic + ingested HAR entries). Filter by method/host/path substring to find an entry id, then replay it with mutations. Returns compact refs only.',
   inputSchema: z.object({
     method: z.string().optional().describe('Filter by HTTP method (exact, case-insensitive)'),
     host: z.string().optional().describe('Filter by exact host'),
@@ -37,7 +37,7 @@ export const listCapturedRequests = createTool({
         method: z.string(),
         url: z.string(),
         status: z.number().optional(),
-        source: z.enum(['tool', 'har']),
+        source: z.enum(['tool', 'har', 'browser']),
       })),
     }),
   }),
@@ -90,8 +90,9 @@ export const replayCapturedRequest = createTool({
       }),
     }).optional(),
     error: z.string().optional(),
+    code: z.string().optional(),
   }),
-  execute: async ({ entryId, setHeaders, removeHeaderNames, body, appendBody, url, method, timeoutMs }) => {
+  execute: async ({ entryId, setHeaders, removeHeaderNames, body, appendBody, url, method, timeoutMs }, context) => {
     const store = getCapturedRequestStore()
     const captured = store.get(entryId)
     if (!captured) {
@@ -139,6 +140,7 @@ export const replayCapturedRequest = createTool({
       ok: boolean
       value?: { status: number; headers: Record<string, string>; body?: string; durationMs?: number }
       error?: string
+      code?: string
     }
     const result = (await httpRequest.execute(
       {
@@ -148,11 +150,11 @@ export const replayCapturedRequest = createTool({
         ...(finalBody !== undefined ? { body: finalBody } : {}),
         timeoutMs: timeoutMs ?? 10000,
       },
-      {} as Parameters<typeof httpRequest.execute>[1],
+      context as Parameters<typeof httpRequest.execute>[1],
     )) as HttpResult
 
     if (!result.ok) {
-      return { ok: false, error: result.error ?? 'replay failed' }
+      return { ok: false, ...(result.code ? { code: result.code } : {}), error: result.error ?? 'replay failed' }
     }
 
     const v = result.value!

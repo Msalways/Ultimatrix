@@ -10,12 +10,15 @@ import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
-import { redactHeadersStrict, redactString } from '../security/secret-vault'
+import { redactHeadersStrict, redactString, redactUrl } from '../security/secret-vault'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { getGlobalGraphStore } from '../graph/store'
+import { NodeType, type EndpointNode, type PageNode } from '../graph/schema'
+import { askUserConfirm } from './interaction-tools'
 import { upsertCandidate } from '../research/candidate-store'
 import { stableId } from '../research/utils'
 import { randomUUID } from 'node:crypto'
+import { getEngagementServices } from '../runtime/engagement-context'
 
 const globalLoopDetector = new LoopDetector()
 
@@ -32,8 +35,66 @@ function checkBlocked(url: string): { ok: false; error: string } | null {
 }
 
 // --- Target-aware rate limiting ---
-async function waitForHostSlot(url: string): Promise<() => void> {
-  return getTargetTransportGovernor().acquire(url)
+async function waitForHostSlot(url: string, signal?: AbortSignal | null): Promise<() => void> {
+  return getTargetTransportGovernor().acquire(url, 'http-tool', signal ?? undefined)
+}
+
+function reserveCampaignRequest(): boolean {
+  return getEngagementServices()?.campaignRequestBudget?.() ?? true
+}
+
+/** Deny routes with no captured, graph-linked, or operator-supplied source. */
+function checkObservedRoute(url: string): string | undefined {
+  const policy = getScopeConfigSafe()
+  if (policy?.requireObservedRoutes !== true) return undefined
+
+  let requested: URL
+  try { requested = new URL(url) } catch { return `Invalid URL: ${url}` }
+  try {
+    if (/\$\{[^}]+\}/.test(decodeURIComponent(requested.pathname))) {
+      return `Unresolved route template blocked: ${requested.pathname} has no concrete target-observed value.`
+    }
+  } catch { /* the exact observed-route check below still applies */ }
+  const params = new Set<string>()
+  let observed = false
+  const addUrl = (raw: string | undefined): boolean => {
+    if (!raw) return false
+    try {
+      const candidate = new URL(raw)
+      if (candidate.origin !== requested.origin || candidate.pathname !== requested.pathname) return false
+      observed = true
+      candidate.searchParams.forEach((_value, name) => params.add(name))
+      return true
+    } catch { /* malformed evidence cannot authorize a route */ }
+    return false
+  }
+
+  // The exact CLI/UI start URL is explicitly operator-authorized.
+  addUrl(policy.authorizedStartUrl)
+
+  // Captured request routes are the canonical wire-level evidence source.
+  for (const ref of getCapturedRequestStore().list({ host: requested.host })) addUrl(ref.url)
+
+  // The engagement graph also contains target-provided links and routes mined
+  // from delivered client code or a captured API schema.
+  try {
+    const graph = getGlobalGraphStore()
+    for (const endpoint of graph.queryNodes(NodeType.ENDPOINT) as EndpointNode[]) {
+      if (addUrl(endpoint.properties.url)) {
+        for (const parameter of endpoint.properties.params ?? []) params.add(parameter.name)
+      }
+    }
+    for (const page of graph.queryNodes(NodeType.PAGE) as PageNode[]) addUrl(page.properties.url)
+  } catch { /* captured traffic or the explicit start URL may still authorize */ }
+
+  if (!observed) {
+    return `Unobserved route blocked: ${requested.origin}${requested.pathname} has no captured request, target-linked graph resource, or operator-supplied start URL.`
+  }
+  const unexpectedParams = [...requested.searchParams.keys()].filter(name => !params.has(name))
+  if (unexpectedParams.length) {
+    return `Unobserved input blocked: query parameter(s) ${unexpectedParams.join(', ')} were not present in captured or target-provided evidence for ${requested.pathname}.`
+  }
+  return undefined
 }
 
 function inferUnauthenticatedAccessSignal(url: string, status: number, headers: Record<string, string>): string | undefined {
@@ -49,15 +110,17 @@ function inferUnauthenticatedAccessSignal(url: string, status: number, headers: 
 // --- 429 exponential backoff ---
 const MAX_429_RETRIES = 3
 const BACKOFF_BASE_MS = 1000
+const MAX_APPROVAL_TIMEOUT_MS = 300_000
 
 async function fetchWithBackoff(url: string, opts: RequestInit, maxRetries = MAX_429_RETRIES): Promise<Response> {
   let lastErr: Error | undefined
   const method = String(opts.method ?? 'GET').toUpperCase()
   const retryLimit = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? maxRetries : 0
   for (let attempt = 0; attempt <= retryLimit; attempt++) {
-    const release = await waitForHostSlot(url)
+    const release = await waitForHostSlot(url, opts.signal)
     let res: Response
     try {
+      if (!reserveCampaignRequest()) throw new Error('campaign request/time budget reached')
       res = await fetch(url, opts)
     } finally {
       release()
@@ -82,7 +145,10 @@ async function isAllowedByRobots(url: string): Promise<boolean> {
   // often exactly where vulnerabilities live. The scope-guard already enforces
   // authorization; robots.txt compliance is for crawlers, not pentesters.
   const scopeCfg = getScopeConfigSafe()
-  if (scopeCfg?.authorizedPentest) return true
+  // In an evidence-bound engagement, an implicit robots.txt request would
+  // itself be an unobserved path probe. The target can still expose that exact
+  // resource through captured traffic if the operator wants to inspect it.
+  if (scopeCfg?.authorizedPentest || scopeCfg?.requireObservedRoutes) return true
 
   try {
     const parsed = new URL(url)
@@ -96,6 +162,7 @@ async function isAllowedByRobots(url: string): Promise<boolean> {
       const release = await waitForHostSlot(`${origin}/robots.txt`)
       let res: Response
       try {
+        if (!reserveCampaignRequest()) return true
         res = await fetch(`${origin}/robots.txt`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
       } finally {
         release()
@@ -136,19 +203,21 @@ function isDisallowed(disallowed: Set<string>, pathname: string): boolean {
 
 export const httpRequest = createTool({
   id: 'httpRequest',
-  description: 'Send an HTTP request with method/headers/body. Does NOT follow redirects.',
+  description: 'Send an HTTP request with method/headers/body. Does NOT follow redirects. Successful results include evidenceId and capturedRequestId; use evidenceId in typed experiment oracles and findings, not graph Fact IDs. The full response is retained behind that evidence reference; body may be compressed for model context.',
   inputSchema: z.object({
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
     url: z.string().url().describe('Target URL'),
     headers: z.record(z.string(), z.string()).optional().describe('Request headers. Pass auth/session headers previously captured from the target session.'),
     body: z.string().optional().describe('Request body — only valid with POST, PUT, or PATCH'),
     timeoutMs: z.number().int().positive().default(10000).describe('Timeout in milliseconds'),
+    approvalTimeoutMs: z.number().int().positive().optional().describe('Maximum time to wait for state-changing request approval.'),
+    retryOnLimit: z.boolean().optional().describe('Retry idempotent 429 responses; disable when the caller enforces an exact request budget.'),
     sessionRef: z.string().optional().describe('Session reference name (e.g. "admin:https://example.com"). When provided, auto-merges session headers (cookies, bearer token) under any explicit headers. Use useSession or storeSession to create sessions.'),
   }).refine(
     (data) => !['GET', 'HEAD'].includes(data.method) || data.body === undefined,
     { message: 'GET and HEAD requests cannot have a body. Use POST/PUT/PATCH for requests with a body.' },
   ),
-  execute: async ({  method, url, headers, body, timeoutMs, sessionRef  }) => {
+  execute: async ({  method, url, headers, body, timeoutMs, approvalTimeoutMs, sessionRef, retryOnLimit  }, context) => {
     const start = performance.now()
     const executionId = randomUUID()
     try {
@@ -156,6 +225,16 @@ export const httpRequest = createTool({
       const scopeCheck = isUrlInScope(url)
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
+      }
+      const routeError = checkObservedRoute(url)
+      if (routeError) return { ok: false, error: routeError }
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
+        const requestUrl = new URL(url)
+        const approved = await askUserConfirm(
+          `Approve this state-changing ${method.toUpperCase()} request to ${requestUrl.origin}${requestUrl.pathname}?`,
+          Math.max(1, Math.min(MAX_APPROVAL_TIMEOUT_MS, approvalTimeoutMs ?? MAX_APPROVAL_TIMEOUT_MS)),
+        )
+        if (!approved) return { ok: false, code: 'APPROVAL_REQUIRED', error: 'State-changing request was not approved.' }
       }
       const blocked = checkBlocked(url)
       if (blocked) return blocked
@@ -172,36 +251,40 @@ export const httpRequest = createTool({
         mergedHeaders = { ...sessionHeaders, ...mergedHeaders }
       }
 
+      const timeoutSignal = AbortSignal.timeout(timeoutMs ?? 10000)
+      const fetchSignal = context?.abortSignal
+        ? AbortSignal.any([context.abortSignal, timeoutSignal])
+        : timeoutSignal
       const fetchOpts: RequestInit = {
         method,
         headers: mergedHeaders,
         redirect: 'manual',
-        signal: AbortSignal.timeout(timeoutMs ?? 10000),
+        signal: fetchSignal,
       }
       if (body !== undefined && method !== 'GET') {
         fetchOpts.body = body
       }
-      const raw = await fetchWithBackoff(url, fetchOpts)
+      const raw = await fetchWithBackoff(url, fetchOpts, retryOnLimit !== false ? MAX_429_RETRIES : 0)
       const rawBody = await raw.text()
       const compressionResult = await getCompressionService().compressResponse(rawBody)
       const responseBody = compressionResult.compressed
       const resHeaders: Record<string, string> = {}
       raw.headers.forEach((v, k) => { resHeaders[k] = v })
-      getCapturedRequestStore().record({
+      const capturedRequest = getCapturedRequestStore().record({
         method,
         url,
         ...(mergedHeaders ? { headers: mergedHeaders } : {}),
         ...(body !== undefined ? { body } : {}),
         status: raw.status,
         responseHeaders: resHeaders,
-        responseBody,
+        responseBody: rawBody,
         executionId,
       })
-      recordStructuredEvidence({
+      const responseEvidence = recordStructuredEvidence({
         type: 'raw_response',
-        data: responseBody,
+        data: rawBody,
         label: `${method} ${url} → ${raw.status}`,
-        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody, responseTimeMs: performance.now() - start, executionId, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
+        observed: { method, url, status: raw.status, responseHeaders: resHeaders, responseBody: rawBody, responseTimeMs: performance.now() - start, executionId, captureId: capturedRequest.id, ...(mergedHeaders ? { requestHeaders: mergedHeaders } : {}), ...(body ? { requestBody: body } : {}) },
       })
       const accessSignal = inferUnauthenticatedAccessSignal(url, raw.status, mergedHeaders)
       if (accessSignal) {
@@ -247,6 +330,9 @@ export const httpRequest = createTool({
           url,
           headers: resHeaders,
           body: responseBody,
+          evidenceId: responseEvidence.id,
+          capturedRequestId: capturedRequest.id,
+          executionId,
           ...(accessSignal ? { securitySignals: [accessSignal] } : {}),
           durationMs: performance.now() - start,
         },
@@ -254,6 +340,22 @@ export const httpRequest = createTool({
     } catch (e) {
       const errMsg = (e as Error).message
       log.warn(`httpRequest ${method} ${url} failed: ${errMsg}`, { method, url, error: errMsg, durationMs: performance.now() - start })
+      try {
+        const bountyMode = isBountyProfile()
+        getForensicLog()?.log({
+          type: 'tool-error',
+          agent: 'worker',
+          tool: 'httpRequest',
+          args: {
+            method,
+            url: bountyMode ? redactUrl(url) : url,
+            timeoutMs: timeoutMs ?? 10_000,
+            targetTransport: getTargetTransportGovernor().stats(url),
+          },
+          error: errMsg,
+          duration: Math.round(performance.now() - start),
+        })
+      } catch { /* failure tracing must never replace the original tool error */ }
       globalLoopDetector.trackFailedTarget(url, errMsg)
       return {
         ok: false,
@@ -285,6 +387,8 @@ export const multipartUpload = createTool({
       if (!scopeCheck.allowed) {
         return { ok: false, error: `Scope violation: ${scopeCheck.reason}` }
       }
+      const routeError = checkObservedRoute(url)
+      if (routeError) return { ok: false, error: routeError }
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
@@ -475,4 +579,3 @@ export const omitHeader = createTool({
     }
   },
 })
-

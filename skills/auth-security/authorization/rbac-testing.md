@@ -36,7 +36,7 @@ For each endpoint, test with every role:
 1. **Path traversal in role check**: `/api/admin/../user/settings` may bypass role check
 2. **HTTP method override**: `X-HTTP-Method-Override: DELETE` on a GET endpoint
 3. **Case sensitivity**: `/Admin/Settings` vs `/admin/settings`
-4. **API versioning**: `/api/v2/admin/users` may have weaker auth than `/api/v1/admin/users`
+4. **API versioning**: Compare role enforcement across versioned routes only when both versions were observed in the target's client code, links, or captured traffic.
 5. **Wildcard routes**: `/api/users/*` may match `/api/users/admin`
 6. **Null byte injection**: `/admin/settings%00.json` — some servers truncate at null byte
 

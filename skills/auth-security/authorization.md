@@ -164,3 +164,12 @@ findings with exploit proofs automatically.
 | `idorSwapper` | object-reference swap across sessions |
 | `authzMatrix` | role x endpoint authorization matrix |
 | `tenantIsolation` | cross-tenant isolation checks |
+
+Use a captured owner request as the control, then replay it with one authorized alternate actor. Keep the object identifier fixed while changing only the session.
+
+```http
+GET /api/orders/ORDER-B HTTP/1.1
+Host: app.example.test
+Authorization: Bearer <captured-alternate-actor-token>
+Accept: application/json
+```

@@ -282,3 +282,15 @@ export function deriveScopeFromTarget(target: string): ScopeConfig | null {
     return null
   }
 }
+
+/** Bind an explicit or derived scope to this engagement's authorized start URL.
+ * Route evidence is required by default; callers can explicitly opt out in config. */
+export function bindScopeToTarget(target: string, configured?: ScopeConfig | null): ScopeConfig | null {
+  const scope = configured ?? deriveScopeFromTarget(target)
+  if (!scope) return null
+  return {
+    ...scope,
+    requireObservedRoutes: scope.requireObservedRoutes ?? true,
+    authorizedStartUrl: scope.authorizedStartUrl ?? target,
+  }
+}

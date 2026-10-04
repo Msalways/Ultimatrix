@@ -2,15 +2,14 @@
  * Post-crawl discovery (Phase C, spec 03 tasks C4/C5).
  *
  * Runs once at crawl completion, over what the session ALREADY captured:
- * - shadowApiDiscovery: OpenAPI/doc seeds + JS-bundle + version-prefix probing
- *   (routed through httpRequest → scope guard, robots, rate limit, evidence).
+ * - shadowApiDiscovery: passive endpoint mining from captured HTML/JS/API-schema
+ *   responses. It does not request guessed documentation paths.
  * - js-miner: static harvest of URL-shaped endpoint candidates from captured
  *   script/HTML response bodies (passive analysis of delivered content —
  *   nothing new is requested).
  *
- * Mined candidates land as Endpoint nodes tagged 'js-mined'; shadow probes as
- * 'shadow-api'. Both are passive observations for the brain to reason over,
- * never auto-executed attack traffic.
+ * Mined candidates land as Endpoint nodes tagged 'js-mined' or 'shadow-api',
+ * with their source evidence retained for the brain to reason over.
  */
 
 import { getGlobalGraphStore } from '../graph/store'
@@ -86,7 +85,7 @@ export async function runPostCrawlDiscovery(target: string): Promise<PostCrawlDi
   const result: PostCrawlDiscoveryResult = { shadowEndpoints: 0, jsCandidates: 0, errors: [] }
   const store = getGlobalGraphStore()
 
-  // 1. Shadow API probing (active but scope-guarded via httpRequest).
+  // 1. Passively mine captured same-origin responses; no HTTP requests occur.
   try {
     const exec = shadowApiDiscovery.execute
     if (typeof exec !== 'function') throw new Error('shadowApiDiscovery is not executable')

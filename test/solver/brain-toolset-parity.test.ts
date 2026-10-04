@@ -28,7 +28,15 @@ function setup() {
   const brain: any = createSolverBrain({ provider: 'groq', model: 'test', engine: 'solver' } as any, {
     skillRegistry: { list: () => [], search: () => [] } as any,
     extensionRegistry,
-    lazyServices: { getBrowserTools: async () => ({}) } as any,
+    lazyServices: {
+      getBrowserTools: async () => ({
+        browserInteract: {
+          description: 'Interact with one currently visible control.',
+          inputSchema: {},
+          execute: async () => ({ success: true }),
+        },
+      }),
+    } as any,
   })
   return { brain, extensionRegistry }
 }
@@ -62,6 +70,26 @@ describe('solver brain lazy tool view', () => {
     const step = brain.defaultOptions.prepareStep()
     expect(step.activeTools).toContain('queryGraph')
     expect(step.tools.queryGraph).toBeDefined()
+  })
+
+  it('discovers provider-neutral browser interaction dynamically and gates it until a plan exists', async () => {
+    const { extensionRegistry } = setup()
+    const descriptor = await extensionRegistry.describe('browserInteract')
+
+    expect(descriptor).toMatchObject({
+      id: 'browserInteract',
+      namespace: 'browser',
+      activity: 'browser-action',
+      readOnly: false,
+    })
+    expect(descriptor?.description).toMatch(/latest page inspection/i)
+
+    const tool = await extensionRegistry.activate('browserInteract')
+    expect(tool.description).toMatch(/requires methodology setup/i)
+    await expect(tool.execute({ action: 'click' } as any)).resolves.toMatchObject({
+      ok: false,
+      code: 'METHODOLOGY_REQUIRED',
+    })
   })
 
   it('does not expose an invocation gateway', () => {

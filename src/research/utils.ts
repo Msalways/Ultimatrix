@@ -61,6 +61,11 @@ export function isTransportOrAssetUrl(url: string, method?: string): boolean {
   } catch {
     return false
   }
+  // Bundle interpolations are not concrete routes until the target emits a
+  // runtime URL carrying an observed value.
+  try {
+    if (/\$\{[^}]+\}/.test(decodeURIComponent(pathname))) return true
+  } catch { /* malformed escapes remain subject to exact route evidence */ }
   if (TRANSPORT_POLLING_RE.test(pathname)) return true
   if (STATIC_ASSET_PATH_RE.test(pathname)) return true
   if (String(method ?? 'GET').toUpperCase() !== 'GET') return false

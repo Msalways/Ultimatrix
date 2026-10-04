@@ -29,6 +29,7 @@ vi.mock('../../src/tools/report-tools', () => ({
 import { SpiderRuntime } from '../../src/spider/runtime'
 import type { SpiderRuntimeState } from '../../src/spider/runtime'
 import { runSpiderRuntime } from '../../src/spider/runtime'
+import { getTargetTransportGovernor } from '../../src/runtime/target-governor'
 
 function config(overrides: Record<string, unknown> = {}) {
   return {
@@ -153,5 +154,33 @@ describe('C3 â€” baseline endpoint hygiene', () => {
 
     // Plain links still queued for traversal.
     expect(result.state.frontier.some((f) => f.url === 'https://example.com/about')).toBe(true)
+  })
+})
+
+describe('landing navigation cancellation', () => {
+  it('stops an aborted navigation and releases its target transport slot', async () => {
+    const target = 'https://cancel.example'
+    const controller = new AbortController()
+    const browser = fakeBrowserPage([])
+    const page = browser.requireStagehand().context.activePage()
+    let stopNavigation: (() => void) | undefined
+    page.goto = vi.fn(() => new Promise((_resolve, reject) => {
+      stopNavigation = () => reject(new Error('Navigation stopped'))
+    }))
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Page.stopLoading') stopNavigation?.()
+    })
+    ;(page as any).mainSession = { send }
+
+    const run = runSpiderRuntime({ config: config(), target, allowAny: false, browser, signal: controller.signal })
+    await vi.waitFor(() => expect(page.goto).toHaveBeenCalledOnce())
+    controller.abort(new Error('test cancellation'))
+    const result = await run
+
+    expect(result.outcome).toEqual({ status: 'aborted', reason: 'Spider aborted' })
+    expect(send).toHaveBeenCalledWith('Page.stopLoading')
+    expect(getTargetTransportGovernor().stats(target).active).toBe(0)
+    const release = await getTargetTransportGovernor().acquire(target)
+    release()
   })
 })

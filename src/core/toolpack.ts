@@ -12,7 +12,7 @@
  */
 
 import type { StagehandBrowser } from '@mastra/stagehand'
-import type { UltimatrixConfig } from '../config'
+import { DEFAULTS, type UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import type { TaskCoordinator } from '../runtime/task-coordinator'
@@ -212,7 +212,7 @@ function orchestrationTools(
   return {
     spawnWorker: s(createSpawnWorkerTool(config, skillRegistry, taskCoordinator, modelSelector), p),
     spawnSwarm: s(createSpawnSwarmTool(config, skillRegistry, taskCoordinator, modelSelector), p),
-    runTaskGraph: s(createRunTaskGraphTool(taskCoordinator, skillRegistry, modelSelector), p),
+    runTaskGraph: s(createRunTaskGraphTool(taskCoordinator, skillRegistry, modelSelector, config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel), p),
     executeDirect: s(createExecuteDirectTool(config, skillRegistry), p),
   }
 }

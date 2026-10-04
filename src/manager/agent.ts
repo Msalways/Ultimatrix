@@ -4,7 +4,7 @@ import type { StagehandBrowser } from '@mastra/stagehand'
 import type { MastraMemory } from '@mastra/core/memory'
 import { createAgent } from '../mastra/index'
 import { supervisorInstructions } from './instructions'
-import type { UltimatrixConfig } from '../config'
+import { DEFAULTS, type UltimatrixConfig } from '../config'
 import type { SkillRegistry } from '../solver/skills/registry'
 import type { WorkerPool } from '../workers/pool'
 import type { TaskCoordinator } from '../runtime/task-coordinator'
@@ -44,7 +44,7 @@ export function createSupervisor(
     const orchestrationTools: Record<string, any> = {
       spawnWorker: sanitizeOrchTool(createSpawnWorkerTool(config, options.skillRegistry!, options.taskCoordinator!), config.provider),
       spawnSwarm: sanitizeOrchTool(createSpawnSwarmTool(config, options.skillRegistry!, options.taskCoordinator!), config.provider),
-      runTaskGraph: sanitizeOrchTool(createRunTaskGraphTool(options.taskCoordinator!, options.skillRegistry!), config.provider),
+      runTaskGraph: sanitizeOrchTool(createRunTaskGraphTool(options.taskCoordinator!, options.skillRegistry!, undefined, config.solver?.maxParallel ?? DEFAULTS.solver.maxParallel), config.provider),
       executeDirect: sanitizeOrchTool(createExecuteDirectTool(config, options.skillRegistry!), config.provider),
     }
 

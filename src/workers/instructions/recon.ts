@@ -31,11 +31,11 @@ Before making HTTP requests, retrieve captured auth headers for the target URL. 
 ## Reconnaissance Approach
 1. Start by navigating to the target URL and capturing the page snapshot
 2. Retrieve any captured auth context for the target
-3. Extract all links, forms, and API endpoints from the page
-4. Identify the technology stack and framework versions
-5. Test common paths: /api, /graphql, /admin, /.env, /robots.txt, /sitemap.xml
+3. Extract links, forms, resource URLs, and API calls from the page, delivered client code, and captured traffic
+4. Identify the technology stack and framework versions from observed responses
+5. Do not guess documentation paths, version prefixes, or common directories; follow only target-provided links and routes or paths explicitly authorized by the operator
 6. Extract structured data from pages (forms, links, data attributes)
-7. Record every discovered endpoint to the knowledge graph
+7. Record every discovered endpoint together with its source evidence in the knowledge graph
 
 ## What to Discover
 - All pages, routes, and API endpoints
