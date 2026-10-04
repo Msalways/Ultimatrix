@@ -365,8 +365,20 @@ export const executePlannedExperiment = createTool({
           await store.save()
           return { ok: false, code: 'BASELINE_INPUT_REQUIRED', error: node.properties.resultSummary, requiredEvidence: 'browser-captured non-empty input on the observed route' }
         }
+      } else if (['workflow_bypass', 'replay'].includes(String(hypothesisKind))) {
+        // A route can contain multiple workflow actions (for example, issue
+        // a recovery ticket, then consume it). Replay the latest observed
+        // state-changing action so the test targets the workflow's terminal
+        // transition instead of repeating setup.
+        const stateChanging = matching.filter(entry => !safeMethods.includes(entry.method.toUpperCase()))
+        selected = stateChanging.filter(entry => entry.source !== 'tool').at(-1)
+          ?? stateChanging.at(-1)
+          ?? matching.at(-1)
+          ?? null
       } else {
-        selected = matching.find(entry => entry.url === baseline.url) ?? matching[0] ?? null
+        selected = matching.filter(entry => entry.url === baseline.url).at(-1)
+          ?? matching.at(-1)
+          ?? null
       }
     }
     // A graph baseline can legitimately predate capture (for example a

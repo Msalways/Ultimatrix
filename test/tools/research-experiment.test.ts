@@ -147,7 +147,8 @@ describe('workflow replay execution', () => {
     const realGetNode = store.getNode
     const captured = getCapturedRequestStore()
     captured.clear()
-    captured.record({ method: 'POST', url: 'https://target.test/api/redeem', status: 200, source: 'browser', body: 'offer=one' })
+    captured.record({ method: 'POST', url: 'https://target.test/api/redeem', status: 200, source: 'browser', body: 'email=member%40example.test' })
+    const finalAction = captured.record({ method: 'POST', url: 'https://target.test/api/redeem?ticket=ticket-1', status: 200, source: 'browser', body: 'password=updated' })
     ;(store as any).getNode = vi.fn((id: string) => id === workflowHypothesis.id ? workflowHypothesis : experiment)
     experiment.properties = {
       status: 'planned',
@@ -162,7 +163,8 @@ describe('workflow replay execution', () => {
     try {
       const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
       expect(replaySpy).toHaveBeenCalledTimes(2)
-      expect(replaySpy.mock.calls[1][1]).not.toHaveProperty('removeHeaderNames')
+      expect(replaySpy.mock.calls[0][0]).toMatchObject({ entryId: finalAction.id })
+      expect(replaySpy.mock.calls[1][0]).not.toHaveProperty('removeHeaderNames')
       expect((result as any).value.differential).toMatchObject({ interesting: false })
       expect(experiment.properties.status).toBe('rejected')
     } finally {
