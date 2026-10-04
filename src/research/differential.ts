@@ -114,3 +114,27 @@ export function compareResearchResponses(baseline: ResponseLike, mutated: Respon
     reason,
   }
 }
+
+/**
+ * A replay check has different semantics from a payload differential: the
+ * exact same state-changing request is sent twice, so two successful
+ * responses are a candidate signal that must be checked against the
+ * resulting business state. A rejection on replay is expected secure
+ * behavior, not a finding.
+ */
+export function compareStatefulReplayResponses(baseline: ResponseLike, replay: ResponseLike): DifferentialResult {
+  const compared = compareResearchResponses(baseline, replay)
+  const baselineAccepted = baseline.status >= 200 && baseline.status < 300
+  const replayAccepted = replay.status >= 200 && replay.status < 300
+  const interesting = baselineAccepted && replayAccepted
+
+  return {
+    ...compared,
+    interesting,
+    reason: interesting
+      ? 'The exact state-changing request was accepted twice; verify the resulting business state before reporting.'
+      : !baselineAccepted
+        ? `The initial state-changing request was not accepted (${baseline.status}); replay behavior is inconclusive.`
+        : `The replay was rejected with status ${replay.status}; this matches expected one-time behavior.`,
+  }
+}

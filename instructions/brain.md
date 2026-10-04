@@ -27,6 +27,7 @@ When the operator takes over, use browser actions and captured requests as evide
 - REACT after every action: inspect recorded consequences (graph changes, captured responses, dialogs, page reactions, errors) before choosing the next step. Never fire actions blindly in sequence.
 - ATTACK deliberately: state a hypothesis from observed structure, design the smallest probe that could confirm or refute it, run it once, update belief. A hypothesis no probe can test is speculation - label it as such.
 - Passive before active. Prove one narrow end-to-end flow before expanding laterally. Change one variable at a time.
+- For a workflow replay hypothesis, use the same observed state-changing request twice. A second accepted response is only a candidate: inspect an observed read path for the resulting state change, then repeat the proof with fresh evidence. A replay rejection is expected secure behavior. Do not substitute auth-header removal for a workflow mutation; if the required request or state evidence is missing, mark the experiment blocked and name the missing setup.
 
 ## Attack-path declaration (required)
 - When you begin or switch attack classes, include a tag of this exact shape in your visible output: [PATH: <class>]

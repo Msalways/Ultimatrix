@@ -38,6 +38,15 @@ function score(variant: 'vulnerable' | 'control', overrides: Partial<Parameters<
     requiresSecondActor: false,
     secondActorAvailable: true,
     untracedRequests: [],
+    expectedHypothesisKinds: ['workflow_bypass'],
+    targetLearning: {
+      workflowCount: 1,
+      entityCount: 1,
+      hypothesisKinds: ['workflow_bypass'],
+      experimentStatuses: [variant === 'vulnerable' ? 'interesting' : 'rejected'],
+      expectedEndpoints: [],
+      observedEndpoints: [],
+    },
     ...overrides,
   })
 }
@@ -89,7 +98,7 @@ describe('live discovery scoring', () => {
         workflowCount: 2,
         entityCount: 1,
         hypothesisKinds: ['workflow_bypass', 'idor'],
-        experimentStatuses: ['planned', 'interesting'],
+        experimentStatuses: ['planned', 'interesting', 'running', 'blocked', 'rejected'],
         expectedEndpoints: [{ method: 'GET', path: '/orders' }, { method: 'POST', path: '/orders' }],
         observedEndpoints: [{ method: 'get', path: '/orders' }],
       },
@@ -107,7 +116,9 @@ describe('live discovery scoring', () => {
       matchedHypothesisKinds: ['workflow_bypass'],
       hypothesisRecall: 1,
       plannedExperiments: 1,
-      nonPlannedExperiments: 1,
+      attemptedExperiments: 3,
+      completedExperiments: 2,
+      blockedExperiments: 1,
     })
   })
 
@@ -120,8 +131,9 @@ describe('live discovery scoring', () => {
       ...Array.from({ length: 9 }, () => ({ variant: 'control' as const, score: control })),
     ])
     expect(passing.pass).toBe(true)
+    expect(passing.learningPass).toBe(true)
     expect(passing.verifiedVulnerableRuns).toBe(7)
-    expect(passing.targetLearning).toMatchObject({ runs: 18, averageEndpointRecall: null, averageHypothesisRecall: null })
+    expect(passing.targetLearning).toMatchObject({ runs: 18, averageEndpointRecall: null, averageHypothesisRecall: 1 })
     const falsePositive = scoreDiscoveryBenchmark([
       ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: vulnerable })),
       ...Array.from({ length: 8 }, () => ({ variant: 'control' as const, score: control })),
@@ -129,6 +141,41 @@ describe('live discovery scoring', () => {
     ])
     expect(falsePositive.controlPass).toBe(false)
     expect(falsePositive.pass).toBe(false)
+  })
+
+  it('does not count blocked or merely planned experiments as attacks', () => {
+    const notAttacked = score('vulnerable', {
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 1,
+        hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['planned', 'blocked'],
+        expectedEndpoints: [],
+        observedEndpoints: [],
+      },
+    })
+    expect(notAttacked.targetLearning).toMatchObject({ plannedExperiments: 1, attemptedExperiments: 0, blockedExperiments: 1 })
+  })
+
+  it('requires target learning and an attempted experiment on vulnerable and control runs', () => {
+    const incomplete = score('control', {
+      targetLearning: {
+        workflowCount: 0,
+        entityCount: 0,
+        hypothesisKinds: [],
+        experimentStatuses: ['planned'],
+        expectedEndpoints: [],
+        observedEndpoints: [],
+      },
+      expectedHypothesisKinds: ['workflow_bypass'],
+    })
+    const result = scoreDiscoveryBenchmark([
+      ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: score('vulnerable') })),
+      ...Array.from({ length: 9 }, () => ({ variant: 'control' as const, score: incomplete })),
+    ])
+    expect(result.learningPass).toBe(false)
+    expect(result.pass).toBe(false)
+    expect(result.targetLearning.qualifiedControlRuns).toBe(0)
   })
 })
 

@@ -133,4 +133,29 @@ describe('evaluateExperimentOracle', () => {
     expect(evaluateExperimentOracle('exp', { type: 'oast-callback', evidenceId: 'callback', correlationToken: 'oast-9' }, items).status).toBe('proven')
     expect(evaluateExperimentOracle('exp', { type: 'browser-effect', evidenceId: 'browser', effectKey: 'toast', expectedValue: 'saved' }, items).status).toBe('proven')
   })
+
+  it('proves business-state changes from the same captured JSON or text read path', () => {
+    const jsonOracle = {
+      type: 'state-transition' as const,
+      beforeEvidenceId: 'before', afterEvidenceId: 'after',
+      stateKey: 'account.balance', beforeValue: '17', afterValue: '34',
+    }
+    const before = evidence('before', '', {
+      method: 'GET', url: 'https://app.test/account', status: 200,
+      responseBody: '{"account":{"balance":17}}', actorFingerprint: 'actor-a',
+    })
+    const after = evidence('after', '', {
+      method: 'GET', url: 'https://app.test/account', status: 200,
+      responseBody: '{"account":{"balance":34}}', actorFingerprint: 'actor-a',
+    })
+    expect(evaluateExperimentOracle('exp', jsonOracle, [before, after]).status).toBe('proven')
+    expect(evaluateExperimentOracle('exp', { ...jsonOracle, stateKey: 'body:balance', beforeValue: '17 credits', afterValue: '34 credits' }, [
+      evidence('before', '', { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: '<p>balance: 17 credits</p>', actorFingerprint: 'actor-a' }),
+      evidence('after', '', { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: '<p>balance: 34 credits</p>', actorFingerprint: 'actor-a' }),
+    ]).status).toBe('proven')
+    expect(evaluateExperimentOracle('exp', jsonOracle, [before, evidence('after', '', {
+      method: 'GET', url: 'https://app.test/other', status: 200,
+      responseBody: '{"account":{"balance":34}}', actorFingerprint: 'actor-a',
+    })])).toMatchObject({ status: 'inconclusive' })
+  })
 })

@@ -7,7 +7,7 @@ import { extractEntities } from '../research/entity-extractor'
 import { findLocationEchoes, findReflectedParams, generateHypotheses, selectHypotheses } from '../research/hypothesis-engine'
 import { planExperiments } from '../research/experiment-planner'
 import { redirectMarkerUrl, reflectionMarker, reflectionMutation, redirectMutation } from '../research/utils'
-import { compareResearchResponses as compareResponsesCore } from '../research/differential'
+import { compareResearchResponses as compareResponsesCore, compareStatefulReplayResponses } from '../research/differential'
 import { candidateFromExperiment, listCandidates, upsertCandidate } from '../research/candidate-store'
 import { assessCandidateForReport } from '../research/verifier'
 import { getResearchSnapshot, persistEntities, persistExperiments, persistHypotheses, persistWorkflows } from '../research/graph-adapter'
@@ -42,7 +42,7 @@ const evidenceOracleSchema = z.discriminatedUnion('type', [
     parameter: z.string().trim().min(1),
   }),
   z.object({ type: z.literal('cross-identity'), victimEvidenceId: evidenceIdSchema, attackerEvidenceId: evidenceIdSchema, victimActorRef: z.string(), attackerActorRef: z.string(), marker: z.string().min(1) }),
-  z.object({ type: z.literal('state-transition'), beforeEvidenceId: evidenceIdSchema, afterEvidenceId: evidenceIdSchema, stateKey: z.string(), beforeValue: z.string(), afterValue: z.string() }),
+  z.object({ type: z.literal('state-transition'), beforeEvidenceId: evidenceIdSchema, afterEvidenceId: evidenceIdSchema, stateKey: z.string().describe('Observed state key, JSON dotted path, or body:<exact unique text>'), beforeValue: z.string(), afterValue: z.string() }),
   z.object({ type: z.literal('oast-callback'), evidenceId: evidenceIdSchema, correlationToken: z.string().min(1) }),
   z.object({ type: z.literal('timing-differential'), baselineEvidenceIds: z.array(evidenceIdSchema).min(1), mutationEvidenceIds: z.array(evidenceIdSchema).min(1), minSamples: z.number().int().positive(), minDeltaMs: z.number().nonnegative() }),
   z.object({ type: z.literal('browser-effect'), evidenceId: evidenceIdSchema, effectKey: z.string(), expectedValue: z.string() }),
@@ -173,7 +173,7 @@ export function automaticMutation(
   kind: string | undefined,
   request: { url: string; body?: string },
   targetParams?: string[],
-): ReplayMutation {
+): ReplayMutation | undefined {
   if (kind === 'idor' || kind === 'broken_access_control') {
     try {
       const url = new URL(request.url)
@@ -202,13 +202,13 @@ export function automaticMutation(
     try {
       const url = new URL(request.url)
       const names = (targetParams ?? []).filter(name => url.searchParams.has(name))
-      if (names.length === 0) return {}
+      if (names.length === 0) return undefined
       const selected = names[0]
       // One small, bounded tautology mutation: no stacked statements, writes,
       // sleep primitive, or out-of-band callback.
       url.searchParams.set(selected, "' OR 1=1 OR 'x'='x")
       return { url: url.toString() }
-    } catch { return {} }
+    } catch { return undefined }
   }
 
   if (kind === 'mass_assignment' && request.body) {
@@ -255,15 +255,22 @@ export function automaticMutation(
     if (url) return { url }
   }
 
-  return { removeHeaderNames: ['authorization', 'cookie', 'x-auth-token', 'x-csrf-token'] }
+  if (kind === 'workflow_bypass' || kind === 'replay') return {}
+  if (kind === 'information_disclosure') {
+    return { removeHeaderNames: ['authorization', 'cookie', 'x-auth-token', 'x-csrf-token'] }
+  }
+  // Object authorization is tested through the two actor sessions above;
+  // keeping the captured request unchanged preserves that identity contrast.
+  if (kind === 'idor' || kind === 'broken_access_control') return {}
+  return undefined
 }
 
 /**
  * Execute one planned experiment end-to-end.  Planning is deliberately kept
  * separate from execution, but the solver must have a typed seam that turns a
- * graph experiment into real, captured traffic.  The default mutation is a
- * generic anonymous-session differential (remove common auth headers); callers
- * can provide a skill-selected structural mutation instead.
+ * graph experiment into real, captured traffic. Workflow replay keeps the
+ * request identical and evaluates duplicate acceptance; unsupported mutation
+ * classes block until the brain supplies an observed structural mutation.
  */
 export const executePlannedExperiment = createTool({
   id: 'executePlannedExperiment',
@@ -380,7 +387,13 @@ export const executePlannedExperiment = createTool({
         ) ?? null
       }
     }
-    if (!selected) return { ok: false, error: 'No captured request matches this experiment baseline and baseline acquisition failed.' }
+    if (!selected) {
+      node.properties.status = 'blocked'
+      node.properties.resultSummary = 'blocked: no captured request matches the experiment baseline and baseline acquisition failed.'
+      node.updatedAt = Date.now()
+      await store.save()
+      return { ok: false, code: 'BASELINE_UNAVAILABLE', error: node.properties.resultSummary, experimentId }
+    }
     if (hypothesisKind === 'sql_injection' && hypothesisParams?.length) {
       const hasObservedBenignValue = selected.source !== 'tool' && hypothesisParams.some(name => {
         try { return (new URL(selected!.url).searchParams.get(name) ?? '').trim().length > 0 } catch { return false }
@@ -394,16 +407,36 @@ export const executePlannedExperiment = createTool({
       }
     }
 
-    node.properties.status = 'running'
-    node.properties.baselineRequest = { method: selected.method, url: selected.url, headers: selected.headers, ...(selected.body !== undefined ? { body: selected.body } : {}) }
-    node.updatedAt = Date.now()
-    await store.save()
-
     const alternateActor = actorSessions.length > 1 &&
       ['idor', 'broken_access_control', 'information_disclosure'].includes(String(hypothesisKind))
       ? actorSessions[1]
       : undefined
     const appliedMutation = mutation ?? automaticMutation(hypothesisKind, selected, hypothesisParams)
+    const statefulReplay = Boolean(appliedMutation && ['workflow_bypass', 'replay'].includes(String(hypothesisKind)) && Object.keys(appliedMutation).length === 0)
+    if (!appliedMutation || (Object.keys(appliedMutation).length === 0 && !statefulReplay && !alternateActor)) {
+      const reason = !appliedMutation
+        ? `blocked: no grounded mutation is available for ${String(hypothesisKind ?? 'this hypothesis')}; select a structural change from observed target traffic.`
+        : `blocked: an empty mutation does not test ${String(hypothesisKind ?? 'this hypothesis')}; select a structural change from observed target traffic.`
+      node.properties.status = 'blocked'
+      node.properties.resultSummary = reason
+      node.updatedAt = Date.now()
+      await store.save()
+      return { ok: false, code: 'STRUCTURAL_MUTATION_REQUIRED', error: reason, experimentId }
+    }
+    if (statefulReplay && safeMethods.includes(selected.method.toUpperCase())) {
+      const reason = `blocked: a workflow replay needs an observed state-changing request; captured ${selected.method.toUpperCase()} ${selected.url}.`
+      node.properties.status = 'blocked'
+      node.properties.resultSummary = reason
+      node.updatedAt = Date.now()
+      await store.save()
+      return { ok: false, code: 'STATE_CHANGING_REQUEST_REQUIRED', error: reason, experimentId }
+    }
+
+    node.properties.status = 'running'
+    node.properties.baselineRequest = { method: selected.method, url: selected.url, headers: selected.headers, ...(selected.body !== undefined ? { body: selected.body } : {}) }
+    node.updatedAt = Date.now()
+    await store.save()
+
     const evidenceBeforeBaseline = new Set(coreEvidenceLedger.all().map(item => item.id))
     // Victim view: for cross-user hypotheses with two actors, the baseline
     // itself replays under the first actor so BOTH sides carry session-tagged
@@ -479,7 +512,9 @@ export const executePlannedExperiment = createTool({
         }
       } catch { /* malformed URLs simply skip auto-assertion */ }
     }
-    const differential = compareResponsesCore(baselineResponse, mutatedResponse, mergedAssertion)
+    const differential = statefulReplay
+      ? compareStatefulReplayResponses(baselineResponse, mutatedResponse)
+      : compareResponsesCore(baselineResponse, mutatedResponse, mergedAssertion)
     node.properties.differential = differential as unknown as Record<string, unknown>
     node.properties.resultSummary = differential.reason
     node.properties.status = differential.interesting ? 'interesting' : 'rejected'

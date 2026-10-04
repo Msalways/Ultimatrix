@@ -561,7 +561,9 @@ async function executeRun(input: {
       matchedHypothesisKinds: score.targetLearning.matchedHypothesisKinds,
       hypothesisRecall: score.targetLearning.hypothesisRecall,
       plannedExperiments: score.targetLearning.plannedExperiments,
-      nonPlannedExperiments: score.targetLearning.nonPlannedExperiments,
+      attemptedExperiments: score.targetLearning.attemptedExperiments,
+      completedExperiments: score.targetLearning.completedExperiments,
+      blockedExperiments: score.targetLearning.blockedExperiments,
     },
     findings,
     candidates,
@@ -706,7 +708,7 @@ async function main(): Promise<void> {
         for (const variant of variants) {
           const report = await executeRun({ fixture: matchedFixture, variant, model: args.model, configPath, iteration })
           runs.push(report)
-          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, ${report.score.targetLearning.plannedExperiments} experiments planned; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
+          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, experiments ${report.score.targetLearning.plannedExperiments} planned/${report.score.targetLearning.attemptedExperiments} attempted/${report.score.targetLearning.blockedExperiments} blocked; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
         }
       }
     }

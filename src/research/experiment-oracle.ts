@@ -72,6 +72,18 @@ function sameObservedRoute(a: EvidenceItem, b: EvidenceItem): boolean {
   }
 }
 
+function sameObservedResource(a: EvidenceItem, b: EvidenceItem): boolean {
+  if (a.observed?.method?.toUpperCase() !== b.observed?.method?.toUpperCase()) return false
+  try {
+    const urlA = new URL(a.observed?.url ?? '')
+    const urlB = new URL(b.observed?.url ?? '')
+    const query = (url: URL) => JSON.stringify([...url.searchParams.entries()].sort(([ak, av], [bk, bv]) => ak.localeCompare(bk) || av.localeCompare(bv)))
+    return urlA.origin === urlB.origin && urlA.pathname === urlB.pathname && query(urlA) === query(urlB)
+  } catch {
+    return false
+  }
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
   if (value && typeof value === 'object') {
@@ -147,6 +159,31 @@ function sameObservedActor(a: EvidenceItem, b: EvidenceItem): boolean {
   return a.session === b.session
 }
 
+function structuredStateValue(item: EvidenceItem, key: string): unknown {
+  const observedState = item.observed?.state
+  if (observedState && Object.prototype.hasOwnProperty.call(observedState, key)) return observedState[key]
+  try {
+    let value: unknown = JSON.parse(item.observed?.responseBody ?? item.data)
+    for (const part of key.split('.').filter(Boolean)) {
+      if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, part)) return undefined
+      value = (value as Record<string, unknown>)[part]
+    }
+    return value
+  } catch {
+    return undefined
+  }
+}
+
+function matchesStateValue(item: EvidenceItem, key: string, expected: string): boolean {
+  if (!expected) return false
+  if (key.startsWith('body:')) {
+    const body = item.observed?.responseBody ?? item.data
+    return body.includes(expected)
+  }
+  const value = structuredStateValue(item, key)
+  return value !== undefined && (String(value) === expected || JSON.stringify(value) === expected)
+}
+
 export function evaluateExperimentOracle(
   experimentId: string,
   oracle: EvidenceOracle,
@@ -202,9 +239,21 @@ export function evaluateExperimentOracle(
       break
     }
     case 'state-transition': {
-      const before = byId.get(oracle.beforeEvidenceId)!.observed?.state?.[oracle.stateKey]
-      const after = byId.get(oracle.afterEvidenceId)!.observed?.state?.[oracle.stateKey]
-      proven = oracle.beforeValue !== oracle.afterValue && before === oracle.beforeValue && after === oracle.afterValue
+      const before = byId.get(oracle.beforeEvidenceId)!
+      const after = byId.get(oracle.afterEvidenceId)!
+      if ([before, after].some(item => item.observed?.status != null && (item.observed.status < 200 || item.observed.status >= 300))) {
+        return { status: 'inconclusive', reason: 'State-transition evidence must come from successful responses', evidenceRefs: refs }
+      }
+      if ((before.observed?.method || before.observed?.url || after.observed?.method || after.observed?.url)
+        && !sameObservedResource(before, after)) {
+        return { status: 'inconclusive', reason: 'State-transition evidence must use the same observed read resource', evidenceRefs: refs }
+      }
+      if (!sameObservedActor(before, after)) {
+        return { status: 'inconclusive', reason: 'State-transition evidence must use the same observed actor', evidenceRefs: refs }
+      }
+      proven = oracle.beforeValue !== oracle.afterValue &&
+        matchesStateValue(before, oracle.stateKey, oracle.beforeValue) &&
+        matchesStateValue(after, oracle.stateKey, oracle.afterValue)
       break
     }
     case 'oast-callback':

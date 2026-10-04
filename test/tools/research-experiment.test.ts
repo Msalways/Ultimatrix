@@ -107,6 +107,71 @@ describe('automatic experiment mutations', () => {
       url: "https://target.test/search?q=%27+OR+1%3D1+OR+%27x%27%3D%27x&lang=en",
     })
   })
+
+  it('uses an unchanged request for workflow replay and refuses unrelated auth stripping', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    expect(automaticMutation('workflow_bypass', { url: 'https://target.test/api/redeem', body: 'offer=one' })).toEqual({})
+    expect(automaticMutation('state_confusion', { url: 'https://target.test/api/redeem', body: 'offer=one' })).toBeUndefined()
+  })
+})
+
+describe('stateful replay comparison', () => {
+  it('treats duplicate success as a candidate and a rejected replay as expected behavior', async () => {
+    const { compareStatefulReplayResponses } = await import('../../src/research/differential')
+    const vulnerable = compareStatefulReplayResponses(
+      { status: 200, body: '17 credits added' },
+      { status: 200, body: '34 credits added' },
+    )
+    const protectedReplay = compareStatefulReplayResponses(
+      { status: 200, body: '17 credits added' },
+      { status: 409, body: 'offer already used' },
+    )
+    expect(vulnerable).toMatchObject({ interesting: true })
+    expect(vulnerable.reason).toMatch(/verify the resulting business state/i)
+    expect(protectedReplay).toMatchObject({ interesting: false })
+    expect(protectedReplay.reason).toMatch(/expected one-time behavior/i)
+  })
+})
+
+describe('workflow replay execution', () => {
+  it('replays the captured state-changing request unchanged and recognizes secure rejection', async () => {
+    const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+    const { getCapturedRequestStore } = await import('../../src/capture/captured-request-store')
+    const { replayCapturedRequest } = await import('../../src/tools/replay-tools')
+    const { setInteractionMode } = await import('../../src/tools/interaction-tools')
+    const workflowHypothesis = {
+      id: 'hypothesis:workflow-1',
+      type: 'Hypothesis',
+      properties: { kind: 'workflow_bypass', status: 'open' },
+    }
+    const realGetNode = store.getNode
+    const captured = getCapturedRequestStore()
+    captured.clear()
+    captured.record({ method: 'POST', url: 'https://target.test/api/redeem', status: 200, source: 'browser', body: 'offer=one' })
+    ;(store as any).getNode = vi.fn((id: string) => id === workflowHypothesis.id ? workflowHypothesis : experiment)
+    experiment.properties = {
+      status: 'planned',
+      hypothesisId: workflowHypothesis.id,
+      baselineRequest: { method: 'POST', url: 'https://target.test/api/redeem', body: 'offer=one' },
+    }
+    setInteractionMode('run')
+    const replaySpy = vi.spyOn(replayCapturedRequest, 'execute')
+      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 200, response: { body: '17 credits added' } } } as any)
+      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 409, response: { body: 'offer already used' } } } as any)
+
+    try {
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+      expect(replaySpy).toHaveBeenCalledTimes(2)
+      expect(replaySpy.mock.calls[1][1]).not.toHaveProperty('removeHeaderNames')
+      expect((result as any).value.differential).toMatchObject({ interesting: false })
+      expect(experiment.properties.status).toBe('rejected')
+    } finally {
+      replaySpy.mockRestore()
+      setInteractionMode(undefined)
+      captured.clear()
+      ;(store as any).getNode = realGetNode
+    }
+  })
 })
 
 describe('planned experiment approval boundary', () => {  it('blocks active methods unless the engagement is explicitly in run mode', async () => {

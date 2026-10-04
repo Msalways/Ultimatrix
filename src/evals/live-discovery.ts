@@ -67,7 +67,9 @@ export interface DiscoveryRunScore {
     matchedHypothesisKinds: string[]
     hypothesisRecall: number | null
     plannedExperiments: number
-    nonPlannedExperiments: number
+    attemptedExperiments: number
+    completedExperiments: number
+    blockedExperiments: number
   }
 }
 
@@ -105,6 +107,8 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const hypothesisKinds = [...new Set(input.targetLearning?.hypothesisKinds ?? [])]
   const matchedHypothesisKinds = expectedHypothesisKinds.filter(kind => hypothesisKinds.includes(kind))
   const experimentStatuses = input.targetLearning?.experimentStatuses ?? []
+  const attemptedStatuses = new Set(['running', 'interesting', 'rejected'])
+  const completedStatuses = new Set(['interesting', 'rejected'])
   const endpointKey = (endpoint: { method: string; path: string }) => `${endpoint.method.toUpperCase()} ${endpoint.path}`
   const observedEndpointKeys = new Set((input.targetLearning?.observedEndpoints ?? []).map(endpointKey))
   const expectedEndpoints = input.targetLearning?.expectedEndpoints ?? []
@@ -132,7 +136,9 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
       matchedHypothesisKinds,
       hypothesisRecall: expectedHypothesisKinds.length ? matchedHypothesisKinds.length / expectedHypothesisKinds.length : null,
       plannedExperiments: experimentStatuses.filter(status => status === 'planned').length,
-      nonPlannedExperiments: experimentStatuses.filter(status => status !== 'planned').length,
+      attemptedExperiments: experimentStatuses.filter(status => attemptedStatuses.has(status)).length,
+      completedExperiments: experimentStatuses.filter(status => completedStatuses.has(status)).length,
+      blockedExperiments: experimentStatuses.filter(status => status === 'blocked').length,
     },
   }
 }
@@ -153,7 +159,12 @@ export interface DiscoveryBenchmarkScore {
     runsWithExpectedHypothesis: number
     averageHypothesisRecall: number | null
     runsWithPlannedExperiments: number
+    runsWithAttemptedExperiments: number
+    runsWithBlockedExperiments: number
+    qualifiedVulnerableRuns: number
+    qualifiedControlRuns: number
   }
+  learningPass: boolean
   pass: boolean
 }
 
@@ -166,6 +177,13 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const vulnerablePass = vulnerable.length === 9 && verifiedVulnerableRuns >= 7
   const controlPass = controls.length === 9 && confirmedControlFindings === 0
   const learningScores = runs.map(run => run.score.targetLearning)
+  const qualifiesAsLearnedAndAttacked = (score: DiscoveryRunScore['targetLearning']) =>
+    score.workflowCount > 0 && score.hypothesisRecall === 1 && score.attemptedExperiments > 0
+  const qualifiedVulnerableRuns = vulnerable.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
+  const qualifiedControlRuns = controls.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
+  const learningPass = vulnerable.length === 9 && controls.length === 9 &&
+    qualifiedVulnerableRuns >= Math.ceil(vulnerable.length * (7 / 9)) &&
+    qualifiedControlRuns >= Math.ceil(controls.length * (7 / 9))
   const scoredHypothesisRuns = learningScores.filter(score => score.hypothesisRecall !== null)
   const scoredEndpointRuns = learningScores.filter(score => score.endpointRecall !== null)
   return {
@@ -188,8 +206,13 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
         ? scoredHypothesisRuns.reduce((sum, score) => sum + (score.hypothesisRecall ?? 0), 0) / scoredHypothesisRuns.length
         : null,
       runsWithPlannedExperiments: learningScores.filter(score => score.plannedExperiments > 0).length,
+      runsWithAttemptedExperiments: learningScores.filter(score => score.attemptedExperiments > 0).length,
+      runsWithBlockedExperiments: learningScores.filter(score => score.blockedExperiments > 0).length,
+      qualifiedVulnerableRuns,
+      qualifiedControlRuns,
     },
-    pass: vulnerablePass && controlPass && runs.every(run =>
+    learningPass,
+    pass: vulnerablePass && learningPass && controlPass && runs.every(run =>
       run.score.requestTraceComplete && run.score.withinRequestBudget && run.score.withinDurationBudget,
     ),
   }
