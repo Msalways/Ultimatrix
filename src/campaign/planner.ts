@@ -17,6 +17,7 @@ import type {
   RBACRoleNode,
   HypothesisNode,
   FactNode,
+  WorkflowNode,
 } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import { getSignalFamilyTags } from '../orchestration/technique-planner'
@@ -51,6 +52,55 @@ interface EndpointContext {
   roles: string[]
   states: string[]
   inputs: Array<{ name: string; location: string; type?: string; required?: boolean }>
+}
+
+interface WorkflowContext {
+  id: string
+  steps: string[]
+  capturedAt?: number
+}
+
+function safeWorkflowStepLabel(step: WorkflowNode['properties']['steps'][number]): string {
+  const method = step.method?.toUpperCase()
+  let path = ''
+  if (step.url) {
+    try { path = new URL(step.url).pathname } catch { /* keep action/method only */ }
+  }
+  return [method ?? step.action, path].filter(Boolean).join(' ')
+}
+
+function terminalWorkflowContexts(
+  workflows: WorkflowNode[],
+  endpoints: EndpointNode[],
+): Map<string, WorkflowContext> {
+  const endpointById = new Map(endpoints.map(endpoint => [endpoint.id, endpoint]))
+  const result = new Map<string, WorkflowContext>()
+  for (const workflow of workflows) {
+    const steps = workflow.properties.steps ?? []
+    if (steps.length < 2) continue
+
+    const terminalStep = [...steps].reverse().find(step => {
+      const endpoint = step.endpointId ? endpointById.get(step.endpointId) : undefined
+      const method = (step.method ?? endpoint?.properties.method ?? '').toUpperCase()
+      return Boolean(endpoint) && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+    })
+    const terminalId = terminalStep?.endpointId
+      ?? [...(workflow.properties.relatedEndpoints ?? [])].reverse().find(id => {
+        const method = String(endpointById.get(id)?.properties.method ?? '').toUpperCase()
+        return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      })
+    if (!terminalId || !endpointById.has(terminalId)) continue
+
+    const existing = result.get(terminalId)
+    if (!existing || (workflow.properties.capturedAt ?? 0) >= (existing.capturedAt ?? 0)) {
+      result.set(terminalId, {
+        id: workflow.id,
+        steps: steps.map(safeWorkflowStepLabel),
+        ...(workflow.properties.capturedAt !== undefined ? { capturedAt: workflow.properties.capturedAt } : {}),
+      })
+    }
+  }
+  return result
 }
 
 /** Structured, shape/typed-derived signals for a single endpoint. */
@@ -198,6 +248,10 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   )
   const humanHypotheses = hypotheses.filter(h => h.properties.origin === 'human')
   const facts = graphStore.queryNodes(NodeType.FACT) as FactNode[]
+  const workflowContexts = terminalWorkflowContexts(
+    graphStore.queryNodes(NodeType.WORKFLOW) as WorkflowNode[],
+    endpoints,
+  )
 
   // Read VALUE_ORIGIN edges for data-flow-aware prioritization
   const valueOriginEndpoints = new Set<string>()
@@ -241,6 +295,7 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     const url = ep.properties.url
     const hasParams = ctx.inputs[0]?.location !== 'endpoint'
     const signals = endpointSignals(ep)
+    const workflow = workflowContexts.get(ep.id)
 
     // Research hypotheses store endpoint node IDs; human-added hypotheses may
     // store URLs. Match both so the target model can affect campaign ordering.
@@ -258,6 +313,9 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
 
           const relevantTechniques = primitives.filter(p => {
             if (techniqueFilter && !techniqueFilter.includes(p.id)) return false
+            // A state-changing method alone does not establish a multi-step
+            // workflow. Only the observed terminal action gets this probe.
+            if (p.id === 'workflowBypass' && !workflow) return false
             return isTechniqueRelevant(p, ep, hasParams, signals)
           })
           if (relevantTechniques.length === 0) continue
@@ -277,6 +335,7 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
           if (state !== BASELINE_STATE) priority += 1
           if (reusedEndpoints.has(url)) priority += 1
           if (valueOriginEndpoints.has(ep.id)) priority += 2
+          if (workflow) priority += 3
           priority += signalBoost
 
           const reasonBits: string[] = []
@@ -285,8 +344,14 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
           if (hasParams) reasonBits.push(`${ctx.inputs.length} input(s)`)
           if (signalTechniqueIds.length > 0) reasonBits.push(`signals: ${[...signals].slice(0, 5).join(', ')}`)
           if (signalBoost) reasonBits.push(`${signalTechniqueIds.length} signal-aligned technique(s)`)
-          for (const input of ctx.inputs) {
-            for (const primitive of relevantTechniques) {
+          if (workflow) reasonBits.push(`observed workflow ${workflow.id} (${workflow.steps.length} steps)`)
+          for (const primitive of relevantTechniques) {
+            // Workflow bypass replays the captured terminal action as one
+            // endpoint-scoped unit; parameter mutation is a separate test.
+            const primitiveInputs = primitive.id === 'workflowBypass'
+              ? [{ name: '', location: 'endpoint' }]
+              : ctx.inputs
+            for (const input of primitiveInputs) {
               const inputId = encodeURIComponent(`${input.location}:${input.name}`)
               const actorId = encodeURIComponent(actor.sessionRef ?? actor.actor)
               slices.push({
@@ -298,6 +363,9 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
                 actor: actor.actor,
                 ...(actor.sessionRef ? { sessionRef: actor.sessionRef } : {}),
                 state,
+                ...(primitive.id === 'workflowBypass' && workflow
+                  ? { workflowId: workflow.id, workflowSteps: [...workflow.steps] }
+                  : {}),
                 techniqueIds: [primitive.id],
                 domains: primitive.domains ?? [],
                 priority: priority + (signalTechniqueIds.includes(primitive.id) ? 1 : 0),

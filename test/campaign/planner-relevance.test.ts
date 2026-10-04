@@ -28,11 +28,12 @@ function primitive(id: string, tags: string[]): PrimitiveRef {
   return { id, description: id, tags }
 }
 
-function store(eps: any[], edges: any[] = [], hypotheses: any[] = []) {
+function store(eps: any[], edges: any[] = [], hypotheses: any[] = [], workflows: any[] = []) {
   return {
     queryNodes: (type: string) => {
       if (type === 'Endpoint') return eps
       if (type === 'Hypothesis') return hypotheses
+      if (type === 'Workflow') return workflows
       return []
     },
     getAllEdges: () => edges,
@@ -116,6 +117,41 @@ describe('planCampaign signal routing', () => {
 
     expect(slice?.reason).toContain('Research hypotheses target this endpoint (1)')
     expect(slice?.priority).toBeGreaterThanOrEqual(4)
+  })
+
+  it('routes workflow bypass only to the observed terminal state change and carries ordered steps', () => {
+    const start = { ...endpoint({ url: 'https://app.test/a1', method: 'POST', params: [{ name: 'draft', type: 'string' }] }), id: 'start' }
+    const finish = { ...endpoint({ url: 'https://app.test/b7', method: 'POST', params: [{ name: 'order', type: 'string' }] }), id: 'finish' }
+    const workflow = {
+      id: 'wf:observed-1',
+      type: 'Workflow',
+      properties: {
+        steps: [
+          { action: 'request', endpointId: 'start', method: 'POST', url: 'https://app.test/a1' },
+          { action: 'request', endpointId: 'finish', method: 'POST', url: 'https://app.test/b7' },
+        ],
+        relatedEndpoints: ['start', 'finish'],
+        capturedAt: 10,
+      },
+    }
+    const plan = planCampaign(
+      store([start, finish], [], [], [workflow]),
+      { primitives: [primitive('workflowBypass', ['workflow', 'business'])] },
+    )
+    const bypassSlices = plan.slices.filter(slice => slice.techniqueIds.includes('workflowBypass'))
+
+    expect(bypassSlices).toHaveLength(1)
+    expect(bypassSlices[0]?.endpoint.id).toBe('finish')
+    expect(bypassSlices[0]?.input).toEqual({ name: '', location: 'endpoint' })
+    expect(bypassSlices[0]?.workflowId).toBe('wf:observed-1')
+    expect(bypassSlices[0]?.workflowSteps).toEqual(['POST /a1', 'POST /b7'])
+    expect(bypassSlices[0]?.reason).toContain('observed workflow wf:observed-1')
+  })
+
+  it('does not infer a workflow from a state-changing method alone', () => {
+    const ep = endpoint({ method: 'POST', params: [{ name: 'value', type: 'string' }] })
+    const plan = planCampaign(store([ep]), { primitives: [primitive('workflowBypass', ['workflow', 'business'])] })
+    expect(plan.slices.some(slice => slice.techniqueIds.includes('workflowBypass'))).toBe(false)
   })
 
   it('keeps generic recon techniques relevant to any endpoint', () => {

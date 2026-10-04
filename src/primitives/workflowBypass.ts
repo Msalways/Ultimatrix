@@ -1,15 +1,13 @@
 /**
  * workflowBypass — FIRST CLASS
  *
- * Attempts to skip REQUIRED steps in a multi-step flow (e.g. checkout, password
- * reset, payment confirmation) by directly accessing the terminal endpoint with
- * missing/empty state, and detects whether the server enforces the prerequisite
- * steps (missing-state check bypass).
+ * Replays the observed terminal request in a learned multi-step flow (e.g.
+ * checkout, password reset, payment confirmation). A successful replay is only
+ * a candidate because the captured actor may still hold prior workflow state.
  *
- * Generator: a direct-access step to the terminal endpoint without the prior
- * flow state. Oracle: inspects the REAL response for success signals vs.
- * required-step / authorization error signals. If the terminal action succeeds
- * without the mandated prior steps, the workflow guard is bypassable.
+ * Generator: an exact replay of the captured terminal request. Oracle: records
+ * accepted replays as candidates; a fresh actor/session check is required to
+ * prove that prerequisites were actually skipped.
  */
 
 import type { TechniquePrimitive, TechniqueContext, AttackStep, StepExecutionResult, PrimitiveResult } from './framework'
@@ -29,28 +27,33 @@ const SUCCESS_MARKERS = [
 
 export const workflowBypass: TechniquePrimitive = {
   id: 'workflowBypass',
-  name: 'Workflow Bypass',
-  description: 'Attempt to skip required steps in a multi-step flow by directly accessing the terminal endpoint with missing state.',
+  name: 'Workflow Replay Probe',
+  description: 'Replay an observed terminal step in a learned multi-step workflow; accepted responses remain candidates pending fresh actor verification.',
   technique: 'workflow_bypass',
   appliesTo(ctx: TechniqueContext): boolean {
     if (!hasTarget(ctx)) return false
-    return isWorkflowEndpoint(ctx)
+    return isWorkflowEndpoint(ctx) && Boolean(ctx.requestTemplate)
   },
   async generate(ctx: TechniqueContext): Promise<AttackStep[]> {
+    const template = ctx.requestTemplate
+    if (!template || (ctx.workflowSteps?.length ?? 0) < 2) return []
     const url = ctx.endpoint?.url ?? ctx.target!
-    const method = ctx.endpoint?.method && ctx.endpoint.method !== 'GET' ? ctx.endpoint.method : 'POST'
+    if (!sameEndpoint(template.url, url)) return []
+    const method = template.method.toUpperCase()
+    if (ctx.endpoint?.method && method !== ctx.endpoint.method.toUpperCase()) return []
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return []
     return [
       {
-        id: 'workflow-direct-access',
-        description: `Directly access terminal endpoint ${url} without performing prior flow steps`,
+        id: 'workflow-terminal-replay',
+        description: `Replay the observed terminal request for ${url} without replaying earlier observed steps`,
         request: {
           method,
-          url,
-          headers: { ...(ctx.sessionHeaders ?? { 'Content-Type': 'application/json' }) },
-          ...(method !== 'GET' ? { body: JSON.stringify({ __workflow_probe: true }) } : {}),
+          url: template.url,
+          headers: { ...template.headers },
+          ...(template.body !== undefined ? { body: template.body } : {}),
         },
-        expectedSignal: 'server accepts the action without enforcing prior required steps',
-        metadata: { kind: 'direct' },
+        expectedSignal: 'replay outcome differs in a way that suggests duplicate or out-of-order workflow processing',
+        metadata: { kind: 'observed-terminal-replay', workflowId: ctx.state?.workflowId },
       },
     ]
   },
@@ -67,36 +70,40 @@ export const workflowBypass: TechniquePrimitive = {
       denyMarkers: DENY_MARKERS,
       successMarkers: SUCCESS_MARKERS,
     })
-    const bypassed = a.granted && !a.denied
+    const replayAccepted = a.granted && !a.denied
 
     const { verified } = evidenceGate.verifyClaim(
       claimFor('workflow_bypass', direct.step.request.url, direct.status, direct.step.request.method),
     )
-    const confirmed = bypassed && verified
+    // The captured actor may already hold server-side workflow state. An
+    // accepted replay is therefore a lead, not proof that prerequisites can
+    // be skipped. A fresh actor/session comparison must establish that.
+    const candidate = replayAccepted && verified
 
     const evidence = [
       {
         kind: 'response' as const,
-        label: `direct ${direct.step.request.method} ${direct.step.request.url} → ${direct.status}`,
+        label: `replay ${direct.step.request.method} ${direct.step.request.url} → ${direct.status}`,
         data: (direct.body ?? '').slice(0, 2000),
       },
     ]
 
     return {
-      confirmed,
-      confidence: confirmed ? Math.max(0.8, a.confidence) : bypassed ? a.confidence : 0.1,
+      confirmed: false,
+      candidate,
+      confidence: candidate ? Math.min(0.6, a.confidence) : 0.1,
       evidence,
-      severity: confirmed ? 'high' : undefined,
-      finding: confirmed
-        ? {
-            category: 'workflow_bypass',
-            description: `Required-step workflow guard missing on ${direct.step.request.url}: terminal action succeeded without prior steps (status ${direct.status}).`,
-            request: direct.step.request,
-            response: { status: direct.status ?? 0, body: (direct.body ?? '').slice(0, 1000) },
-            cwe: 'CWE-841',
-          }
-        : undefined,
-      note: `granted=${a.granted} denied=${a.denied} signals=${a.signals.join(',')} verified=${verified}`,
+      note: candidate
+        ? `terminal replay accepted (status=${direct.status}); candidate only because this actor may retain prior workflow state; fresh actor/session verification required`
+        : `granted=${a.granted} denied=${a.denied} signals=${a.signals.join(',')} verified=${verified}`,
     }
   },
+}
+
+function sameEndpoint(left: string, right: string): boolean {
+  try {
+    const a = new URL(left)
+    const b = new URL(right)
+    return a.origin === b.origin && a.pathname === b.pathname
+  } catch { return left === right }
 }

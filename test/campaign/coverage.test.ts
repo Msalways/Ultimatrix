@@ -309,6 +309,38 @@ describe('campaign prerequisites', () => {
     expect(observedHeaders).toEqual({ 'X-Trace': 'kept' })
   })
 
+  it('passes the observed workflow sequence and terminal capture to the primitive', async () => {
+    let observed: any
+    registerPrimitive({
+      id: 'workflowContextProbe',
+      name: 'workflow context probe',
+      description: 'test-only workflow context probe',
+      appliesTo: () => true,
+      generate: async (context: any) => {
+        observed = { workflowSteps: context.workflowSteps, requestTemplate: context.requestTemplate }
+        return []
+      },
+      oracle: async () => ({ confirmed: false, candidate: true, confidence: 0.5, evidence: [], note: 'fresh actor verification required' }),
+    } as any)
+    const store = memoryGraph([endpoint({ params: [], headers: {} })])
+    const captureStore = new CapturedRequestStore()
+    captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"captured"}' })
+    __setTestFallback(testServices({ capturedRequests: captureStore }))
+    const runner = createPrimitiveRunner(store, config, new EvidenceGate())
+    const slice: CampaignSlice = {
+      id: 'workflow-unit',
+      endpoint: { id: 'ep:fixture', url: 'https://app.test/api/items?search=old', method: 'POST' },
+      input: { name: '', location: 'endpoint' }, params: [], role: 'anonymous', actor: 'anonymous',
+      state: 'baseline', workflowId: 'wf:test', workflowSteps: ['POST /draft', 'POST /finish'],
+      techniqueIds: ['workflowContextProbe'], priority: 1,
+    }
+
+    const result = await runner('workflowContextProbe', slice, { slice, graphStore: store, config, provider: 'test' })
+    expect(result.coverageStatus).toBe('candidate')
+    expect(observed.workflowSteps).toEqual(['POST /draft', 'POST /finish'])
+    expect(observed.requestTemplate).toMatchObject({ method: 'POST', body: '{"title":"captured"}' })
+  })
+
   it('reports an out-of-scope endpoint as blocked before attempting HTTP', async () => {
     const store = memoryGraph([endpoint({ url: 'https://outside.test/api/items?search=old' })])
     __setTestFallback(testServices({ scopeConfig: { allowedDomains: ['app.test'], enforcement: 'hard' } }))

@@ -63,6 +63,9 @@ export interface CampaignSlice {
   actor?: string
   sessionRef?: string
   state: string
+  /** Ordered, target-observed steps for the workflow ending at this endpoint. */
+  workflowId?: string
+  workflowSteps?: string[]
   techniqueIds: string[]
   domains?: string[]
   priority: number

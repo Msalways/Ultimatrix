@@ -229,6 +229,9 @@ export function createPrimitiveRunner(
   return async (primitiveId, slice, ctx) => {
     const primitive = getPrimitive(primitiveId)
     if (!primitive) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `unavailable primitive: ${primitiveId}` }
+    if (primitiveId === 'workflowBypass' && (slice.workflowSteps?.length ?? 0) < 2) {
+      return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: 'requires an observed multi-step workflow ending at this endpoint' }
+    }
     const scope = isUrlInScope(slice.endpoint.url)
     if (!scope.allowed) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `scope denied: ${scope.reason}` }
 
@@ -285,8 +288,9 @@ export function createPrimitiveRunner(
       sessionHeaders,
       ...(alternateActor ? { altSessionHeaders: alternateActor.headers, altSessionRef: alternateActor.ref } : {}),
       ...(authenticated?.ref ? { sessionRef: authenticated.ref } : {}),
+      ...(slice.workflowSteps ? { workflowSteps: [...slice.workflowSteps] } : {}),
       requestTemplate: { method: requestTemplate.method, url: requestTemplate.url, headers: { ...requestTemplate.headers }, ...(requestTemplate.body !== undefined ? { body: requestTemplate.body } : {}) },
-      state: slice.state ? { name: slice.state } : undefined,
+      state: slice.state ? { name: slice.state, ...(slice.workflowId ? { workflowId: slice.workflowId } : {}) } : undefined,
     }
     if (!primitive.appliesTo(techniqueCtx)) {
       return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'not_applicable', description: `${primitiveId} is not applicable to this endpoint/input` }
@@ -310,7 +314,7 @@ export function createPrimitiveRunner(
       return output
     }, gate)
 
-    const coverageStatus = blockedReason ? 'blocked' : result.confirmed ? undefined : 'tested'
+    const coverageStatus = blockedReason ? 'blocked' : result.confirmed ? undefined : result.candidate ? 'candidate' : 'tested'
     return {
       primitiveId,
       confirmed: result.confirmed,

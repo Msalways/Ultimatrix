@@ -195,6 +195,8 @@ export interface EvidenceRef {
 export interface PrimitiveResult {
   confirmed: boolean
   confidence: number
+  /** Positive signal that still needs stronger proof or an independent retest. */
+  candidate?: boolean
   evidence: EvidenceRef[]
   severity?: Severity
   finding?: Partial<Finding>
