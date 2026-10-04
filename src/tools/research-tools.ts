@@ -55,7 +55,7 @@ async function executeTool(tool: any, args: Record<string, unknown>, context: { 
 
 export const buildResearchMap = createTool({
   id: 'buildResearchMap',
-  description: 'Extract workflows and entities from the graph, generate bug-bounty hypotheses, and persist the research map. Use before choosing what to test.',
+  description: 'Extract workflows, entities, and explicit action-limit rules from observed target traffic; generate grounded hypotheses and persist the research map. Use before choosing what to test.',
   inputSchema: z.object({
     maxHypotheses: z.number().int().positive().optional().default(25),
   }),
@@ -81,6 +81,29 @@ export const buildResearchMap = createTool({
         generateHypotheses(store, workflows, entities, captured),
         maxHypotheses || 25,
       )
+
+      // Browser/HAR captures are target observations too. Import only the
+      // exact response captures backing explicit usage-limit hypotheses so
+      // businessLogicAbuse can verify them through the shared evidence gate.
+      for (const hypothesis of hypotheses) {
+        const businessRule = hypothesis.businessRule
+        if (!businessRule || coreEvidenceLedger.all().some(item => item.observed?.captureId === businessRule.ruleCaptureId)) continue
+        const response = captured.find(entry => entry.id === businessRule.ruleCaptureId)
+        if (!response?.responseBody) continue
+        coreEvidenceLedger.record({
+          type: 'raw_response',
+          label: `Captured business rule ${response.method} ${response.url}`,
+          data: response.responseBody,
+          observed: {
+            method: response.method,
+            url: response.url,
+            status: response.status,
+            responseHeaders: response.responseHeaders,
+            responseBody: response.responseBody,
+            captureId: response.id,
+          },
+        })
+      }
 
       persistWorkflows(store, workflows)
       persistEntities(store, entities)

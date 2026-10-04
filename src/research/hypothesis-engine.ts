@@ -1,7 +1,7 @@
 import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { CapturedRequest } from '../capture/captured-request-store'
-import type { ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
+import type { BusinessRuleObservation, ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
 import { looksLikeId, MIN_REFLECTION_VALUE_LENGTH, isTransportOrAssetUrl, stableId } from './utils'
 
 /** Case-insensitive response-header lookup (fetch lowercases; HAR preserves case). */
@@ -82,6 +82,119 @@ function isHighValueEndpoint(endpoint: EndpointNode): boolean {
   } catch {
     return false
   }
+}
+
+const LIMIT_COUNT: Record<string, number> = {
+  one: 1,
+  'a single': 1,
+  '1': 1,
+  '2': 2,
+  '3': 3,
+  '4': 4,
+  '5': 5,
+  '6': 6,
+  '7': 7,
+  '8': 8,
+  '9': 9,
+}
+
+/** Only recognize explicit, bounded target statements; do not infer a default limit. */
+function explicitActionLimit(body: string): { allowedCount: number; ruleText: string } | undefined {
+  const patterns = [
+    /\b(?:only|maximum|max(?:imum)?(?:\s+of)?|at\s+most|no\s+more\s+than|up\s+to|limit(?:ed)?\s+(?:to|of))\s+(one|a single|[1-9])\s+(?:time|use|redemption|claim|attempt|purchase|transfer|transaction|booking|request|submission|item|coupon|offer|reward|voucher)s?\b/ig,
+    /\b(?:can|may)(?:\s+only)?\s+(?:be\s+)?(?:used|redeemed|claimed|applied)\s+once\b/ig,
+    /\bonly\s+once\s+per\s+(?:user|account|customer|order|campaign)\b/ig,
+    /\b(?:one|a single)\s+(?:use|redemption|claim|attempt)\s+per\s+(?:user|account|customer|order|campaign)\b/ig,
+    /\b(?:one[-\s]?time|single[-\s]?use)\b/ig,
+  ]
+  for (const pattern of patterns) {
+    const match = pattern.exec(body)
+    if (!match) continue
+    const countText = match[1]?.toLowerCase()
+    return { allowedCount: countText ? LIMIT_COUNT[countText] : 1, ruleText: match[0] }
+  }
+  return undefined
+}
+
+function sameObservedWorkflow(
+  workflow: ResearchWorkflow,
+  firstCaptureId: string,
+  secondCaptureId: string,
+): boolean {
+  if (workflow.source !== 'operator-demonstration' || workflow.sequenceObserved !== true) return false
+  const ids = new Set([
+    ...(workflow.capturedRequestIds ?? []),
+    ...workflow.steps.map(step => step.requestId).filter((id): id is string => Boolean(id)),
+  ])
+  return ids.has(firstCaptureId) && ids.has(secondCaptureId)
+}
+
+function actionLimitHypotheses(
+  store: GraphStore,
+  workflows: ResearchWorkflow[],
+  captured: CapturedRequest[],
+): ResearchHypothesis[] {
+  const endpoints = endpointById(store)
+  const byRoute = new Map<string, EndpointNode>()
+  for (const endpoint of endpoints.values()) {
+    const key = endpointKey(endpoint.properties.url)
+    if (key && isHighValueEndpoint(endpoint)) byRoute.set(key, endpoint)
+  }
+
+  const ruleCaptures = captured.flatMap(entry => {
+    if (!entry.url || entry.status == null || entry.status < 200 || entry.status >= 300 || !entry.responseBody) return []
+    const rule = explicitActionLimit(entry.responseBody.slice(0, 100_000))
+    return rule ? [{ entry, ...rule }] : []
+  })
+  const actions = captured.filter(entry =>
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(entry.method.toUpperCase())
+      && entry.status != null && entry.status >= 200 && entry.status < 300,
+  )
+  const out: ResearchHypothesis[] = []
+
+  for (const rule of ruleCaptures) {
+    const ruleRoute = endpointKey(rule.entry.url)
+    if (!ruleRoute) continue
+    for (const action of actions) {
+      const actionRoute = endpointKey(action.url)
+      if (!actionRoute) continue
+      let sameOrigin = false
+      try { sameOrigin = new URL(rule.entry.url).origin === new URL(action.url).origin } catch { /* invalid URLs are not candidates */ }
+      if (!sameOrigin) continue
+      const workflow = workflows.find(item => sameObservedWorkflow(item, rule.entry.id, action.id))
+      if (ruleRoute !== actionRoute && !workflow) continue
+      const endpoint = byRoute.get(actionRoute)
+      const businessRule: BusinessRuleObservation = {
+        kind: 'action_limit',
+        allowedCount: rule.allowedCount,
+        actionRequestId: action.id,
+        actionMethod: action.method.toUpperCase(),
+        actionUrl: action.url,
+        ruleCaptureId: rule.entry.id,
+        ruleUrl: rule.entry.url,
+        ruleText: rule.ruleText,
+      }
+      out.push({
+        id: stableId('hypothesis', ['action-limit', action.id, rule.entry.id, rule.ruleText]),
+        title: `Observed action limit of ${rule.allowedCount} may be unenforced`,
+        kind: 'action_limit',
+        reason: `Captured target response ${rule.entry.id} states “${rule.ruleText}”; captured state-changing request ${action.id} is on the same route${workflow ? ` in observed workflow ${workflow.id}` : ''}. Verify the actor, state baseline, and post-limit state before reporting impact.`,
+        targetEndpoints: endpoint ? [endpoint.id] : [],
+        relatedWorkflowIds: workflow ? [workflow.id] : [],
+        relatedEntityIds: [],
+        requiredSetup: [
+          `Use captured request ${action.id} as the state-changing action`,
+          'Capture a same-actor JSON state baseline and record its evidence',
+          'Verify the exact target-stated limit before bounded replay',
+        ],
+        businessRule,
+        risk: 'medium',
+        confidence: 0.62,
+        status: 'open',
+      })
+    }
+  }
+  return out
 }
 
 /**
@@ -195,6 +308,11 @@ export function generateHypotheses(
       })
     }
   }
+
+  // An explicit target-stated usage rule plus a successful observed state-
+  // changing request is actionable learning. The resulting item is only a
+  // hypothesis; the campaign still needs an actor-matched state baseline.
+  hypotheses.push(...actionLimitHypotheses(store, workflows, captured))
 
   // Endpoint-native hypotheses close the extraction gap: a route can be
   // actionable even when entity/workflow extraction has not recognized its

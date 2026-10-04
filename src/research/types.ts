@@ -14,6 +14,7 @@ export type HypothesisKind =
   | 'broken_access_control'
   | 'mass_assignment'
   | 'workflow_bypass'
+  | 'action_limit'
   | 'information_disclosure'
   | 'reflected_injection'
   | 'sql_injection'
@@ -67,12 +68,25 @@ export interface ResearchHypothesis {
    * marker mutation so the probe targets the observed sink, not a guess.
    */
   targetParams?: string[]
+  /** Explicit rule and request references observed in captured target traffic. */
+  businessRule?: BusinessRuleObservation
   relatedWorkflowIds: string[]
   relatedEntityIds: string[]
   requiredSetup: string[]
   risk: RiskLevel
   confidence: number
   status: HypothesisStatus
+}
+
+export interface BusinessRuleObservation {
+  kind: 'action_limit'
+  allowedCount: number
+  actionRequestId: string
+  actionMethod: string
+  actionUrl: string
+  ruleCaptureId: string
+  ruleUrl: string
+  ruleText: string
 }
 
 export interface ReplayableRequest {

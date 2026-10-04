@@ -139,7 +139,7 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
         'Routes not observed or linked from the target remain unknown.',
         'Coverage is limited to actors, inputs, and states observed or available in this engagement.',
         'Campaign actor coverage alone does not verify cross-account authorization; that requires a victim and a separate attacker identity.',
-        'Observed business-logic facts do not by themselves establish allowed action counts, quotas, or required state transitions.',
+        'Observed business-logic facts do not by themselves establish allowed action counts, quotas, or enforcement; verify stated limits with an actor-matched baseline and measured state transition.',
       ],
     },
     targetModel: {

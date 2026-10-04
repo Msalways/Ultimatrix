@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { generateHypotheses } from '../../src/research/hypothesis-engine'
 import type { GraphStore } from '../../src/graph/store'
-import { NodeType, type EndpointNode } from '../../src/graph/schema'
+import { NodeType, type EndpointNode, validateNodeProperties } from '../../src/graph/schema'
 import type { ResearchEntity, ResearchWorkflow } from '../../src/research/types'
 
 function makeStore(endpoints: EndpointNode[]): GraphStore {
@@ -18,7 +18,7 @@ const ep = (id: string, url: string, method = 'GET', params: any[] = []): Endpoi
   properties: { url, method, params, tags: ['har-capture'], source: 'har-bridge' },
 })
 
-describe('generateHypotheses (relation-native, no keyword regex)', () => {
+describe('generateHypotheses (evidence-linked and conservative)', () => {
   it('flags IDOR from a structured numeric id in the URL path', () => {
     const store = makeStore([ep('e1', 'https://app.test/api/orders/12345')])
     const entity: ResearchEntity = {
@@ -128,5 +128,103 @@ describe('generateHypotheses (relation-native, no keyword regex)', () => {
     expect(r!.risk).toBe('high')
     expect(a!.risk).toBe('high')
     expect(l!.risk).toBe('medium')
+  })
+
+  it('learns an explicit bounded action limit and links it to a captured successful action', () => {
+    const store = makeStore([ep('redeem', 'https://app.test/api/coupon/redeem', 'POST')])
+    const captures = [
+      {
+        id: 'cap-rule', method: 'GET', url: 'https://app.test/api/coupon/redeem', headers: {},
+        status: 200, responseBody: '<p>This offer may only be used once.</p>', source: 'browser' as const, capturedAt: 1,
+      },
+      {
+        id: 'cap-action', method: 'POST', url: 'https://app.test/api/coupon/redeem', headers: {},
+        body: '{"code":"WELCOME"}', status: 200, responseBody: '{"balance":10}', source: 'browser' as const, capturedAt: 2,
+      },
+    ]
+
+    const hypothesis = generateHypotheses(store, [], [], captures).find(item => item.kind === 'action_limit')
+
+    expect(hypothesis).toMatchObject({
+      targetEndpoints: ['redeem'],
+      businessRule: {
+        kind: 'action_limit', allowedCount: 1,
+        actionRequestId: 'cap-action', actionMethod: 'POST',
+        ruleCaptureId: 'cap-rule', ruleText: 'may only be used once',
+      },
+    })
+    const validation = validateNodeProperties(NodeType.HYPOTHESIS, {
+      title: hypothesis!.title,
+      kind: hypothesis!.kind,
+      reason: hypothesis!.reason,
+      targetEndpoints: hypothesis!.targetEndpoints,
+      relatedWorkflowIds: hypothesis!.relatedWorkflowIds,
+      relatedEntityIds: hypothesis!.relatedEntityIds,
+      requiredSetup: hypothesis!.requiredSetup,
+      risk: hypothesis!.risk,
+      confidence: hypothesis!.confidence,
+      status: hypothesis!.status,
+      businessRule: hypothesis!.businessRule,
+    })
+    expect(validation.valid).toBe(true)
+  })
+
+  it('does not connect a limit statement to an unrelated route without an observed sequence', () => {
+    const store = makeStore([ep('redeem', 'https://app.test/api/coupon/redeem', 'POST')])
+    const captures = [
+      {
+        id: 'cap-rule', method: 'GET', url: 'https://app.test/terms', headers: {},
+        status: 200, responseBody: '<p>Only one redemption per account.</p>', source: 'browser' as const, capturedAt: 1,
+      },
+      {
+        id: 'cap-action', method: 'POST', url: 'https://app.test/api/coupon/redeem', headers: {},
+        status: 200, responseBody: '{"balance":10}', source: 'browser' as const, capturedAt: 2,
+      },
+    ]
+
+    expect(generateHypotheses(store, [], [], captures).some(item => item.kind === 'action_limit')).toBe(false)
+  })
+
+  it('links rules from another route only when both captures belong to an observed workflow sequence', () => {
+    const store = makeStore([ep('redeem', 'https://app.test/api/coupon/redeem', 'POST')])
+    const captures = [
+      {
+        id: 'cap-rule', method: 'GET', url: 'https://app.test/offers', headers: {},
+        status: 200, responseBody: '<p>Maximum of 3 claims per account.</p>', source: 'browser' as const, capturedAt: 1,
+      },
+      {
+        id: 'cap-action', method: 'POST', url: 'https://app.test/api/coupon/redeem', headers: {},
+        status: 200, responseBody: '{"balance":10}', source: 'browser' as const, capturedAt: 2,
+      },
+    ]
+    const workflow: ResearchWorkflow = {
+      id: 'wf-offer', name: 'offer redemption', steps: [
+        { action: 'GET offers', requestId: 'cap-rule' }, { action: 'POST redeem', requestId: 'cap-action' },
+      ], capturedRequestIds: ['cap-rule', 'cap-action'], sequenceObserved: true,
+      source: 'operator-demonstration', relatedEndpoints: ['redeem'], inputFields: ['code'],
+      stateChanges: ['balance'], observedRoles: ['authenticated'], confidence: 1,
+    }
+
+    const hypothesis = generateHypotheses(store, [workflow], [], captures).find(item => item.kind === 'action_limit')
+
+    expect(hypothesis?.businessRule).toMatchObject({ allowedCount: 3, ruleCaptureId: 'cap-rule', actionRequestId: 'cap-action' })
+    expect(hypothesis?.relatedWorkflowIds).toEqual(['wf-offer'])
+  })
+
+  it('learns an explicit numeric cap without guessing above its bounded probe range', () => {
+    const store = makeStore([ep('redeem', 'https://app.test/api/rewards/claim', 'POST')])
+    const captures = [
+      {
+        id: 'cap-rule', method: 'GET', url: 'https://app.test/api/rewards/claim', headers: {},
+        status: 200, responseBody: 'Each account may claim at most 4 rewards.', source: 'browser' as const, capturedAt: 1,
+      },
+      {
+        id: 'cap-action', method: 'POST', url: 'https://app.test/api/rewards/claim', headers: {},
+        status: 200, responseBody: '{"credits":4}', source: 'browser' as const, capturedAt: 2,
+      },
+    ]
+    expect(generateHypotheses(store, [], [], captures).find(item => item.kind === 'action_limit')?.businessRule?.allowedCount).toBe(4)
+    captures[0].responseBody = 'Each account may claim at most 10 rewards.'
+    expect(generateHypotheses(store, [], [], captures).some(item => item.kind === 'action_limit')).toBe(false)
   })
 })

@@ -20,7 +20,9 @@ Before making HTTP requests, call **getCapturedHeaders** with the target URL to 
 
 ## Grounded Limit and Quota Checks
 
-Use `businessLogicAbuse` only with a `capturedRequestId` resolved from `listCapturedRequests` and a limit stated by the target. Supply the exact allowed count, the response URL and text containing the rule, plus a captured baseline URL, JSON state key, and numeric value. The primitive replays the captured request at most ten times. Repeated 2xx responses alone are a candidate; confirmation also requires the over-limit response to change the measured state and the rule and baseline to match captured evidence. If any input is missing, keep the limit unknown and continue learning instead of guessing.
+`buildResearchMap` can surface an `action_limit` hypothesis when a successful state-changing request and an explicit target-stated limit are linked by the same route or an operator-observed workflow. Treat it as a candidate, not proof that the action violates the rule.
+
+Use `businessLogicAbuse` only with that captured `capturedRequestId` and the exact allowed count. The research map imports its source response into the evidence ledger; capture and record a same-actor JSON state baseline with its URL, state key, and numeric value. The experiment plan names this setup and the bounded replay. The primitive replays the captured request at most ten times. Repeated 2xx responses alone are a candidate; confirmation also requires the over-limit response to change the measured state and the rule and baseline to match captured evidence. If any input is missing, keep the limit unknown and continue learning instead of guessing.
 
 Use `workflowBypass` for step skipping and ordered workflow replay. It requires the captured workflow sequence and exact request evidence; a response that merely accepts replay remains a candidate until a fresh state check proves impact.
 

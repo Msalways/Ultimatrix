@@ -50,6 +50,7 @@ vi.mock('../../src/graph/store', () => ({
 }))
 
 import { solve as solveCore } from '../../src/solver/solver'
+import { buildResearchMap, planResearchExperiments } from '../../src/tools/research-tools'
 import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
 import { resolveModelRef } from '../../src/models/routing'
 
@@ -735,6 +736,52 @@ describe('solve', () => {
     expect(events.indexOf('research.bootstrap.completed')).toBeGreaterThanOrEqual(0)
     expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
     expect(events.indexOf('coverage.started')).toBeLessThan(events.indexOf('campaign.called'))
+  })
+  itEngagement('surfaces learned action-limit rules and their bounded plan to the solver brain', async () => {
+    const rule = {
+      kind: 'action_limit', allowedCount: 1, actionRequestId: 'cap-action', actionMethod: 'POST',
+      actionUrl: 'https://example.com/api/redeem?token=private', ruleCaptureId: 'cap-rule',
+      ruleUrl: 'https://example.com/terms', ruleText: 'This offer may only be used once.',
+    }
+    const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({
+      ok: true,
+      value: { topHypotheses: [{
+        id: 'hyp-limit', title: 'Observed action limit of 1 may be unenforced', kind: 'action_limit',
+        reason: 'captured rule and request', targetEndpoints: [], relatedWorkflowIds: [], relatedEntityIds: [],
+        requiredSetup: [], risk: 'medium', confidence: 0.62, status: 'open', businessRule: rule,
+      }] },
+    })
+    const planSpy = vi.spyOn(planResearchExperiments as any, 'execute').mockResolvedValue({
+      ok: true,
+      value: { experiments: [{
+        id: 'exp-limit', hypothesisId: 'hyp-limit', title: 'Verify the observed 1-action limit',
+        mutation: 'Run businessLogicAbuse with capturedRequestId=cap-action, allowedCount=1, iterations=2.',
+      }] },
+    })
+    try {
+      const agent = createMockAgent(['Continue with the observed action-limit candidate.'])
+      await solve(agent as any, {
+        origin: 'https://example.com', goal: 'assess the observed target', interactionMode: 'ask',
+        lazyServices: {
+          observationState: { status: 'completed', result: { requests: 2, url: 'https://example.com' } },
+          crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
+          researchBootstrapState: 'pending', markResearchBootstrapAttempted: vi.fn(),
+          taskStates: [],
+        },
+      })
+
+      const prompt = agent.stream.mock.calls[0][0]
+      expect(prompt).toContain('Business-logic candidate only')
+      expect(prompt).toContain('cap-rule')
+      expect(prompt).toContain('cap-action POST https://example.com/api/redeem')
+      expect(prompt).not.toContain('token=private')
+      expect(prompt).toContain('capture a JSON state baseline')
+      expect(prompt).toContain('iterations=2')
+      expect(prompt).toContain('not a finding')
+    } finally {
+      mapSpy.mockRestore()
+      planSpy.mockRestore()
+    }
   })
   itEngagement('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
     // Real provider behavior (e.g. nvidia): the model streams reasoning/scratch

@@ -196,6 +196,16 @@ export const HypothesisSchema = z.object({
   confidence: z.number().min(0).max(1),
   status: z.enum(['open', 'planned', 'testing', 'candidate', 'verified', 'rejected']),
   origin: z.enum(['human', 'llm']).optional(),
+  businessRule: z.object({
+    kind: z.literal('action_limit'),
+    allowedCount: z.number().int().min(0).max(9),
+    actionRequestId: z.string().min(1),
+    actionMethod: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
+    actionUrl: z.string().url(),
+    ruleCaptureId: z.string().min(1),
+    ruleUrl: z.string().url(),
+    ruleText: z.string().min(8),
+  }).optional(),
 })
 
 export const ExperimentSchema = z.object({
@@ -653,6 +663,7 @@ export interface HypothesisNode extends GraphNodeData {
     confidence: number
     status: HypothesisStatus
     origin?: 'human' | 'llm'
+    businessRule?: import('../research/types').BusinessRuleObservation
   }
 }
 
@@ -946,7 +957,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.REFLEXION]: ['workerId', 'vulnType', 'failureCategory', 'escalationLevel', 'failedPaths', 'hints', 'targetOrigin'],
   [NodeType.WORKFLOW]: ['name', 'entryUrl', 'steps', 'relatedEndpoints', 'requiredAuth', 'inputFields', 'stateChanges', 'observedRoles', 'confidence'],
   [NodeType.ENTITY]: ['name', 'ids', 'endpoints', 'ownerFields', 'roleFields', 'sensitiveFields', 'lifecycleStates', 'confidence'],
-  [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'targetParams', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status'],
+  [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'targetParams', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status', 'businessRule'],
   [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential', 'oracle', 'outcome', 'retest'],
   [NodeType.CANDIDATE_FINDING]: ['title', 'signalType', 'endpoint', 'evidence', 'experimentIds', 'confidence', 'nextVerificationSteps', 'blockers', 'status', 'severity'],
   [NodeType.HEADER_SEMANTIC]: ['header', 'role', 'endpoint', 'confidence'],
