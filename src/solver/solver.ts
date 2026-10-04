@@ -1875,6 +1875,7 @@ export async function solve(
           }
           return {
             entities: nodes(NodeType.ENTITY).length,
+            businessLogicFacts: nodes(NodeType.FACT).filter(node => String((node as any).properties?.source ?? '') === 'business-logic-analyser').length,
             hypotheses: nodes(NodeType.HYPOTHESIS).map(node => ({ kind: String((node as any).properties?.kind ?? 'unknown') })),
             experiments: nodes(NodeType.EXPERIMENT).map(node => ({ status: String((node as any).properties?.status ?? 'unknown') })),
           }

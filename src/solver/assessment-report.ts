@@ -11,6 +11,7 @@ export interface AssessmentReportInput {
   }
   research?: {
     entities: number
+    businessLogicFacts?: number
     hypotheses: ReadonlyArray<{ kind: string }>
     experiments: ReadonlyArray<{ status: string }>
   }
@@ -33,6 +34,7 @@ export interface AssessmentReport {
   }
   targetModel: {
     entities: number
+    businessLogicFacts: number
     hypotheses: number
     hypothesesByKind: Record<string, number>
     experimentsByStatus: Record<string, number>
@@ -46,6 +48,8 @@ export interface AssessmentReport {
     requestsUsed: number
     budgetExceeded: boolean
     unitOutcomes: Partial<Record<CoverageStatus, number>>
+    workflowUnits: Partial<Record<CoverageStatus, number>>
+    businessLogicUnits: Partial<Record<CoverageStatus, number>>
     dimensions: {
       endpoints: { covered: number; total: number }
       inputs: { covered: number; total: number }
@@ -65,7 +69,17 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
   const remainingWork: string[] = []
   const campaign = input.campaign
   const unitOutcomes: Partial<Record<CoverageStatus, number>> = {}
-  for (const unit of campaign?.units ?? []) unitOutcomes[unit.status] = (unitOutcomes[unit.status] ?? 0) + 1
+  const workflowUnits: Partial<Record<CoverageStatus, number>> = {}
+  const businessLogicUnits: Partial<Record<CoverageStatus, number>> = {}
+  for (const unit of campaign?.units ?? []) {
+    unitOutcomes[unit.status] = (unitOutcomes[unit.status] ?? 0) + 1
+    const outcomes = unit.technique === 'workflowBypass'
+      ? workflowUnits
+      : ['businessLogicAbuse', 'invariantProbe', 'concurrencyHarness'].includes(unit.technique)
+        ? businessLogicUnits
+        : undefined
+    if (outcomes) outcomes[unit.status] = (outcomes[unit.status] ?? 0) + 1
+  }
   const hypothesesByKind: Record<string, number> = {}
   for (const hypothesis of input.research?.hypotheses ?? []) {
     hypothesesByKind[hypothesis.kind] = (hypothesesByKind[hypothesis.kind] ?? 0) + 1
@@ -125,10 +139,12 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
         'Routes not observed or linked from the target remain unknown.',
         'Coverage is limited to actors, inputs, and states observed or available in this engagement.',
         'Campaign actor coverage alone does not verify cross-account authorization; that requires a victim and a separate attacker identity.',
+        'Observed business-logic facts do not by themselves establish allowed action counts, quotas, or required state transitions.',
       ],
     },
     targetModel: {
       entities: input.research?.entities ?? 0,
+      businessLogicFacts: input.research?.businessLogicFacts ?? 0,
       hypotheses: input.research?.hypotheses.length ?? 0,
       hypothesesByKind,
       experimentsByStatus,
@@ -142,6 +158,8 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
       requestsUsed: campaign?.requestsUsed ?? 0,
       budgetExceeded: campaign?.budgetExceeded ?? false,
       unitOutcomes,
+      workflowUnits,
+      businessLogicUnits,
       dimensions: {
         endpoints: { covered: campaign?.coverage.endpointsCovered ?? 0, total: campaign?.coverage.endpointsTotal ?? 0 },
         inputs: { covered: campaign?.coverage.paramsCovered ?? 0, total: campaign?.coverage.paramsTotal ?? 0 },

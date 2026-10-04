@@ -386,7 +386,7 @@ try {
 
 ### Workflow attack planning
 
-The campaign planner ties a captured multi-step workflow to its terminal state-changing endpoint and passes the ordered observed steps to the probe. The probe reuses the captured terminal request; an accepted replay is recorded as a candidate because the captured actor may still hold state from earlier steps. Confirmation requires a fresh actor/session check of the resulting business state.
+The campaign planner ties a captured multi-step workflow to its terminal state-changing endpoint and passes the ordered observed steps to the probe. The probe reuses the captured terminal request; an accepted replay is recorded as a candidate because the captured actor may still hold state from earlier steps. Confirmation requires a fresh actor/session check of the resulting business state. CLI and web assessment summaries show analyzer-derived business-logic fact counts and separate tested, candidate, and blocked workflow/business-logic units.
 
 ### Internal live discovery benchmark
 

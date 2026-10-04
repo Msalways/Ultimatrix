@@ -184,10 +184,10 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
         pages: 1, endpoints: 2, inputs: 1, workflows: 1, authFlows: 0, roles: 1,
         unknowns: ['Cross-account authorization remains unknown.'],
       },
-      targetModel: { entities: 1, hypotheses: 2, hypothesesByKind: { workflow_bypass: 1, idor: 1 }, experimentsByStatus: { planned: 2 } },
+      targetModel: { entities: 1, businessLogicFacts: 3, hypotheses: 2, hypothesesByKind: { workflow_bypass: 1, idor: 1 }, experimentsByStatus: { planned: 2 } },
       testedCoverage: {
         status: 'partial', planned: 2, executed: 1, confirmed: 0, remaining: 1, requestsUsed: 2,
-        budgetExceeded: false, unitOutcomes: { tested: 1 },
+        budgetExceeded: false, unitOutcomes: { tested: 1 }, workflowUnits: { candidate: 1 }, businessLogicUnits: { blocked: 1 },
         dimensions: {
           endpoints: { covered: 1, total: 2 }, inputs: { covered: 1, total: 1 },
           actors: { covered: 1, total: 1 }, roles: { covered: 1, total: 1 },
@@ -208,7 +208,9 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     cs.final(model)
     const joined = writes.join('')
 
-    expect(joined).toContain('1 workflows, 1 entities, 2 hypotheses across 2 classes')
+    expect(joined).toContain('1 workflows, 1 entities, 3 business-logic facts, 2 hypotheses across 2 classes')
+    expect(joined).toContain('3 business-logic facts')
+    expect(joined).toContain('workflow probes: candidate 1; business-logic probes: blocked 1')
     expect(joined).toContain('hypothesis classes: workflow_bypass 1, idor 1')
     expect(joined).toContain('research experiments: planned 2')
     expect(joined).toContain('endpoints 1/2, actors 1/1, states 1/2')

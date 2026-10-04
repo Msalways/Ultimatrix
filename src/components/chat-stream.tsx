@@ -942,11 +942,14 @@ function MessageBubble({
               const coverage = report.testedCoverage
               const hypotheses = Object.entries(model.hypothesesByKind).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'none'
               const experiments = Object.entries(model.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
+              const workflowUnits = Object.entries(coverage.workflowUnits ?? {}).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
+              const businessLogicUnits = Object.entries(coverage.businessLogicUnits ?? {}).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
               return (
                 <div className="mt-3 border-t border-zinc-800 pt-2 text-[11px] leading-relaxed text-zinc-500">
-                  <div>Learned target: {d.workflows} workflows, {model.entities} entities, {model.hypotheses} hypotheses across {Object.keys(model.hypothesesByKind).length} classes.</div>
+                  <div>Learned target: {d.workflows} workflows, {model.entities} entities, {model.businessLogicFacts ?? 0} business-logic facts, {model.hypotheses} hypotheses across {Object.keys(model.hypothesesByKind).length} classes.</div>
                   <div>Hypothesis classes: {hypotheses}.</div>
                   <div>Research experiments: {experiments}.</div>
+                  <div>Workflow probes: {workflowUnits}. Business-logic probes: {businessLogicUnits}.</div>
                   <div>Coverage: {coverage.executed}/{coverage.planned} units; endpoints {coverage.dimensions.endpoints.covered}/{coverage.dimensions.endpoints.total}; actors {coverage.dimensions.actors.covered}/{coverage.dimensions.actors.total}; states {coverage.dimensions.states.covered}/{coverage.dimensions.states.total}.</div>
                   {d.unknowns.map((unknown: string) => <div key={unknown} className="mt-1 text-amber-500/80">Unknown: {unknown}</div>)}
                   {report.blockers.map((blocker: string) => <div key={blocker} className="mt-1 text-amber-500/80">Blocked: {blocker}</div>)}

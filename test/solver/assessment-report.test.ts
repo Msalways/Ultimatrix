@@ -41,16 +41,17 @@ describe('assessment report', () => {
 
     expect(report.status).toBe('complete')
     expect(report.discovery).toMatchObject({ ...observed, observedRequests: 12, endpoints: 4 })
-    expect(report.discovery.unknowns).toHaveLength(3)
+    expect(report.discovery.unknowns).toHaveLength(4)
     expect(report.testedCoverage).toMatchObject({ status: 'complete', planned: 2, executed: 2, confirmed: 1, remaining: 0, requestsUsed: 8 })
     expect(report.testedCoverage.unitOutcomes).toEqual({ confirmed: 1, tested: 1 })
-    expect(report.targetModel).toEqual({ entities: 0, hypotheses: 0, hypothesesByKind: {}, experimentsByStatus: {} })
+    expect(report.targetModel).toEqual({ entities: 0, businessLogicFacts: 0, hypotheses: 0, hypothesesByKind: {}, experimentsByStatus: {} })
     expect(report.testedCoverage.dimensions).toMatchObject({
       endpoints: { covered: 2, total: 2 },
       actors: { covered: 1, total: 1 },
       states: { covered: 1, total: 1 },
     })
     expect(report.discovery.unknowns).toEqual(expect.arrayContaining([expect.stringContaining('cross-account authorization')]))
+    expect(report.discovery.unknowns).toEqual(expect.arrayContaining([expect.stringContaining('allowed action counts, quotas')]))
     expect(report.blockers).toEqual([])
   })
 
@@ -59,6 +60,7 @@ describe('assessment report', () => {
       discovery: observed,
       research: {
         entities: 2,
+        businessLogicFacts: 4,
         hypotheses: [{ kind: 'workflow_bypass' }, { kind: 'workflow_bypass' }, { kind: 'idor' }],
         experiments: [{ status: 'planned' }, { status: 'blocked' }],
       },
@@ -66,16 +68,25 @@ describe('assessment report', () => {
       observation: { status: 'completed' },
       crawl: { stopReason: 'frontier_exhausted' },
       campaignEnabled: true,
-      campaign: completeCampaign(),
+      campaign: completeCampaign({
+        units: [
+          { id: 'workflow-candidate', domain: 'workflow', endpoint: '/finish', input: { name: '', location: 'endpoint' }, actor: 'user', state: 'baseline', technique: 'workflowBypass', status: 'candidate' },
+          { id: 'business-rule-tested', domain: 'business', endpoint: '/limit', input: { name: 'code', location: 'body' }, actor: 'user', state: 'baseline', technique: 'businessLogicAbuse', status: 'tested' },
+          { id: 'invariant-blocked', domain: 'business', endpoint: '/limit', input: { name: 'code', location: 'body' }, actor: 'user', state: 'baseline', technique: 'invariantProbe', status: 'blocked' },
+        ],
+      }),
       solverReason: 'response_complete',
     })
 
     expect(report.targetModel).toEqual({
       entities: 2,
+      businessLogicFacts: 4,
       hypotheses: 3,
       hypothesesByKind: { workflow_bypass: 2, idor: 1 },
       experimentsByStatus: { planned: 1, blocked: 1 },
     })
+    expect(report.testedCoverage.workflowUnits).toEqual({ candidate: 1 })
+    expect(report.testedCoverage.businessLogicUnits).toEqual({ tested: 1, blocked: 1 })
   })
 
   it('keeps discovery, tested coverage, blockers, and remaining work distinct when incomplete', () => {

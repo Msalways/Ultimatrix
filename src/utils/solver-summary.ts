@@ -36,8 +36,11 @@ export function logSolveSummary(result: SolveResult): void {
     const hypotheses = Object.entries(m.hypothesesByKind).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'none'
     const experiments = Object.entries(m.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
     const label = report.status === 'complete' ? log.success : log.warn
-    label(`Assessment ${report.status}: learned ${d.workflows} workflows, ${m.entities} entities, ${m.hypotheses} hypotheses; discovered ${d.endpoints} endpoints, ${d.inputs} inputs, ${d.roles} roles; tested ${t.executed}/${t.planned} units, ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP requests.`)
+    const workflowUnits = Object.entries(t.workflowUnits).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
+    const businessLogicUnits = Object.entries(t.businessLogicUnits).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
+    label(`Assessment ${report.status}: learned ${d.workflows} workflows, ${m.entities} entities, ${m.businessLogicFacts} business-logic facts, ${m.hypotheses} hypotheses; discovered ${d.endpoints} endpoints, ${d.inputs} inputs, ${d.roles} roles; tested ${t.executed}/${t.planned} units, ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP requests.`)
     log.dim(`Hypothesis classes: ${hypotheses}.`)
+    log.dim(`Workflow probes: ${workflowUnits}. Business-logic probes: ${businessLogicUnits}.`)
     log.dim(`Coverage dimensions: endpoints ${t.dimensions.endpoints.covered}/${t.dimensions.endpoints.total}, actors ${t.dimensions.actors.covered}/${t.dimensions.actors.total}, roles ${t.dimensions.roles.covered}/${t.dimensions.roles.total}, states ${t.dimensions.states.covered}/${t.dimensions.states.total}, techniques ${t.dimensions.techniques.planned}/${t.dimensions.techniques.total}.`)
     log.dim(`Research experiments: ${experiments}.`)
     for (const unknown of d.unknowns) log.dim(`Unknown: ${unknown}`)
