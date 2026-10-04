@@ -3,7 +3,7 @@ name: business-logic
 description: "Business logic flaw testing: workflow bypass, data manipulation, race conditions, and state integrity"
 category: specialized
 tier: powerful
-toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, runPrimitive, runCampaign]
+toolRefs: [httpRequest, parseResponse, evaluateRendered, measureTiming, compareResponses, followRedirects, findEndpointsInResponse, updateGraph, writeFinding, recordEvidence, getCapturedHeaders, listCapturedRequests, runPrimitive, runCampaign]
 primitives: [workflowBypass, invariantProbe, configTrust, businessLogicAbuse]
 triggers: ["business logic", "workflow bypass", "data manipulation", "race conditions", "state integrity", "logic flaws", "business testing", "workflow testing", "business vulnerabilities", "application logic"]
 mitreAttack: ["T1190"]
@@ -17,6 +17,12 @@ Business logic testing identifies flaws in application workflows that allow user
 
 ## Auth Context
 Before making HTTP requests, call **getCapturedHeaders** with the target URL to get real auth context.
+
+## Grounded Limit and Quota Checks
+
+Use `businessLogicAbuse` only with a `capturedRequestId` resolved from `listCapturedRequests` and a limit stated by the target. Supply the exact allowed count, the response URL and text containing the rule, plus a captured baseline URL, JSON state key, and numeric value. The primitive replays the captured request at most ten times. Repeated 2xx responses alone are a candidate; confirmation also requires the over-limit response to change the measured state and the rule and baseline to match captured evidence. If any input is missing, keep the limit unknown and continue learning instead of guessing.
+
+Use `workflowBypass` for step skipping and ordered workflow replay. It requires the captured workflow sequence and exact request evidence; a response that merely accepts replay remains a candidate until a fresh state check proves impact.
 
 ## Methodology
 

@@ -82,6 +82,8 @@ export interface TechniqueContext {
     headers: Record<string, string>
     body?: string
   }
+  /** Canonical CapturedRequestStore id used to resolve requestTemplate. */
+  capturedRequestId?: string
   mutationStrategy?: {
     type: 'shape' | 'enumeration' | 'boundary' | 'type-confusion'
     options?: Record<string, unknown>

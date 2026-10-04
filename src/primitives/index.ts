@@ -67,6 +67,7 @@ import { httpRequest } from '../tools/http-tools'
 import { rawHttpClient } from '../tools/raw-http-client'
 import { getGlobalWorkspace } from '../workspace'
 import { summarizeTrace } from '../capture/render-tracer'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { NodeType, type EndpointNode } from '../graph/schema'
 
 // ─── Register all primitives (single source of truth) ───────────────────
@@ -147,7 +148,20 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (input.variant) ctx.variant = input.variant
   if (input.dbms) ctx.dbms = input.dbms
   if (input.oastHost) ctx.oastHost = input.oastHost
-  if (input.requestTemplate) ctx.requestTemplate = input.requestTemplate
+  if (typeof input.capturedRequestId === 'string' && input.capturedRequestId.length > 0) {
+    const captured = getCapturedRequestStore().get(input.capturedRequestId)
+    if (captured) {
+      ctx.capturedRequestId = captured.id
+      ctx.requestTemplate = {
+        method: captured.method,
+        url: captured.url,
+        headers: { ...captured.headers },
+        ...(captured.body !== undefined ? { body: captured.body } : {}),
+      }
+    }
+  } else if (input.requestTemplate) {
+    ctx.requestTemplate = input.requestTemplate
+  }
   if (input.mutationStrategy) ctx.mutationStrategy = input.mutationStrategy
   if (input.payloadSet) ctx.payloadSet = input.payloadSet
   if (input.multiParam !== undefined) ctx.multiParam = input.multiParam
@@ -405,7 +419,7 @@ function evidenceType(kind: EvidenceRef['kind']): 'text' | 'screenshot' | 'har_e
 
 export const runPrimitiveTool = createTool({
   id: 'runPrimitive',
-  description: `Run a technique primitive against a target context. Primitives: ${PRIMITIVE_IDS.join(', ')}. Returns a PrimitiveResult with confirmed/unconfirmed + evidence, verified against the EvidenceGate (T2.5).`,
+  description: `Run a technique primitive against a target context. Primitives: ${PRIMITIVE_IDS.join(', ')}. For businessLogicAbuse, provide a capturedRequestId, a target-stated limit, and captured rule/baseline evidence; repeats are bounded to ten and confirm only on a measured over-limit state change. Returns a PrimitiveResult with evidence verified against the EvidenceGate (T2.5).`,
   inputSchema: z.object({
     primitiveId: z.enum(PRIMITIVE_IDS).describe('Primitive id to run'),
     context: z.object({
@@ -418,6 +432,8 @@ export const runPrimitiveTool = createTool({
       roles: z.array(z.string()).optional(),
       sessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for the actor'),
       altSessionHeaders: z.record(z.string(), z.string()).optional().describe('Captured session headers for an alternate actor'),
+      sessionRef: z.string().optional().describe('Origin-bound SessionManager reference for the primary actor.'),
+      altSessionRef: z.string().optional().describe('Origin-bound SessionManager reference for the alternate actor.'),
       objectId: z.string().optional().describe('Object id owned by the actor (IDOR)'),
       altObjectId: z.string().optional().describe('Object id owned by another user (IDOR)'),
       workflowSteps: z.array(z.string()).optional(),
@@ -442,6 +458,7 @@ export const runPrimitiveTool = createTool({
         headers: z.record(z.string(), z.string()),
         body: z.string().optional(),
       }).optional().describe('Captured request to replay with mutations (full headers/body)'),
+      capturedRequestId: z.string().optional().describe('Canonical cap-N id from listCapturedRequests; resolves the exact observed request from the engagement capture store.'),
       payloadSet: z.object({
         category: z.string(),
         variant: z.string().optional(),
@@ -487,7 +504,7 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
 
   return createTool({
     id: 'runPrimitive',
-    description: `Run an authorized technique primitive. Allowed: ${valid.join(', ')}. Returns a PrimitiveResult with confirmed/unconfirmed + evidence, verified against the EvidenceGate.`,
+    description: `Run an authorized technique primitive. Allowed: ${valid.join(', ')}. businessLogicAbuse requires a capturedRequestId, target-stated limit, and captured rule/baseline evidence; repeats are bounded to ten and confirm only on a measured state change. Returns a PrimitiveResult with evidence verified against the EvidenceGate.`,
     inputSchema: z.object({
       primitiveId: z.enum(ids).describe('Primitive id to run (skill-scoped)'),
       context: z.object({
@@ -527,6 +544,7 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
           headers: z.record(z.string(), z.string()),
           body: z.string().optional(),
         }).optional().describe('Captured request to replay with mutations'),
+        capturedRequestId: z.string().optional().describe('Canonical cap-N id from listCapturedRequests; resolves the exact observed request from the engagement capture store.'),
         payloadSet: z.object({
           category: z.string(),
           variant: z.string().optional(),
