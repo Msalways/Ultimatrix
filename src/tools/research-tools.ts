@@ -316,6 +316,14 @@ export const executePlannedExperiment = createTool({
     const hypothesisParams = Array.isArray(hypothesis?.properties?.targetParams)
       ? hypothesis.properties.targetParams.filter((p): p is string => typeof p === 'string')
       : undefined
+    if (hypothesisKind === 'race_condition') {
+      const reason = 'blocked: executePlannedExperiment dispatches requests sequentially; a race hypothesis requires a concurrent request runner.'
+      node.properties.status = 'blocked'
+      node.properties.resultSummary = reason
+      node.updatedAt = Date.now()
+      await store.save()
+      return { ok: false, code: 'CONCURRENCY_REQUIRED', error: reason, experimentId }
+    }
     const actorSessions = getGlobalSessionManager().listSessions()
     // Cross-user hypotheses (IDOR / object-level access control) are only
     // meaningful with two authenticated actors. Gate BEFORE capture work:

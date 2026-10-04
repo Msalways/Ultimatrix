@@ -176,6 +176,32 @@ describe('workflow replay execution', () => {
   })
 })
 
+describe('unsupported race experiment semantics', () => {
+  it('blocks race hypotheses before sending sequential requests', async () => {
+    const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+    const raceHypothesis = {
+      id: 'hypothesis:race-1',
+      type: 'Hypothesis',
+      properties: { kind: 'race_condition', status: 'open' },
+    }
+    const realGetNode = store.getNode
+    ;(store as any).getNode = vi.fn((id: string) => id === raceHypothesis.id ? raceHypothesis : experiment)
+    experiment.properties = {
+      status: 'planned',
+      hypothesisId: raceHypothesis.id,
+      baselineRequest: { method: 'GET', url: 'https://target.test/api/claim' },
+    }
+
+    try {
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+      expect(result).toMatchObject({ ok: false, code: 'CONCURRENCY_REQUIRED' })
+      expect(experiment.properties.status).toBe('blocked')
+    } finally {
+      ;(store as any).getNode = realGetNode
+    }
+  })
+})
+
 describe('planned experiment approval boundary', () => {  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
     const { executePlannedExperiment } = await import('../../src/tools/research-tools')
     const { setInteractionMode } = await import('../../src/tools/interaction-tools')
