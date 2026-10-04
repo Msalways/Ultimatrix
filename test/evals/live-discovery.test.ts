@@ -122,6 +122,41 @@ describe('live discovery scoring', () => {
     })
   })
 
+  it('requires every fixture-specific hypothesis class for full learning recall', () => {
+    const expectedHypothesisKinds = ['workflow_bypass', 'action_limit']
+    const partial = score('vulnerable', {
+      expectedHypothesisKinds,
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 0,
+        hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: [],
+        expectedEndpoints: [],
+        observedEndpoints: [],
+      },
+    })
+    const complete = score('vulnerable', {
+      expectedHypothesisKinds,
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 0,
+        hypothesisKinds: expectedHypothesisKinds,
+        experimentStatuses: [],
+        expectedEndpoints: [],
+        observedEndpoints: [],
+      },
+    })
+
+    expect(partial.targetLearning).toMatchObject({
+      matchedHypothesisKinds: ['workflow_bypass'],
+      hypothesisRecall: 0.5,
+    })
+    expect(complete.targetLearning).toMatchObject({
+      matchedHypothesisKinds: expectedHypothesisKinds,
+      hypothesisRecall: 1,
+    })
+  })
+
   it('scores exact ordered workflow steps while allowing unrelated observed traffic between them', () => {
     const result = scoreDiscoveryRun({
       variant: 'vulnerable', findings: [], experiments: [], candidates: [],
