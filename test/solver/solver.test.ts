@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
           ]
         : [],
     getTargetSummary: () => ({ totalFindings: 0, totalEndpoints: 0, totalTests: 0, totalCapturedHeaders: 0, findingsBySeverity: {}, endpoints: [], authFlows: 0, rbacRoles: 0, untestedActions: 0 }),
+    save: vi.fn().mockResolvedValue(undefined),
+    upsertNode: vi.fn(),
   },
   logWarn: vi.fn(),
 }))
@@ -692,6 +694,47 @@ describe('solve', () => {
     })
     expect(result.answer?.assessmentStatus).toBe('complete')
     expect(result.answer?.assessmentReport).toEqual(result.assessmentReport)
+  })
+  itEngagement('builds the target research map before starting deterministic coverage', async () => {
+    const events: string[] = []
+    const campaign = {
+      findings: [],
+      coverage: {
+        endpointsTotal: 0, endpointsCovered: 0, paramsTotal: 0, paramsCovered: 0,
+        rolesTotal: 0, rolesCovered: 0, actorsTotal: 0, actorsCovered: 0,
+        statesTotal: 0, statesCovered: 0, techniquesTotal: 0, techniquesPlanned: 0,
+        slicesPlanned: 0, slicesExecuted: 0, slicesConfirmed: 0, humanHypothesesConsidered: 0,
+      },
+      budgetExceeded: false,
+      slicesRun: 0,
+      status: 'complete',
+      requestsUsed: 0,
+      remainingSlices: [],
+      domains: [],
+      units: [],
+    }
+    await solve(createMockAgent(['Research map ready.']) as any, {
+      origin: 'https://example.com',
+      goal: 'assess the observed target',
+      interactionMode: 'run',
+      onMessage: (message: any) => {
+        if (message.kind === 'event') events.push(message.event)
+      },
+      lazyServices: {
+        observationState: { status: 'completed', result: { requests: 1, url: 'https://example.com' } },
+        crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
+        researchBootstrapState: 'pending',
+        markResearchBootstrapAttempted: vi.fn(),
+        runCoverageCampaign: vi.fn().mockImplementation(async () => {
+          events.push('campaign.called')
+          return campaign
+        }),
+      },
+    })
+
+    expect(events.indexOf('research.bootstrap.completed')).toBeGreaterThanOrEqual(0)
+    expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
+    expect(events.indexOf('coverage.started')).toBeLessThan(events.indexOf('campaign.called'))
   })
   itEngagement('commits the SDK-canonical stream.text as the answer (provider-agnostic, no echo/dup)', async () => {
     // Real provider behavior (e.g. nvidia): the model streams reasoning/scratch

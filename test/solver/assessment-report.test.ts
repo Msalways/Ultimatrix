@@ -41,10 +41,41 @@ describe('assessment report', () => {
 
     expect(report.status).toBe('complete')
     expect(report.discovery).toMatchObject({ ...observed, observedRequests: 12, endpoints: 4 })
-    expect(report.discovery.unknowns).toHaveLength(2)
+    expect(report.discovery.unknowns).toHaveLength(3)
     expect(report.testedCoverage).toMatchObject({ status: 'complete', planned: 2, executed: 2, confirmed: 1, remaining: 0, requestsUsed: 8 })
     expect(report.testedCoverage.unitOutcomes).toEqual({ confirmed: 1, tested: 1 })
+    expect(report.targetModel).toEqual({ entities: 0, hypotheses: 0, hypothesesByKind: {}, experimentsByStatus: {} })
+    expect(report.testedCoverage.dimensions).toMatchObject({
+      endpoints: { covered: 2, total: 2 },
+      actors: { covered: 1, total: 1 },
+      states: { covered: 1, total: 1 },
+    })
+    expect(report.discovery.unknowns).toEqual(expect.arrayContaining([expect.stringContaining('cross-account authorization')]))
     expect(report.blockers).toEqual([])
+  })
+
+  it('summarizes the learned hypothesis classes and experiment states', () => {
+    const report = buildAssessmentReport({
+      discovery: observed,
+      research: {
+        entities: 2,
+        hypotheses: [{ kind: 'workflow_bypass' }, { kind: 'workflow_bypass' }, { kind: 'idor' }],
+        experiments: [{ status: 'planned' }, { status: 'blocked' }],
+      },
+      spiderEnabled: true,
+      observation: { status: 'completed' },
+      crawl: { stopReason: 'frontier_exhausted' },
+      campaignEnabled: true,
+      campaign: completeCampaign(),
+      solverReason: 'response_complete',
+    })
+
+    expect(report.targetModel).toEqual({
+      entities: 2,
+      hypotheses: 3,
+      hypothesesByKind: { workflow_bypass: 2, idor: 1 },
+      experimentsByStatus: { planned: 1, blocked: 1 },
+    })
   })
 
   it('keeps discovery, tested coverage, blockers, and remaining work distinct when incomplete', () => {

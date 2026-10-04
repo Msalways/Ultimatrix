@@ -28,10 +28,11 @@ function primitive(id: string, tags: string[]): PrimitiveRef {
   return { id, description: id, tags }
 }
 
-function store(eps: any[], edges: any[] = []) {
+function store(eps: any[], edges: any[] = [], hypotheses: any[] = []) {
   return {
     queryNodes: (type: string) => {
       if (type === 'Endpoint') return eps
+      if (type === 'Hypothesis') return hypotheses
       return []
     },
     getAllEdges: () => edges,
@@ -91,6 +92,30 @@ describe('planCampaign signal routing', () => {
     expect(slices.flatMap(s => s.techniqueIds)).toEqual(expect.arrayContaining(['authzMatrix', 'idorSwapper']))
     // authenticated 2 + object-id signal boost 3 + hasParams 1
     expect(slices.find(s => s.techniqueIds.includes('idorSwapper'))!.priority).toBeGreaterThanOrEqual(6)
+  })
+
+  it('prioritizes endpoint units targeted by learned workflow hypotheses', () => {
+    const ep = endpoint({
+      method: 'POST',
+      params: [{ name: 'orderId', type: 'string' }],
+    })
+    const workflowHypothesis = {
+      id: 'hypothesis-workflow-bypass',
+      type: 'Hypothesis',
+      properties: {
+        kind: 'workflow_bypass',
+        targetEndpoints: ['ep1'],
+        status: 'open',
+      },
+    }
+    const plan = planCampaign(
+      store([ep], [], [workflowHypothesis]),
+      { primitives: [primitive('stateProbe', ['state-changing'])] },
+    )
+    const slice = plan.slices.find(s => s.endpoint.id === 'ep1')
+
+    expect(slice?.reason).toContain('Research hypotheses target this endpoint (1)')
+    expect(slice?.priority).toBeGreaterThanOrEqual(4)
   })
 
   it('keeps generic recon techniques relevant to any endpoint', () => {

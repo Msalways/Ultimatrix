@@ -9,6 +9,11 @@ export interface AssessmentReportInput {
     authFlows: number
     roles: number
   }
+  research?: {
+    entities: number
+    hypotheses: ReadonlyArray<{ kind: string }>
+    experiments: ReadonlyArray<{ status: string }>
+  }
   spiderEnabled: boolean
   observation?: { status: 'completed' | 'failed'; requests?: number }
   crawl?: { stopReason?: string; pagesSeen?: number; frontierRemaining?: number }
@@ -26,6 +31,12 @@ export interface AssessmentReport {
     crawl?: AssessmentReportInput['crawl']
     unknowns: string[]
   }
+  targetModel: {
+    entities: number
+    hypotheses: number
+    hypothesesByKind: Record<string, number>
+    experimentsByStatus: Record<string, number>
+  }
   testedCoverage: {
     status: CampaignResult['status'] | 'not_run'
     planned: number
@@ -35,6 +46,14 @@ export interface AssessmentReport {
     requestsUsed: number
     budgetExceeded: boolean
     unitOutcomes: Partial<Record<CoverageStatus, number>>
+    dimensions: {
+      endpoints: { covered: number; total: number }
+      inputs: { covered: number; total: number }
+      actors: { covered: number; total: number }
+      roles: { covered: number; total: number }
+      states: { covered: number; total: number }
+      techniques: { planned: number; total: number }
+    }
   }
   blockers: string[]
   remainingWork: string[]
@@ -47,6 +66,14 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
   const campaign = input.campaign
   const unitOutcomes: Partial<Record<CoverageStatus, number>> = {}
   for (const unit of campaign?.units ?? []) unitOutcomes[unit.status] = (unitOutcomes[unit.status] ?? 0) + 1
+  const hypothesesByKind: Record<string, number> = {}
+  for (const hypothesis of input.research?.hypotheses ?? []) {
+    hypothesesByKind[hypothesis.kind] = (hypothesesByKind[hypothesis.kind] ?? 0) + 1
+  }
+  const experimentsByStatus: Record<string, number> = {}
+  for (const experiment of input.research?.experiments ?? []) {
+    experimentsByStatus[experiment.status] = (experimentsByStatus[experiment.status] ?? 0) + 1
+  }
 
   if (!input.observation) blockers.push('Baseline target observation did not complete.')
   else if (input.observation.status === 'failed') blockers.push('Baseline target observation failed.')
@@ -97,7 +124,14 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
       unknowns: [
         'Routes not observed or linked from the target remain unknown.',
         'Coverage is limited to actors, inputs, and states observed or available in this engagement.',
+        'Campaign actor coverage alone does not verify cross-account authorization; that requires a victim and a separate attacker identity.',
       ],
+    },
+    targetModel: {
+      entities: input.research?.entities ?? 0,
+      hypotheses: input.research?.hypotheses.length ?? 0,
+      hypothesesByKind,
+      experimentsByStatus,
     },
     testedCoverage: {
       status: campaign?.status ?? 'not_run',
@@ -108,6 +142,14 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
       requestsUsed: campaign?.requestsUsed ?? 0,
       budgetExceeded: campaign?.budgetExceeded ?? false,
       unitOutcomes,
+      dimensions: {
+        endpoints: { covered: campaign?.coverage.endpointsCovered ?? 0, total: campaign?.coverage.endpointsTotal ?? 0 },
+        inputs: { covered: campaign?.coverage.paramsCovered ?? 0, total: campaign?.coverage.paramsTotal ?? 0 },
+        actors: { covered: campaign?.coverage.actorsCovered ?? 0, total: campaign?.coverage.actorsTotal ?? 0 },
+        roles: { covered: campaign?.coverage.rolesCovered ?? 0, total: campaign?.coverage.rolesTotal ?? 0 },
+        states: { covered: campaign?.coverage.statesCovered ?? 0, total: campaign?.coverage.statesTotal ?? 0 },
+        techniques: { planned: campaign?.coverage.techniquesPlanned ?? 0, total: campaign?.coverage.techniquesTotal ?? 0 },
+      },
     },
     blockers,
     remainingWork,

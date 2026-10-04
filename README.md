@@ -392,7 +392,9 @@ With an NVIDIA API credential available from the environment or provider configu
 npm run benchmark:discovery -- --runs 3 --out evals/live-discovery.json
 ```
 
-It runs `interact -t` against randomized, disposable loopback apps with matched vulnerable and patched workflows. Without a credential, it records `untested` and makes no model calls. Each target run is limited to 100 HTTP requests and five minutes. Reports under `evals/` are local benchmark artifacts.
+It runs `interact -t` against randomized, disposable loopback apps with matched vulnerable and patched workflows. The solver maps workflows and hypotheses before deterministic coverage; matching research hypotheses raise the priority of their observed endpoints. CLI and web run summaries show the learned workflow and hypothesis counts, experiment statuses, tested endpoint/actor/state coverage, and explicit unknowns.
+
+The report scores target learning separately from vulnerability proof: expected endpoint/method recall, fixture-appropriate hypothesis-class recall, workflow-map presence, and planned versus exercised experiments. Those learning scores are diagnostic until live results establish useful thresholds. Without an NVIDIA credential, the benchmark records `untested` and makes no model calls. Each target run is limited to 100 HTTP requests and five minutes. Reports under `evals/` are local benchmark artifacts.
 
 ```bash
 npm test                 # full Vitest suite

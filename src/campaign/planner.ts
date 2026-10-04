@@ -6,7 +6,7 @@
  *   endpoint × param × role × state × technique(primitive)
  *
  * Then decides per-cell relevance, prioritizes using analyser-derived
- * invariants + open human Hypotheses, and dedupes equivalent cells into
+ * invariants + open research hypotheses, and dedupes equivalent cells into
  * CampaignSlice units of work.
  */
 
@@ -194,8 +194,9 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   const authSchemes = graphStore.queryNodes(NodeType.AUTH_SCHEME) as AuthSchemeNode[]
   const rbacRoles = graphStore.queryNodes(NodeType.RBAC_ROLE) as RBACRoleNode[]
   const hypotheses = (graphStore.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]).filter(
-    h => (h.properties.origin ?? 'llm') === 'human' && h.properties.status === 'open',
+    h => h.properties.status === 'open' || h.properties.status === 'planned',
   )
+  const humanHypotheses = hypotheses.filter(h => h.properties.origin === 'human')
   const facts = graphStore.queryNodes(NodeType.FACT) as FactNode[]
 
   // Read VALUE_ORIGIN edges for data-flow-aware prioritization
@@ -241,7 +242,12 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     const hasParams = ctx.inputs[0]?.location !== 'endpoint'
     const signals = endpointSignals(ep)
 
-    const hypBoost = hypotheses.filter(h => (h.properties.targetEndpoints ?? []).includes(url)).length
+    // Research hypotheses store endpoint node IDs; human-added hypotheses may
+    // store URLs. Match both so the target model can affect campaign ordering.
+    const hypBoost = hypotheses.filter(h => {
+      const targets = h.properties.targetEndpoints ?? []
+      return targets.includes(ep.id) || targets.includes(url)
+    }).length
     const factBoost = facts.filter(f => f.properties.description.includes(url)).length
 
     for (const role of ctx.roles) {
@@ -274,7 +280,7 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
           priority += signalBoost
 
           const reasonBits: string[] = []
-          if (hypBoost) reasonBits.push(`${hypBoost} human hypothes(is/es) target this endpoint`)
+          if (hypBoost) reasonBits.push(`Research hypotheses target this endpoint (${hypBoost})`)
           if (ep.properties.authType) reasonBits.push(`auth:${ep.properties.authType}`)
           if (hasParams) reasonBits.push(`${ctx.inputs.length} input(s)`)
           if (signalTechniqueIds.length > 0) reasonBits.push(`signals: ${[...signals].slice(0, 5).join(', ')}`)
@@ -353,7 +359,7 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
     slicesPlanned: slices.length,
     slicesExecuted: 0,
     slicesConfirmed: 0,
-    humanHypothesesConsidered: hypotheses.length,
+    humanHypothesesConsidered: humanHypotheses.length,
   }
 
   const domains = new Set(options.domainNames ?? primitives.flatMap(primitive => primitive.domains ?? []))

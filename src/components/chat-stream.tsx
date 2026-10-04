@@ -562,6 +562,7 @@ export function ChatStream() {
               reason: result.reason,
               goal,
               mode: effectiveMode,
+              assessmentReport: result.assessmentReport,
               timestamp: Date.now(),
             } as any)
           }
@@ -934,6 +935,24 @@ function MessageBubble({
               <span>{m.toolCalls} tool {m.toolCalls === 1 ? 'call' : 'calls'}</span>
               <span>{m.findings} new {m.findings === 1 ? 'finding' : 'findings'}</span>
             </div>
+            {m.assessmentReport && (() => {
+              const report = m.assessmentReport
+              const d = report.discovery
+              const model = report.targetModel
+              const coverage = report.testedCoverage
+              const hypotheses = Object.entries(model.hypothesesByKind).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'none'
+              const experiments = Object.entries(model.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
+              return (
+                <div className="mt-3 border-t border-zinc-800 pt-2 text-[11px] leading-relaxed text-zinc-500">
+                  <div>Learned target: {d.workflows} workflows, {model.entities} entities, {model.hypotheses} hypotheses across {Object.keys(model.hypothesesByKind).length} classes.</div>
+                  <div>Hypothesis classes: {hypotheses}.</div>
+                  <div>Research experiments: {experiments}.</div>
+                  <div>Coverage: {coverage.executed}/{coverage.planned} units; endpoints {coverage.dimensions.endpoints.covered}/{coverage.dimensions.endpoints.total}; actors {coverage.dimensions.actors.covered}/{coverage.dimensions.actors.total}; states {coverage.dimensions.states.covered}/{coverage.dimensions.states.total}.</div>
+                  {d.unknowns.map((unknown: string) => <div key={unknown} className="mt-1 text-amber-500/80">Unknown: {unknown}</div>)}
+                  {report.blockers.map((blocker: string) => <div key={blocker} className="mt-1 text-amber-500/80">Blocked: {blocker}</div>)}
+                </div>
+              )
+            })()}
           </div>
           {action && (
             <button

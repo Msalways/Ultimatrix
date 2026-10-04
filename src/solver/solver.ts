@@ -787,27 +787,6 @@ export async function solve(
     emitMessage({ kind: "event", event: "observation.reused", label: "reusing browser failure; HTTP fallback active", status: "warn" })
   }
   const campaignEnabled = params.ultimatrixConfig?.campaign?.auto ?? DEFAULTS.campaign?.auto ?? true
-  if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
-    emitMessage({ kind: 'event', event: 'coverage.started', label: 'running deterministic input coverage', status: 'running' })
-    try {
-      campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId)
-      board.addFact(
-        `Deterministic coverage ${campaignResult.status}: ${campaignResult.coverage.slicesExecuted} unit(s), ${campaignResult.requestsUsed} HTTP request(s), ${campaignResult.remainingSlices.length} pending unit(s).`,
-        'coverage',
-      )
-      emitMessage({
-        kind: 'event',
-        event: 'coverage.completed',
-        label: `coverage ${campaignResult.status}: ${campaignResult.units.length} unit result(s), ${campaignResult.domains.length} skill domain(s)`,
-        status: campaignResult.status === 'complete' ? 'ok' : 'warn',
-        data: { status: campaignResult.status, requestsUsed: campaignResult.requestsUsed, domains: campaignResult.domains.length, remaining: campaignResult.remainingSlices.length },
-      })
-    } catch (error) {
-      campaignError = error instanceof Error ? error.message : String(error)
-      board.addFact(`Deterministic coverage did not run: ${campaignError}`, 'coverage-failure')
-      emitMessage({ kind: 'event', event: 'coverage.failed', label: `coverage unavailable: ${campaignError}`, status: 'warn' })
-    }
-  }
   // F1 FIX: Do NOT call resetTurn() here — capabilities persist across turns.
   // Previously discovered/activated tools (browser, workers, crawl) remain available.
 
@@ -884,6 +863,31 @@ export async function solve(
   } else if (lazyServices?.researchBootstrapState === 'completed') {
     board.addFact('Research bootstrap already completed for this engagement; reusing its graph and captured evidence.', 'research-bootstrap-reused');
     emitMessage({ kind: "event", event: "research.bootstrap.reused", label: "reusing engagement research map", status: "ok" });
+  }
+
+  // Deterministic coverage consumes the workflow and experiment map built
+  // above. Starting it before research bootstrap meant a cold engagement's
+  // first campaign could only use the raw crawl graph and miss stateful paths.
+  if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
+    emitMessage({ kind: 'event', event: 'coverage.started', label: 'running deterministic input coverage', status: 'running' })
+    try {
+      campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId)
+      board.addFact(
+        `Deterministic coverage ${campaignResult.status}: ${campaignResult.coverage.slicesExecuted} unit(s), ${campaignResult.requestsUsed} HTTP request(s), ${campaignResult.remainingSlices.length} pending unit(s).`,
+        'coverage',
+      )
+      emitMessage({
+        kind: 'event',
+        event: 'coverage.completed',
+        label: `coverage ${campaignResult.status}: ${campaignResult.units.length} unit result(s), ${campaignResult.domains.length} skill domain(s)`,
+        status: campaignResult.status === 'complete' ? 'ok' : 'warn',
+        data: { status: campaignResult.status, requestsUsed: campaignResult.requestsUsed, domains: campaignResult.domains.length, remaining: campaignResult.remainingSlices.length },
+      })
+    } catch (error) {
+      campaignError = error instanceof Error ? error.message : String(error)
+      board.addFact(`Deterministic coverage did not run: ${campaignError}`, 'coverage-failure')
+      emitMessage({ kind: 'event', event: 'coverage.failed', label: `coverage unavailable: ${campaignError}`, status: 'warn' })
+    }
   }
 
   const contextRegistry = new ContextWindowRegistry(params.ultimatrixConfig ?? {} as UltimatrixConfig);
@@ -1862,6 +1866,17 @@ export async function solve(
             workflows: count(NodeType.WORKFLOW),
             authFlows: count(NodeType.AUTH_FLOW),
             roles: count(NodeType.RBAC_ROLE),
+          }
+        })(),
+        research: (() => {
+          const graph = getEngagementServices()?.graph
+          const nodes = (type: NodeType) => {
+            try { return graph?.queryNodes(type) ?? [] } catch { return [] }
+          }
+          return {
+            entities: nodes(NodeType.ENTITY).length,
+            hypotheses: nodes(NodeType.HYPOTHESIS).map(node => ({ kind: String((node as any).properties?.kind ?? 'unknown') })),
+            experiments: nodes(NodeType.EXPERIMENT).map(node => ({ status: String((node as any).properties?.status ?? 'unknown') })),
           }
         })(),
         spiderEnabled: params.ultimatrixConfig?.spider?.enabled !== false,

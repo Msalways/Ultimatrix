@@ -288,6 +288,20 @@ export class ChatStream {
     if (!model.reasoning.trim() && model.tools.length === 0 && !model.answer.trim()) {
       this.write(`${this.c(ESC.dim)}(no output — model returned no steps)${this.c(ESC.reset)}\n`)
     }
+    const report = model.done?.assessmentReport
+    if (report) {
+      const d = report.discovery
+      const m = report.targetModel
+      const t = report.testedCoverage
+      const hypotheses = Object.entries(m.hypothesesByKind).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'none'
+      const experiments = Object.entries(m.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
+      this.write(`${this.c(ESC.dim)}  learned target: ${d.workflows} workflows, ${m.entities} entities, ${m.hypotheses} hypotheses across ${Object.keys(m.hypothesesByKind).length} classes${this.c(ESC.reset)}\n`)
+      this.write(`${this.c(ESC.dim)}  hypothesis classes: ${hypotheses}${this.c(ESC.reset)}\n`)
+      this.write(`${this.c(ESC.dim)}  research experiments: ${experiments}${this.c(ESC.reset)}\n`)
+      this.write(`${this.c(ESC.dim)}  coverage: ${t.executed}/${t.planned} units; endpoints ${t.dimensions.endpoints.covered}/${t.dimensions.endpoints.total}, actors ${t.dimensions.actors.covered}/${t.dimensions.actors.total}, states ${t.dimensions.states.covered}/${t.dimensions.states.total}${this.c(ESC.reset)}\n`)
+      for (const unknown of d.unknowns) this.write(`${this.c(ESC.yellow)}  unknown: ${unknown}${this.c(ESC.reset)}\n`)
+      for (const blocker of report.blockers) this.write(`${this.c(ESC.yellow)}  blocker: ${blocker}${this.c(ESC.reset)}\n`)
+    }
     this.write(`${this.c(ESC.dim)}─────── ${footer(model)} ───────${this.c(ESC.reset)}\n`)
     return
   }

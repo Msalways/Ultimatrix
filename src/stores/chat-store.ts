@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { RunOutcomeKind } from '@/core/run-outcome'
 import type { LoadState } from './resource-store'
+import type { AssessmentReport } from '@/solver/assessment-report'
 
 export interface ChatMessage {
   id: string
@@ -94,6 +95,7 @@ export interface SummaryMessage {
   reason?: string
   goal?: string
   mode?: 'ask' | 'run' | 'auto'
+  assessmentReport?: AssessmentReport
   timestamp: number
 }
 

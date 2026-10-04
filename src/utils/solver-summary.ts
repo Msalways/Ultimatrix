@@ -31,9 +31,15 @@ export function logSolveSummary(result: SolveResult): void {
       return
     }
     const d = report.discovery
+    const m = report.targetModel
     const t = report.testedCoverage
+    const hypotheses = Object.entries(m.hypothesesByKind).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'none'
+    const experiments = Object.entries(m.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
     const label = report.status === 'complete' ? log.success : log.warn
-    label(`Assessment ${report.status}: discovered ${d.endpoints} endpoint(s), ${d.inputs} input(s), ${d.workflows} workflow(s), ${d.roles} role(s); tested ${t.executed}/${t.planned} unit(s), ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP request(s).`)
+    label(`Assessment ${report.status}: learned ${d.workflows} workflows, ${m.entities} entities, ${m.hypotheses} hypotheses; discovered ${d.endpoints} endpoints, ${d.inputs} inputs, ${d.roles} roles; tested ${t.executed}/${t.planned} units, ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP requests.`)
+    log.dim(`Hypothesis classes: ${hypotheses}.`)
+    log.dim(`Coverage dimensions: endpoints ${t.dimensions.endpoints.covered}/${t.dimensions.endpoints.total}, actors ${t.dimensions.actors.covered}/${t.dimensions.actors.total}, roles ${t.dimensions.roles.covered}/${t.dimensions.roles.total}, states ${t.dimensions.states.covered}/${t.dimensions.states.total}, techniques ${t.dimensions.techniques.planned}/${t.dimensions.techniques.total}.`)
+    log.dim(`Research experiments: ${experiments}.`)
     for (const unknown of d.unknowns) log.dim(`Unknown: ${unknown}`)
     for (const blocker of report.blockers) log.warn(`Blocker: ${blocker}`)
     for (const work of report.remainingWork) log.dim(`Remaining: ${work}`)

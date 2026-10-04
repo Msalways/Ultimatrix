@@ -22,6 +22,15 @@ export interface DiscoveryExperiment {
   retest?: { outcome?: { status?: string; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } } }
 }
 
+export interface DiscoveryTargetLearning {
+  workflowCount: number
+  entityCount: number
+  hypothesisKinds: string[]
+  experimentStatuses: string[]
+  expectedEndpoints: Array<{ method: string; path: string }>
+  observedEndpoints: Array<{ method: string; path: string }>
+}
+
 export interface DiscoveryRunInput {
   variant: DiscoveryVariant
   findings: DiscoveryFinding[]
@@ -30,6 +39,8 @@ export interface DiscoveryRunInput {
   requiresSecondActor: boolean
   secondActorAvailable: boolean
   untracedRequests: string[]
+  targetLearning?: DiscoveryTargetLearning
+  expectedHypothesisKinds?: string[]
   requestCount?: number
   requestLimit?: number
   durationMs?: number
@@ -45,6 +56,19 @@ export interface DiscoveryRunScore {
   requestTraceComplete: boolean
   withinRequestBudget: boolean
   withinDurationBudget: boolean
+  targetLearning: {
+    workflowCount: number
+    entityCount: number
+    expectedEndpointCount: number
+    observedExpectedEndpointCount: number
+    endpointRecall: number | null
+    hypothesisKinds: string[]
+    expectedHypothesisKinds: string[]
+    matchedHypothesisKinds: string[]
+    hypothesisRecall: number | null
+    plannedExperiments: number
+    nonPlannedExperiments: number
+  }
 }
 
 function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryExperiment[]): boolean {
@@ -77,6 +101,14 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const confirmedFindingCount = input.findings.filter(finding =>
     finding.confirmed === true || finding.lifecycleStatus === 'verified',
   ).length
+  const expectedHypothesisKinds = [...new Set(input.expectedHypothesisKinds ?? [])]
+  const hypothesisKinds = [...new Set(input.targetLearning?.hypothesisKinds ?? [])]
+  const matchedHypothesisKinds = expectedHypothesisKinds.filter(kind => hypothesisKinds.includes(kind))
+  const experimentStatuses = input.targetLearning?.experimentStatuses ?? []
+  const endpointKey = (endpoint: { method: string; path: string }) => `${endpoint.method.toUpperCase()} ${endpoint.path}`
+  const observedEndpointKeys = new Set((input.targetLearning?.observedEndpoints ?? []).map(endpointKey))
+  const expectedEndpoints = input.targetLearning?.expectedEndpoints ?? []
+  const observedExpectedEndpointCount = expectedEndpoints.filter(endpoint => observedEndpointKeys.has(endpointKey(endpoint))).length
 
   return {
     verifiedFindingIds,
@@ -89,6 +121,19 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
     requestTraceComplete: input.untracedRequests.length === 0,
     withinRequestBudget: input.requestCount === undefined || input.requestLimit === undefined || input.requestCount <= input.requestLimit,
     withinDurationBudget: input.durationMs === undefined || input.durationLimitMs === undefined || input.durationMs <= input.durationLimitMs,
+    targetLearning: {
+      workflowCount: input.targetLearning?.workflowCount ?? 0,
+      entityCount: input.targetLearning?.entityCount ?? 0,
+      expectedEndpointCount: expectedEndpoints.length,
+      observedExpectedEndpointCount,
+      endpointRecall: expectedEndpoints.length ? observedExpectedEndpointCount / expectedEndpoints.length : null,
+      hypothesisKinds,
+      expectedHypothesisKinds,
+      matchedHypothesisKinds,
+      hypothesisRecall: expectedHypothesisKinds.length ? matchedHypothesisKinds.length / expectedHypothesisKinds.length : null,
+      plannedExperiments: experimentStatuses.filter(status => status === 'planned').length,
+      nonPlannedExperiments: experimentStatuses.filter(status => status !== 'planned').length,
+    },
   }
 }
 
@@ -100,6 +145,15 @@ export interface DiscoveryBenchmarkScore {
   controlRuns: number
   confirmedControlFindings: number
   controlPass: boolean
+  targetLearning: {
+    runs: number
+    runsWithWorkflowMap: number
+    runsWithCompleteEndpointMap: number
+    averageEndpointRecall: number | null
+    runsWithExpectedHypothesis: number
+    averageHypothesisRecall: number | null
+    runsWithPlannedExperiments: number
+  }
   pass: boolean
 }
 
@@ -111,6 +165,9 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const confirmedControlFindings = controls.reduce((sum, run) => sum + run.score.confirmedFindingCount, 0)
   const vulnerablePass = vulnerable.length === 9 && verifiedVulnerableRuns >= 7
   const controlPass = controls.length === 9 && confirmedControlFindings === 0
+  const learningScores = runs.map(run => run.score.targetLearning)
+  const scoredHypothesisRuns = learningScores.filter(score => score.hypothesisRecall !== null)
+  const scoredEndpointRuns = learningScores.filter(score => score.endpointRecall !== null)
   return {
     vulnerableRuns: vulnerable.length,
     verifiedVulnerableRuns,
@@ -119,6 +176,19 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
     controlRuns: controls.length,
     confirmedControlFindings,
     controlPass,
+    targetLearning: {
+      runs: learningScores.length,
+      runsWithWorkflowMap: learningScores.filter(score => score.workflowCount > 0).length,
+      runsWithCompleteEndpointMap: learningScores.filter(score => score.endpointRecall === 1).length,
+      averageEndpointRecall: scoredEndpointRuns.length
+        ? scoredEndpointRuns.reduce((sum, score) => sum + (score.endpointRecall ?? 0), 0) / scoredEndpointRuns.length
+        : null,
+      runsWithExpectedHypothesis: learningScores.filter(score => score.matchedHypothesisKinds.length > 0).length,
+      averageHypothesisRecall: scoredHypothesisRuns.length
+        ? scoredHypothesisRuns.reduce((sum, score) => sum + (score.hypothesisRecall ?? 0), 0) / scoredHypothesisRuns.length
+        : null,
+      runsWithPlannedExperiments: learningScores.filter(score => score.plannedExperiments > 0).length,
+    },
     pass: vulnerablePass && controlPass && runs.every(run =>
       run.score.requestTraceComplete && run.score.withinRequestBudget && run.score.withinDurationBudget,
     ),

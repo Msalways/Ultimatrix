@@ -174,6 +174,48 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     expect(joined).not.toContain('▸ you:')
   })
 
+  it('shows learned target coverage and unknowns in the final card', () => {
+    const writes: string[] = []
+    const cs = new ChatStream({ isTTY: false, write: (s) => writes.push(s) })
+    cs.begin('assess the target')
+    const report = {
+      status: 'partial',
+      discovery: {
+        pages: 1, endpoints: 2, inputs: 1, workflows: 1, authFlows: 0, roles: 1,
+        unknowns: ['Cross-account authorization remains unknown.'],
+      },
+      targetModel: { entities: 1, hypotheses: 2, hypothesesByKind: { workflow_bypass: 1, idor: 1 }, experimentsByStatus: { planned: 2 } },
+      testedCoverage: {
+        status: 'partial', planned: 2, executed: 1, confirmed: 0, remaining: 1, requestsUsed: 2,
+        budgetExceeded: false, unitOutcomes: { tested: 1 },
+        dimensions: {
+          endpoints: { covered: 1, total: 2 }, inputs: { covered: 1, total: 1 },
+          actors: { covered: 1, total: 1 }, roles: { covered: 1, total: 1 },
+          states: { covered: 1, total: 2 }, techniques: { planned: 1, total: 2 },
+        },
+      },
+      blockers: ['Second actor credentials unavailable.'],
+      remainingWork: [],
+    }
+    const model = feed([{
+      kind: 'done',
+      answer: {
+        content: 'Assessment complete.', reasoning: '', findings: [], completed: false,
+        status: 'response_complete', durationMs: 1, steps: 1, toolCalls: 1, newFindings: 0,
+        assessmentReport: report,
+      } as any,
+    }])
+    cs.final(model)
+    const joined = writes.join('')
+
+    expect(joined).toContain('1 workflows, 1 entities, 2 hypotheses across 2 classes')
+    expect(joined).toContain('hypothesis classes: workflow_bypass 1, idor 1')
+    expect(joined).toContain('research experiments: planned 2')
+    expect(joined).toContain('endpoints 1/2, actors 1/1, states 1/2')
+    expect(joined).toContain('Cross-account authorization remains unknown.')
+    expect(joined).toContain('Second actor credentials unavailable.')
+  })
+
   it('does NOT emit alternate-screen escapes (no black flicker)', () => {
     const writes: string[] = []
     const cs = new ChatStream({ isTTY: true, write: (s) => writes.push(s) })

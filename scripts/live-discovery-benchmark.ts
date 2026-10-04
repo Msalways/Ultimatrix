@@ -16,6 +16,11 @@ const DEFAULT_RUNS = 3
 const MAX_HTTP_REQUESTS = 100
 const RUN_WALL_MS = 300_000
 const SOLVER_WALL_MS = 270_000
+const EXPECTED_HYPOTHESIS_BY_CASE: Record<CaseKind, string> = {
+  'case-1': 'workflow_bypass',
+  'case-2': 'workflow_bypass',
+  'case-3': 'broken_access_control',
+}
 const GOAL = [
   'Explore this local application using only the resources and synthetic account details shown by the application.',
   'Map the available user workflows and test their security behavior with bounded actions inside the sample workflows.',
@@ -404,6 +409,18 @@ function endpointSummaries(nodes: GraphNode[]): Array<{ method?: string; url: st
   }))
 }
 
+function expectedSurfaceEndpoints(fixture: Fixture): Array<{ method: string; path: string }> {
+  const endpoints = [
+    { method: 'GET', path: fixture.route },
+    { method: 'POST', path: fixture.route },
+  ]
+  if (fixture.kind === 'case-3') {
+    endpoints.push({ method: 'GET', path: `${fixture.route}/record/${fixture.ownerDocument}` })
+    if (fixture.peerAvailable) endpoints.push({ method: 'GET', path: `${fixture.route}/record/${fixture.peerDocument}` })
+  }
+  return endpoints
+}
+
 function redactUrlQuery(value: string): string {
   try {
     const url = new URL(value)
@@ -435,6 +452,18 @@ async function executeRun(input: {
   const graphNodes = readNodes(graph)
   const findings = graphNodes.filter(node => node.type === 'Finding').map(mapFinding)
   const experiments = graphNodes.filter(node => node.type === 'Experiment').map(mapExperiment)
+  const learning = {
+    workflowCount: graphNodes.filter(node => node.type === 'Workflow').length,
+    entityCount: graphNodes.filter(node => node.type === 'Entity').length,
+    hypothesisKinds: graphNodes.filter(node => node.type === 'Hypothesis').map(node => String(node.properties.kind ?? 'unknown')),
+    experimentStatuses: graphNodes.filter(node => node.type === 'Experiment').map(node => String(node.properties.status ?? 'unknown')),
+    expectedEndpoints: expectedSurfaceEndpoints(input.fixture),
+    observedEndpoints: graphNodes.filter(node => node.type === 'Endpoint').flatMap(node => {
+      if (typeof node.properties.method !== 'string' || typeof node.properties.url !== 'string') return []
+      try { return [{ method: node.properties.method, path: new URL(node.properties.url).pathname }] }
+      catch { return [] }
+    }),
+  }
   const candidates = graphNodes.filter(node => node.type === 'CandidateFinding').map(node => {
     const evidenceText = Array.isArray(node.properties.evidence) ? node.properties.evidence.join('\n') : ''
     return {
@@ -467,6 +496,8 @@ async function executeRun(input: {
     requiresSecondActor: input.fixture.kind === 'case-3',
     secondActorAvailable: input.fixture.kind !== 'case-3' || input.fixture.peerAvailable,
     untracedRequests,
+    targetLearning: learning,
+    expectedHypothesisKinds: [EXPECTED_HYPOTHESIS_BY_CASE[input.fixture.kind]],
     requestCount: targetApp.requests.length,
     requestLimit: MAX_HTTP_REQUESTS,
     durationMs: cli?.durationMs ?? 0,
@@ -520,6 +551,17 @@ async function executeRun(input: {
       endpointCount: endpointSummaries(graphNodes).length,
       endpoints: endpointSummaries(graphNodes),
       actor: score.actorCoverage,
+    },
+    targetLearning: {
+      ...learning,
+      expectedEndpointCount: score.targetLearning.expectedEndpointCount,
+      observedExpectedEndpointCount: score.targetLearning.observedExpectedEndpointCount,
+      endpointRecall: score.targetLearning.endpointRecall,
+      expectedHypothesisKinds: score.targetLearning.expectedHypothesisKinds,
+      matchedHypothesisKinds: score.targetLearning.matchedHypothesisKinds,
+      hypothesisRecall: score.targetLearning.hypothesisRecall,
+      plannedExperiments: score.targetLearning.plannedExperiments,
+      nonPlannedExperiments: score.targetLearning.nonPlannedExperiments,
     },
     findings,
     candidates,
@@ -664,7 +706,7 @@ async function main(): Promise<void> {
         for (const variant of variants) {
           const report = await executeRun({ fixture: matchedFixture, variant, model: args.model, configPath, iteration })
           runs.push(report)
-          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified, ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
+          process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, ${report.score.targetLearning.plannedExperiments} experiments planned; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
         }
       }
     }

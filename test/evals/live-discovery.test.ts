@@ -81,6 +81,36 @@ describe('live discovery scoring', () => {
     expect(score('vulnerable', { durationMs: 300_001, durationLimitMs: 300_000 }).withinDurationBudget).toBe(false)
   })
 
+  it('scores learned workflow hypotheses and experiment planning separately from proof', () => {
+    const result = scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], experiments: [], candidates: [],
+      requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+      targetLearning: {
+        workflowCount: 2,
+        entityCount: 1,
+        hypothesisKinds: ['workflow_bypass', 'idor'],
+        experimentStatuses: ['planned', 'interesting'],
+        expectedEndpoints: [{ method: 'GET', path: '/orders' }, { method: 'POST', path: '/orders' }],
+        observedEndpoints: [{ method: 'get', path: '/orders' }],
+      },
+      expectedHypothesisKinds: ['workflow_bypass'],
+    })
+
+    expect(result.verifiedFindingIds).toEqual([])
+    expect(result.targetLearning).toMatchObject({
+      workflowCount: 2,
+      entityCount: 1,
+      expectedEndpointCount: 2,
+      observedExpectedEndpointCount: 1,
+      endpointRecall: 0.5,
+      expectedHypothesisKinds: ['workflow_bypass'],
+      matchedHypothesisKinds: ['workflow_bypass'],
+      hypothesisRecall: 1,
+      plannedExperiments: 1,
+      nonPlannedExperiments: 1,
+    })
+  })
+
   it('requires nine vulnerable runs, at least seven independently proven, and zero confirmed controls', () => {
     const vulnerable = score('vulnerable')
     const control = score('control')
@@ -91,6 +121,7 @@ describe('live discovery scoring', () => {
     ])
     expect(passing.pass).toBe(true)
     expect(passing.verifiedVulnerableRuns).toBe(7)
+    expect(passing.targetLearning).toMatchObject({ runs: 18, averageEndpointRecall: null, averageHypothesisRecall: null })
     const falsePositive = scoreDiscoveryBenchmark([
       ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: vulnerable })),
       ...Array.from({ length: 8 }, () => ({ variant: 'control' as const, score: control })),
