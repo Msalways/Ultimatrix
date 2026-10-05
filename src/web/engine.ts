@@ -210,6 +210,11 @@ export class WebEngine {
           evidence: this.engineServices.sessionEvidence,
           loopDetector: this.engineServices.sessionLoopDetector,
           reflexion: this.engineServices.sessionReflexion,
+          // Pass engagement-owned discovery services explicitly, matching
+          // the CLI path. The agent also retains these for tool activation,
+          // but the solver bootstrap needs them for observation, crawl,
+          // research-state reuse, and run-mode coverage.
+          lazyServices: this.engineServices.lazyServices,
           onMessage: params.onMessage,
           onPhase: params.onPhase,
           memory: { thread: this.runtimeIdentity.threadId, resource: this.runtimeIdentity.resourceId },

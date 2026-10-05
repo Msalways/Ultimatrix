@@ -775,7 +775,8 @@ describe('solve', () => {
       expect(prompt).toContain('cap-rule')
       expect(prompt).toContain('cap-action POST https://example.com/api/redeem')
       expect(prompt).not.toContain('token=private')
-      expect(prompt).toContain('capture a JSON state baseline')
+      expect(prompt).toContain('Capture a successful JSON state baseline with httpRequest')
+      expect(prompt).toContain('keep the same actor for baseline and replay')
       expect(prompt).toContain('iterations=2')
       expect(prompt).toContain('not a finding')
     } finally {
