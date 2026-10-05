@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, mapExperiment, observedWorkflowSequences, startTarget } from '../../scripts/live-discovery-benchmark'
+import { makeConfig, makeFixture, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, startTarget } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -90,6 +90,24 @@ describe('live discovery scoring', () => {
     expect(result.verifiedFindingIds).toEqual([])
     expect(result.targetLearning).toMatchObject({ attackedHypothesisKinds: [], attemptedExperiments: 0 })
   })
+
+  it.each(['initial', 'retest', 'finding proof check'] as const)(
+    'rejects a verified finding when any %s evidence reference is absent from the target trace',
+    phase => {
+      const proof = successfulProof()
+      if (phase === 'initial') proof.experiment.outcome!.proof!.evidenceRefs!.push('ev_untraced')
+      if (phase === 'retest') proof.experiment.retest!.outcome!.proof!.evidenceRefs!.push('ev_untraced')
+      if (phase === 'finding proof check') proof.finding.proofCheck!.evidenceRefs!.push('ev_untraced')
+
+      const result = scoreDiscoveryRun({
+        variant: 'vulnerable', findings: [proof.finding], experiments: [proof.experiment], candidates: [],
+        requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+        observedEvidenceRefs: ['ev_1_1', 'ev_1_2', 'ev_1_3'],
+      })
+
+      expect(result.verifiedFindingIds).toEqual([])
+    },
+  )
 
   it('keeps candidates separate and marks unavailable cross-account coverage unknown', () => {
     const result = scoreDiscoveryRun({
@@ -460,6 +478,30 @@ describe('blinded loopback targets', () => {
       { method: 'GET', path: '/member' },
       { method: 'POST', path: '/member' },
     ]])
+    expect(observedWorkflowSequences([observed], [
+      { method: 'GET', path: '/member', trace: 'target-provided' },
+      { method: 'POST', path: '/member', trace: 'observed-traffic' },
+    ])).toEqual([[
+      { method: 'GET', path: '/member' },
+      { method: 'POST', path: '/member' },
+    ]])
+    expect(observedWorkflowSequences([observed], [
+      { method: 'GET', path: '/member', trace: 'target-provided' },
+      { method: 'POST', path: '/guessed', trace: 'untraced' },
+    ])).toEqual([])
+  })
+
+  it('counts endpoint learning only when the disposable target observed a sourced request', () => {
+    const endpoints = [
+      { id: 'observed', type: 'Endpoint', properties: { method: 'GET', url: 'http://127.0.0.1/member' } },
+      { id: 'guessed', type: 'Endpoint', properties: { method: 'POST', url: 'http://127.0.0.1/guessed' } },
+    ]
+    const requests = [
+      { method: 'GET', path: '/member', trace: 'target-provided' },
+      { method: 'POST', path: '/guessed', trace: 'untraced' },
+    ]
+
+    expect(requestBackedEndpoints(endpoints, requests)).toEqual([{ method: 'GET', path: '/member' }])
   })
 
   it('keeps the experiment-to-hypothesis-to-endpoint link for benchmark scoring', () => {

@@ -485,7 +485,10 @@ function expectedWorkflowSequences(fixture: Fixture): Array<Array<{ method: stri
   return []
 }
 
-export function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ method: string; path: string }>> {
+export function observedWorkflowSequences(
+  nodes: GraphNode[],
+  requests?: ReadonlyArray<{ method: string; path: string; trace: string }>,
+): Array<Array<{ method: string; path: string }>> {
   return nodes.filter(node => node.type === 'Workflow'
     && hasObservedWorkflowSequence(node.properties))
     .map(node => (Array.isArray(node.properties.steps) ? node.properties.steps : [])
@@ -494,7 +497,41 @@ export function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ met
         try { return [{ method: step.method, path: new URL(step.url).pathname }] }
         catch { return [] }
       }))
-    .filter(sequence => sequence.length >= 2)
+    .filter(sequence => {
+      if (sequence.length < 2) return false
+      if (!requests) return true
+      let requestIndex = 0
+      return sequence.every(step => {
+        const matchIndex = requests.findIndex((request, index) => {
+          if (index < requestIndex || request.trace === 'untraced' || request.method.toUpperCase() !== step.method.toUpperCase()) return false
+          try { return new URL(request.path, 'http://benchmark.invalid').pathname === step.path }
+          catch { return false }
+        })
+        if (matchIndex < 0) return false
+        requestIndex = matchIndex + 1
+        return true
+      })
+    })
+}
+
+export function requestBackedEndpoints(
+  nodes: GraphNode[],
+  requests: ReadonlyArray<{ method: string; path: string; trace: string }>,
+): Array<{ method: string; path: string }> {
+  const observed = new Set(requests.flatMap(request => {
+    if (request.trace === 'untraced') return []
+    try { return [`${request.method.toUpperCase()} ${new URL(request.path, 'http://benchmark.invalid').pathname}`] }
+    catch { return [] }
+  }))
+  return nodes.filter(node => node.type === 'Endpoint').flatMap(node => {
+    const method = typeof node.properties.method === 'string' ? node.properties.method.toUpperCase() : undefined
+    const url = node.properties.url
+    if (!method || typeof url !== 'string') return []
+    try {
+      const endpoint = { method, path: new URL(url).pathname }
+      return observed.has(`${method} ${endpoint.path}`) ? [endpoint] : []
+    } catch { return [] }
+  })
 }
 
 function redactUrlQuery(value: string): string {
@@ -537,21 +574,22 @@ async function executeRun(input: {
     actorsObserved: [...new Set(targetApp.requests.flatMap(request => request.actor ? [request.actor] : []))],
     crossActorRequestCount: targetApp.requests.filter(request => request.crossActor === true).length,
   }
+  const learnedWorkflowSequences = observedWorkflowSequences(graphNodes, targetApp.requests)
   const learning = {
     // Do not let route-cluster inference masquerade as a workflow the product
-    // learned from observed actions and requests.
-    workflowCount: observedWorkflowSequences(graphNodes).length,
+    // learned from observed actions and requests. Validate the recorded
+    // request order against the disposable target's independent server trace.
+    workflowCount: learnedWorkflowSequences.length,
     entityCount: graphNodes.filter(node => node.type === 'Entity').length,
     hypothesisKinds: hypothesisNodes.map(node => String(node.properties.kind ?? 'unknown')),
     experimentStatuses: graphNodes.filter(node => node.type === 'Experiment').map(node => String(node.properties.status ?? 'unknown')),
     expectedEndpoints: expectedSurfaceEndpoints(input.fixture),
     expectedWorkflowSequences: expectedWorkflowSequences(input.fixture),
-    observedWorkflowSequences: observedWorkflowSequences(graphNodes),
-    observedEndpoints: graphNodes.filter(node => node.type === 'Endpoint').flatMap(node => {
-      if (typeof node.properties.method !== 'string' || typeof node.properties.url !== 'string') return []
-      try { return [{ method: node.properties.method, path: new URL(node.properties.url).pathname }] }
-      catch { return [] }
-    }),
+    observedWorkflowSequences: learnedWorkflowSequences,
+    // Graph endpoint nodes alone are not sufficient: a model can hypothesize
+    // a route without ever seeing it. Count only methods/paths the fixture
+    // independently logged as target-provided or previously observed.
+    observedEndpoints: requestBackedEndpoints(graphNodes, targetApp.requests),
   }
   const candidates = graphNodes.filter(node => node.type === 'CandidateFinding').map(node => {
     const evidenceText = Array.isArray(node.properties.evidence) ? node.properties.evidence.join('\n') : ''

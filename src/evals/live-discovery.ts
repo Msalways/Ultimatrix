@@ -98,6 +98,8 @@ export interface DiscoveryRunScore {
 function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryExperiment[], observedEvidenceRefs: Set<string>): boolean {
   const ids = finding.experimentIds ?? []
   if (ids.length === 0) return false
+  const hasObservedRefs = (refs: string[] | undefined): refs is string[] =>
+    Boolean(refs?.length && refs.every(ref => ref.startsWith('ev_') && observedEvidenceRefs.has(ref)))
   return ids.every(id => {
     const experiment = experiments.find(item => item.id === id)
     const initial = experiment?.outcome?.proof
@@ -106,13 +108,10 @@ function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryE
       experiment?.outcome?.status !== 'proven' || experiment.retest?.outcome?.status !== 'proven' ||
       initial?.experimentId !== id || initial.phase !== 'initial' ||
       retest?.experimentId !== id || retest.phase !== 'retest' ||
-      !initial.evidenceRefs?.length || !retest.evidenceRefs?.length
+      !hasObservedRefs(initial.evidenceRefs) || !hasObservedRefs(retest.evidenceRefs)
     ) return false
     const initialRefs = new Set(initial.evidenceRefs)
-    return retest.evidenceRefs.every(ref => !initialRefs.has(ref)) &&
-      initial.evidenceRefs.some(ref => observedEvidenceRefs.has(ref)) &&
-      retest.evidenceRefs.some(ref => observedEvidenceRefs.has(ref)) &&
-      initial.evidenceRefs.every(ref => ref.startsWith('ev_')) && retest.evidenceRefs.every(ref => ref.startsWith('ev_'))
+    return retest.evidenceRefs.every(ref => !initialRefs.has(ref))
   })
 }
 
@@ -132,7 +131,9 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const verifiedFindingIds = input.findings.filter(finding =>
     finding.confirmed === true && finding.lifecycleStatus === 'verified' &&
     finding.proofCheck?.passed === true &&
-    (finding.proofCheck.evidenceRefs ?? []).some(ref => observedEvidenceRefs.has(ref)) &&
+    Boolean(finding.proofCheck.evidenceRefs?.length && finding.proofCheck.evidenceRefs.every(ref =>
+      ref.startsWith('ev_') && observedEvidenceRefs.has(ref),
+    )) &&
     hasIndependentRetest(finding, input.experiments, observedEvidenceRefs),
   ).map(finding => finding.id)
 
