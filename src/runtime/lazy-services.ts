@@ -90,7 +90,7 @@ export class LazySolverServices {
    * spider instead of abandoning it: an un-aborted run keeps driving
    * browser/HTTP traffic detached from any turn or session. */
   private crawlController?: AbortController
-  private researchBootstrapAttempted = false
+  private researchBootstrapStatus: 'pending' | 'attempted' | 'completed' = 'pending'
   // Observation is engagement-scoped, not model-turn-scoped. Once the
   // browser provider has failed, a model fallback must consume that fact
   // instead of launching the same 45s startup attempt again.
@@ -560,12 +560,16 @@ export class LazySolverServices {
 
   /** Deterministic research setup is engagement-scoped and must not rerun on
    * provider fallback turns. */
-  get researchBootstrapState(): 'pending' | 'completed' {
-    return this.researchBootstrapAttempted ? 'completed' : 'pending'
+  get researchBootstrapState(): 'pending' | 'attempted' | 'completed' {
+    return this.researchBootstrapStatus
   }
 
   markResearchBootstrapAttempted(): void {
-    this.researchBootstrapAttempted = true
+    if (this.researchBootstrapStatus === 'pending') this.researchBootstrapStatus = 'attempted'
+  }
+
+  markResearchBootstrapCompleted(): void {
+    this.researchBootstrapStatus = 'completed'
   }
 
   async close(): Promise<void> {

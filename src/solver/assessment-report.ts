@@ -18,6 +18,7 @@ export interface AssessmentReportInput {
   spiderEnabled: boolean
   observation?: { status: 'completed' | 'failed'; requests?: number }
   crawl?: { stopReason?: string; pagesSeen?: number; frontierRemaining?: number }
+  researchBootstrapIncomplete?: boolean
   campaignEnabled: boolean
   campaign?: CampaignResult
   campaignError?: string
@@ -91,6 +92,8 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
 
   if (!input.observation) blockers.push('Baseline target observation did not complete.')
   else if (input.observation.status === 'failed') blockers.push('Baseline target observation failed.')
+
+  if (input.researchBootstrapIncomplete) blockers.push('Target workflow and hypothesis learning did not complete.')
 
   if (!input.spiderEnabled) {
     blockers.push('Adaptive route and workflow crawl was disabled.')

@@ -50,6 +50,23 @@ describe('lazy capability registry', () => {
   })
 })
 
+describe('research bootstrap state', () => {
+  it('distinguishes an attempted setup from a completed one', () => {
+    const services = new LazySolverServices({
+      config: {} as any,
+      target: 'http://target.test',
+      skillRegistry: {} as any,
+      extensionRegistry: {} as any,
+    })
+
+    expect(services.researchBootstrapState).toBe('pending')
+    services.markResearchBootstrapAttempted()
+    expect(services.researchBootstrapState).toBe('attempted')
+    services.markResearchBootstrapCompleted()
+    expect(services.researchBootstrapState).toBe('completed')
+  })
+})
+
 describe('bounded runtime context', () => {
   it('uses the configured two-percent envelope bounds', () => {
     expect(runtimeEnvelopeTokenBudget(8_000)).toBe(500)

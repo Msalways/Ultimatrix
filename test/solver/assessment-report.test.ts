@@ -128,6 +128,22 @@ describe('assessment report', () => {
     ]))
   })
 
+  it('does not call an assessment complete when workflow and hypothesis learning failed', () => {
+    const report = buildAssessmentReport({
+      discovery: observed,
+      spiderEnabled: true,
+      observation: { status: 'completed', requests: 12 },
+      crawl: { stopReason: 'frontier_exhausted', pagesSeen: 3, frontierRemaining: 0 },
+      researchBootstrapIncomplete: true,
+      campaignEnabled: true,
+      campaign: completeCampaign(),
+      solverReason: 'response_complete',
+    })
+
+    expect(report.status).toBe('partial')
+    expect(report.blockers).toContain('Target workflow and hypothesis learning did not complete.')
+  })
+
   it('reports disabled or missing stages as blockers instead of treating them as complete', () => {
     const report = buildAssessmentReport({
       discovery: { pages: 0, endpoints: 0, inputs: 0, workflows: 0, authFlows: 0, roles: 0 },

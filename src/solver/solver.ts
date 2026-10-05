@@ -688,8 +688,9 @@ export async function solve(
   const lazyServices = params.lazyServices ?? (agent as any).lazyServices as {
     observe?: () => Promise<{ requests: number; url: string }>;
     observationState?: { status: 'completed' | 'failed'; result?: { requests: number; url: string }; error?: string };
-    researchBootstrapState?: 'pending' | 'completed';
+    researchBootstrapState?: 'pending' | 'attempted' | 'completed';
     markResearchBootstrapAttempted?: () => void;
+    markResearchBootstrapCompleted?: () => void;
     crawl?: () => Promise<unknown>;
     crawlState?: unknown;
     taskStates?: ReadonlyArray<{ taskId: string; status: string }>;
@@ -795,7 +796,9 @@ export async function solve(
   // engagement makes progress even when the model stalls before tool use.
   // Collaborative/ask mode auto-runs only idempotent GETs; explicit run mode
   // authorizes the bounded state-changing experiments selected by the graph.
-  const researchBootstrapPending = !lazyServices || lazyServices.researchBootstrapState !== 'completed'
+  const researchBootstrapState = lazyServices?.researchBootstrapState
+  const researchBootstrapPending = !lazyServices || researchBootstrapState === undefined || researchBootstrapState === 'pending'
+  let researchBootstrapIncomplete = researchBootstrapState === 'attempted'
   if (researchBootstrapPending) {
   const execute = async (tool: any, args: Record<string, unknown>): Promise<any> => {
     if (!tool || typeof tool.execute !== 'function') return { ok: false, error: 'bootstrap tool unavailable' }
@@ -839,6 +842,9 @@ export async function solve(
     const planResult = mapResult?.ok
       ? await execute(planResearchExperiments, { maxExperiments: 6 })
       : undefined;
+    if (!mapResult?.ok || !planResult?.ok) {
+      throw new Error(String(mapResult?.error ?? planResult?.error ?? 'research map or experiment planning did not complete'));
+    }
     const planned = planResult?.ok ? (planResult.value?.experiments ?? []) : [];
     const topHypotheses = Array.isArray(mapResult?.value?.topHypotheses)
       ? mapResult.value.topHypotheses as import('../research/types').ResearchHypothesis[]
@@ -866,7 +872,9 @@ export async function solve(
     // experiments regardless of relevance or missing workflow prerequisites.
     board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned and queued for current-goal selection. No experiment ran before goal routing.`, 'research-bootstrap');
     emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${planned.length} experiments queued for goal-aware selection`, status: "ok" });
+    lazyServices?.markResearchBootstrapCompleted?.();
   } catch (error) {
+    researchBootstrapIncomplete = true
     const message = error instanceof Error ? error.message : String(error);
     board.addFact(`Autonomous research bootstrap unavailable: ${message}; continue with model-selected tools.`, 'research-bootstrap-failure');
     emitMessage({ kind: "event", event: "research.bootstrap.failed", label: "research bootstrap unavailable; model path retained", status: "warn" });
@@ -876,6 +884,9 @@ export async function solve(
   } else if (lazyServices?.researchBootstrapState === 'completed') {
     board.addFact('Research bootstrap already completed for this engagement; reusing its graph and captured evidence.', 'research-bootstrap-reused');
     emitMessage({ kind: "event", event: "research.bootstrap.reused", label: "reusing engagement research map", status: "ok" });
+  } else if (lazyServices?.researchBootstrapState === 'attempted') {
+    board.addFact('Research bootstrap was attempted but did not complete for this engagement; use available observations and report research coverage as incomplete.', 'research-bootstrap-incomplete');
+    emitMessage({ kind: "event", event: "research.bootstrap.incomplete", label: "research setup incomplete; using available target observations", status: "warn" });
   }
 
   // Deterministic coverage consumes the workflow and experiment map built
@@ -1904,6 +1915,7 @@ export async function solve(
           const state = lazyServices?.crawlState as { stopReason?: string; pagesSeen?: number; frontier?: unknown[] } | undefined
           return state ? { stopReason: state.stopReason, pagesSeen: state.pagesSeen, frontierRemaining: state.frontier?.length } : undefined
         })(),
+        researchBootstrapIncomplete,
         campaignEnabled,
         campaign: campaignResult,
         campaignError,

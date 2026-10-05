@@ -737,6 +737,63 @@ describe('solve', () => {
     expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
     expect(events.indexOf('coverage.started')).toBeLessThan(events.indexOf('campaign.called'))
   })
+  itEngagement('keeps a failed research bootstrap incomplete across turns', async () => {
+    const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({ ok: false, error: 'graph unavailable' })
+    const planSpy = vi.spyOn(planResearchExperiments as any, 'execute')
+    const events: string[] = []
+    const markAttempted = vi.fn()
+    const markCompleted = vi.fn()
+    const campaign = {
+      findings: [],
+      coverage: {
+        endpointsTotal: 0, endpointsCovered: 0, paramsTotal: 0, paramsCovered: 0,
+        rolesTotal: 0, rolesCovered: 0, actorsTotal: 0, actorsCovered: 0,
+        statesTotal: 0, statesCovered: 0, techniquesTotal: 0, techniquesPlanned: 0,
+        slicesPlanned: 0, slicesExecuted: 0, slicesConfirmed: 0, humanHypothesesConsidered: 0,
+      },
+      budgetExceeded: false, slicesRun: 0, status: 'complete', requestsUsed: 0,
+      remainingSlices: [], domains: [], units: [],
+    }
+    try {
+      const result = await solve(createMockAgent(['Continue from observed traffic.']) as any, {
+        origin: 'https://example.com', goal: 'assess the observed target', interactionMode: 'run',
+        onMessage: (message: any) => { if (message.kind === 'event') events.push(message.event) },
+        lazyServices: {
+          observationState: { status: 'completed', result: { requests: 1, url: 'https://example.com' } },
+          crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
+          researchBootstrapState: 'pending', markResearchBootstrapAttempted: markAttempted,
+          markResearchBootstrapCompleted: markCompleted,
+          runCoverageCampaign: vi.fn().mockResolvedValue(campaign),
+        },
+      })
+
+      expect(events).toContain('research.bootstrap.failed')
+      expect(events).not.toContain('research.bootstrap.completed')
+      expect(result.assessmentReport?.status).toBe('partial')
+      expect(result.assessmentReport?.blockers).toContain('Target workflow and hypothesis learning did not complete.')
+      expect(markAttempted).toHaveBeenCalledOnce()
+      expect(markCompleted).not.toHaveBeenCalled()
+      expect(planSpy).not.toHaveBeenCalled()
+
+      events.length = 0
+      await solve(createMockAgent(['Continue with available observations.']) as any, {
+        origin: 'https://example.com', goal: 'assess the observed target', interactionMode: 'ask',
+        onMessage: (message: any) => { if (message.kind === 'event') events.push(message.event) },
+        lazyServices: {
+          observationState: { status: 'completed', result: { requests: 1, url: 'https://example.com' } },
+          crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
+          researchBootstrapState: 'attempted',
+        },
+      })
+
+      expect(events).toContain('research.bootstrap.incomplete')
+      expect(events).not.toContain('research.bootstrap.reused')
+      expect(mapSpy).toHaveBeenCalledOnce()
+    } finally {
+      mapSpy.mockRestore()
+      planSpy.mockRestore()
+    }
+  })
   itEngagement('surfaces learned action-limit rules and their bounded plan to the solver brain', async () => {
     const rule = {
       kind: 'action_limit', allowedCount: 1, actionRequestId: 'cap-action', actionMethod: 'POST',
