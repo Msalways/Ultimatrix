@@ -1,4 +1,4 @@
-import type { EvidenceItem } from '../intelligence/evidence-ledger'
+import { urlMatchesEndpoint, type EvidenceItem } from '../intelligence/evidence-ledger'
 import { isBountyProfile } from '../safety/bounty-policy'
 import type { EvidenceOracle, ExperimentOutcome, ProofAssertion } from './types'
 import { randomUUID } from 'node:crypto'
@@ -184,6 +184,35 @@ function matchesStateValue(item: EvidenceItem, key: string, expected: string): b
   return value !== undefined && (String(value) === expected || JSON.stringify(value) === expected)
 }
 
+function numericState(item: EvidenceItem, key: string): number | undefined {
+  try {
+    const value = JSON.parse(item.observed?.responseBody ?? item.data) as Record<string, unknown>
+    const state = value[key]
+    return typeof state === 'number' && Number.isFinite(state) ? state : undefined
+  } catch { return undefined }
+}
+
+function sameActorEvidence(a: EvidenceItem, b: EvidenceItem): boolean {
+  if (a.observed?.actorFingerprint || b.observed?.actorFingerprint) {
+    return !!a.observed?.actorFingerprint && a.observed.actorFingerprint === b.observed?.actorFingerprint
+  }
+  const identityHeaders = (item: EvidenceItem): string[] => Object.entries(item.observed?.requestHeaders ?? {})
+    .filter(([name]) => /^(authorization|cookie|x-token|x-(?:auth|session|access|refresh|api|actor)(?:[-_].*)?)$/i.test(name))
+    .map(([name, value]) => `${name.toLowerCase()}:${value}`)
+    .sort()
+  const actorA = identityHeaders(a)
+  return actorA.length > 0 && JSON.stringify(actorA) === JSON.stringify(identityHeaders(b))
+}
+
+function exactRoute(left: string, right?: string): boolean {
+  if (!right) return false
+  try {
+    const a = new URL(left)
+    const b = new URL(right)
+    return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search
+  } catch { return false }
+}
+
 export function evaluateExperimentOracle(
   experimentId: string,
   oracle: EvidenceOracle,
@@ -254,6 +283,65 @@ export function evaluateExperimentOracle(
       proven = oracle.beforeValue !== oracle.afterValue &&
         matchesStateValue(before, oracle.stateKey, oracle.beforeValue) &&
         matchesStateValue(after, oracle.stateKey, oracle.afterValue)
+      break
+    }
+    case 'action-limit': {
+      const baseline = byId.get(oracle.baselineEvidenceId)!
+      const actions = oracle.actionEvidenceIds.map(id => byId.get(id)!)
+      const rule = evidence.find(item => item.observed?.captureId === oracle.ruleCaptureId)
+      if (!rule || !urlMatchesEndpoint(oracle.ruleUrl, rule.observed?.url)
+        || !(rule.observed?.responseBody ?? rule.data).includes(oracle.ruleText)) {
+        return { status: 'inconclusive', reason: 'The exact captured response stating the action limit is unavailable', evidenceRefs: refs }
+      }
+      const validCount = Number.isInteger(oracle.allowedCount) && oracle.allowedCount >= 0 && oracle.allowedCount <= 9
+      if (!validCount || !Number.isFinite(oracle.baselineValue) || oracle.actionEvidenceIds.length !== oracle.allowedCount + 1
+        || new Set(oracle.actionEvidenceIds).size !== oracle.actionEvidenceIds.length) {
+        return { status: 'inconclusive', reason: 'Action-limit evidence must contain exactly the allowed actions and one over-limit action', evidenceRefs: refs }
+      }
+      let sameTargetOrigin = false
+      try {
+        const actionOrigin = new URL(oracle.actionUrl).origin
+        sameTargetOrigin = new URL(oracle.baselineUrl).origin === actionOrigin && new URL(oracle.ruleUrl).origin === actionOrigin
+      } catch { /* invalid URLs fail closed */ }
+      if (!sameTargetOrigin || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(oracle.stateKey)) {
+        return { status: 'inconclusive', reason: 'Rule, action, and state baseline must use one target origin and an observed numeric field', evidenceRefs: refs }
+      }
+      if (!urlMatchesEndpoint(oracle.ruleUrl, rule.observed?.url) || !exactRoute(oracle.actionUrl, actions[0]?.observed?.url)
+        || !exactRoute(oracle.baselineUrl, baseline.observed?.url)
+        || actions.some(item => !exactRoute(oracle.actionUrl, item.observed?.url)
+          || item.observed?.method?.toUpperCase() !== oracle.actionMethod.toUpperCase()
+          || item.observed?.requestBody !== actions[0]?.observed?.requestBody)) {
+        return { status: 'inconclusive', reason: 'Rule and action evidence must match the observed target routes, method, and replay body', evidenceRefs: refs }
+      }
+      const captureSequence = actions.map(item => Number(item.observed?.captureId?.match(/^cap-(\d+)$/)?.[1]))
+      if (captureSequence.some(value => !Number.isFinite(value))
+        || captureSequence.some((value, index) => index > 0 && value <= captureSequence[index - 1])) {
+        return { status: 'inconclusive', reason: 'Action evidence must preserve the observed replay order', evidenceRefs: refs }
+      }
+      if (baseline.observed?.status == null || baseline.observed.status < 200 || baseline.observed.status >= 300
+        || numericState(baseline, oracle.stateKey) !== oracle.baselineValue) {
+        return { status: 'inconclusive', reason: 'Fresh successful baseline evidence does not contain the stated numeric state', evidenceRefs: refs }
+      }
+      if ([baseline, ...actions].some(item => !sameActorEvidence(baseline, item))) {
+        return { status: 'inconclusive', reason: 'Rule-limit replay and baseline must use the same actor identity', evidenceRefs: refs }
+      }
+      if (actions.slice(0, oracle.allowedCount).some(item => item.observed?.status == null
+        || item.observed.status < 200 || item.observed.status >= 300)) {
+        return { status: 'inconclusive', reason: 'The allowed baseline actions did not all succeed; setup is not established', evidenceRefs: refs }
+      }
+      const overflow = actions[oracle.allowedCount]
+      if (overflow.observed?.status != null && overflow.observed.status >= 400 && overflow.observed.status < 500) {
+        return { status: 'disproven', evidenceRefs: refs }
+      }
+      if (overflow.observed?.status == null || overflow.observed.status < 200 || overflow.observed.status >= 300) {
+        return { status: 'inconclusive', reason: 'The over-limit response did not establish either acceptance or a client-error rejection', evidenceRefs: refs }
+      }
+      const before = oracle.allowedCount === 0 ? oracle.baselineValue : numericState(actions[oracle.allowedCount - 1], oracle.stateKey)
+      const after = numericState(overflow, oracle.stateKey)
+      if (before === undefined || after === undefined) {
+        return { status: 'inconclusive', reason: `Successful action responses must expose numeric state field ${oracle.stateKey}`, evidenceRefs: refs }
+      }
+      proven = before !== undefined && after !== undefined && before !== after
       break
     }
     case 'oast-callback':

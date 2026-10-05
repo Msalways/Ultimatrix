@@ -490,6 +490,70 @@ describe('control-tools', () => {
       expect(mockStore.addFinding).not.toHaveBeenCalled()
     })
 
+    it('promotes an action-limit proof using same-endpoint actions and separate read-only baselines', async () => {
+      const { promoteFindingCandidate, recordStructuredEvidence } = await import('../../src/tools/control-tools')
+      const action = (label: string, body: string) => recordStructuredEvidence({
+        type: 'raw_response', data: body, label,
+        observed: {
+          method: 'POST', url: 'https://app.test/api/redeem', status: 200,
+          responseBody: body, requestBody: '{"code":"ONE"}',
+        },
+      })
+      const baseline = (label: string, body: string) => recordStructuredEvidence({
+        type: 'raw_response', data: body, label,
+        observed: { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: body },
+      })
+      const initialBaseline = baseline('initial account state', '{"balance":0}')
+      const initialAllowed = action('allowed redemption', '{"balance":1}')
+      const initialOverflow = action('over-limit redemption', '{"balance":2}')
+      const retestBaseline = baseline('fresh account state', '{"balance":2}')
+      const retestAllowed = action('retest allowed redemption', '{"balance":3}')
+      const retestOverflow = action('retest over-limit redemption', '{"balance":4}')
+      const refs = (base: string, allowed: string, overflow: string) => [base, allowed, overflow]
+      const oracle = (baselineEvidenceId: string, actionEvidenceIds: string[]) => ({
+        type: 'action-limit' as const,
+        baselineEvidenceId,
+        baselineUrl: 'https://app.test/account',
+        actionEvidenceIds,
+        ruleCaptureId: 'cap-rule',
+        ruleText: 'This offer may only be used once.',
+        ruleUrl: 'https://app.test/terms',
+        actionUrl: 'https://app.test/api/redeem',
+        actionMethod: 'POST' as const,
+        allowedCount: 1,
+        stateKey: 'balance',
+        baselineValue: 0,
+      })
+      mockStore.getNode.mockReturnValue({
+        id: 'experiment:action-limit',
+        type: 'Experiment',
+        properties: {
+          baselineRequest: { method: 'POST', url: 'https://app.test/api/redeem' },
+          oracle: oracle(initialBaseline.id, [initialAllowed.id, initialOverflow.id]),
+          outcome: { status: 'proven', proof: {
+            experimentId: 'experiment:action-limit', phase: 'initial',
+            evidenceRefs: refs(initialBaseline.id, initialAllowed.id, initialOverflow.id),
+          } },
+          retest: {
+            oracle: oracle(retestBaseline.id, [retestAllowed.id, retestOverflow.id]),
+            outcome: { status: 'proven', proof: {
+              experimentId: 'experiment:action-limit', phase: 'retest',
+              evidenceRefs: refs(retestBaseline.id, retestAllowed.id, retestOverflow.id),
+            } },
+          },
+        },
+      })
+
+      const result = await promoteFindingCandidate({
+        type: 'business_logic', endpoint: 'https://app.test/api/redeem', method: 'POST',
+        severity: 'medium', confidence: 0.9, source: 'llm', tool: 'runPrimitive',
+        experimentIds: ['experiment:action-limit'], evidence: [initialOverflow, retestOverflow],
+      })
+
+      expect(result.ok).toBe(true)
+      expect(mockStore.addFinding).toHaveBeenCalled()
+    })
+
     it('human assertions skip claim verification but the proof floor still fails CLOSED', async () => {
       const { promoteFindingCandidate } = await import('../../src/tools/control-tools')
       const result = await promoteFindingCandidate(

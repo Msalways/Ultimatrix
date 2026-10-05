@@ -517,9 +517,15 @@ export async function promoteFindingCandidate(input: PromoteFindingInput): Promi
       if (typeof request?.url !== 'string' || !urlMatchesEndpoint(args.endpoint, request.url)) return false
       if (args.method && (typeof request.method !== 'string' || args.method.toUpperCase() !== request.method.toUpperCase())) return false
 
-      const refsMatchFinding = (proof: import('../research/types').ProofAssertion | undefined): boolean => {
+      const refsMatchFinding = (
+        proof: import('../research/types').ProofAssertion | undefined,
+        oracle: import('../research/types').EvidenceOracle | undefined,
+      ): boolean => {
         if (!proof?.evidenceRefs.length) return false
-        return proof.evidenceRefs.every(ref => {
+        const supportRefs = oracle?.type === 'action-limit'
+          ? proof.evidenceRefs.filter(ref => ref !== oracle.baselineEvidenceId)
+          : proof.evidenceRefs
+        return supportRefs.length > 0 && supportRefs.every(ref => {
           const item = structuredLedger.get(ref)
           return Boolean(item && urlMatchesEndpoint(args.endpoint, item.observed?.url) &&
             (!args.method || item.observed?.method?.toUpperCase() === args.method.toUpperCase()))
@@ -529,7 +535,8 @@ export async function promoteFindingCandidate(input: PromoteFindingInput): Promi
       const retest = experiment.properties.retest?.outcome
       return initial?.status === 'proven' && initial.proof.experimentId === id &&
         retest?.status === 'proven' && retest.proof.experimentId === id && retest.proof.phase === 'retest' &&
-        refsMatchFinding(initial.proof) && refsMatchFinding(retest.proof)
+        refsMatchFinding(initial.proof, experiment.properties.oracle) &&
+        refsMatchFinding(retest.proof, experiment.properties.retest?.oracle)
     }),
   )
 

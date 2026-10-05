@@ -202,6 +202,40 @@ describe('unsupported race experiment semantics', () => {
   })
 })
 
+describe('action-limit experiment handoff', () => {
+  it('routes planned action limits to the tracked primitive lifecycle without marking them as structural blockers', async () => {
+    const { executePlannedExperiment } = await import('../../src/tools/research-tools')
+    const { setInteractionMode } = await import('../../src/tools/interaction-tools')
+    const actionLimitHypothesis = {
+      id: 'hypothesis:limit-1', type: 'Hypothesis',
+      properties: {
+        kind: 'action_limit', status: 'planned',
+        businessRule: {
+          kind: 'action_limit', allowedCount: 1, actionRequestId: 'cap-action', actionMethod: 'POST',
+          actionUrl: 'https://target.test/api/redeem', ruleCaptureId: 'cap-rule',
+          ruleUrl: 'https://target.test/terms', ruleText: 'This offer may only be used once.',
+        },
+      },
+    }
+    const realGetNode = store.getNode
+    ;(store as any).getNode = vi.fn((id: string) => id === actionLimitHypothesis.id ? actionLimitHypothesis : experiment)
+    experiment.properties = {
+      status: 'planned', hypothesisId: actionLimitHypothesis.id,
+      baselineRequest: { method: 'POST', url: 'https://target.test/api/redeem' },
+    }
+    setInteractionMode('run')
+    try {
+      const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
+      expect(result).toMatchObject({ ok: false, code: 'SPECIALIZED_PRIMITIVE_REQUIRED', experimentId: experiment.id })
+      expect(String((result as any).next)).toContain('businessLogicAbuse')
+      expect(experiment.properties.status).toBe('planned')
+    } finally {
+      setInteractionMode(undefined)
+      ;(store as any).getNode = realGetNode
+    }
+  })
+})
+
 describe('planned experiment approval boundary', () => {  it('blocks active methods unless the engagement is explicitly in run mode', async () => {
     const { executePlannedExperiment } = await import('../../src/tools/research-tools')
     const { setInteractionMode } = await import('../../src/tools/interaction-tools')

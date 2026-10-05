@@ -95,8 +95,9 @@ export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesi
       })
     } else if (hypothesis.kind === 'action_limit' && hypothesis.businessRule) {
       const rule = hypothesis.businessRule
+      const experimentId = stableId('experiment', [hypothesis.id, 'bounded-action-limit-replay'])
       experiments.push({
-        id: stableId('experiment', [hypothesis.id, 'bounded-action-limit-replay']),
+        id: experimentId,
         hypothesisId: hypothesis.id,
         title: `Verify the observed ${rule.allowedCount}-action limit`,
         setup: [
@@ -105,7 +106,7 @@ export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesi
           'Capture and record a fresh JSON state baseline before replay',
         ],
         baselineRequest: { method: rule.actionMethod as ReplayableRequest['method'], url: rule.actionUrl },
-        mutation: `Run businessLogicAbuse with capturedRequestId=${rule.actionRequestId}, allowedCount=${rule.allowedCount}, and iterations=${rule.allowedCount + 1}; supply the same-actor baseline URL, numeric state key/value, and exact observed rule text.`,
+        mutation: `Run runPrimitive with primitiveId=businessLogicAbuse, context.experimentId=${experimentId}, context.experimentPhase=initial, capturedRequestId=${rule.actionRequestId}, allowedCount=${rule.allowedCount}, and iterations=${rule.allowedCount + 1}. First capture a successful same-actor JSON baseline and pass its evidenceId as state.baselineEvidenceId with baselineUrl, numeric stateKey/value, and the exact rule URL/text. After an initial proof, capture a fresh baseline, pass its new baselineEvidenceId, and repeat with context.experimentPhase=retest.`,
         expectedSecureBehavior: 'The action after the explicitly observed limit is rejected or leaves the measured business state unchanged.',
         insecureSignal: 'The action after the limit changes the measured business state; confirm only after fresh independent retest.',
         requiredActors: ['same authenticated actor for rule, baseline, action, and state check'],

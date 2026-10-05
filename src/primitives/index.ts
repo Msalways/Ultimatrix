@@ -68,7 +68,12 @@ import { rawHttpClient } from '../tools/raw-http-client'
 import { getGlobalWorkspace } from '../workspace'
 import { summarizeTrace } from '../capture/render-tracer'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
-import { NodeType, type EndpointNode } from '../graph/schema'
+import { NodeType, type EndpointNode, type ExperimentNode } from '../graph/schema'
+import { getGlobalGraphStore } from '../graph/store'
+import { coreEvidenceLedger } from '../core/evidence'
+import { evaluateExperimentOracle, evaluateIndependentRetest } from '../research/experiment-oracle'
+import type { EvidenceOracle, ExperimentOutcome } from '../research/types'
+import { urlMatchesEndpoint } from '../intelligence/evidence-ledger'
 
 // ─── Register all primitives (single source of truth) ───────────────────
 
@@ -145,6 +150,8 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (Array.isArray(input.workflowSteps)) ctx.workflowSteps = input.workflowSteps
   if (Array.isArray(input.payloads)) ctx.payloads = input.payloads
   if (input.state) ctx.state = input.state
+  if (typeof input.experimentId === 'string') ctx.experimentId = input.experimentId
+  if (input.experimentPhase === 'initial' || input.experimentPhase === 'retest') ctx.experimentPhase = input.experimentPhase
   if (input.variant) ctx.variant = input.variant
   if (input.dbms) ctx.dbms = input.dbms
   if (input.oastHost) ctx.oastHost = input.oastHost
@@ -170,6 +177,30 @@ function buildContext(input: Record<string, any> = {}): TechniqueContext {
   if (input.relationSeed) ctx.relationSeed = input.relationSeed
   if (Array.isArray(input.experimentIds)) ctx.experimentIds = input.experimentIds
   return ctx
+}
+
+function sameExactUrl(left: string, right?: string): boolean {
+  if (!right) return false
+  try {
+    const a = new URL(left)
+    const b = new URL(right)
+    return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search
+  } catch { return false }
+}
+
+function numericJsonField(body: string | undefined, key: string): number | undefined {
+  if (!body) return undefined
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown>)[key]
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  } catch { return undefined }
+}
+
+function identityHeaders(headers: Record<string, string> | undefined): string[] {
+  return Object.entries(headers ?? {})
+    .filter(([name]) => /^(authorization|cookie|x-token|x-(?:auth|session|access|refresh|api|actor)(?:[-_].*)?)$/i.test(name))
+    .map(([name, value]) => `${name.toLowerCase()}:${value}`)
+    .sort()
 }
 
 // ─── Executor: run a step via the HTTP tool (real tool output) ───────────
@@ -208,6 +239,11 @@ async function executeOnce(step: AttackStep): Promise<StepExecutionResult> {
       headers: r.value?.headers,
       body: r.value?.body,
       durationMs: r.value?.durationMs,
+      extra: {
+        ...(r.value?.evidenceId ? { evidenceId: r.value.evidenceId } : {}),
+        ...(r.value?.capturedRequestId ? { capturedRequestId: r.value.capturedRequestId } : {}),
+        ...(r.value?.executionId ? { executionId: r.value.executionId } : {}),
+      },
     }
   } catch (e: any) {
     return { step, ok: false, error: e?.message ?? String(e) }
@@ -260,12 +296,100 @@ export async function runPrimitiveById(
   primitiveId: string,
   context: Record<string, any>,
   options?: { commit?: boolean; gate?: EvidenceGate },
-): Promise<{ ok: boolean; skipped?: boolean; reason?: string; result?: PrimitiveResult; available?: string[] }> {
+): Promise<{ ok: boolean; skipped?: boolean; reason?: string; result?: PrimitiveResult; available?: string[]; experiment?: { id: string; phase: 'initial' | 'retest'; outcome: ExperimentOutcome } }> {
   const primitive = getPrimitive(primitiveId)
   if (!primitive) {
     return { ok: false, available: listPrimitives().map(p => p.id), result: undefined }
   }
   const ctx = buildContext(context)
+  let actionLimitExperiment: ExperimentNode | undefined
+  let actionLimitBaseline: ReturnType<typeof coreEvidenceLedger.get>
+  let actionLimitPhase: 'initial' | 'retest' = 'initial'
+  if (ctx.experimentId) {
+    if (primitiveId !== 'businessLogicAbuse') {
+      return { ok: false, reason: 'Only businessLogicAbuse can be attached to an action-limit experiment.' }
+    }
+    const store = getGlobalGraphStore()
+    const experiment = store.getNode(String(ctx.experimentId)) as ExperimentNode | undefined
+    if (!experiment || experiment.type !== NodeType.EXPERIMENT) {
+      return { ok: false, reason: `Action-limit experiment not found: ${String(ctx.experimentId)}` }
+    }
+    const hypothesis = store.getNode(experiment.properties.hypothesisId) as { properties?: { kind?: string; businessRule?: Record<string, unknown> } } | undefined
+    const rule = hypothesis?.properties?.businessRule
+    const state = ctx.state as Record<string, unknown> | undefined
+    const capturedRequestId = String(ctx.capturedRequestId ?? '')
+    const phase = ctx.experimentPhase === 'retest' ? 'retest' : 'initial'
+    actionLimitPhase = phase
+    if (hypothesis?.properties?.kind !== 'action_limit' || !rule || rule.kind !== 'action_limit') {
+      return { ok: false, reason: 'The selected experiment is not backed by an observed action-limit rule.' }
+    }
+    const stateMatchesRule = state?.blaKind === 'action_limit'
+      && state.allowedCount === rule.allowedCount
+      && state.iterations === Number(rule.allowedCount) + 1
+      && state.ruleEvidenceUrl === rule.ruleUrl
+      && state.ruleText === rule.ruleText
+      && state.baselineEvidenceId
+      && state.baselineUrl
+      && state.stateKey
+      && typeof state.baselineValue === 'number'
+    if (!stateMatchesRule || capturedRequestId !== rule.actionRequestId
+      || String(ctx.endpoint?.url ?? ctx.target ?? '') !== rule.actionUrl
+      || String(ctx.endpoint?.method ?? '').toUpperCase() !== String(rule.actionMethod).toUpperCase()) {
+      return { ok: false, reason: 'Action-limit context must match the exact observed rule, action request, method, endpoint, limit, and a captured numeric baseline.' }
+    }
+    const baseline = coreEvidenceLedger.get(String(state.baselineEvidenceId))
+    if (!baseline || !urlMatchesEndpoint(String(state.baselineUrl), baseline.observed?.url)
+      || !sameExactUrl(String(state.baselineUrl), baseline.observed?.url)
+      || baseline.observed?.status == null || baseline.observed.status < 200 || baseline.observed.status >= 300
+      || numericJsonField(baseline.observed.responseBody ?? baseline.data, String(state.stateKey)) !== state.baselineValue) {
+      return { ok: false, reason: 'A fresh successful baselineEvidenceId from the exact state URL is required before replay.' }
+    }
+    let sameOrigin = false
+    try { sameOrigin = new URL(String(state.baselineUrl)).origin === new URL(String(rule.actionUrl)).origin } catch { /* invalid evidence URLs fail closed */ }
+    if (!sameOrigin) {
+      return { ok: false, reason: 'The state baseline must be on the same target origin as the captured action.' }
+    }
+    if (phase === 'initial') {
+      if (!['planned', 'blocked', 'rejected'].includes(experiment.properties.status)) {
+        return { ok: false, reason: `Action-limit experiment is not executable in status ${experiment.properties.status}` }
+      }
+    } else {
+      const initialOutcome = experiment.properties.outcome
+      const initialOracle = experiment.properties.oracle
+      if (initialOutcome?.status !== 'proven' || initialOracle?.type !== 'action-limit') {
+        return { ok: false, reason: 'A proven initial action-limit experiment is required before independent retest.' }
+      }
+      const initialRefs = initialOutcome.proof.evidenceRefs
+      if (initialRefs.includes(String(state.baselineEvidenceId))) {
+        return { ok: false, reason: 'Retest requires a newly captured baselineEvidenceId that was not used by the initial proof.' }
+      }
+      const latestInitialEvidenceAt = Math.max(...initialRefs
+        .map((id: string) => coreEvidenceLedger.get(id)?.timestamp ?? 0))
+      if (!latestInitialEvidenceAt || baseline.timestamp < latestInitialEvidenceAt) {
+        return { ok: false, reason: 'Retest requires a fresh baseline captured after the initial proof.' }
+      }
+    }
+    actionLimitBaseline = baseline
+    const ruleEvidence = coreEvidenceLedger.all().find(item => item.observed?.captureId === rule.ruleCaptureId)
+    if (!ruleEvidence || !urlMatchesEndpoint(String(rule.ruleUrl), ruleEvidence.observed?.url)
+      || !(ruleEvidence.observed?.responseBody ?? ruleEvidence.data).includes(String(rule.ruleText))) {
+      return { ok: false, reason: 'The captured response containing the exact action-limit rule is not available in the evidence ledger.' }
+    }
+    actionLimitExperiment = experiment
+  }
+
+  if (ctx.sessionRef && !ctx.sessionHeaders) {
+    const manager = (await import('../http/session-manager')).getGlobalSessionManager()
+    const endpointUrl = ctx.endpoint?.url ?? ctx.target
+    ctx.sessionHeaders = manager.getAllHeaders(String(ctx.sessionRef), endpointUrl)
+  }
+  if (actionLimitExperiment && actionLimitBaseline) {
+    const baselineIdentity = identityHeaders(actionLimitBaseline.observed?.requestHeaders)
+    const replayIdentity = identityHeaders(ctx.sessionHeaders)
+    if (!baselineIdentity.length || JSON.stringify(baselineIdentity) !== JSON.stringify(replayIdentity)) {
+      return { ok: false, reason: 'Action-limit baseline and replay must prove the same actor; provide matching sessionRef or captured session headers.' }
+    }
+  }
   if (isBountyProfile() && (ctx.sessionHeaders || ctx.altSessionHeaders)) {
     const manager = (await import('../http/session-manager')).getGlobalSessionManager()
     const endpointUrl = ctx.endpoint?.url ?? ctx.target
@@ -287,6 +411,64 @@ export async function runPrimitiveById(
   if (getEngagementServices()) setEvidenceGateForFindings(gate)
 
   const result = await runPrimitive(primitive, ctx, httpExecutor, gate)
+
+  let actionLimitOutcome: ExperimentOutcome | undefined
+  if (actionLimitExperiment) {
+    const state = ctx.state as Record<string, unknown>
+    const hypothesis = getGlobalGraphStore().getNode(actionLimitExperiment.properties.hypothesisId) as { properties?: { businessRule?: Record<string, unknown> } } | undefined
+    const rule = hypothesis?.properties?.businessRule ?? {}
+    const actionEvidenceIds = result.evidence
+      .filter(item => item.kind === 'response' && typeof item.evidenceId === 'string')
+      .map(item => item.evidenceId!)
+    const oracle: EvidenceOracle = {
+      type: 'action-limit',
+      baselineEvidenceId: String(state.baselineEvidenceId),
+      baselineUrl: String(state.baselineUrl),
+      actionEvidenceIds,
+      ruleCaptureId: String(rule.ruleCaptureId),
+      ruleText: String(rule.ruleText),
+      ruleUrl: String(rule.ruleUrl),
+      actionUrl: String(rule.actionUrl),
+      actionMethod: String(rule.actionMethod) as 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+      allowedCount: Number(rule.allowedCount),
+      stateKey: String(state.stateKey),
+      baselineValue: Number(state.baselineValue),
+    }
+    const evidence = coreEvidenceLedger.all()
+    if (actionLimitPhase === 'initial') {
+      actionLimitOutcome = evaluateExperimentOracle(actionLimitExperiment.id, oracle, evidence, 'initial')
+    } else {
+      const initialOutcome = actionLimitExperiment.properties.outcome!
+      const initialOracle = actionLimitExperiment.properties.oracle!
+      if (initialOutcome.status !== 'proven' || initialOracle.type !== 'action-limit') {
+        return { ok: false, reason: 'The initial action-limit proof is no longer valid; restart the experiment from fresh observations.' }
+      }
+      actionLimitOutcome = evaluateIndependentRetest(actionLimitExperiment.id, initialOracle, initialOutcome.proof, oracle, evidence)
+    }
+    if (result.confirmed !== (actionLimitOutcome.status === 'proven')) {
+      const evidenceRefs = 'proof' in actionLimitOutcome
+        ? actionLimitOutcome.proof.evidenceRefs
+        : 'evidenceRefs' in actionLimitOutcome ? actionLimitOutcome.evidenceRefs : []
+      actionLimitOutcome = {
+        status: 'inconclusive',
+        reason: 'The primitive result and independently checked canonical evidence did not agree.',
+        evidenceRefs,
+      }
+    }
+    if (actionLimitPhase === 'initial') {
+      actionLimitExperiment.properties.oracle = oracle
+      actionLimitExperiment.properties.outcome = actionLimitOutcome
+      actionLimitExperiment.properties.status = actionLimitOutcome.status === 'proven'
+        ? 'interesting'
+        : actionLimitOutcome.status === 'disproven' ? 'rejected' : 'blocked'
+    } else {
+      actionLimitExperiment.properties.retest = { oracle, outcome: actionLimitOutcome, evaluatedAt: new Date().toISOString() }
+      actionLimitExperiment.properties.status = actionLimitOutcome.status === 'proven' ? 'interesting' : 'blocked'
+    }
+    actionLimitExperiment.properties.resultSummary = `${actionLimitPhase}:${actionLimitOutcome.status}${actionLimitOutcome.status === 'inconclusive' ? `: ${actionLimitOutcome.reason}` : ''}`
+    actionLimitExperiment.updatedAt = Date.now()
+    await getGlobalGraphStore().save()
+  }
 
   // WS-E: persist render traces as RENDERED_ELEMENT graph nodes and surface a
   // compact render summary in the evidence the LLM (and report) consumes.
@@ -324,7 +506,12 @@ export async function runPrimitiveById(
     result.evidence.push({ kind: 'render', label: `render trace ${endpointUrl ?? ''}`, data: summary })
   }
 
-  if (result.confirmed && options?.commit !== false) {
+  const verifiedActionLimitRetest = actionLimitExperiment && actionLimitPhase === 'retest' && actionLimitOutcome?.status === 'proven'
+  const promotionExperimentIds = verifiedActionLimitRetest && actionLimitExperiment
+    ? [actionLimitExperiment.id]
+    : actionLimitExperiment ? [] : Array.isArray(ctx.experimentIds) ? ctx.experimentIds : []
+  const shouldCommit = result.confirmed && options?.commit !== false
+  if (shouldCommit) {
     const store = getGlobalWorkspace().getGraphStore()
     const findingUrl = result.finding?.request?.url ?? ctx.target ?? ctx.endpoint?.url ?? ''
 
@@ -386,14 +573,20 @@ export async function runPrimitiveById(
       // Escalation of an already proven finding carries its experiment
       // provenance into the commit gate. Fresh direct primitive calls remain
       // candidates until the research/retest path creates an experiment.
-      ...(Array.isArray(ctx.experimentIds) && ctx.experimentIds.length > 0
-        ? { experimentIds: ctx.experimentIds }
-        : {}),
+      ...(promotionExperimentIds.length ? { experimentIds: promotionExperimentIds } : {}),
       // W1: when the oracle proved weaponizability, persist a first-class
       // EXPLOIT_PROOF node (real request/response/impact) via writeFinding.
       ...(proof ? { exploitProof: proof } : {}),
     })
     if (!commitResult?.ok) {
+      if (actionLimitExperiment && actionLimitPhase === 'initial' && actionLimitOutcome?.status === 'proven') {
+        return {
+          ok: true,
+          reason: 'Initial action-limit proof is stored as a candidate. Run a fresh baseline and businessLogicAbuse retest before promotion.',
+          result,
+          experiment: { id: actionLimitExperiment.id, phase: actionLimitPhase, outcome: actionLimitOutcome },
+        }
+      }
       return {
         ok: false,
         reason: commitResult?.error ?? 'primitive confirmation was not persisted as a finding',
@@ -402,7 +595,11 @@ export async function runPrimitiveById(
     }
   }
 
-  return { ok: true, result }
+  return {
+    ok: true,
+    result,
+    ...(actionLimitExperiment && actionLimitOutcome ? { experiment: { id: actionLimitExperiment.id, phase: actionLimitPhase, outcome: actionLimitOutcome } } : {}),
+  }
 }
 
 function evidenceType(kind: EvidenceRef['kind']): 'text' | 'screenshot' | 'har_entry' | 'raw_request' | 'raw_response' {
@@ -419,7 +616,7 @@ function evidenceType(kind: EvidenceRef['kind']): 'text' | 'screenshot' | 'har_e
 
 export const runPrimitiveTool = createTool({
   id: 'runPrimitive',
-  description: `Run a technique primitive against a target context. Primitives: ${PRIMITIVE_IDS.join(', ')}. For businessLogicAbuse, provide a capturedRequestId, a target-stated limit, and captured rule/baseline evidence; repeats are bounded to ten and confirm only on a measured over-limit state change. Returns a PrimitiveResult with evidence verified against the EvidenceGate (T2.5).`,
+  description: `Run a technique primitive against a target context. Primitives: ${PRIMITIVE_IDS.join(', ')}. For planned action-limit work, attach context.experimentId and context.experimentPhase (initial, then retest), a fresh successful baselineEvidenceId, the exact observed capturedRequestId, and the same actor session; repeats are bounded and finding promotion waits for an independent proven retest.`,
   inputSchema: z.object({
     primitiveId: z.enum(PRIMITIVE_IDS).describe('Primitive id to run'),
     context: z.object({
@@ -439,6 +636,8 @@ export const runPrimitiveTool = createTool({
       workflowSteps: z.array(z.string()).optional(),
       payloads: z.array(z.string()).optional(),
       state: z.record(z.string(), z.any()).optional(),
+      experimentId: z.string().optional().describe('Attach this primitive run to its planned research experiment. Required for the typed action-limit initial/retest lifecycle.'),
+      experimentPhase: z.enum(['initial', 'retest']).optional().describe('For attached action-limit work, use initial once and retest only with a fresh baseline and fresh traffic.'),
       authRequired: z.boolean().optional(),
       authType: z.string().optional(),
       useCase: z.string().optional().describe('Analyser-assigned endpoint use-case (single source of endpoint semantics). Route on this, not URL names.'),
@@ -478,6 +677,7 @@ export const runPrimitiveTool = createTool({
       reason: res.reason,
       available: res.available,
       result: res.result,
+      experiment: res.experiment,
     }
   },
 })
@@ -504,7 +704,7 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
 
   return createTool({
     id: 'runPrimitive',
-    description: `Run an authorized technique primitive. Allowed: ${valid.join(', ')}. businessLogicAbuse requires a capturedRequestId, target-stated limit, and captured rule/baseline evidence; repeats are bounded to ten and confirm only on a measured state change. Returns a PrimitiveResult with evidence verified against the EvidenceGate.`,
+    description: `Run an authorized technique primitive. Allowed: ${valid.join(', ')}. Planned action-limit work should include context.experimentId and context.experimentPhase (initial, then retest), a fresh successful baselineEvidenceId, the exact observed capturedRequestId, and the same actor session; finding promotion waits for an independent proven retest.`,
     inputSchema: z.object({
       primitiveId: z.enum(ids).describe('Primitive id to run (skill-scoped)'),
       context: z.object({
@@ -524,6 +724,8 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
         workflowSteps: z.array(z.string()).optional(),
         payloads: z.array(z.string()).optional(),
         state: z.record(z.string(), z.any()).optional(),
+        experimentId: z.string().optional().describe('Attach this primitive run to its planned research experiment.'),
+        experimentPhase: z.enum(['initial', 'retest']).optional().describe('For action-limit work, use initial once and retest only with fresh evidence.'),
        experimentIds: z.array(z.string()).optional().describe('Proven experiment IDs authorizing finding promotion for an escalation run.'),
         authRequired: z.boolean().optional(),
         authType: z.string().optional(),
@@ -572,6 +774,7 @@ export function createRunPrimitiveTool(allowedPrimitiveIds: string[]) {
         reason: res.reason,
         available: valid,
         result: res.result,
+        experiment: res.experiment,
       }
     },
   })

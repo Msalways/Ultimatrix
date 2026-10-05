@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateExperimentOracle } from '../../src/research/experiment-oracle'
+import { evaluateExperimentOracle, evaluateIndependentRetest } from '../../src/research/experiment-oracle'
 import type { EvidenceItem } from '../../src/intelligence/evidence-ledger'
 
 const evidence = (id: string, data: string, observed: EvidenceItem['observed'] = {}, session?: string): EvidenceItem => ({
@@ -157,5 +157,59 @@ describe('evaluateExperimentOracle', () => {
       method: 'GET', url: 'https://app.test/other', status: 200,
       responseBody: '{"account":{"balance":34}}', actorFingerprint: 'actor-a',
     })])).toMatchObject({ status: 'inconclusive' })
+  })
+
+  it('proves an action-limit overrun only from the stated rule, same actor, and ordered captured actions', () => {
+    const oracle = {
+      type: 'action-limit' as const,
+      baselineEvidenceId: 'state-base', baselineUrl: 'https://app.test/account',
+      actionEvidenceIds: ['allowed', 'over-limit'], ruleCaptureId: 'cap-rule',
+      ruleText: 'This offer may only be used once.', ruleUrl: 'https://app.test/terms',
+      actionUrl: 'https://app.test/api/redeem', actionMethod: 'POST' as const,
+      allowedCount: 1, stateKey: 'balance', baselineValue: 0,
+    }
+    const actorHeaders = { 'x-session-id': 'actor-a' }
+    const items = [
+      evidence('rule-evidence', 'This offer may only be used once.', { url: 'https://app.test/terms', status: 200, captureId: 'cap-rule' }),
+      evidence('state-base', '{"balance":0}', { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: '{"balance":0}', requestHeaders: actorHeaders, captureId: 'cap-1' }),
+      evidence('allowed', '{"balance":1}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":1}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-2', executionId: 'run-allowed' }),
+      evidence('over-limit', '{"balance":2}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":2}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-3', executionId: 'run-over' }),
+    ]
+
+    expect(evaluateExperimentOracle('exp', oracle, items)).toMatchObject({ status: 'proven', proof: { phase: 'initial', evidenceRefs: ['state-base', 'allowed', 'over-limit'] } })
+    expect(evaluateExperimentOracle('exp', oracle, [
+      ...items.slice(0, 3),
+      evidence('over-limit', '{"balance":2}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":2}', requestBody: '{"code":"ONE"}', requestHeaders: { authorization: 'Bearer actor-b' }, captureId: 'cap-3' }),
+    ])).toMatchObject({ status: 'inconclusive' })
+    expect(evaluateExperimentOracle('exp', oracle, [
+      ...items.slice(0, 3),
+      evidence('over-limit', 'limit reached', { method: 'POST', url: 'https://app.test/api/redeem', status: 409, requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-3' }),
+    ])).toMatchObject({ status: 'disproven' })
+  })
+
+  it('requires a fresh baseline and action traffic for action-limit retest', () => {
+    const oracle = {
+      type: 'action-limit' as const,
+      baselineEvidenceId: 'base-1', baselineUrl: 'https://app.test/account',
+      actionEvidenceIds: ['allowed-1', 'over-1'], ruleCaptureId: 'cap-rule',
+      ruleText: 'This offer may only be used once.', ruleUrl: 'https://app.test/terms',
+      actionUrl: 'https://app.test/api/redeem', actionMethod: 'POST' as const,
+      allowedCount: 1, stateKey: 'balance', baselineValue: 0,
+    }
+    const actorHeaders = { authorization: 'Bearer actor-a' }
+    const items = [
+      evidence('rule-evidence', 'This offer may only be used once.', { url: 'https://app.test/terms', status: 200, captureId: 'cap-rule' }),
+      evidence('base-1', '{"balance":0}', { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: '{"balance":0}', requestHeaders: actorHeaders, captureId: 'cap-1' }),
+      evidence('allowed-1', '{"balance":1}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":1}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-2', executionId: 'initial-a' }),
+      evidence('over-1', '{"balance":2}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":2}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-3', executionId: 'initial-b' }),
+      evidence('base-2', '{"balance":2}', { method: 'GET', url: 'https://app.test/account', status: 200, responseBody: '{"balance":2}', requestHeaders: actorHeaders, captureId: 'cap-4' }),
+      evidence('allowed-2', '{"balance":3}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":3}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-5', executionId: 'retest-a' }),
+      evidence('over-2', '{"balance":4}', { method: 'POST', url: 'https://app.test/api/redeem', status: 200, responseBody: '{"balance":4}', requestBody: '{"code":"ONE"}', requestHeaders: actorHeaders, captureId: 'cap-6', executionId: 'retest-b' }),
+    ]
+    const initial = evaluateExperimentOracle('exp', oracle, items)
+    expect(initial.status).toBe('proven')
+    const fresh = { ...oracle, baselineEvidenceId: 'base-2', actionEvidenceIds: ['allowed-2', 'over-2'], baselineValue: 2 }
+    expect(evaluateIndependentRetest('exp', oracle, (initial as any).proof, fresh, items)).toMatchObject({ status: 'proven', proof: { phase: 'retest' } })
+    expect(evaluateIndependentRetest('exp', oracle, (initial as any).proof, oracle, items)).toMatchObject({ status: 'inconclusive' })
   })
 })

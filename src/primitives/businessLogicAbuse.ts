@@ -147,6 +147,7 @@ export const businessLogicAbuse: TechniquePrimitive = {
       kind: 'response' as const,
       label: `${result.step.request.method} ${result.step.request.url} → ${result.status}`,
       data: (result.body ?? '').slice(0, 1200),
+      ...(typeof result.extra?.evidenceId === 'string' ? { evidenceId: result.extra.evidenceId } : {}),
     }))
 
     return {

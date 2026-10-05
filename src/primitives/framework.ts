@@ -188,6 +188,8 @@ export interface EvidenceRef {
   label: string
   /** The actual snippet that was (or will be) recorded into the EvidenceGate. */
   data: string
+  /** Canonical EvidenceLedger ID when the result came from a captured HTTP call. */
+  evidenceId?: string
   /** Optional correlation id (e.g. OAST callback id, step id). */
   ref?: string
 }

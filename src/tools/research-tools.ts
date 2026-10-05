@@ -43,6 +43,13 @@ const evidenceOracleSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('cross-identity'), victimEvidenceId: evidenceIdSchema, attackerEvidenceId: evidenceIdSchema, victimActorRef: z.string(), attackerActorRef: z.string(), marker: z.string().min(1) }),
   z.object({ type: z.literal('state-transition'), beforeEvidenceId: evidenceIdSchema, afterEvidenceId: evidenceIdSchema, stateKey: z.string().describe('Observed state key, JSON dotted path, or body:<exact unique text>'), beforeValue: z.string(), afterValue: z.string() }),
+  z.object({
+    type: z.literal('action-limit'), baselineEvidenceId: evidenceIdSchema, baselineUrl: z.string().url(),
+    actionEvidenceIds: z.array(evidenceIdSchema).min(1), ruleCaptureId: z.string().min(1),
+    ruleText: z.string().min(8), ruleUrl: z.string().url(), actionUrl: z.string().url(),
+    actionMethod: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']), allowedCount: z.number().int().min(0).max(9),
+    stateKey: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), baselineValue: z.number().finite(),
+  }),
   z.object({ type: z.literal('oast-callback'), evidenceId: evidenceIdSchema, correlationToken: z.string().min(1) }),
   z.object({ type: z.literal('timing-differential'), baselineEvidenceIds: z.array(evidenceIdSchema).min(1), mutationEvidenceIds: z.array(evidenceIdSchema).min(1), minSamples: z.number().int().positive(), minDeltaMs: z.number().nonnegative() }),
   z.object({ type: z.literal('browser-effect'), evidenceId: evidenceIdSchema, effectKey: z.string(), expectedValue: z.string() }),
@@ -346,6 +353,15 @@ export const executePlannedExperiment = createTool({
       node.updatedAt = Date.now()
       await store.save()
       return { ok: false, code: 'CONCURRENCY_REQUIRED', error: reason, experimentId }
+    }
+    if (hypothesisKind === 'action_limit') {
+      return {
+        ok: false,
+        code: 'SPECIALIZED_PRIMITIVE_REQUIRED',
+        error: 'Action-limit experiments run through runPrimitive with businessLogicAbuse so the bounded replay and typed initial/retest proof stay attached to this experiment.',
+        experimentId,
+        next: 'Call runPrimitive with primitiveId=businessLogicAbuse, context.experimentId, context.experimentPhase, the exact capturedRequestId from the observed business rule, and a fresh baselineEvidenceId/state snapshot.',
+      }
     }
     const actorSessions = getGlobalSessionManager().listSessions()
     // Cross-user hypotheses (IDOR / object-level access control) are only

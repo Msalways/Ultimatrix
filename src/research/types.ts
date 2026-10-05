@@ -121,6 +121,7 @@ export type EvidenceOracle =
   | { type: 'database-error-differential'; baselineEvidenceId: string; mutationEvidenceId: string; inputLocation: 'query' | 'json' | 'form'; parameter: string }
   | { type: 'cross-identity'; victimEvidenceId: string; attackerEvidenceId: string; victimActorRef: string; attackerActorRef: string; marker: string }
   | { type: 'state-transition'; beforeEvidenceId: string; afterEvidenceId: string; stateKey: string; beforeValue: string; afterValue: string }
+  | { type: 'action-limit'; baselineEvidenceId: string; baselineUrl: string; actionEvidenceIds: string[]; ruleCaptureId: string; ruleText: string; ruleUrl: string; actionUrl: string; actionMethod: HttpMethod; allowedCount: number; stateKey: string; baselineValue: number }
   | { type: 'oast-callback'; evidenceId: string; correlationToken: string }
   | { type: 'timing-differential'; baselineEvidenceIds: string[]; mutationEvidenceIds: string[]; minSamples: number; minDeltaMs: number }
   | { type: 'browser-effect'; evidenceId: string; effectKey: string; expectedValue: string }
