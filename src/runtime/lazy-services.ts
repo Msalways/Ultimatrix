@@ -1,5 +1,5 @@
 import type { MastraMemory } from '@mastra/core/memory'
-import type { UltimatrixConfig } from '../config'
+import { DEFAULTS, type UltimatrixConfig } from '../config'
 import type { Blackboard } from '../core/blackboard'
 import type { DynamicToolRegistry } from '../extensions/tool-registry'
 import type { ModelSelector } from '../models/selector'
@@ -96,20 +96,50 @@ export class LazySolverServices {
   // browser provider has failed, a model fallback must consume that fact
   // instead of launching the same 45s startup attempt again.
   private lastObservationState?: ObservationState
-  private coverageCampaign?: Promise<CampaignResult>
-  private coverageRunId?: string
+  private coverageSession?: {
+    runId?: string
+    researchInputRevision?: string
+    campaign?: Promise<CampaignResult>
+    requestsUsed: number
+    elapsedMs: number
+  }
 
   constructor(private readonly options: LazySolverServicesOptions) {}
 
-  /** One campaign per interactive run/retry sequence; later turns reuse new captures and sessions. */
-  runCoverageCampaign(gate: EvidenceGate, runId?: string): Promise<CampaignResult> {
-    if (!this.coverageCampaign || this.coverageRunId !== runId) {
-      this.coverageRunId = runId
-      this.coverageCampaign = import('../campaign/campaign-tool').then(({ runCampaignAssessment }) =>
-        runCampaignAssessment(this.options.config, gate),
-      )
+  /** Reuse a revision in place while keeping refreshed campaigns inside one run's budget. */
+  runCoverageCampaign(gate: EvidenceGate, runId?: string, researchInputRevision?: string): Promise<CampaignResult> {
+    let session = this.coverageSession
+    if (!session || session.runId !== runId) {
+      session = { runId, requestsUsed: 0, elapsedMs: 0 }
+      this.coverageSession = session
     }
-    return this.coverageCampaign
+    if (session.campaign && session.researchInputRevision === researchInputRevision) return session.campaign
+
+    const previous = session.campaign
+    session.researchInputRevision = researchInputRevision
+    session.campaign = (async () => {
+      await previous?.catch(() => undefined)
+      const maxRequests = this.options.config.campaign?.maxRequests ?? DEFAULTS.campaign.maxRequests
+      const maxDurationMs = this.options.config.campaign?.maxDurationMs ?? DEFAULTS.campaign.maxDurationMs
+      const remainingDurationMs = Math.max(0, maxDurationMs - session.elapsedMs)
+      const startedAt = Date.now()
+      try {
+        const { runCampaignAssessment } = await import('../campaign/campaign-tool')
+        const result = await runCampaignAssessment(this.options.config, gate, {
+          maxRequests: remainingDurationMs > 0 ? Math.max(0, maxRequests - session.requestsUsed) : 0,
+          maxDurationMs: remainingDurationMs,
+        })
+        session.requestsUsed += result.requestsUsed
+        return result
+      } catch (error) {
+        // A failed runner may already have sent traffic; exhaust this run's request budget safely.
+        session.requestsUsed = maxRequests
+        throw error
+      } finally {
+        session.elapsedMs += Math.max(0, Date.now() - startedAt)
+      }
+    })()
+    return session.campaign
   }
 
   setTurnObservers(observers: { onSpiderEvent?: (event: SpiderRuntimeEvent) => void; onSpiderRuntime?: (runtime: SpiderRuntime) => void }): void {

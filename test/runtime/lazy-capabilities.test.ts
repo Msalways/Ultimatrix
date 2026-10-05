@@ -3,9 +3,9 @@ import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
 import { buildRuntimeEnvelope, runtimeEnvelopeTokenBudget, sanitizeDurableContext } from '../../src/runtime/context-envelope'
 import { LazySolverServices } from '../../src/runtime/lazy-services'
 import { EvidenceGate } from '../../src/intelligence/evidence-gate'
-import { __setTestFallback } from '../../src/runtime/engagement-context'
-import { SessionManager } from '../../src/http/session-manager'
-import { CapturedRequestStore } from '../../src/capture/captured-request-store'
+
+const { runCampaignAssessmentMock } = vi.hoisted(() => ({ runCampaignAssessmentMock: vi.fn() }))
+vi.mock('../../src/campaign/campaign-tool', () => ({ runCampaignAssessment: runCampaignAssessmentMock }))
 
 const descriptor = {
   id: 'coldTool',
@@ -85,32 +85,39 @@ describe('bounded runtime context', () => {
 })
 
 describe('coverage campaign turn scoping', () => {
-  afterEach(() => __setTestFallback(null))
+  afterEach(() => {
+    runCampaignAssessmentMock.mockReset()
+    vi.useRealTimers()
+  })
 
-  it('reuses work for retries in one turn and refreshes on a later turn', async () => {
-    const graph = {
-      queryNodes: () => [], getAllEdges: () => [], getNode: () => undefined,
-      getTargetSummary: () => ({ totalPages: 0, totalEndpoints: 0, totalFindings: 0, totalTests: 0, authFlows: 0, rbacRoles: 0 }),
-      upsertNode: (node: unknown) => node, save: async () => {},
-    }
-    __setTestFallback({
-      graph, httpSessions: new SessionManager(), capturedRequests: new CapturedRequestStore(),
-      findingState: { evidenceBuffer: new Map(), evidenceGate: null },
-    } as any)
+  it('refreshes changed research and keeps request/time budgets cumulative per run', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    let calls = 0
+    runCampaignAssessmentMock.mockImplementation(async (_config: unknown, _gate: unknown, _settings: { maxRequests: number; maxDurationMs: number }) => {
+      vi.advanceTimersByTime(4_000)
+      return { requestsUsed: [4, 3, 1, 0, 0][calls++], status: 'partial' } as any
+    })
     const services = new LazySolverServices({
-      config: { provider: 'test', campaign: { maxRequests: 100, maxDurationMs: 10_000 } } as any,
+      config: { provider: 'test', campaign: { maxRequests: 10, maxDurationMs: 10_000 } } as any,
       target: 'http://target.test', skillRegistry: {} as any,
       extensionRegistry: {} as any,
     })
-    const firstGate = new EvidenceGate()
-    const firstRun = services.runCoverageCampaign(firstGate, 'turn-1')
-    expect(services.runCoverageCampaign(firstGate, 'turn-1')).toBe(firstRun)
-    const secondGate = new EvidenceGate()
-    const secondRun = services.runCoverageCampaign(secondGate, 'turn-2')
+    const gate = new EvidenceGate()
+    const first = services.runCoverageCampaign(gate, 'run-1', 'revision-1')
+    expect(services.runCoverageCampaign(gate, 'run-1', 'revision-1')).toBe(first)
+    await first
+    await services.runCoverageCampaign(gate, 'run-1', 'revision-2')
+    await services.runCoverageCampaign(gate, 'run-1', 'revision-3')
+    await services.runCoverageCampaign(gate, 'run-1', 'revision-4')
 
-    await Promise.all([firstRun, secondRun])
-    expect((await firstRun).status).toBe('partial')
-    expect((await secondRun).status).toBe('partial')
-    __setTestFallback(null)
+    expect(runCampaignAssessmentMock.mock.calls.map((call: unknown[]) => call[2])).toEqual([
+      { maxRequests: 10, maxDurationMs: 10_000 },
+      { maxRequests: 6, maxDurationMs: 6_000 },
+      { maxRequests: 3, maxDurationMs: 2_000 },
+      { maxRequests: 0, maxDurationMs: 0 },
+    ])
+    await services.runCoverageCampaign(gate, 'run-2', 'revision-4')
+    expect(runCampaignAssessmentMock.mock.calls[4]?.[2]).toEqual({ maxRequests: 10, maxDurationMs: 10_000 })
   })
 })

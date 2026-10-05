@@ -245,7 +245,8 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
   })
   const authSchemes = graphStore.queryNodes(NodeType.AUTH_SCHEME) as AuthSchemeNode[]
   const rbacRoles = graphStore.queryNodes(NodeType.RBAC_ROLE) as RBACRoleNode[]
-  const hypotheses = (graphStore.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]).filter(
+  const allHypotheses = graphStore.queryNodes(NodeType.HYPOTHESIS) as HypothesisNode[]
+  const hypotheses = allHypotheses.filter(
     h => h.properties.status === 'open' || h.properties.status === 'planned',
   )
   const humanHypotheses = hypotheses.filter(h => h.properties.origin === 'human')
@@ -301,10 +302,12 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
 
     // Research hypotheses store endpoint node IDs; human-added hypotheses may
     // store URLs. Match both so the target model can affect campaign ordering.
-    const hypBoost = hypotheses.filter(h => {
+    const targetsEndpoint = (h: HypothesisNode) => {
       const targets = h.properties.targetEndpoints ?? []
       return targets.includes(ep.id) || targets.includes(url)
-    }).length
+    }
+    const targetHypothesisIds = allHypotheses.filter(targetsEndpoint).map(h => h.id).sort()
+    const hypBoost = hypotheses.filter(targetsEndpoint).length
     const factBoost = facts.filter(f => f.properties.description.includes(url)).length
 
     for (const role of ctx.roles) {
@@ -356,8 +359,14 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
             for (const input of primitiveInputs) {
               const inputId = encodeURIComponent(`${input.location}:${input.name}`)
               const actorId = encodeURIComponent(actor.sessionRef ?? actor.actor)
+              const learnedContext = [
+                ...(targetHypothesisIds.length ? [`hypotheses:${encodeURIComponent(targetHypothesisIds.join(','))}`] : []),
+                ...(primitive.id === 'workflowBypass' && workflow
+                  ? [`workflow:${encodeURIComponent(workflow.id)}:${encodeURIComponent(workflow.terminalRequestId)}`]
+                  : []),
+              ].join(':')
               slices.push({
-                id: `slice:${ep.id}:${inputId}:${encodeURIComponent(role)}:${actorId}:${encodeURIComponent(state)}:${encodeURIComponent(primitive.id)}`,
+                id: `slice:${ep.id}:${inputId}:${encodeURIComponent(role)}:${actorId}:${encodeURIComponent(state)}:${encodeURIComponent(primitive.id)}${learnedContext ? `:${learnedContext}` : ''}`,
                 endpoint: { id: ep.id, url, method: ep.properties.method },
                 input,
                 params: input.name ? [input.name] : [],

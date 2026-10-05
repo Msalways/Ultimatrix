@@ -697,7 +697,7 @@ export async function solve(
     crawl?: () => Promise<unknown>;
     crawlState?: unknown;
     taskStates?: ReadonlyArray<{ taskId: string; status: string }>;
-    runCoverageCampaign?: (gate: EvidenceGate) => Promise<CampaignResult>;
+    runCoverageCampaign?: (gate: EvidenceGate, runId?: string, researchInputRevision?: string) => Promise<CampaignResult>;
     /** Stop a detached crawl (implemented by LazySolverServices). */
     abortCrawl?: (reason?: string) => void;
   } | undefined;
@@ -912,7 +912,7 @@ export async function solve(
   } else if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
     emitMessage({ kind: 'event', event: 'coverage.started', label: 'running deterministic input coverage', status: 'running' })
     try {
-      campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId)
+      campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId, researchInputRevision)
       board.addFact(
         `Deterministic coverage ${campaignResult.status}: ${campaignResult.coverage.slicesExecuted} unit(s), ${campaignResult.requestsUsed} HTTP request(s), ${campaignResult.remainingSlices.length} pending unit(s).`,
         'coverage',

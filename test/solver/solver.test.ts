@@ -768,6 +768,7 @@ describe('solve', () => {
       expect(markCompleted).toHaveBeenCalledWith('revision-current')
       expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
       expect(runCoverageCampaign).toHaveBeenCalledOnce()
+      expect(runCoverageCampaign.mock.calls[0]?.[2]).toBe('revision-current')
     } finally {
       mapSpy.mockRestore()
       planSpy.mockRestore()

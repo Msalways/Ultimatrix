@@ -390,6 +390,8 @@ The research map imports operator-demonstrated and browser-observed workflows wi
 
 New captured traffic or changes to observed endpoints, UI actions, inputs, or demonstrated workflows invalidate the solver's cached research map and experiment plan. The solver refreshes them before its next active attack, and it rejects a map build if target observations change while that map is being built.
 
+Coverage refresh follows the same research revision: unchanged retries reuse their campaign result, while a changed map schedules new coverage. Refreshed campaigns are serialized and share the interaction run's configured request and time budgets. Saved progress is keyed by targeted hypothesis IDs and, for workflow replay, the observed workflow and terminal capture ID, so an old `not_applicable` unit cannot suppress a newly grounded check.
+
 CLI and web assessment summaries count only observed workflows whose ordered steps link to at least two captured requests. Endpoint-inferred route groups remain useful planning context, but they do not inflate the observed-workflow count or authorize workflow-grounded probes.
 
 ### Internal live discovery benchmark

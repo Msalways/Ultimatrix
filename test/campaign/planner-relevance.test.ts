@@ -119,6 +119,25 @@ describe('planCampaign signal routing', () => {
     expect(slice?.priority).toBeGreaterThanOrEqual(4)
   })
 
+  it('keys saved campaign units to learned hypotheses, including closed hypothesis identity', () => {
+    const ep = endpoint({ method: 'POST', params: [{ name: 'amount', type: 'number' }] })
+    const primitiveRef = primitive('businessLogicAbuse', ['business'])
+    const base = planCampaign(store([ep]), { primitives: [primitiveRef] }).slices[0]
+    const hypothesis = {
+      id: 'hypothesis-action-limit',
+      type: 'Hypothesis',
+      properties: { targetEndpoints: ['ep1'], status: 'open' },
+    }
+    const opened = planCampaign(store([ep], [], [hypothesis]), { primitives: [primitiveRef] }).slices[0]
+    const closed = planCampaign(
+      store([ep], [], [{ ...hypothesis, properties: { ...hypothesis.properties, status: 'closed' } }]),
+      { primitives: [primitiveRef] },
+    ).slices[0]
+
+    expect(opened?.id).not.toBe(base?.id)
+    expect(closed?.id).toBe(opened?.id)
+  })
+
   it('routes workflow bypass only to the observed terminal state change and carries ordered steps', () => {
     const start = { ...endpoint({ url: 'https://app.test/a1', method: 'POST', params: [{ name: 'draft', type: 'string' }] }), id: 'start' }
     const finish = { ...endpoint({ url: 'https://app.test/b7', method: 'POST', params: [{ name: 'order', type: 'string' }] }), id: 'finish' }
@@ -150,6 +169,22 @@ describe('planCampaign signal routing', () => {
     expect(bypassSlices[0]?.workflowSteps).toEqual(['POST /a1', 'POST /b7'])
     expect(bypassSlices[0]?.workflowTerminalRequestId).toBe('cap-finish')
     expect(bypassSlices[0]?.reason).toContain('observed workflow wf:observed-1')
+
+    const refreshedWorkflow = {
+      ...workflow,
+      properties: {
+        ...workflow.properties,
+        steps: workflow.properties.steps.map(step => step.requestId === 'cap-finish'
+          ? { ...step, requestId: 'cap-finish-v2' }
+          : step),
+        capturedRequestIds: ['cap-start', 'cap-finish-v2'],
+      },
+    }
+    const refreshed = planCampaign(
+      store([start, finish], [], [], [refreshedWorkflow]),
+      { primitives: [primitive('workflowBypass', ['workflow', 'business'])] },
+    ).slices.find(slice => slice.techniqueIds.includes('workflowBypass'))
+    expect(refreshed?.id).not.toBe(bypassSlices[0]?.id)
   })
 
   it('does not schedule workflow replay from inferred or unbacked workflow sequences', () => {
