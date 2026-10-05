@@ -279,6 +279,41 @@ describe('campaign prerequisites', () => {
     expect(result.description).toContain('second authenticated actor')
   })
 
+  it('recognizes a captured custom session header as an authenticated campaign actor', async () => {
+    let observed: any
+    registerPrimitive({
+      id: 'customSessionActorProbe',
+      name: 'custom session actor probe',
+      description: 'test-only custom session context probe',
+      appliesTo: () => true,
+      generate: async (context: any) => {
+        observed = { sessionHeaders: context.sessionHeaders, requestHeaders: context.requestTemplate.headers }
+        return []
+      },
+      oracle: async () => ({ confirmed: false, confidence: 0, evidence: [], note: 'no request required' }),
+    } as any)
+    const store = memoryGraph([endpoint({ authRequired: true, params: [], headers: {} })])
+    const captureStore = new CapturedRequestStore()
+    captureStore.record({
+      method: 'POST', url: 'https://app.test/api/items?search=old',
+      headers: { 'X-Session-ID': 'actor-a', 'Content-Type': 'application/json' },
+    })
+    __setTestFallback(testServices({ capturedRequests: captureStore }))
+    const runner = createPrimitiveRunner(store, config, new EvidenceGate())
+    const slice: CampaignSlice = {
+      id: 'custom-session-unit',
+      endpoint: { id: 'ep:fixture', url: 'https://app.test/api/items?search=old', method: 'POST' },
+      input: { name: '', location: 'endpoint' }, params: [], role: 'authenticated', actor: 'captured actor',
+      state: 'baseline', techniqueIds: ['customSessionActorProbe'], priority: 1,
+    }
+
+    const result = await runner('customSessionActorProbe', slice, { slice, graphStore: store, config, provider: 'test' })
+
+    expect(result.coverageStatus).toBe('tested')
+    expect(observed.sessionHeaders).toHaveProperty('X-Session-ID', 'actor-a')
+    expect(observed.requestHeaders).toHaveProperty('X-Session-ID', 'actor-a')
+  })
+
   it('removes captured credentials from anonymous actor coverage', async () => {
     let observedHeaders: Record<string, string> | undefined
     registerPrimitive({
@@ -294,7 +329,10 @@ describe('campaign prerequisites', () => {
     captureStore.record({
       method: 'POST',
       url: 'https://app.test/api/items?search=old',
-      headers: { Authorization: 'Bearer private', Cookie: 'sid=private', 'X-CSRF-Token': 'private', 'X-Trace': 'kept' },
+      headers: {
+        Authorization: 'Bearer private', Cookie: 'sid=private', 'X-Session-ID': 'private-session',
+        'X-CSRF-Token': 'private', 'X-Trace': 'kept',
+      },
     })
     __setTestFallback(testServices({ capturedRequests: captureStore }))
     const runner = createPrimitiveRunner(store, config, new EvidenceGate())

@@ -14,6 +14,7 @@ import { getOutcomeFeedbackStore } from '../intelligence/outcome-feedback'
 import { getAllSkills } from '../solver/skills/loader'
 import type { CampaignResult } from './types'
 import { getEngagementServices } from '../runtime/engagement-context'
+import { hasActorIdentityHeader } from '../http/auth-headers'
 
 function defaultCampaignConfig(): UltimatrixConfig {
   return {
@@ -45,9 +46,7 @@ export async function runCampaignAssessment(
   const sessionManager = getEngagementServices()?.httpSessions
   const sessionRefs = sessionManager?.listSessions().filter(ref => {
     try {
-      return Object.keys(sessionManager.getAllHeaders(ref)).some(name =>
-        /^(authorization|proxy-authorization|cookie|x-auth-token|x-api-key)$/i.test(name),
-      )
+      return hasActorIdentityHeader(sessionManager.getAllHeaders(ref))
     } catch { return false }
   }) ?? []
   if (sessionRefs.length) actorSessions.authenticated = sessionRefs

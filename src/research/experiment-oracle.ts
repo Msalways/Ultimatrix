@@ -2,6 +2,7 @@ import { urlMatchesEndpoint, type EvidenceItem } from '../intelligence/evidence-
 import { isBountyProfile } from '../safety/bounty-policy'
 import type { EvidenceOracle, ExperimentOutcome, ProofAssertion } from './types'
 import { randomUUID } from 'node:crypto'
+import { isActorIdentityHeader } from '../http/auth-headers'
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
@@ -197,7 +198,7 @@ function sameActorEvidence(a: EvidenceItem, b: EvidenceItem): boolean {
     return !!a.observed?.actorFingerprint && a.observed.actorFingerprint === b.observed?.actorFingerprint
   }
   const identityHeaders = (item: EvidenceItem): string[] => Object.entries(item.observed?.requestHeaders ?? {})
-    .filter(([name]) => /^(authorization|cookie|x-token|x-(?:auth|session|access|refresh|api|actor)(?:[-_].*)?)$/i.test(name))
+    .filter(([name]) => isActorIdentityHeader(name))
     .map(([name, value]) => `${name.toLowerCase()}:${value}`)
     .sort()
   const actorA = identityHeaders(a)

@@ -15,6 +15,7 @@ import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { stripActorIdentityHeaders } from '../http/auth-headers'
 import { coreEvidenceLedger } from '../core/evidence'
 import { httpRequest } from './http-tools'
 import { redactHeadersStrict } from '../security/secret-vault'
@@ -97,10 +98,7 @@ export const requestAsActor = createTool({
     // Resolve actor headers
     const finalUrl = url ?? captured.url
     let actorHeaders: Record<string, string> = {}
-    let stripAuthHeaders = false
-    if (actorId === 'unauthenticated') {
-      stripAuthHeaders = true
-    } else {
+    if (actorId !== 'unauthenticated') {
       const sm = getGlobalSessionManager()
       actorHeaders = sm.getAllHeaders(actorId, finalUrl)
       if (Object.keys(actorHeaders).length === 0) {
@@ -114,17 +112,8 @@ Use storeSession to create an actor first, or pass "unauthenticated" for no auth
       }
     }
 
-    // Start from captured headers, strip auth headers if unauthenticated
-    const baseHeaders: Record<string, string> = { ...captured.headers }
-    if (stripAuthHeaders) {
-      // Remove all auth-related headers (case-insensitive)
-      const AUTH_HEADER_NAMES = ['authorization', 'cookie', 'x-api-key', 'x-auth-token', 'x-csrf-token']
-      for (const existing of Object.keys(baseHeaders)) {
-        if (AUTH_HEADER_NAMES.includes(existing.toLowerCase())) {
-          delete baseHeaders[existing]
-        }
-      }
-    }
+    // Remove captured identity so an actor replay cannot inherit the original actor.
+    const baseHeaders = stripActorIdentityHeaders(captured.headers, { includeCsrfToken: true })
 
     // Merge headers: base (captured ± stripped) → actor (override) → explicit (override)
     const mergedHeaders: Record<string, string> = {

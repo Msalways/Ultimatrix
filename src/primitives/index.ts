@@ -74,6 +74,7 @@ import { coreEvidenceLedger } from '../core/evidence'
 import { evaluateExperimentOracle, evaluateIndependentRetest } from '../research/experiment-oracle'
 import type { EvidenceOracle, ExperimentOutcome } from '../research/types'
 import { urlMatchesEndpoint } from '../intelligence/evidence-ledger'
+import { isActorIdentityHeader } from '../http/auth-headers'
 
 // ─── Register all primitives (single source of truth) ───────────────────
 
@@ -198,7 +199,7 @@ function numericJsonField(body: string | undefined, key: string): number | undef
 
 function identityHeaders(headers: Record<string, string> | undefined): string[] {
   return Object.entries(headers ?? {})
-    .filter(([name]) => /^(authorization|cookie|x-token|x-(?:auth|session|access|refresh|api|actor)(?:[-_].*)?)$/i.test(name))
+    .filter(([name]) => isActorIdentityHeader(name))
     .map(([name, value]) => `${name.toLowerCase()}:${value}`)
     .sort()
 }

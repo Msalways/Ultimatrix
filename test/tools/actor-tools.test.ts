@@ -147,7 +147,13 @@ describe('requestAsActor', () => {
       id: 'cap-1',
       method: 'GET',
       url: 'https://example.com/api/users/123',
-      headers: { Accept: 'application/json', 'Authorization': 'Bearer owner-token' },
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer owner-token',
+        'X-Session-ID': 'private-session',
+        'X-CSRF-Token': 'private-csrf',
+        'X-Trace': 'kept',
+      },
       status: 200,
       source: 'tool',
     })
@@ -174,6 +180,9 @@ describe('requestAsActor', () => {
       expect(result.value.statusDelta).toBe('200 → 403')
       // Owner token should be stripped (only captured headers remain, no actor headers added)
       expect(capturedHeaders['Authorization']).toBeUndefined()
+      expect(capturedHeaders['X-Session-ID']).toBeUndefined()
+      expect(capturedHeaders['X-CSRF-Token']).toBeUndefined()
+      expect(capturedHeaders['X-Trace']).toBe('kept')
     } finally {
       httpRequest.execute = originalExecute
     }
@@ -184,7 +193,12 @@ describe('requestAsActor', () => {
       id: 'cap-1',
       method: 'GET',
       url: 'https://example.com/api/users/123',
-      headers: { Accept: 'application/json', 'Authorization': 'Bearer owner-token' },
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer owner-token',
+        'X-Session-ID': 'owner-custom-session',
+        'X-CSRF-Token': 'owner-csrf',
+      },
       status: 200,
       source: 'tool',
     })
@@ -214,11 +228,11 @@ describe('requestAsActor', () => {
 
       expect(result.ok).toBe(true)
       expect(result.value.actorId).toBe('attacker:https://example.com')
-      // Actor headers override captured
+      // The captured actor is removed before the selected actor is attached.
       expect(capturedHeaders['Authorization']).toBe('Bearer attacker-token-xyz')
       expect(capturedHeaders['Cookie']).toContain('alt_session=abc')
-      // Original owner token is gone
-      expect(capturedHeaders['Cookie']).not.toContain('owner-token')
+      expect(capturedHeaders['X-Session-ID']).toBeUndefined()
+      expect(capturedHeaders['X-CSRF-Token']).toBeUndefined()
     } finally {
       httpRequest.execute = originalExecute
     }

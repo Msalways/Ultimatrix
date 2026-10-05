@@ -14,6 +14,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { isActorIdentityHeader } from '../http/auth-headers'
 import { NodeType, EdgeType } from '../graph/schema'
 import type {
   HeaderSemanticNode,
@@ -119,17 +120,6 @@ export interface UseCaseInput {
 
 // ── T1.2 — Custom-header classifier ───────────────────────────────
 
-const IDENTITY_HEADERS = [
-  'authorization',
-  'cookie',
-  'x-api-key',
-  'x-apikey',
-  'x-auth-token',
-  'x-auth',
-  'x-access-token',
-  'proxy-authorization',
-]
-
 const CORRELATION_HEADERS = [
   'x-request-id',
   'x-requestid',
@@ -162,7 +152,7 @@ function headerRole(
 ): { role: HeaderSemanticNode['properties']['role']; confidence: number } {
   const n = name.toLowerCase()
 
-  if (IDENTITY_HEADERS.includes(n)) return { role: 'identity', confidence: 0.9 }
+  if (isActorIdentityHeader(n)) return { role: 'identity', confidence: 0.9 }
   if (CORRELATION_HEADERS.some(c => n === c || n.startsWith(c.replace('*', '')))) {
     return { role: 'correlation', confidence: 0.85 }
   }

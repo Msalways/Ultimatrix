@@ -113,6 +113,14 @@ describe('automatic experiment mutations', () => {
     expect(automaticMutation('workflow_bypass', { url: 'https://target.test/api/redeem', body: 'offer=one' })).toEqual({})
     expect(automaticMutation('state_confusion', { url: 'https://target.test/api/redeem', body: 'offer=one' })).toBeUndefined()
   })
+
+  it('strips captured custom actor credentials for an anonymous disclosure check', async () => {
+    const { automaticMutation } = await import('../../src/tools/research-tools')
+    expect(automaticMutation('information_disclosure', {
+      url: 'https://target.test/api/profile',
+      headers: { Authorization: 'Bearer private', 'X-Session-ID': 'private', 'X-CSRF-Token': 'private', 'X-Trace': 'keep' },
+    })).toEqual({ removeHeaderNames: ['Authorization', 'X-Session-ID', 'X-CSRF-Token'] })
+  })
 })
 
 describe('stateful replay comparison', () => {
@@ -263,7 +271,10 @@ describe('planned experiment cancellation', () => {
     const realGetNode = store.getNode
     const captured = getCapturedRequestStore()
     captured.clear()
-    captured.record({ method: 'GET', url: 'https://target.test/api/profile', status: 200, source: 'browser' })
+    captured.record({
+      method: 'GET', url: 'https://target.test/api/profile', status: 200, source: 'browser',
+      headers: { 'X-Session-ID': 'private-actor', 'X-CSRF-Token': 'private-csrf', 'X-Trace': 'keep' },
+    })
     ;(store as any).getNode = vi.fn((id: string) => id === disclosureHypothesis.id ? disclosureHypothesis : experiment)
     experiment.properties = {
       status: 'planned',
@@ -284,6 +295,8 @@ describe('planned experiment cancellation', () => {
       expect(replaySpy).toHaveBeenCalledTimes(2)
       expect(replaySpy.mock.calls[0][1]).toMatchObject({ abortSignal: controller.signal })
       expect(replaySpy.mock.calls[1][1]).toMatchObject({ abortSignal: controller.signal })
+      expect(replaySpy.mock.calls[1][0].removeHeaderNames).toEqual(expect.arrayContaining(['X-Session-ID', 'X-CSRF-Token']))
+      expect(replaySpy.mock.calls[1][0].removeHeaderNames).not.toContain('X-Trace')
     } finally {
       replaySpy.mockRestore()
       captured.clear()

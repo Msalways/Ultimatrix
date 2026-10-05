@@ -12,6 +12,7 @@ import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
 import { SECRET_NAME, redactHeadersStrict, redactString, redactUrl } from '../security/secret-vault'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { hasActorIdentityHeader } from '../http/auth-headers'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type EndpointNode, type PageNode } from '../graph/schema'
 import { askUserConfirm } from './interaction-tools'
@@ -102,7 +103,7 @@ function inferUnauthenticatedAccessSignal(url: string, status: number, headers: 
   let pathname = ''
   try { pathname = new URL(url).pathname.toLowerCase() } catch { return undefined }
   if (!/(^|\/)(admin|manage|management|config|configuration|internal|private|debug|actuator|metrics)(\/|$)/.test(pathname)) return undefined
-  const hasAuth = Object.keys(headers).some(key => /^(authorization|cookie|x-auth-token|x-csrf-token)$/i.test(key))
+  const hasAuth = hasActorIdentityHeader(headers)
   if (hasAuth) return undefined
   return 'In-scope privileged-looking resource returned a successful response without an authentication header.'
 }

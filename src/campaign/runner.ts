@@ -10,6 +10,7 @@ import {
 import { httpRequest } from '../tools/http-tools'
 import { getCapturedRequestStore, type CapturedRequest } from '../capture/captured-request-store'
 import { getGlobalSessionManager } from '../http/session-manager'
+import { hasActorIdentityHeader, stripActorIdentityHeaders } from '../http/auth-headers'
 import { isUrlInScope } from '../safety/scope-guard'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { GraphStore } from '../graph/store'
@@ -34,13 +35,11 @@ function findCapturedRequest(slice: CampaignSlice): CapturedRequest | undefined 
 }
 
 function hasAuth(headers: Record<string, string>): boolean {
-  return Object.keys(headers).some(name => /^(authorization|proxy-authorization|cookie|x-auth-token|x-api-key)$/i.test(name))
+  return hasActorIdentityHeader(headers)
 }
 
 function withoutAuthHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).filter(([name]) =>
-    !/^(authorization|proxy-authorization|cookie|x-auth-token|x-api-key|x-csrf-token)$/i.test(name),
-  ))
+  return stripActorIdentityHeaders(headers, { includeCsrfToken: true })
 }
 
 function actorHeaders(url: string): Array<{ ref: string; headers: Record<string, string> }> {

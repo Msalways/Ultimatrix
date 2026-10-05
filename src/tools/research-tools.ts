@@ -1,6 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
+import { actorIdentityHeaderNames } from '../http/auth-headers'
 import { NodeType, type ExperimentNode } from '../graph/schema'
 import { extractWorkflows } from '../research/workflow-extractor'
 import { extractEntities } from '../research/entity-extractor'
@@ -201,7 +202,7 @@ type ReplayMutation = z.infer<typeof replayMutationSchema>
 /** Pick a concrete mutation from the typed hypothesis when autonomy omitted one. */
 export function automaticMutation(
   kind: string | undefined,
-  request: { url: string; body?: string },
+  request: { url: string; body?: string; headers?: Record<string, string> },
   targetParams?: string[],
 ): ReplayMutation | undefined {
   if (kind === 'idor' || kind === 'broken_access_control') {
@@ -287,7 +288,9 @@ export function automaticMutation(
 
   if (kind === 'workflow_bypass' || kind === 'replay') return {}
   if (kind === 'information_disclosure') {
-    return { removeHeaderNames: ['authorization', 'cookie', 'x-auth-token', 'x-csrf-token'] }
+    const identityHeaders = actorIdentityHeaderNames(request.headers)
+    const csrfHeaders = Object.keys(request.headers ?? {}).filter(name => /^x-csrf-token$/i.test(name))
+    return { removeHeaderNames: [...identityHeaders, ...csrfHeaders] }
   }
   // Object authorization is tested through the two actor sessions above;
   // keeping the captured request unchanged preserves that identity contrast.
