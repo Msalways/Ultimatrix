@@ -168,6 +168,38 @@ describe('flow-tools', () => {
     }
   })
 
+  it('excludes out-of-scope browser actions from a learned workflow', async () => {
+    const { getCapturedRequestStore } = await import('../../src/capture/captured-request-store')
+    const { getGlobalObserver } = await import('../../src/capture/human-observer')
+    const { setAllowAny, setScopeConfig } = await import('../../src/safety/scope-guard')
+    const captures = getCapturedRequestStore()
+    captures.clear()
+    setAllowAny(false)
+    setScopeConfig({ allowedDomains: ['example.com'], allowedProtocols: ['https'] })
+    const now = Date.now()
+    captures.record({ method: 'GET', url: 'https://example.com/offers', status: 200, source: 'browser', capturedAt: now })
+    captures.record({ method: 'POST', url: 'https://example.com/api/redeem', status: 200, source: 'browser', capturedAt: now + 2 })
+    const observer = getGlobalObserver()
+    vi.mocked(observer.getActions).mockReturnValue([
+      { type: 'fill', url: 'https://evil.test/login', selector: '#outside-secret', value: 'ignored', timestamp: now - 1 },
+      { type: 'submit', url: 'https://example.com/offers', selector: 'form', timestamp: now + 1 },
+    ] as any)
+
+    try {
+      const { persistUnlinkedBrowserWorkflows } = await import('../../src/tools/flow-tools')
+      await persistUnlinkedBrowserWorkflows()
+
+      const workflow = mockStore.upsertNode.mock.calls[0]![0]
+      expect(workflow.properties.entryUrl).toBe('https://example.com/offers')
+      expect(workflow.properties.steps).not.toContainEqual(expect.objectContaining({ url: 'https://evil.test/login' }))
+      expect(workflow.properties.inputFields).not.toContain('#outside-secret')
+    } finally {
+      setScopeConfig(null)
+      setAllowAny(true)
+      captures.clear()
+    }
+  })
+
   describe('saveSession', () => {
     it('saves session with cookies and localStorage to graph', async () => {
       const { saveSession } = await import('../../src/tools/flow-tools')

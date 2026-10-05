@@ -29,11 +29,14 @@ export async function persistOperatorWorkflow(
   const services = getEngagementServices()
   const store = services?.graph ?? getGlobalGraphStore()
   const captures = services?.capturedRequests ?? getCapturedRequestStore()
+  const inScope = (url: string) => isUrlInScope(url, services?.scopeConfig, { allowAny: services?.allowAny }).allowed
   const requests = captures.list()
     .filter(r => r.source === 'browser'
       && (requestIds ? requestIds.has(r.id) : r.capturedAt >= startedAt && r.capturedAt <= endedAt))
     .filter(r => !isTransportOrAssetUrl(r.url, r.method))
-  if (!actions.length && !requests.length) return undefined
+    .filter(r => inScope(r.url))
+  const scopedActions = actions.filter(action => safeRouteUrl(action.url) && inScope(action.url))
+  if (!scopedActions.length && !requests.length) return undefined
 
   const endpointIds: string[] = []
   const requestSteps: Array<{ timestamp: number; step: WorkflowNode['properties']['steps'][number] }> = []
@@ -41,7 +44,6 @@ export async function persistOperatorWorkflow(
   for (const ref of requests) {
     let parsed: URL
     try { parsed = new URL(ref.url) } catch { continue }
-    if (!isUrlInScope(parsed.toString(), services ? services.scopeConfig : undefined, { allowAny: services?.allowAny }).allowed) continue
     const routeUrl = `${parsed.origin}${parsed.pathname}`
     const request = captures.get(ref.id)
     const names = new Set<string>()
@@ -68,21 +70,21 @@ export async function persistOperatorWorkflow(
     requestSteps.push({ timestamp: ref.capturedAt, step: { action: 'request', url: routeUrl, endpointId: endpoint.id, method: ref.method.toUpperCase(), requestId: ref.id } })
   }
   const steps: WorkflowNode['properties']['steps'] = [
-    ...actions.map(action => ({ timestamp: action.timestamp, step: { action: action.type, url: safeRouteUrl(action.url), selector: action.selector } })),
+    ...scopedActions.map(action => ({ timestamp: action.timestamp, step: { action: action.type, url: safeRouteUrl(action.url), selector: action.selector } })),
     ...requestSteps,
   ].sort((a, b) => a.timestamp - b.timestamp).map(event => event.step)
   const uniqueEndpointIds = [...new Set(endpointIds)]
-  const pageUrl = actions.find(a => a.url)?.url ?? requests[0]?.url
+  const pageUrl = scopedActions.find(a => a.url)?.url ?? requests[0]?.url
   const entryUrl = safeRouteUrl(pageUrl)
   const id = `workflow:${randomUUID()}`
-  const meaningfulActionObserved = actions.some(action => ['click', 'fill', 'select', 'press', 'submit'].includes(action.type))
+  const meaningfulActionObserved = scopedActions.some(action => ['click', 'fill', 'select', 'press', 'submit'].includes(action.type))
   const workflow: WorkflowNode = {
-    id, type: NodeType.WORKFLOW, label: `${source === 'operator-demonstration' ? 'Operator demonstrated' : 'Browser observed'} workflow (${actions.length} actions, ${requestSteps.length} requests)`,
+    id, type: NodeType.WORKFLOW, label: `${source === 'operator-demonstration' ? 'Operator demonstrated' : 'Browser observed'} workflow (${scopedActions.length} actions, ${requestSteps.length} requests)`,
     properties: {
       name: source, entryUrl, steps, relatedEndpoints: uniqueEndpointIds,
       inputFields: [...new Set([
         ...[...paramNames.values()].flatMap(names => [...names]),
-        ...actions.map(action => action.selector).filter((selector): selector is string => Boolean(selector)),
+        ...scopedActions.map(action => action.selector).filter((selector): selector is string => Boolean(selector)),
       ])],
       stateChanges: [...new Set(requestSteps.filter(event => !['GET', 'HEAD', 'OPTIONS'].includes(event.step.method ?? '')).map(event => event.step.method!))],
       observedRoles: [], confidence: 1, capturedRequestIds: requestSteps.map(event => event.step.requestId!).filter(Boolean),
