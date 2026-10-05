@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, startTarget } from '../../scripts/live-discovery-benchmark'
+import { makeConfig, makeFixture, mapExperiment, startTarget } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -30,23 +30,33 @@ function successfulProof(): { finding: DiscoveryFinding; experiment: DiscoveryEx
 
 function score(variant: 'vulnerable' | 'control', overrides: Partial<Parameters<typeof scoreDiscoveryRun>[0]> = {}): DiscoveryRunScore {
   const proof = successfulProof()
+  const targetLearning = overrides.targetLearning ?? {
+    workflowCount: 1,
+    entityCount: 1,
+    hypothesisKinds: ['workflow_bypass'],
+    experimentStatuses: [variant === 'vulnerable' ? 'interesting' : 'rejected'],
+    expectedEndpoints: [{ method: 'POST', path: '/private' }],
+    observedEndpoints: [{ method: 'POST', path: '/private' }],
+  }
+  const expectedHypothesisKinds = overrides.expectedHypothesisKinds ?? ['workflow_bypass']
+  const targetEndpoint = targetLearning.expectedEndpoints[0]
+  const experiments = expectedHypothesisKinds.map((kind, index) => ({
+    ...(variant === 'vulnerable' && index === 0 ? proof.experiment : { id: `experiment-${index + 1}` }),
+    hypothesisId: `hypothesis-${kind}`,
+    hypothesisKind: kind,
+    status: 'rejected',
+    targetEndpoints: targetEndpoint ? [targetEndpoint] : [],
+  }))
   return scoreDiscoveryRun({
     variant,
     findings: variant === 'vulnerable' ? [proof.finding] : [],
-    experiments: variant === 'vulnerable' ? [proof.experiment] : [],
+    experiments,
     candidates: [],
     requiresSecondActor: false,
     secondActorAvailable: true,
     untracedRequests: [],
-    expectedHypothesisKinds: ['workflow_bypass'],
-    targetLearning: {
-      workflowCount: 1,
-      entityCount: 1,
-      hypothesisKinds: ['workflow_bypass'],
-      experimentStatuses: [variant === 'vulnerable' ? 'interesting' : 'rejected'],
-      expectedEndpoints: [],
-      observedEndpoints: [],
-    },
+    expectedHypothesisKinds,
+    targetLearning,
     ...overrides,
   })
 }
@@ -157,6 +167,43 @@ describe('live discovery scoring', () => {
     })
   })
 
+  it('counts an expected attack only when its experiment targets an expected route', () => {
+    const base = {
+      variant: 'vulnerable' as const,
+      findings: [],
+      candidates: [],
+      requiresSecondActor: false,
+      secondActorAvailable: true,
+      untracedRequests: [],
+      expectedHypothesisKinds: ['workflow_bypass'],
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 0,
+        hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['rejected'],
+        expectedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+        observedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      },
+    }
+    const unrelated = scoreDiscoveryRun({
+      ...base,
+      experiments: [{
+        id: 'experiment-unrelated', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
+        status: 'rejected', targetEndpoints: [{ method: 'POST', path: '/profile/update' }],
+      }],
+    })
+    const grounded = scoreDiscoveryRun({
+      ...base,
+      experiments: [{
+        id: 'experiment-grounded', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
+        status: 'rejected', targetEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      }],
+    })
+
+    expect(unrelated.targetLearning).toMatchObject({ attackedHypothesisKinds: [], attackedHypothesisRecall: 0 })
+    expect(grounded.targetLearning).toMatchObject({ attackedHypothesisKinds: ['workflow_bypass'], attackedHypothesisRecall: 1 })
+  })
+
   it('scores exact ordered workflow steps while allowing unrelated observed traffic between them', () => {
     const result = scoreDiscoveryRun({
       variant: 'vulnerable', findings: [], experiments: [], candidates: [],
@@ -206,7 +253,10 @@ describe('live discovery scoring', () => {
     expect(passing.pass).toBe(true)
     expect(passing.learningPass).toBe(true)
     expect(passing.verifiedVulnerableRuns).toBe(7)
-    expect(passing.targetLearning).toMatchObject({ runs: 18, averageEndpointRecall: null, averageHypothesisRecall: 1 })
+    expect(passing.targetLearning).toMatchObject({
+      runs: 18, averageEndpointRecall: 1, averageHypothesisRecall: 1,
+      runsWithExpectedAttacks: 18, averageAttackedHypothesisRecall: 1,
+    })
     const falsePositive = scoreDiscoveryBenchmark([
       ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: vulnerable })),
       ...Array.from({ length: 8 }, () => ({ variant: 'control' as const, score: control })),
@@ -285,6 +335,29 @@ describe('live discovery scoring', () => {
 })
 
 describe('blinded loopback targets', () => {
+  it('keeps the experiment-to-hypothesis-to-endpoint link for benchmark scoring', () => {
+    const endpoint = {
+      id: 'endpoint-1', type: 'Endpoint',
+      properties: { method: 'POST', url: 'http://127.0.0.1:41235/random/finish?token=secret' },
+    }
+    const hypothesis = {
+      id: 'hypothesis-1', type: 'Hypothesis',
+      properties: { kind: 'workflow_bypass', targetEndpoints: ['endpoint-1'] },
+    }
+    const experiment = {
+      id: 'experiment-1', type: 'Experiment',
+      properties: { hypothesisId: 'hypothesis-1', status: 'rejected' },
+    }
+    const mapped = mapExperiment(experiment, new Map([[hypothesis.id, hypothesis]]), new Map([[endpoint.id, endpoint]]), [endpoint])
+
+    expect(mapped).toMatchObject({
+      hypothesisId: 'hypothesis-1',
+      hypothesisKind: 'workflow_bypass',
+      status: 'rejected',
+      targetEndpoints: [{ method: 'POST', path: '/random/finish' }],
+    })
+  })
+
   it('builds a pinned NVIDIA config scoped to one generated origin', () => {
     const model = 'nvidia/nemotron-3-super-120b-a12b'
     const target = 'http://127.0.0.1:41235/'

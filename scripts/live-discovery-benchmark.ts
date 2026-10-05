@@ -390,9 +390,42 @@ function mapFinding(node: GraphNode): DiscoveryFinding {
   }
 }
 
-function mapExperiment(node: GraphNode): DiscoveryExperiment {
+function endpointReference(target: string, endpointById: Map<string, GraphNode>, endpoints: GraphNode[]): { method?: string; path: string }[] {
+  const endpoint = endpointById.get(target) ?? endpoints.find(candidate => candidate.properties.url === target)
+  if (endpoint) {
+    try {
+      return [{
+        ...(typeof endpoint.properties.method === 'string' ? { method: endpoint.properties.method } : {}),
+        path: new URL(String(endpoint.properties.url)).pathname,
+      }]
+    } catch { /* fall back to interpreting the target as a URL or path */ }
+  }
+  try { return [{ path: new URL(target, 'http://benchmark.invalid').pathname }] }
+  catch { return [] }
+}
+
+export function mapExperiment(
+  node: GraphNode,
+  hypothesesById: Map<string, GraphNode>,
+  endpointById: Map<string, GraphNode>,
+  endpoints: GraphNode[],
+): DiscoveryExperiment {
   const p = node.properties ?? {}
-  return { id: node.id, outcome: p.outcome, retest: p.retest }
+  const hypothesisId = typeof p.hypothesisId === 'string' ? p.hypothesisId : undefined
+  const hypothesis = hypothesisId ? hypothesesById.get(hypothesisId) : undefined
+  const targetEndpointIds = Array.isArray(hypothesis?.properties.targetEndpoints)
+    ? hypothesis.properties.targetEndpoints.filter((target: unknown): target is string => typeof target === 'string')
+    : []
+  const targetEndpoints = targetEndpointIds.flatMap((target: string) => endpointReference(target, endpointById, endpoints))
+  return {
+    id: node.id,
+    ...(hypothesisId ? { hypothesisId } : {}),
+    ...(typeof hypothesis?.properties.kind === 'string' ? { hypothesisKind: hypothesis.properties.kind } : {}),
+    ...(typeof p.status === 'string' ? { status: p.status } : {}),
+    ...(targetEndpoints.length ? { targetEndpoints } : {}),
+    outcome: p.outcome,
+    retest: p.retest,
+  }
 }
 
 function safeEvents(raw: string): any[] {
@@ -415,6 +448,7 @@ function expectedSurfaceEndpoints(fixture: Fixture): Array<{ method: string; pat
     { method: 'POST', path: fixture.route },
   ]
   if (fixture.kind === 'case-3') {
+    endpoints.push({ method: 'GET', path: `${fixture.route}/records` })
     endpoints.push({ method: 'GET', path: `${fixture.route}/record/${fixture.ownerDocument}` })
     if (fixture.peerAvailable) endpoints.push({ method: 'GET', path: `${fixture.route}/record/${fixture.peerDocument}` })
   }
@@ -471,12 +505,17 @@ async function executeRun(input: {
   const targetDir = getTargetWorkspaceDir(targetApp.target)
   const graph = await readJson(join(targetDir, 'graph.json'))
   const graphNodes = readNodes(graph)
+  const endpointNodes = graphNodes.filter(node => node.type === 'Endpoint')
+  const endpointById = new Map(endpointNodes.map(node => [node.id, node]))
+  const hypothesisNodes = graphNodes.filter(node => node.type === 'Hypothesis')
+  const hypothesesById = new Map(hypothesisNodes.map(node => [node.id, node]))
   const findings = graphNodes.filter(node => node.type === 'Finding').map(mapFinding)
-  const experiments = graphNodes.filter(node => node.type === 'Experiment').map(mapExperiment)
+  const experiments = graphNodes.filter(node => node.type === 'Experiment')
+    .map(node => mapExperiment(node, hypothesesById, endpointById, endpointNodes))
   const learning = {
     workflowCount: graphNodes.filter(node => node.type === 'Workflow').length,
     entityCount: graphNodes.filter(node => node.type === 'Entity').length,
-    hypothesisKinds: graphNodes.filter(node => node.type === 'Hypothesis').map(node => String(node.properties.kind ?? 'unknown')),
+    hypothesisKinds: hypothesisNodes.map(node => String(node.properties.kind ?? 'unknown')),
     experimentStatuses: graphNodes.filter(node => node.type === 'Experiment').map(node => String(node.properties.status ?? 'unknown')),
     expectedEndpoints: expectedSurfaceEndpoints(input.fixture),
     expectedWorkflowSequences: expectedWorkflowSequences(input.fixture),
@@ -583,6 +622,8 @@ async function executeRun(input: {
       expectedHypothesisKinds: score.targetLearning.expectedHypothesisKinds,
       matchedHypothesisKinds: score.targetLearning.matchedHypothesisKinds,
       hypothesisRecall: score.targetLearning.hypothesisRecall,
+      attackedHypothesisKinds: score.targetLearning.attackedHypothesisKinds,
+      attackedHypothesisRecall: score.targetLearning.attackedHypothesisRecall,
       plannedExperiments: score.targetLearning.plannedExperiments,
       attemptedExperiments: score.targetLearning.attemptedExperiments,
       completedExperiments: score.targetLearning.completedExperiments,

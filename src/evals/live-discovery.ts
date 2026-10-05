@@ -18,6 +18,10 @@ export interface DiscoveryFinding {
 
 export interface DiscoveryExperiment {
   id: string
+  hypothesisId?: string
+  hypothesisKind?: string
+  status?: string
+  targetEndpoints?: Array<{ method?: string; path: string }>
   outcome?: { status?: string; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } }
   retest?: { outcome?: { status?: string; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } } }
 }
@@ -71,6 +75,8 @@ export interface DiscoveryRunScore {
     expectedHypothesisKinds: string[]
     matchedHypothesisKinds: string[]
     hypothesisRecall: number | null
+    attackedHypothesisKinds: string[]
+    attackedHypothesisRecall: number | null
     plannedExperiments: number
     attemptedExperiments: number
     completedExperiments: number
@@ -118,6 +124,15 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const observedEndpointKeys = new Set((input.targetLearning?.observedEndpoints ?? []).map(endpointKey))
   const expectedEndpoints = input.targetLearning?.expectedEndpoints ?? []
   const observedExpectedEndpointCount = expectedEndpoints.filter(endpoint => observedEndpointKeys.has(endpointKey(endpoint))).length
+  const attackedHypothesisKinds = expectedHypothesisKinds.filter(kind => input.experiments.some(experiment =>
+    experiment.hypothesisId
+      && experiment.hypothesisKind === kind
+      && attemptedStatuses.has(experiment.status ?? '')
+      && (experiment.targetEndpoints ?? []).some(target => expectedEndpoints.some(expected =>
+        target.path === expected.path
+        && (!target.method || target.method.toUpperCase() === expected.method.toUpperCase()),
+      )),
+  ))
   const expectedWorkflowSequences = input.targetLearning?.expectedWorkflowSequences ?? []
   const remainingObservedSequences = [...(input.targetLearning?.observedWorkflowSequences ?? [])]
   const matchedWorkflowSequenceCount = expectedWorkflowSequences.filter(expected => {
@@ -161,6 +176,8 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
       expectedHypothesisKinds,
       matchedHypothesisKinds,
       hypothesisRecall: expectedHypothesisKinds.length ? matchedHypothesisKinds.length / expectedHypothesisKinds.length : null,
+      attackedHypothesisKinds,
+      attackedHypothesisRecall: expectedHypothesisKinds.length ? attackedHypothesisKinds.length / expectedHypothesisKinds.length : null,
       plannedExperiments: experimentStatuses.filter(status => status === 'planned').length,
       attemptedExperiments: experimentStatuses.filter(status => attemptedStatuses.has(status)).length,
       completedExperiments: experimentStatuses.filter(status => completedStatuses.has(status)).length,
@@ -186,6 +203,8 @@ export interface DiscoveryBenchmarkScore {
     averageWorkflowSequenceRecall: number | null
     runsWithExpectedHypothesis: number
     averageHypothesisRecall: number | null
+    runsWithExpectedAttacks: number
+    averageAttackedHypothesisRecall: number | null
     runsWithPlannedExperiments: number
     runsWithAttemptedExperiments: number
     runsWithBlockedExperiments: number
@@ -206,8 +225,9 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const controlPass = controls.length === 9 && confirmedControlFindings === 0
   const learningScores = runs.map(run => run.score.targetLearning)
   const qualifiesAsLearnedAndAttacked = (score: DiscoveryRunScore['targetLearning']) =>
-    score.workflowCount > 0 && (score.endpointRecall === null || score.endpointRecall === 1)
-      && score.hypothesisRecall === 1 && score.attemptedExperiments > 0
+    score.workflowCount > 0 && score.endpointRecall === 1
+      && score.hypothesisRecall === 1 && score.attackedHypothesisRecall === 1
+      && score.attemptedExperiments > 0
       && (score.workflowSequenceRecall === null || score.workflowSequenceRecall === 1)
   const qualifiedVulnerableRuns = vulnerable.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
   const qualifiedControlRuns = controls.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
@@ -239,6 +259,10 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
       runsWithExpectedHypothesis: learningScores.filter(score => score.matchedHypothesisKinds.length > 0).length,
       averageHypothesisRecall: scoredHypothesisRuns.length
         ? scoredHypothesisRuns.reduce((sum, score) => sum + (score.hypothesisRecall ?? 0), 0) / scoredHypothesisRuns.length
+        : null,
+      runsWithExpectedAttacks: learningScores.filter(score => score.attackedHypothesisRecall === 1).length,
+      averageAttackedHypothesisRecall: scoredHypothesisRuns.length
+        ? scoredHypothesisRuns.reduce((sum, score) => sum + (score.attackedHypothesisRecall ?? 0), 0) / scoredHypothesisRuns.length
         : null,
       runsWithPlannedExperiments: learningScores.filter(score => score.plannedExperiments > 0).length,
       runsWithAttemptedExperiments: learningScores.filter(score => score.attemptedExperiments > 0).length,
