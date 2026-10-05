@@ -127,10 +127,13 @@ describe('planCampaign signal routing', () => {
       type: 'Workflow',
       properties: {
         steps: [
-          { action: 'request', endpointId: 'start', method: 'POST', url: 'https://app.test/a1' },
-          { action: 'request', endpointId: 'finish', method: 'POST', url: 'https://app.test/b7' },
+          { action: 'request', endpointId: 'start', method: 'POST', url: 'https://app.test/a1', requestId: 'cap-start' },
+          { action: 'request', endpointId: 'finish', method: 'POST', url: 'https://app.test/b7', requestId: 'cap-finish' },
         ],
         relatedEndpoints: ['start', 'finish'],
+        capturedRequestIds: ['cap-start', 'cap-finish'],
+        source: 'operator-demonstration',
+        sequenceObserved: true,
         capturedAt: 10,
       },
     }
@@ -145,7 +148,32 @@ describe('planCampaign signal routing', () => {
     expect(bypassSlices[0]?.input).toEqual({ name: '', location: 'endpoint' })
     expect(bypassSlices[0]?.workflowId).toBe('wf:observed-1')
     expect(bypassSlices[0]?.workflowSteps).toEqual(['POST /a1', 'POST /b7'])
+    expect(bypassSlices[0]?.workflowTerminalRequestId).toBe('cap-finish')
     expect(bypassSlices[0]?.reason).toContain('observed workflow wf:observed-1')
+  })
+
+  it('does not schedule workflow replay from inferred or unbacked workflow sequences', () => {
+    const start = { ...endpoint({ url: 'https://app.test/a1', method: 'POST' }), id: 'start' }
+    const finish = { ...endpoint({ url: 'https://app.test/b7', method: 'POST' }), id: 'finish' }
+    const base = {
+      steps: [
+        { action: 'request', endpointId: 'start', method: 'POST', url: 'https://app.test/a1', requestId: 'cap-start' },
+        { action: 'request', endpointId: 'finish', method: 'POST', url: 'https://app.test/b7', requestId: 'cap-finish' },
+      ],
+      relatedEndpoints: ['start', 'finish'],
+      capturedRequestIds: ['cap-start', 'cap-finish'],
+    }
+    const workflows = [
+      { id: 'wf:inferred', type: 'Workflow', properties: { ...base, source: 'endpoint-inference', sequenceObserved: false } },
+      { id: 'wf:unobserved', type: 'Workflow', properties: { ...base, source: 'operator-demonstration', sequenceObserved: false } },
+      { id: 'wf:missing-requests', type: 'Workflow', properties: { ...base, source: 'operator-demonstration', sequenceObserved: true, capturedRequestIds: [] } },
+    ]
+    const plan = planCampaign(
+      store([start, finish], [], [], workflows),
+      { primitives: [primitive('workflowBypass', ['workflow', 'business'])] },
+    )
+
+    expect(plan.slices.some(slice => slice.techniqueIds.includes('workflowBypass'))).toBe(false)
   })
 
   it('does not infer a workflow from a state-changing method alone', () => {

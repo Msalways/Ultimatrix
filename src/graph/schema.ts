@@ -170,6 +170,7 @@ export const WorkflowSchema = z.object({
   capturedRequestIds: z.array(z.string()).optional(),
   source: z.string().optional(),
   capturedAt: z.number().optional(),
+  sequenceObserved: z.boolean().optional(),
 })
 
 export const EntitySchema = z.object({

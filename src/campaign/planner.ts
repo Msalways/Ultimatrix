@@ -57,6 +57,7 @@ interface EndpointContext {
 interface WorkflowContext {
   id: string
   steps: string[]
+  terminalRequestId: string
   capturedAt?: number
 }
 
@@ -77,25 +78,30 @@ function terminalWorkflowContexts(
   const result = new Map<string, WorkflowContext>()
   for (const workflow of workflows) {
     const steps = workflow.properties.steps ?? []
-    if (steps.length < 2) continue
+    const capturedRequestIds = new Set(workflow.properties.capturedRequestIds ?? [])
+    const observedRequestIds = new Set(steps
+      .map(step => step.requestId)
+      .filter((id): id is string => Boolean(id && capturedRequestIds.has(id))))
+    if (workflow.properties.source !== 'operator-demonstration'
+      || workflow.properties.sequenceObserved !== true
+      || observedRequestIds.size < 2) continue
 
     const terminalStep = [...steps].reverse().find(step => {
       const endpoint = step.endpointId ? endpointById.get(step.endpointId) : undefined
       const method = (step.method ?? endpoint?.properties.method ?? '').toUpperCase()
-      return Boolean(endpoint) && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      return Boolean(endpoint && step.requestId && capturedRequestIds.has(step.requestId))
+        && method === String(endpoint?.properties.method ?? '').toUpperCase()
+        && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
     })
     const terminalId = terminalStep?.endpointId
-      ?? [...(workflow.properties.relatedEndpoints ?? [])].reverse().find(id => {
-        const method = String(endpointById.get(id)?.properties.method ?? '').toUpperCase()
-        return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
-      })
-    if (!terminalId || !endpointById.has(terminalId)) continue
+    if (!terminalId || !terminalStep?.requestId || !endpointById.has(terminalId)) continue
 
     const existing = result.get(terminalId)
     if (!existing || (workflow.properties.capturedAt ?? 0) >= (existing.capturedAt ?? 0)) {
       result.set(terminalId, {
         id: workflow.id,
         steps: steps.map(safeWorkflowStepLabel),
+        terminalRequestId: terminalStep.requestId,
         ...(workflow.properties.capturedAt !== undefined ? { capturedAt: workflow.properties.capturedAt } : {}),
       })
     }
@@ -364,7 +370,11 @@ export function planCampaign(graphStore: GraphStore, options: PlanOptions): Camp
                 ...(actor.sessionRef ? { sessionRef: actor.sessionRef } : {}),
                 state,
                 ...(primitive.id === 'workflowBypass' && workflow
-                  ? { workflowId: workflow.id, workflowSteps: [...workflow.steps] }
+                  ? {
+                    workflowId: workflow.id,
+                    workflowSteps: [...workflow.steps],
+                    workflowTerminalRequestId: workflow.terminalRequestId,
+                  }
                   : {}),
                 techniqueIds: [primitive.id],
                 domains: primitive.domains ?? [],

@@ -355,14 +355,19 @@ describe('campaign prerequisites', () => {
       description: 'test-only workflow context probe',
       appliesTo: () => true,
       generate: async (context: any) => {
-        observed = { workflowSteps: context.workflowSteps, requestTemplate: context.requestTemplate }
+        observed = {
+          workflowSteps: context.workflowSteps,
+          requestTemplate: context.requestTemplate,
+          capturedRequestId: context.capturedRequestId,
+        }
         return []
       },
       oracle: async () => ({ confirmed: false, candidate: true, confidence: 0.5, evidence: [], note: 'fresh actor verification required' }),
     } as any)
     const store = memoryGraph([endpoint({ params: [], headers: {} })])
     const captureStore = new CapturedRequestStore()
-    captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"captured"}' })
+    captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"workflow-terminal"}' })
+    captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"later-unrelated-request"}' })
     __setTestFallback(testServices({ capturedRequests: captureStore }))
     const runner = createPrimitiveRunner(store, config, new EvidenceGate())
     const slice: CampaignSlice = {
@@ -370,13 +375,35 @@ describe('campaign prerequisites', () => {
       endpoint: { id: 'ep:fixture', url: 'https://app.test/api/items?search=old', method: 'POST' },
       input: { name: '', location: 'endpoint' }, params: [], role: 'anonymous', actor: 'anonymous',
       state: 'baseline', workflowId: 'wf:test', workflowSteps: ['POST /draft', 'POST /finish'],
+      workflowTerminalRequestId: 'cap-1',
       techniqueIds: ['workflowContextProbe'], priority: 1,
     }
 
     const result = await runner('workflowContextProbe', slice, { slice, graphStore: store, config, provider: 'test' })
     expect(result.coverageStatus).toBe('candidate')
     expect(observed.workflowSteps).toEqual(['POST /draft', 'POST /finish'])
-    expect(observed.requestTemplate).toMatchObject({ method: 'POST', body: '{"title":"captured"}' })
+    expect(observed.requestTemplate).toMatchObject({ method: 'POST', body: '{"title":"workflow-terminal"}' })
+    expect(observed.capturedRequestId).toBe('cap-1')
+  })
+
+  it('blocks workflow replay when the graph has no request-backed operator trace', async () => {
+    const store = memoryGraph([endpoint({ params: [], headers: {} })])
+    const captureStore = new CapturedRequestStore()
+    captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old' })
+    __setTestFallback(testServices({ capturedRequests: captureStore }))
+    const runner = createPrimitiveRunner(store, config, new EvidenceGate())
+    const slice: CampaignSlice = {
+      id: 'unobserved-workflow-unit',
+      endpoint: { id: 'ep:fixture', url: 'https://app.test/api/items?search=old', method: 'POST' },
+      input: { name: '', location: 'endpoint' }, params: [], role: 'anonymous', actor: 'anonymous',
+      state: 'baseline', workflowId: 'wf:missing', workflowSteps: ['POST /draft', 'POST /finish'],
+      workflowTerminalRequestId: 'cap-1', techniqueIds: ['workflowBypass'], priority: 1,
+    }
+
+    const result = await runner('workflowBypass', slice, { slice, graphStore: store, config, provider: 'test' })
+
+    expect(result.coverageStatus).toBe('blocked')
+    expect(result.description).toContain('request-backed operator-observed workflow')
   })
 
   it('reports an out-of-scope endpoint as blocked before attempting HTTP', async () => {

@@ -12,6 +12,7 @@ import { getCapturedRequestStore, type CapturedRequest } from '../capture/captur
 import { getGlobalSessionManager } from '../http/session-manager'
 import { hasActorIdentityHeader, stripActorIdentityHeaders } from '../http/auth-headers'
 import { isUrlInScope } from '../safety/scope-guard'
+import { NodeType, type WorkflowNode } from '../graph/schema'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { GraphStore } from '../graph/store'
 import type { UltimatrixConfig } from '../config'
@@ -27,11 +28,42 @@ function sameEndpoint(left: string, right: string): boolean {
 
 function findCapturedRequest(slice: CampaignSlice): CapturedRequest | undefined {
   const store = getCapturedRequestStore()
+  if (slice.workflowTerminalRequestId) {
+    const entry = store.get(slice.workflowTerminalRequestId)
+    if (!entry || entry.method.toUpperCase() !== slice.endpoint.method.toUpperCase()
+      || !sameEndpoint(entry.url, slice.endpoint.url)) return undefined
+    return entry
+  }
   return store.list({ method: slice.endpoint.method, limit: 500 })
     .map(ref => store.get(ref.id))
     .filter((entry): entry is CapturedRequest => Boolean(entry))
     .reverse()
     .find(entry => sameEndpoint(entry.url, slice.endpoint.url))
+}
+
+function hasObservedWorkflowTerminal(slice: CampaignSlice, graphStore: GraphStore): boolean {
+  if (!slice.workflowId || !slice.workflowTerminalRequestId) return false
+  const node = graphStore.getNode(slice.workflowId)
+  if (!node || node.type !== NodeType.WORKFLOW) return false
+  const workflow = node as WorkflowNode
+  const props = workflow.properties
+  if (props.source !== 'operator-demonstration' || props.sequenceObserved !== true) return false
+  const capturedRequestIds = new Set(props.capturedRequestIds ?? [])
+  const observedRequestIds = new Set((props.steps ?? [])
+    .map(step => step.requestId)
+    .filter((id): id is string => Boolean(id && capturedRequestIds.has(id))))
+  if (observedRequestIds.size < 2 || !capturedRequestIds.has(slice.workflowTerminalRequestId)) return false
+  const terminalSteps = (props.steps ?? []).filter(step => step.requestId === slice.workflowTerminalRequestId)
+  if (terminalSteps.length !== 1) return false
+  const terminal = terminalSteps[0]!
+  const method = String(terminal.method ?? '').toUpperCase()
+  if (terminal.endpointId !== slice.endpoint.id
+    || method !== slice.endpoint.method.toUpperCase()
+    || !['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false
+  return !(props.steps ?? []).slice((props.steps ?? []).indexOf(terminal) + 1).some(step =>
+    Boolean(step.requestId && capturedRequestIds.has(step.requestId)
+      && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(step.method ?? '').toUpperCase())),
+  )
 }
 
 function hasAuth(headers: Record<string, string>): boolean {
@@ -228,8 +260,9 @@ export function createPrimitiveRunner(
   return async (primitiveId, slice, ctx) => {
     const primitive = getPrimitive(primitiveId)
     if (!primitive) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `unavailable primitive: ${primitiveId}` }
-    if (primitiveId === 'workflowBypass' && (slice.workflowSteps?.length ?? 0) < 2) {
-      return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: 'requires an observed multi-step workflow ending at this endpoint' }
+    if (primitiveId === 'workflowBypass'
+      && ((slice.workflowSteps?.length ?? 0) < 2 || !hasObservedWorkflowTerminal(slice, graphStore))) {
+      return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: 'requires a request-backed operator-observed workflow and its exact terminal request' }
     }
     const scope = isUrlInScope(slice.endpoint.url)
     if (!scope.allowed) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `scope denied: ${scope.reason}` }
@@ -287,6 +320,7 @@ export function createPrimitiveRunner(
       sessionHeaders,
       ...(alternateActor ? { altSessionHeaders: alternateActor.headers, altSessionRef: alternateActor.ref } : {}),
       ...(authenticated?.ref ? { sessionRef: authenticated.ref } : {}),
+      capturedRequestId: captured.id,
       ...(slice.workflowSteps ? { workflowSteps: [...slice.workflowSteps] } : {}),
       requestTemplate: { method: requestTemplate.method, url: requestTemplate.url, headers: { ...requestTemplate.headers }, ...(requestTemplate.body !== undefined ? { body: requestTemplate.body } : {}) },
       state: slice.state ? { name: slice.state, ...(slice.workflowId ? { workflowId: slice.workflowId } : {}) } : undefined,

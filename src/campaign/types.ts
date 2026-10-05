@@ -66,6 +66,8 @@ export interface CampaignSlice {
   /** Ordered, target-observed steps for the workflow ending at this endpoint. */
   workflowId?: string
   workflowSteps?: string[]
+  /** Exact captured terminal request that grounds the observed workflow replay. */
+  workflowTerminalRequestId?: string
   techniqueIds: string[]
   domains?: string[]
   priority: number
