@@ -8,7 +8,7 @@
  * - getOrCreateEngine: returns existing or creates new
  */
 
-import { WebEngine } from './engine'
+import type { WebEngine } from './engine'
 import { log } from '../utils/logger'
 
 const ENGINE_TTL_MS = 30 * 60 * 1000 // 30 minutes
@@ -62,6 +62,7 @@ export class TargetManager {
     }
 
     // Concurrency lock: create placeholder immediately, init async
+    const { WebEngine } = await import('./engine')
     const engine = new WebEngine(target)
     const managed: ManagedEngine = {
       engine,
