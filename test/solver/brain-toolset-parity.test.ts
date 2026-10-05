@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
+const { captureState, graphState } = vi.hoisted(() => ({
+  captureState: { size: 0 },
+  graphState: { nodes: [] as Array<{ id: string; type: string; updatedAt: number }> },
+}))
+
 vi.mock('@mastra/core/agent', () => ({
   Agent: class {
     id = ''
@@ -18,10 +23,25 @@ vi.mock('../../src/solver/brain-instructions', () => ({ getBrainInstructions: ()
 vi.mock('../../src/browser/manager', () => ({ getActivePage: () => null }))
 vi.mock('../../src/capture/human-observer', () => ({ getGlobalObserver: () => ({ getAuthDetector: () => ({ detectAuthState: async () => ({}) }) }) }))
 vi.mock('../../src/graph/tool-result-store', () => ({ getToolResultStore: () => ({ get: () => null }) }))
-vi.mock('../../src/graph/store', () => ({ getGlobalGraphStore: () => ({}) }))
+vi.mock('../../src/graph/store', () => ({
+  getGlobalGraphStore: () => ({
+    queryNodes: (type: string) => graphState.nodes.filter(node => node.type === type),
+  }),
+}))
+vi.mock('../../src/capture/captured-request-store', () => ({
+  getCapturedRequestStore: () => ({
+    get size() { return captureState.size },
+    record: () => undefined,
+    list: () => [],
+    get: () => null,
+    clear: () => { captureState.size = 0 },
+  }),
+}))
 
 import { createSolverBrain } from '../../src/solver/brain-tools'
 import { DynamicToolRegistry } from '../../src/extensions/tool-registry'
+import { buildResearchMap, planResearchExperiments } from '../../src/tools/research-tools'
+import { NodeType } from '../../src/graph/schema'
 
 function setup() {
   const extensionRegistry = new DynamicToolRegistry()
@@ -42,6 +62,120 @@ function setup() {
 }
 
 describe('solver brain lazy tool view', () => {
+  it('keeps a map stale when target observations arrive while it is being built', async () => {
+    captureState.size = 0
+    graphState.nodes = []
+    const mapSpy = vi.spyOn(buildResearchMap, 'execute').mockImplementationOnce(async () => {
+      captureState.size += 1
+      return { ok: true, value: { hypotheses: 1 } } as any
+    })
+    try {
+      const { brain } = setup()
+      const tools = brain.tools()
+      await expect(tools.buildResearchMap.execute({ maxHypotheses: 12 })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+      await expect(tools.planResearchExperiments.execute({ maxExperiments: 6 })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+    } finally {
+      mapSpy.mockRestore()
+    }
+  })
+
+  it('does not mistake workflow persistence timestamp changes for new observations', async () => {
+    captureState.size = 0
+    const workflow = {
+      id: 'workflow:observed-1',
+      type: NodeType.WORKFLOW,
+      updatedAt: 1,
+      properties: {
+        name: 'operator-demonstration',
+        entryUrl: 'https://example.test/account',
+        steps: [{ action: 'click', url: 'https://example.test/account', selector: '#save' }],
+        relatedEndpoints: [],
+        inputFields: ['#save'],
+        stateChanges: [],
+        observedRoles: [],
+        confidence: 1,
+        source: 'operator-demonstration',
+        sequenceObserved: false,
+        capturedRequestIds: [],
+        capturedAt: 1,
+      },
+    }
+    graphState.nodes = [workflow]
+    const mapSpy = vi.spyOn(buildResearchMap, 'execute').mockImplementationOnce(async () => {
+      workflow.updatedAt += 1
+      return { ok: true, value: { hypotheses: 1 } } as any
+    })
+    const planSpy = vi.spyOn(planResearchExperiments, 'execute').mockResolvedValue({ ok: true, value: { experimentsPlanned: 1 } } as any)
+    try {
+      const { brain } = setup()
+      const tools = brain.tools()
+      await expect(tools.buildResearchMap.execute({ maxHypotheses: 12 })).resolves.toMatchObject({ ok: true })
+      await expect(tools.planResearchExperiments.execute({ maxExperiments: 6 })).resolves.toMatchObject({ ok: true })
+      expect(planSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      mapSpy.mockRestore()
+      planSpy.mockRestore()
+    }
+  })
+
+  it('refreshes cached research setup when captured target traffic changes', async () => {
+    captureState.size = 0
+    graphState.nodes = []
+    const mapSpy = vi.spyOn(buildResearchMap, 'execute').mockResolvedValue({ ok: true, value: { hypotheses: 1 } } as any)
+    const planSpy = vi.spyOn(planResearchExperiments, 'execute').mockResolvedValue({ ok: true, value: { experimentsPlanned: 1 } } as any)
+    try {
+      const { brain, extensionRegistry } = setup()
+      await extensionRegistry.activate('runPrimitive')
+      const tools = brain.tools()
+      await tools.buildResearchMap.execute({ maxHypotheses: 12 })
+      await tools.buildResearchMap.execute({ maxHypotheses: 12 })
+      expect(mapSpy).toHaveBeenCalledTimes(1)
+
+      await tools.planResearchExperiments.execute({ maxExperiments: 6 })
+      await tools.planResearchExperiments.execute({ maxExperiments: 6 })
+      expect(planSpy).toHaveBeenCalledTimes(1)
+      brain.setMethodologyState({ methodologyLoaded: true, researchMapBuilt: true, experimentPlanned: true })
+
+      captureState.size += 1
+      await expect(tools.planResearchExperiments.execute({ maxExperiments: 6 })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+      await expect(tools.executePlannedExperiment.execute({ experimentId: 'experiment-1' })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+      await expect(tools.runPrimitive.execute({ primitiveId: 'businessLogicAbuse', context: {} })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+
+      await tools.buildResearchMap.execute({ maxHypotheses: 12 })
+      await tools.planResearchExperiments.execute({ maxExperiments: 6 })
+      expect(mapSpy).toHaveBeenCalledTimes(2)
+      expect(planSpy).toHaveBeenCalledTimes(2)
+
+      graphState.nodes.push({ id: 'endpoint-1', type: NodeType.ENDPOINT, updatedAt: 1 })
+      await expect(tools.runPrimitive.execute({ primitiveId: 'businessLogicAbuse', context: {} })).resolves.toMatchObject({
+        ok: false,
+        code: 'RESEARCH_MAP_STALE',
+      })
+      await tools.buildResearchMap.execute({ maxHypotheses: 12 })
+      await tools.planResearchExperiments.execute({ maxExperiments: 6 })
+      expect(mapSpy).toHaveBeenCalledTimes(3)
+      expect(planSpy).toHaveBeenCalledTimes(3)
+    } finally {
+      mapSpy.mockRestore()
+      planSpy.mockRestore()
+    }
+  })
+
   it('starts with control-plane tools plus catalog discovery', () => {
     const { brain } = setup()
     expect(Object.keys(brain.tools())).toEqual(expect.arrayContaining([

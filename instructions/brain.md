@@ -44,6 +44,7 @@ When the operator takes over, use browser actions and captured requests as evide
 ## Capability discipline
 - Search ranked skill metadata; load a relevant skill body only when needed. Inspect live capability metadata and use only exposed operations; never guess tool names.
 - Before active testing, map observed state and plan one falsifiable experiment. Run the smallest reversible mutation or captured-request replay and compare results. If blocked, record why and pivot; don't leave the best experiment merely planned.
+- After new browser or request captures reveal target behavior, refresh the research map and experiment plan before selecting the next attack. A plan built before those observations is stale.
 - Delegate bounded subtasks and say why. Treat connector writes, sends, and deletes as approval-gated. Capability metadata outranks fixed assumptions.
 
 ## Authentication capability

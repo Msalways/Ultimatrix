@@ -19,6 +19,8 @@ import { recordBrowserEffectEvidence } from '../tools/control-tools'
 import { randomUUID } from 'node:crypto'
 import { getToolResultStore } from '../graph/tool-result-store'
 import { getGlobalGraphStore } from '../graph/store'
+import { getCapturedRequestStore } from '../capture/captured-request-store'
+import { NodeType } from '../graph/schema'
 import { createExtensionTools } from '../extensions/tool-tools'
 import type { DynamicToolRegistry } from '../extensions/tool-registry'
 import type { LazySolverServices } from '../runtime/lazy-services'
@@ -169,7 +171,7 @@ export const BOOTSTRAP_TOOL_IDS = new Set([
 
 const METHODOLOGY_GATE_TOOLS = new Set([
   'httpRequest', 'listCapturedRequests', 'replayCapturedRequest', 'writeFinding',
-  'executePlannedExperiment',
+  'executePlannedExperiment', 'runPrimitive',
   'stagehand_navigate', 'stagehand_act', 'stagehand_extract', 'stagehand_observe',
   'browserInteract', 'stagehand_screenshot', 'stagehand_tabs',
   'detectAuthFlows', 'testSessionValid',
@@ -191,6 +193,48 @@ function isPassiveInvocation(toolId: string, args: unknown[]): boolean {
     'stagehand_extract', 'stagehand_screenshot', 'stagehand_tabs',
     'detectAuthFlows', 'testSessionValid',
   ]).has(toolId)
+}
+
+function researchInputRevision(): string {
+  let graphRevision = ''
+  try {
+    const graph = getGlobalGraphStore()
+    const inputs = [NodeType.ENDPOINT, NodeType.ACTION, NodeType.INPUT]
+      .flatMap(type => graph.queryNodes(type).map(node => `${type}:${node.id}:${node.updatedAt}`))
+    const demonstratedWorkflows = graph.queryNodes(NodeType.WORKFLOW)
+      .filter(node => (node.properties as Record<string, unknown>)?.source === 'operator-demonstration')
+      .map(node => {
+        const properties = node.properties as Record<string, any>
+        const steps = Array.isArray(properties.steps)
+          ? properties.steps.map((step: Record<string, unknown>) => ({
+            action: step.action,
+            url: step.url,
+            endpointId: step.endpointId,
+            method: step.method,
+            selector: step.selector,
+            requestId: step.requestId,
+          }))
+          : []
+        const input = {
+          name: properties.name,
+          entryUrl: properties.entryUrl,
+          steps,
+          relatedEndpoints: properties.relatedEndpoints,
+          requiredAuth: properties.requiredAuth,
+          inputFields: properties.inputFields,
+          stateChanges: properties.stateChanges,
+          observedRoles: properties.observedRoles,
+          confidence: properties.confidence,
+          source: properties.source,
+          sequenceObserved: properties.sequenceObserved,
+          capturedRequestIds: properties.capturedRequestIds,
+          capturedAt: properties.capturedAt,
+        }
+        return `${NodeType.WORKFLOW}:${node.id}:${JSON.stringify(input)}`
+      })
+    graphRevision = [...inputs, ...demonstratedWorkflows].sort().join('|')
+  } catch { /* a capture-count revision still detects new traffic */ }
+  try { return `${getCapturedRequestStore().size}:${graphRevision}` } catch { return `0:${graphRevision}` }
 }
 
 /**
@@ -394,6 +438,51 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
     },
   }), provider)
 
+  let methodologyLoaded = false
+  let researchMapBuilt = false
+  let experimentPlanned = false
+  const setupResults = new Map<string, unknown>()
+  const setupRevisions = new Map<string, string>()
+  let researchMapRevision: string | undefined
+  const guardedMethodologyTools = new WeakMap<object, any>()
+  const guardMethodologyTool = (id: string, tool: any): any => {
+    if (!METHODOLOGY_GATE_TOOLS.has(id) || !tool || typeof tool.execute !== 'function') return tool
+    const cached = guardedMethodologyTools.get(tool)
+    if (cached) return cached
+    const execute = tool.execute
+    const guarded = {
+      ...tool,
+      description: `${String(tool.description ?? id)} (requires methodology setup before execution)`,
+      execute: async (...args: any[]) => {
+        const plannedAttack = id !== 'writeFinding'
+          && !isPassiveInvocation(id, args)
+        const researchMapStale = plannedAttack
+          && researchMapRevision !== undefined
+          && researchMapRevision !== researchInputRevision()
+        if (researchMapStale) {
+          researchMapBuilt = false
+          experimentPlanned = false
+          setupResults.delete('planResearchExperiments')
+          setupRevisions.delete('planResearchExperiments')
+        }
+        if (id === 'writeFinding') return execute(...args)
+        if (!(methodologyLoaded && researchMapBuilt && experimentPlanned) && !isPassiveInvocation(id, args)) {
+          return {
+            ok: false,
+            code: researchMapStale ? 'RESEARCH_MAP_STALE' : 'METHODOLOGY_REQUIRED',
+            error: researchMapStale
+              ? 'New captured target traffic arrived after the research map. Refresh the map and experiment plan before another attack.'
+              : 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
+            next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
+          }
+        }
+        return execute(...args)
+      },
+    }
+    guardedMethodologyTools.set(tool, guarded)
+    return guarded
+  }
+
   const catalog = { ...baseTools, ...extras }
   for (const [id, tool] of Object.entries(catalog)) {
     const requirements = CAPTURE_DEPENDENT.has(id)
@@ -415,7 +504,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       if (CAPTURE_DEPENDENT.has(id)) await options.lazyServices?.ensureCapture()
       else if (BROWSER_DEPENDENT.has(id)) await options.lazyServices?.ensureCapture()
       if (OAST_DEPENDENT.has(id)) await options.lazyServices?.ensureOast()
-      return tool as any
+      return guardMethodologyTool(id, tool as any)
     })
   }
 
@@ -432,24 +521,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       }, async () => {
         const tool = (await options.lazyServices!.getBrowserTools())[id]
         if (!tool) throw new Error(`Browser provider does not supply ${id}`)
-        const sanitized = sanitizeTool(tool, provider)
-        if (!METHODOLOGY_GATE_TOOLS.has(id)) return sanitized
-        const execute = sanitized.execute
-        return {
-          ...sanitized,
-          description: `${String(sanitized.description ?? description)} (requires methodology setup before active testing)`,
-          execute: async (...args: any[]) => {
-            if (!(methodologyLoaded && researchMapBuilt && experimentPlanned) && !isPassiveInvocation(id, args)) {
-              return {
-                ok: false,
-                code: 'METHODOLOGY_REQUIRED',
-                error: 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
-                next: ['load applicable skill body', 'build research map', 'plan research experiment'],
-              }
-            }
-            return execute(...args)
-          },
-        }
+        return guardMethodologyTool(id, sanitizeTool(tool, provider))
       })
     }
 
@@ -524,10 +596,6 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   // domain knowledge before it can execute attack traffic. This prevents a
   // model from burning the turn on blind browser/HTTP actions while keeping
   // the policy target-agnostic.
-  let methodologyLoaded = false
-  let researchMapBuilt = false
-  let experimentPlanned = false
-  const setupResults = new Map<string, unknown>()
   for (const id of [
     'discoverSkillsForTarget', 'searchSkills', 'loadSkillBody',
     'buildResearchMap', 'planResearchExperiments', 'executePlannedExperiment',
@@ -539,18 +607,89 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       ...tool,
       execute: async (...args: any[]) => {
         // Setup is deterministic and already persisted in the graph. Reusing
-        // the typed result prevents a stalled model from repeatedly rebuilding
-        // the same map/plan and exhausting the turn budget.
-        if ((id === 'buildResearchMap' || id === 'planResearchExperiments') && setupResults.has(id)) {
+        // the typed result prevents repeated work until new target traffic is
+        // captured. A changed capture count must invalidate the old map/plan.
+        const revision = researchInputRevision()
+        if (id === 'buildResearchMap' && researchMapRevision !== undefined && researchMapRevision !== revision) {
+          setupResults.delete('buildResearchMap')
+          setupResults.delete('planResearchExperiments')
+          setupRevisions.delete('buildResearchMap')
+          setupRevisions.delete('planResearchExperiments')
+          researchMapBuilt = false
+          experimentPlanned = false
+        }
+        if (id === 'planResearchExperiments' && researchMapRevision !== undefined && researchMapRevision !== revision) {
+          setupResults.delete('planResearchExperiments')
+          setupRevisions.delete('planResearchExperiments')
+          researchMapBuilt = false
+          experimentPlanned = false
+          return {
+            ok: false,
+            code: 'RESEARCH_MAP_STALE',
+            error: 'New captured target traffic arrived after the research map. Rebuild the map before planning experiments.',
+            next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
+          }
+        }
+        if (id === 'planResearchExperiments' && !researchMapBuilt) {
+          return {
+            ok: false,
+            code: researchMapRevision !== undefined ? 'RESEARCH_MAP_STALE' : 'METHODOLOGY_REQUIRED',
+            error: 'Build the research map from current target observations before planning experiments.',
+            next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
+          }
+        }
+        if ((id === 'buildResearchMap' || id === 'planResearchExperiments')
+          && setupResults.has(id) && setupRevisions.get(id) === revision) {
           const cached = setupResults.get(id) as any
           return cached && typeof cached === 'object' ? { ...cached, reused: true } : cached
+        }
+        if (id === 'buildResearchMap') {
+          setupResults.delete('planResearchExperiments')
+          setupRevisions.delete('planResearchExperiments')
+          experimentPlanned = false
         }
         const result = await execute(...args)
         if (result?.ok !== false) {
           if (id === 'loadSkillBody') methodologyLoaded = true
-          if (id === 'buildResearchMap') researchMapBuilt = true
-          if (id === 'planResearchExperiments') experimentPlanned = true
-          if (id === 'buildResearchMap' || id === 'planResearchExperiments') setupResults.set(id, result)
+          if (id === 'buildResearchMap') {
+            const completedAtRevision = researchInputRevision()
+            if (completedAtRevision !== revision) {
+              researchMapBuilt = false
+              experimentPlanned = false
+              researchMapRevision = revision
+              setupResults.delete('buildResearchMap')
+              setupResults.delete('planResearchExperiments')
+              setupRevisions.delete('buildResearchMap')
+              setupRevisions.delete('planResearchExperiments')
+              return {
+                ok: false,
+                code: 'RESEARCH_MAP_STALE',
+                error: 'Target observations changed while the research map was being built. Rebuild it before planning experiments.',
+                next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
+              }
+            }
+            researchMapBuilt = true
+            researchMapRevision = completedAtRevision
+            setupResults.set(id, result)
+            setupRevisions.set(id, researchMapRevision)
+          }
+          if (id === 'planResearchExperiments') {
+            const plannedAtRevision = researchInputRevision()
+            if (plannedAtRevision !== revision) {
+              experimentPlanned = false
+              setupResults.delete('planResearchExperiments')
+              setupRevisions.delete('planResearchExperiments')
+              return {
+                ok: false,
+                code: 'RESEARCH_MAP_STALE',
+                error: 'Target observations changed while experiments were being planned. Refresh the research map and plan again.',
+                next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
+              }
+            }
+            experimentPlanned = true
+            setupResults.set(id, result)
+            setupRevisions.set(id, plannedAtRevision)
+          }
         }
         return result
       },
@@ -564,22 +703,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   for (const id of METHODOLOGY_GATE_TOOLS) {
     const tool = discoveryTools[id]
     if (!tool) continue
-    const execute = tool.execute
-    discoveryTools[id] = {
-      ...tool,
-      description: `${String(tool.description ?? id)} (requires methodology setup before execution)`,
-      execute: async (...args: any[]) => {
-        if (!(methodologyLoaded && researchMapBuilt && experimentPlanned) && !isPassiveInvocation(id, args)) {
-          return {
-            ok: false,
-            code: 'METHODOLOGY_REQUIRED',
-            error: 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
-            next: ['load applicable skill body', 'build research map', 'plan research experiment'],
-          }
-        }
-        return execute(...args)
-      },
-    }
+    discoveryTools[id] = guardMethodologyTool(id, tool)
   }
   const listTools = discoveryTools.listTools
   if (listTools) {
@@ -696,9 +820,26 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
   // first model turn. Keep the methodology gate in sync with that runtime
   // state; otherwise the brain is forced to repeat setup that already ran.
   ;(agent as any).setMethodologyState = (state: MethodologyState) => {
-    if (state.methodologyLoaded) methodologyLoaded = true
-    if (state.researchMapBuilt) researchMapBuilt = true
-    if (state.experimentPlanned) experimentPlanned = true
+    if (state.methodologyLoaded !== undefined) methodologyLoaded = state.methodologyLoaded
+    if (state.researchMapBuilt !== undefined) {
+      researchMapBuilt = state.researchMapBuilt
+      if (state.researchMapBuilt) researchMapRevision = researchInputRevision()
+      else {
+        researchMapRevision = undefined
+        experimentPlanned = false
+        setupResults.delete('buildResearchMap')
+        setupResults.delete('planResearchExperiments')
+        setupRevisions.delete('buildResearchMap')
+        setupRevisions.delete('planResearchExperiments')
+      }
+    }
+    if (state.experimentPlanned !== undefined) {
+      experimentPlanned = state.experimentPlanned
+      if (!state.experimentPlanned) {
+        setupResults.delete('planResearchExperiments')
+        setupRevisions.delete('planResearchExperiments')
+      }
+    }
   }
   ;(agent as any).capabilityRegistry = options.extensionRegistry
   ;(agent as any).lazyServices = options.lazyServices
