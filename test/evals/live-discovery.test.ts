@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, mapExperiment, startTarget } from '../../scripts/live-discovery-benchmark'
+import { makeConfig, makeFixture, mapExperiment, observedWorkflowSequences, startTarget } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -439,6 +439,27 @@ describe('live discovery scoring', () => {
 })
 
 describe('blinded loopback targets', () => {
+  it('counts only provenance-backed ordered multi-request workflows', () => {
+    const base = {
+      id: 'workflow-1', type: 'Workflow',
+      properties: {
+        steps: [
+          { requestId: 'cap-1', method: 'GET', url: 'http://127.0.0.1/member' },
+          { requestId: 'cap-2', method: 'POST', url: 'http://127.0.0.1/member' },
+        ],
+      },
+    }
+    const inferred = { ...base, properties: { ...base.properties, source: 'endpoint-inference', sequenceObserved: false } }
+    const observed = { ...base, properties: { ...base.properties, source: 'browser-observation', sequenceObserved: true } }
+    const unordered = { ...base, properties: { ...base.properties, source: 'browser-observation', sequenceObserved: false } }
+
+    expect(observedWorkflowSequences([inferred, unordered])).toEqual([])
+    expect(observedWorkflowSequences([observed])).toEqual([[
+      { method: 'GET', path: '/member' },
+      { method: 'POST', path: '/member' },
+    ]])
+  })
+
   it('keeps the experiment-to-hypothesis-to-endpoint link for benchmark scoring', () => {
     const endpoint = {
       id: 'endpoint-1', type: 'Endpoint',

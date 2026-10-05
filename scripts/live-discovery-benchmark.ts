@@ -485,7 +485,7 @@ function expectedWorkflowSequences(fixture: Fixture): Array<Array<{ method: stri
   return []
 }
 
-function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ method: string; path: string }>> {
+export function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ method: string; path: string }>> {
   return nodes.filter(node => node.type === 'Workflow'
     && isObservedWorkflowSource(node.properties.source)
     && node.properties.sequenceObserved === true)
@@ -539,7 +539,9 @@ async function executeRun(input: {
     crossActorRequestCount: targetApp.requests.filter(request => request.crossActor === true).length,
   }
   const learning = {
-    workflowCount: graphNodes.filter(node => node.type === 'Workflow').length,
+    // Do not let route-cluster inference masquerade as a workflow the product
+    // learned from observed actions and requests.
+    workflowCount: observedWorkflowSequences(graphNodes).length,
     entityCount: graphNodes.filter(node => node.type === 'Entity').length,
     hypothesisKinds: hypothesisNodes.map(node => String(node.properties.kind ?? 'unknown')),
     experimentStatuses: graphNodes.filter(node => node.type === 'Experiment').map(node => String(node.properties.status ?? 'unknown')),
