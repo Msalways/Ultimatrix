@@ -10,7 +10,7 @@ import { recordStructuredEvidence } from './control-tools'
 import { LoopDetector } from '../intelligence/anti-loop'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getTargetTransportGovernor } from '../runtime/target-governor'
-import { redactHeadersStrict, redactString, redactUrl } from '../security/secret-vault'
+import { SECRET_NAME, redactHeadersStrict, redactString, redactUrl } from '../security/secret-vault'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, type EndpointNode, type PageNode } from '../graph/schema'
@@ -111,6 +111,78 @@ function inferUnauthenticatedAccessSignal(url: string, status: number, headers: 
 const MAX_429_RETRIES = 3
 const BACKOFF_BASE_MS = 1000
 const MAX_APPROVAL_TIMEOUT_MS = 300_000
+
+function isSensitiveApprovalField(name: string): boolean {
+  return SECRET_NAME.test(name) || /(?:ticket|otp|one[-_]?time[-_]?code|verification[-_]?code)/i.test(name)
+}
+
+function redactApprovalValue(value: unknown, key = ''): unknown {
+  if (typeof value === 'string') return isSensitiveApprovalField(key) ? '<redacted>' : redactString(value)
+  if (Array.isArray(value)) return value.map(item => redactApprovalValue(item, key))
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  if (typeof record.name === 'string' && 'value' in record && isSensitiveApprovalField(record.name)) {
+    return { ...record, value: '<redacted>' }
+  }
+  return Object.fromEntries(Object.entries(record).map(([childKey, child]) => [childKey, redactApprovalValue(child, childKey)]))
+}
+
+function redactApprovalUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    const params = [...url.searchParams.entries()]
+    url.search = ''
+    for (const [name, paramValue] of params) {
+      url.searchParams.append(name, isSensitiveApprovalField(name) ? '<redacted>' : redactString(paramValue))
+    }
+    url.hash = ''
+    return redactString(url.toString())
+  } catch {
+    return redactString(value)
+  }
+}
+
+function redactApprovalBody(body: string, contentType: string): string {
+  try {
+    return JSON.stringify(redactApprovalValue(JSON.parse(body)), null, 2)
+  } catch { /* try form or text below */ }
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    return [...new URLSearchParams(body).entries()]
+      .map(([name, value]) => `${name}=${isSensitiveApprovalField(name) ? '<redacted>' : redactString(value)}`)
+      .join('&')
+  }
+  if (contentType.startsWith('text/')) {
+    return redactString(body).replace(
+      /(^|[?&;\s,{])(["']?)([a-z][a-z0-9_.-]*)(["']?)\s*([=:])\s*("[^"]*"|'[^']*'|[^,&;\s}]+)/gi,
+      (match, prefix: string, openQuote: string, name: string, closeQuote: string, separator: string) =>
+        isSensitiveApprovalField(name) ? `${prefix}${openQuote}${name}${closeQuote}${separator}<redacted>` : match,
+    )
+  }
+  return `[omitted: ${body.length} characters; unsupported content type${contentType ? ` ${contentType}` : ''}]`
+}
+
+/** Build the redacted request summary shown before a state-changing HTTP action. */
+export function formatRequestApproval(input: {
+  method: string
+  url: string
+  headers?: Record<string, string>
+  body?: string
+  sessionRef?: string
+}): string {
+  const headers = redactHeadersStrict(input.headers) ?? {}
+  const contentType = Object.entries(input.headers ?? {}).find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.toLowerCase() ?? ''
+  return [
+    'Approve this state-changing HTTP request?',
+    `Method: ${input.method.toUpperCase()}`,
+    `URL: ${redactApprovalUrl(input.url)}`,
+    `Headers: ${Object.keys(headers).length ? JSON.stringify(headers) : '(none)'}`,
+    ...(input.sessionRef ? [`Session: ${redactString(input.sessionRef)} (stored authentication values are hidden)`] : []),
+    `Body: ${input.body === undefined ? '(none)' : redactApprovalBody(input.body, contentType)}`,
+    'Reply yes to send this request or no to cancel it.',
+  ].join('\n')
+}
 
 async function fetchWithBackoff(url: string, opts: RequestInit, maxRetries = MAX_429_RETRIES): Promise<Response> {
   let lastErr: Error | undefined
@@ -228,10 +300,16 @@ export const httpRequest = createTool({
       }
       const routeError = checkObservedRoute(url)
       if (routeError) return { ok: false, error: routeError }
+      // Resolve the authentication context before asking for approval so the
+      // operator sees the headers that will be sent (with secrets redacted).
+      let mergedHeaders: Record<string, string> = { ...(headers ?? {}) }
+      if (sessionRef) {
+        const sessionHeaders = getGlobalSessionManager().getAllHeaders(sessionRef, url)
+        mergedHeaders = { ...sessionHeaders, ...mergedHeaders }
+      }
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
-        const requestUrl = new URL(url)
         const approved = await askUserConfirm(
-          `Approve this state-changing ${method.toUpperCase()} request to ${requestUrl.origin}${requestUrl.pathname}?`,
+          formatRequestApproval({ method, url, headers: mergedHeaders, body, sessionRef }),
           Math.max(1, Math.min(MAX_APPROVAL_TIMEOUT_MS, approvalTimeoutMs ?? MAX_APPROVAL_TIMEOUT_MS)),
         )
         if (!approved) return { ok: false, code: 'APPROVAL_REQUIRED', error: 'State-changing request was not approved.' }
@@ -241,16 +319,6 @@ export const httpRequest = createTool({
       if (!(await isAllowedByRobots(url))) {
         return { ok: false, error: `Blocked by robots.txt: ${url}` }
       }
-      // Phase 4: Auto-merge session headers when sessionRef is provided.
-      // Session headers go underneath; explicit headers override them.
-      let mergedHeaders: Record<string, string> = { ...(headers ?? {}) }
-      if (sessionRef) {
-        const sessionManager = getGlobalSessionManager()
-        const sessionHeaders = sessionManager.getAllHeaders(sessionRef, url)
-        // Session headers are the base; explicit headers win
-        mergedHeaders = { ...sessionHeaders, ...mergedHeaders }
-      }
-
       const timeoutSignal = AbortSignal.timeout(timeoutMs ?? 10000)
       const fetchSignal = context?.abortSignal
         ? AbortSignal.any([context.abortSignal, timeoutSignal])

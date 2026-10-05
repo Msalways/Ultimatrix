@@ -302,9 +302,9 @@ Engagement memory contains target-sensitive state. Reflexion and technique-outco
 
 | Surface | What it feels like | Runtime behavior |
 |---|---|---|
-| `ultimatrix interact -t <url>` | A research partner at the keyboard | Ask mode; you can redirect, provide credentials, act in the browser, or approve a meaningful step |
-| `ultimatrix solve -t <url>` | A bounded autonomous assessment | Run mode; the loop continues without waiting for HITL prompts, but scope, budgets, capability checks, and evidence gates remain active |
-| `ultimatrix web` | The case wall | Chat, graph, findings, approvals, and live progress in one workspace |
+| `ultimatrix interact -t <url>` | An interactive scoped assessment | Run mode; steer the investigation, provide credentials, act in the browser, and approve each state-changing HTTP request |
+| `ultimatrix solve -t <url>` | A bounded assessment | Run mode and deterministic coverage; state-changing HTTP requests still require operator approval, with scope, budgets, capability checks, and evidence gates active |
+| `ultimatrix web` | The case wall | Ask is the default. Choose Run tests for the next message to start active experiments; state-changing requests show redacted request details and require approval |
 
 The stream has typed channels rather than one ambiguous text blob:
 

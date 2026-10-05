@@ -17,14 +17,17 @@ export type InputMode = 'auto' | 'run'
 
 export function ChatInput({ onSend, onSteer, onStop, disabled, isStreaming, placeholder = 'Type a message...' }: ChatInputProps) {
   const [value, setValue] = useState('')
-  const mode: InputMode = 'auto'
+  const [mode, setMode] = useState<InputMode>('auto')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const handleSubmit = useCallback(() => {
     const trimmed = value.trim()
     if (!trimmed || disabled) return
     if (isStreaming) onSteer?.(trimmed)
-    else onSend(trimmed, mode)
+    else {
+      onSend(trimmed, mode)
+      setMode('auto')
+    }
     setValue('')
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -53,6 +56,39 @@ export function ChatInput({ onSend, onSteer, onStop, disabled, isStreaming, plac
   return (
     <div className="border-t border-zinc-800/80 bg-zinc-950 p-3">
       <div className="mx-auto max-w-4xl">
+        <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="inline-flex w-fit rounded-md border border-zinc-800 bg-zinc-900 p-0.5" role="group" aria-label="Execution mode">
+            <button
+              type="button"
+              aria-pressed={mode === 'auto'}
+              disabled={disabled || isStreaming}
+              onClick={() => setMode('auto')}
+              className={cn(
+                'rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 disabled:cursor-not-allowed disabled:opacity-50',
+                mode === 'auto' ? 'bg-zinc-200 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+              )}
+            >
+              Ask
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'run'}
+              disabled={disabled || isStreaming}
+              onClick={() => setMode('run')}
+              className={cn(
+                'rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-not-allowed disabled:opacity-50',
+                mode === 'run' ? 'bg-amber-400 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+              )}
+            >
+              Run tests
+            </button>
+          </div>
+          <p id="chat-input-mode-help" className={cn('text-xs', mode === 'run' ? 'text-amber-300/90' : 'text-zinc-500')} aria-live="polite">
+            {mode === 'run'
+              ? 'Run mode applies to your next message. State-changing requests show a secret-redacted request summary for approval.'
+              : 'Ask about the target or plan work. Choose Run tests to start active experiments.'}
+          </p>
+        </div>
         <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
@@ -60,6 +96,7 @@ export function ChatInput({ onSend, onSteer, onStop, disabled, isStreaming, plac
           onChange={(e) => { setValue(e.target.value); handleInput() }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
+          aria-describedby="chat-input-mode-help"
           disabled={disabled || (isStreaming && !onSteer)}
           rows={1}
           className={cn(

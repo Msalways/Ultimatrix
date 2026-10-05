@@ -8,6 +8,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: number
+  mode?: 'ask' | 'run' | 'auto'
 }
 
 export interface ToolCallMessage {

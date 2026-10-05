@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { resolve } from 'node:path';
 
 export default defineConfig({
   esbuild: {
@@ -12,7 +13,7 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {},
+    alias: { '@': resolve(process.cwd(), 'src') },
   },
   test: {
     globals: true,

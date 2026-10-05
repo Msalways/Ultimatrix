@@ -151,6 +151,7 @@ export function ChatStream() {
       role: 'user',
       content: goal,
       timestamp: Date.now(),
+      mode,
     })
 
     setStreaming(true)
@@ -818,6 +819,7 @@ export function ChatStream() {
         )}
       </div>
       <ChatInput
+        key={activeTarget || 'no-target'}
         onSend={handleSend}
         onSteer={handleOperatorInput}
         onStop={handleStop}
@@ -1030,6 +1032,7 @@ function MessageBubble({
   if (isUser) {
     return (
       <div className="my-2 px-4 text-right">
+        {chatMsg.mode === 'run' && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300/80">Run tests</div>}
         <div className="inline-block max-w-[85%] rounded-md rounded-tr-sm bg-zinc-800 px-4 py-2 text-left text-sm leading-relaxed text-zinc-100 shadow-sm">
           {chatMsg.content}
         </div>
