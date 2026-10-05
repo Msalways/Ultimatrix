@@ -29,7 +29,7 @@ import type {
   PrimitiveRef,
 } from './types'
 import { isTransportOrAssetUrl } from '../research/utils'
-import { isObservedWorkflowSource } from '../research/types'
+import { hasObservedWorkflowSequence } from '../research/types'
 
 const DEFAULT_ROLE = 'anonymous'
 const ANONYMOUS_ROLE = 'anonymous'
@@ -80,12 +80,7 @@ function terminalWorkflowContexts(
   for (const workflow of workflows) {
     const steps = workflow.properties.steps ?? []
     const capturedRequestIds = new Set(workflow.properties.capturedRequestIds ?? [])
-    const observedRequestIds = new Set(steps
-      .map(step => step.requestId)
-      .filter((id): id is string => Boolean(id && capturedRequestIds.has(id))))
-    if (!isObservedWorkflowSource(workflow.properties.source)
-      || workflow.properties.sequenceObserved !== true
-      || observedRequestIds.size < 2) continue
+    if (!hasObservedWorkflowSequence(workflow.properties)) continue
 
     const terminalStep = [...steps].reverse().find(step => {
       const endpoint = step.endpointId ? endpointById.get(step.endpointId) : undefined

@@ -208,7 +208,7 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     cs.final(model)
     const joined = writes.join('')
 
-    expect(joined).toContain('1 workflows, 1 entities, 3 business-logic facts, 2 hypotheses across 2 classes')
+    expect(joined).toContain('observed workflow sequences 1, 1 entities, 3 business-logic facts, 2 hypotheses across 2 classes')
     expect(joined).toContain('3 business-logic facts')
     expect(joined).toContain('workflow probes: candidate 1; business-logic probes: blocked 1')
     expect(joined).toContain('hypothesis classes: workflow_bypass 1, idor 1')

@@ -2,7 +2,7 @@ import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { CapturedRequest } from '../capture/captured-request-store'
 import type { BusinessRuleObservation, ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
-import { isObservedWorkflowSource } from './types'
+import { hasObservedWorkflowSequence } from './types'
 import { looksLikeId, MIN_REFLECTION_VALUE_LENGTH, isTransportOrAssetUrl, stableId } from './utils'
 
 /** Case-insensitive response-header lookup (fetch lowercases; HAR preserves case). */
@@ -122,7 +122,7 @@ function sameObservedWorkflow(
   firstCaptureId: string,
   secondCaptureId: string,
 ): boolean {
-  if (!isObservedWorkflowSource(workflow.source) || workflow.sequenceObserved !== true) return false
+  if (!hasObservedWorkflowSequence(workflow)) return false
   const ids = new Set([
     ...(workflow.capturedRequestIds ?? []),
     ...workflow.steps.map(step => step.requestId).filter((id): id is string => Boolean(id)),
@@ -289,11 +289,9 @@ export function generateHypotheses(
     // is not an observed sequence. Only operator traces with multiple captured
     // requests can ground skip/replay hypotheses. Keep legacy caller-provided
     // workflows usable when they have no explicit inferred provenance.
-    const sequenceCanBeTested = workflow.source === 'endpoint-inference'
-      ? workflow.sequenceObserved === true
-      : isObservedWorkflowSource(workflow.source)
-        ? workflow.sequenceObserved === true
-        : workflow.steps.length >= 2 || workflow.stateChanges.length > 0
+    const sequenceCanBeTested = workflow.source
+      ? hasObservedWorkflowSequence(workflow)
+      : workflow.steps.length >= 2 || workflow.stateChanges.length > 0
     if (sequenceCanBeTested && endpointEvidenceAvailable && hasStructuredWorkflowSignal) {
       hypotheses.push({
         id: stableId('hypothesis', ['workflow-bypass', workflow.id]),

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun, type DiscoveryExperiment, type DiscoveryFinding, type DiscoveryVariant } from '../src/evals/live-discovery'
-import { isObservedWorkflowSource } from '../src/research/types'
+import { hasObservedWorkflowSequence } from '../src/research/types'
 import { getTargetWorkspaceDir } from '../src/workspace'
 import { loadConfig, loadProvidersConfig } from '../src/config'
 
@@ -487,8 +487,7 @@ function expectedWorkflowSequences(fixture: Fixture): Array<Array<{ method: stri
 
 export function observedWorkflowSequences(nodes: GraphNode[]): Array<Array<{ method: string; path: string }>> {
   return nodes.filter(node => node.type === 'Workflow'
-    && isObservedWorkflowSource(node.properties.source)
-    && node.properties.sequenceObserved === true)
+    && hasObservedWorkflowSequence(node.properties))
     .map(node => (Array.isArray(node.properties.steps) ? node.properties.steps : [])
       .filter((step: any) => step?.requestId && typeof step.method === 'string' && typeof step.url === 'string')
       .flatMap((step: any) => {

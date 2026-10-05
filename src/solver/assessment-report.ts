@@ -5,6 +5,7 @@ export interface AssessmentReportInput {
     pages: number
     endpoints: number
     inputs: number
+    /** Observed ordered multi-request workflows, excluding route-only inference. */
     workflows: number
     authFlows: number
     roles: number

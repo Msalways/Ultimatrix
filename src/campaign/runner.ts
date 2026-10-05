@@ -12,7 +12,7 @@ import { getCapturedRequestStore, type CapturedRequest } from '../capture/captur
 import { getGlobalSessionManager } from '../http/session-manager'
 import { hasActorIdentityHeader, stripActorIdentityHeaders } from '../http/auth-headers'
 import { isUrlInScope } from '../safety/scope-guard'
-import { isObservedWorkflowSource } from '../research/types'
+import { hasObservedWorkflowSequence } from '../research/types'
 import { NodeType, type WorkflowNode } from '../graph/schema'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { GraphStore } from '../graph/store'
@@ -48,12 +48,9 @@ function hasObservedWorkflowTerminal(slice: CampaignSlice, graphStore: GraphStor
   if (!node || node.type !== NodeType.WORKFLOW) return false
   const workflow = node as WorkflowNode
   const props = workflow.properties
-  if (!isObservedWorkflowSource(props.source) || props.sequenceObserved !== true) return false
+  if (!hasObservedWorkflowSequence(props)) return false
   const capturedRequestIds = new Set(props.capturedRequestIds ?? [])
-  const observedRequestIds = new Set((props.steps ?? [])
-    .map(step => step.requestId)
-    .filter((id): id is string => Boolean(id && capturedRequestIds.has(id))))
-  if (observedRequestIds.size < 2 || !capturedRequestIds.has(slice.workflowTerminalRequestId)) return false
+  if (!capturedRequestIds.has(slice.workflowTerminalRequestId)) return false
   const terminalSteps = (props.steps ?? []).filter(step => step.requestId === slice.workflowTerminalRequestId)
   if (terminalSteps.length !== 1) return false
   const terminal = terminalSteps[0]!

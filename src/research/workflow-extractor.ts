@@ -1,6 +1,6 @@
 import { NodeType, type ActionNode, type EndpointNode, type InputNode, type WorkflowNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
-import { isObservedWorkflowSource, type ResearchWorkflow } from './types'
+import { hasObservedWorkflowSequence, isObservedWorkflowSource, type ResearchWorkflow } from './types'
 import {stableId, uniq, isTransportOrAssetUrl} from './utils'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
@@ -100,9 +100,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
     if (!isObservedWorkflowSource(props.source)) continue
     const steps = Array.isArray(props.steps) ? props.steps : []
     const capturedRequestIds = Array.isArray(props.capturedRequestIds) ? props.capturedRequestIds : []
-    const sequenceObserved = props.sequenceObserved === true
-      && capturedRequestIds.length >= 2
-      && steps.filter(step => Boolean(step.requestId)).length >= 2
+    const sequenceObserved = hasObservedWorkflowSequence(props)
     workflows.set(node.id, {
       id: node.id,
       name: props.name,

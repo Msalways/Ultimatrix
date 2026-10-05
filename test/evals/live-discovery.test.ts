@@ -443,6 +443,7 @@ describe('blinded loopback targets', () => {
     const base = {
       id: 'workflow-1', type: 'Workflow',
       properties: {
+        capturedRequestIds: ['cap-1', 'cap-2'],
         steps: [
           { requestId: 'cap-1', method: 'GET', url: 'http://127.0.0.1/member' },
           { requestId: 'cap-2', method: 'POST', url: 'http://127.0.0.1/member' },
@@ -452,8 +453,9 @@ describe('blinded loopback targets', () => {
     const inferred = { ...base, properties: { ...base.properties, source: 'endpoint-inference', sequenceObserved: false } }
     const observed = { ...base, properties: { ...base.properties, source: 'browser-observation', sequenceObserved: true } }
     const unordered = { ...base, properties: { ...base.properties, source: 'browser-observation', sequenceObserved: false } }
+    const unlinked = { ...observed, properties: { ...observed.properties, capturedRequestIds: [] } }
 
-    expect(observedWorkflowSequences([inferred, unordered])).toEqual([])
+    expect(observedWorkflowSequences([inferred, unordered, unlinked])).toEqual([])
     expect(observedWorkflowSequences([observed])).toEqual([[
       { method: 'GET', path: '/member' },
       { method: 'POST', path: '/member' },

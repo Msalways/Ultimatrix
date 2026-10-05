@@ -948,7 +948,7 @@ function MessageBubble({
               const businessLogicUnits = Object.entries(coverage.businessLogicUnits ?? {}).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
               return (
                 <div className="mt-3 border-t border-zinc-800 pt-2 text-[11px] leading-relaxed text-zinc-500">
-                  <div>Learned target: {d.workflows} workflows, {model.entities} entities, {model.businessLogicFacts ?? 0} business-logic facts, {model.hypotheses} hypotheses across {Object.keys(model.hypothesesByKind).length} classes.</div>
+                  <div>Learned target: observed workflow sequences {d.workflows}, {model.entities} entities, {model.businessLogicFacts ?? 0} business-logic facts, {model.hypotheses} hypotheses across {Object.keys(model.hypothesesByKind).length} classes.</div>
                   <div>Hypothesis classes: {hypotheses}.</div>
                   <div>Research experiments: {experiments}.</div>
                   <div>Workflow probes: {workflowUnits}. Business-logic probes: {businessLogicUnits}.</div>

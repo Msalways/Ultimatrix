@@ -47,6 +47,7 @@ import { discoverSkillsForTarget, loadSkillBodyTool } from "../tools/skill-tools
 import { resolveProgressTimeoutMs } from "./model-fallback";
 import type { CampaignResult } from "../campaign/types";
 import { buildAssessmentReport, type AssessmentReport } from "./assessment-report";
+import { hasObservedWorkflowSequence } from '../research/types';
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -1887,7 +1888,11 @@ export async function solve(
             pages: count(NodeType.PAGE),
             endpoints: count(NodeType.ENDPOINT),
             inputs: count(NodeType.INPUT),
-            workflows: count(NodeType.WORKFLOW),
+            workflows: (() => {
+              try {
+                return graph?.queryNodes(NodeType.WORKFLOW).filter(node => hasObservedWorkflowSequence((node as any).properties)).length ?? 0
+              } catch { return 0 }
+            })(),
             authFlows: count(NodeType.AUTH_FLOW),
             roles: count(NodeType.RBAC_ROLE),
           }

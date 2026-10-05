@@ -30,6 +30,26 @@ export function isObservedWorkflowSource(source: unknown): source is typeof OBSE
   return OBSERVED_WORKFLOW_SOURCES.includes(source as typeof OBSERVED_WORKFLOW_SOURCES[number])
 }
 
+/** True only when an observed workflow's ordered steps link to two captured requests. */
+export function hasObservedWorkflowSequence(workflow: {
+  source?: unknown
+  sequenceObserved?: unknown
+  capturedRequestIds?: unknown
+  steps?: unknown
+}): boolean {
+  if (!isObservedWorkflowSource(workflow.source) || workflow.sequenceObserved !== true) return false
+  const capturedRequestIds = new Set(Array.isArray(workflow.capturedRequestIds)
+    ? workflow.capturedRequestIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [])
+  if (capturedRequestIds.size < 2 || !Array.isArray(workflow.steps)) return false
+  const orderedRequests = new Set(workflow.steps.flatMap(step => {
+    if (!step || typeof step !== 'object') return []
+    const requestId = (step as { requestId?: unknown }).requestId
+    return typeof requestId === 'string' && capturedRequestIds.has(requestId) ? [requestId] : []
+  }))
+  return orderedRequests.size >= 2
+}
+
 export interface ResearchWorkflow {
   id: string
   name: string
