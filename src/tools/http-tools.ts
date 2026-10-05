@@ -389,7 +389,7 @@ export const httpRequest = createTool({
           headers: bountyMode ? (redactHeadersStrict(mergedHeaders) ?? {}) : mergedHeaders,
           ...(body !== undefined ? { body: bountyMode ? redactString(body.substring(0, 1000)) : body.substring(0, 1000) } : {}),
         },
-        result: { status: raw.status, headers: resHeaders, bodyLength: responseBody.length },
+        result: { status: raw.status, headers: resHeaders, bodyLength: responseBody.length, evidenceId: responseEvidence.id, executionId },
         duration: Math.round(performance.now() - start),
       })
       return {

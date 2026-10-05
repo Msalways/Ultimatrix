@@ -40,13 +40,19 @@ function score(variant: 'vulnerable' | 'control', overrides: Partial<Parameters<
   }
   const expectedHypothesisKinds = overrides.expectedHypothesisKinds ?? ['workflow_bypass']
   const targetEndpoint = targetLearning.expectedEndpoints[0]
-  const experiments = expectedHypothesisKinds.map((kind, index) => ({
+  const experiments = expectedHypothesisKinds.map((kind, index) => {
+    const status = targetLearning.experimentStatuses[index] ?? 'planned'
+    return {
     ...(variant === 'vulnerable' && index === 0 ? proof.experiment : { id: `experiment-${index + 1}` }),
     hypothesisId: `hypothesis-${kind}`,
     hypothesisKind: kind,
-    status: 'rejected',
+    status,
+    executionEvidenceRefs: ['interesting', 'rejected'].includes(status)
+      ? [`ev_execution_${index + 1}_baseline`, `ev_execution_${index + 1}_mutation`]
+      : [],
     targetEndpoints: targetEndpoint ? [targetEndpoint] : [],
-  }))
+    }
+  })
   return scoreDiscoveryRun({
     variant,
     findings: variant === 'vulnerable' ? [proof.finding] : [],
@@ -55,6 +61,11 @@ function score(variant: 'vulnerable' | 'control', overrides: Partial<Parameters<
     requiresSecondActor: false,
     secondActorAvailable: true,
     untracedRequests: [],
+    observedEvidenceRefs: [
+      ...proof.experiment.outcome!.proof!.evidenceRefs!,
+      ...proof.experiment.retest!.outcome!.proof!.evidenceRefs!,
+      ...experiments.flatMap(experiment => experiment.executionEvidenceRefs ?? []),
+    ],
     expectedHypothesisKinds,
     targetLearning,
     ...overrides,
@@ -69,8 +80,15 @@ describe('live discovery scoring', () => {
     const blocked = scoreDiscoveryRun({
       variant: 'vulnerable', findings: [proof.finding], experiments: [proof.experiment], candidates: [],
       requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+      observedEvidenceRefs: ['ev_1_1', 'ev_1_2', 'ev_1_3'],
     })
     expect(blocked.verifiedFindingIds).toEqual([])
+  })
+
+  it('rejects graph evidence IDs that are absent from the forensic HTTP trace', () => {
+    const result = score('vulnerable', { observedEvidenceRefs: [] })
+    expect(result.verifiedFindingIds).toEqual([])
+    expect(result.targetLearning).toMatchObject({ attackedHypothesisKinds: [], attemptedExperiments: 0 })
   })
 
   it('keeps candidates separate and marks unavailable cross-account coverage unknown', () => {
@@ -84,11 +102,28 @@ describe('live discovery scoring', () => {
     expect(result.unsupportedCrossActorFinding).toBe(false)
   })
 
+  it('requires both observed actors and an actual cross-account request for available coverage', () => {
+    const scoreWith = (actorEvidence: { actorsObserved: string[]; crossActorRequestCount: number }) => scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], candidates: [],
+      experiments: [],
+      requiresSecondActor: true, secondActorAvailable: true, actorEvidence, untracedRequests: [],
+    })
+
+    expect(scoreWith({ actorsObserved: [], crossActorRequestCount: 0 }).actorCoverage).toBe('blocked')
+    expect(scoreWith({ actorsObserved: ['owner'], crossActorRequestCount: 0 }).actorCoverage).toBe('blocked')
+    expect(scoreWith({ actorsObserved: ['owner', 'peer'], crossActorRequestCount: 0 }).actorCoverage).toBe('blocked')
+    expect(scoreWith({ actorsObserved: ['owner', 'peer'], crossActorRequestCount: 1 })).toMatchObject({
+      actorCoverage: 'available',
+      actorEvidence: { actorsObserved: ['owner', 'peer'], crossActorRequestCount: 1 },
+    })
+  })
+
   it('flags unsupported cross-account findings and untraced requests', () => {
     const proof = successfulProof()
     const result = scoreDiscoveryRun({
       variant: 'vulnerable', findings: [proof.finding], experiments: [proof.experiment], candidates: [],
       requiresSecondActor: true, secondActorAvailable: false, untracedRequests: ['GET /guessed'],
+      observedEvidenceRefs: ['ev_1_1', 'ev_1_2', 'ev_1_3'],
     })
     expect(result.actorCoverage).toBe('unknown')
     expect(result.unsupportedCrossActorFinding).toBe(true)
@@ -102,8 +137,18 @@ describe('live discovery scoring', () => {
 
   it('scores learned workflow hypotheses and experiment planning separately from proof', () => {
     const result = scoreDiscoveryRun({
-      variant: 'vulnerable', findings: [], experiments: [], candidates: [],
+      variant: 'vulnerable', findings: [], candidates: [],
+      experiments: ['planned', 'interesting', 'running', 'blocked', 'rejected'].map((status, index) => ({
+        id: `experiment-${index + 1}`, status,
+        executionEvidenceRefs: ['interesting', 'rejected'].includes(status)
+          ? [`ev_execution_${index + 1}_baseline`, `ev_execution_${index + 1}_mutation`]
+          : [],
+      })),
       requiresSecondActor: false, secondActorAvailable: true, untracedRequests: [],
+      observedEvidenceRefs: [
+        'ev_execution_2_baseline', 'ev_execution_2_mutation',
+        'ev_execution_5_baseline', 'ev_execution_5_mutation',
+      ],
       targetLearning: {
         workflowCount: 2,
         entityCount: 1,
@@ -126,7 +171,7 @@ describe('live discovery scoring', () => {
       matchedHypothesisKinds: ['workflow_bypass'],
       hypothesisRecall: 1,
       plannedExperiments: 1,
-      attemptedExperiments: 3,
+      attemptedExperiments: 2,
       completedExperiments: 2,
       blockedExperiments: 1,
     })
@@ -167,7 +212,7 @@ describe('live discovery scoring', () => {
     })
   })
 
-  it('counts an expected attack only when its experiment targets an expected route', () => {
+  it('counts an expected attack only when its experiment has canonical execution evidence on an expected route', () => {
     const base = {
       variant: 'vulnerable' as const,
       findings: [],
@@ -175,6 +220,7 @@ describe('live discovery scoring', () => {
       requiresSecondActor: false,
       secondActorAvailable: true,
       untracedRequests: [],
+      observedEvidenceRefs: ['ev_baseline', 'ev_replay'],
       expectedHypothesisKinds: ['workflow_bypass'],
       targetLearning: {
         workflowCount: 1,
@@ -189,19 +235,63 @@ describe('live discovery scoring', () => {
       ...base,
       experiments: [{
         id: 'experiment-unrelated', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
-        status: 'rejected', targetEndpoints: [{ method: 'POST', path: '/profile/update' }],
+        status: 'rejected', executionEvidenceRefs: ['ev_baseline', 'ev_replay'],
+        targetEndpoints: [{ method: 'POST', path: '/profile/update' }],
       }],
     })
     const grounded = scoreDiscoveryRun({
       ...base,
       experiments: [{
         id: 'experiment-grounded', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
-        status: 'rejected', targetEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+        status: 'rejected', executionEvidenceRefs: ['ev_baseline', 'ev_replay'],
+        targetEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
       }],
     })
 
     expect(unrelated.targetLearning).toMatchObject({ attackedHypothesisKinds: [], attackedHypothesisRecall: 0 })
     expect(grounded.targetLearning).toMatchObject({ attackedHypothesisKinds: ['workflow_bypass'], attackedHypothesisRecall: 1 })
+  })
+
+  it('does not count a still-running experiment without request evidence as an executed attack', () => {
+    const result = scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], candidates: [], requiresSecondActor: false,
+      secondActorAvailable: true, untracedRequests: [], expectedHypothesisKinds: ['workflow_bypass'],
+      targetLearning: {
+        workflowCount: 1, entityCount: 0, hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['running'],
+        expectedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+        observedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      },
+      experiments: [{
+        id: 'experiment-still-running', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
+        status: 'running', targetEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      }],
+    })
+
+    expect(result.targetLearning).toMatchObject({ attackedHypothesisKinds: [], attackedHypothesisRecall: 0 })
+  })
+
+  it('counts an inconclusive execution as attempted when canonical evidence was attached', () => {
+    const result = scoreDiscoveryRun({
+      variant: 'vulnerable', findings: [], candidates: [], requiresSecondActor: false,
+      secondActorAvailable: true, untracedRequests: [], expectedHypothesisKinds: ['workflow_bypass'],
+      targetLearning: {
+        workflowCount: 1, entityCount: 0, hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['blocked'],
+        expectedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+        observedEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      },
+      experiments: [{
+        id: 'experiment-inconclusive', hypothesisId: 'hypothesis-1', hypothesisKind: 'workflow_bypass',
+        status: 'blocked', outcome: { status: 'inconclusive', evidenceRefs: ['ev_1_1', 'ev_1_2'] },
+        targetEndpoints: [{ method: 'POST', path: '/checkout/finish' }],
+      }],
+      observedEvidenceRefs: ['ev_1_1', 'ev_1_2'],
+    })
+
+    expect(result.targetLearning).toMatchObject({
+      attackedHypothesisKinds: ['workflow_bypass'], attackedHypothesisRecall: 1, attemptedExperiments: 1,
+    })
   })
 
   it('scores exact ordered workflow steps while allowing unrelated observed traffic between them', () => {
@@ -268,6 +358,7 @@ describe('live discovery scoring', () => {
 
   it('does not count blocked or merely planned experiments as attacks', () => {
     const notAttacked = score('vulnerable', {
+      experiments: [],
       targetLearning: {
         workflowCount: 1,
         entityCount: 1,
@@ -299,6 +390,19 @@ describe('live discovery scoring', () => {
     expect(result.learningPass).toBe(false)
     expect(result.pass).toBe(false)
     expect(result.targetLearning.qualifiedControlRuns).toBe(0)
+  })
+
+  it('requires actual cross-actor coverage for a control run to qualify as fully learned', () => {
+    const complete = score('control')
+    const actorGap = { ...complete, actorCoverage: 'blocked' as const }
+    const result = scoreDiscoveryBenchmark([
+      ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: score('vulnerable') })),
+      ...Array.from({ length: 6 }, () => ({ variant: 'control' as const, score: complete })),
+      ...Array.from({ length: 3 }, () => ({ variant: 'control' as const, score: actorGap })),
+    ])
+
+    expect(result.targetLearning).toMatchObject({ runsWithCompleteActorCoverage: 15, qualifiedControlRuns: 6 })
+    expect(result.learningPass).toBe(false)
   })
 
   it('does not qualify a run as learned when expected endpoint mapping is incomplete', () => {
@@ -346,7 +450,7 @@ describe('blinded loopback targets', () => {
     }
     const experiment = {
       id: 'experiment-1', type: 'Experiment',
-      properties: { hypothesisId: 'hypothesis-1', status: 'rejected' },
+      properties: { hypothesisId: 'hypothesis-1', status: 'rejected', executionEvidenceRefs: ['ev_1_1'] },
     }
     const mapped = mapExperiment(experiment, new Map([[hypothesis.id, hypothesis]]), new Map([[endpoint.id, endpoint]]), [endpoint])
 
@@ -354,6 +458,7 @@ describe('blinded loopback targets', () => {
       hypothesisId: 'hypothesis-1',
       hypothesisKind: 'workflow_bypass',
       status: 'rejected',
+      executionEvidenceRefs: ['ev_1_1'],
       targetEndpoints: [{ method: 'POST', path: '/random/finish' }],
     })
   })
@@ -444,5 +549,13 @@ describe('blinded loopback targets', () => {
     expect((await fetch(new URL(`${fixture.route}/record/${fixture.peerDocument}`, control.target), {
       headers: { authorization: `Bearer ${ownerC}` },
     })).status).toBe(403)
+    expect(vulnerable.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: 'owner' }),
+      expect.objectContaining({ actor: 'peer' }),
+      expect.objectContaining({ actor: 'owner', crossActor: true }),
+    ]))
+    expect(control.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: 'owner', crossActor: true, status: 403 }),
+    ]))
   })
 })

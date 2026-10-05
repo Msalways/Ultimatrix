@@ -147,6 +147,7 @@ describe('workflow replay execution', () => {
     const { getCapturedRequestStore } = await import('../../src/capture/captured-request-store')
     const { replayCapturedRequest } = await import('../../src/tools/replay-tools')
     const { setInteractionMode } = await import('../../src/tools/interaction-tools')
+    const { coreEvidenceLedger } = await import('../../src/core/evidence')
     const workflowHypothesis = {
       id: 'hypothesis:workflow-1',
       type: 'Hypothesis',
@@ -163,10 +164,17 @@ describe('workflow replay execution', () => {
       hypothesisId: workflowHypothesis.id,
       baselineRequest: { method: 'POST', url: 'https://target.test/api/redeem', body: 'offer=one' },
     }
+    coreEvidenceLedger.clear()
     setInteractionMode('run')
     const replaySpy = vi.spyOn(replayCapturedRequest, 'execute')
-      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 200, response: { body: '17 credits added' } } } as any)
-      .mockResolvedValueOnce({ ok: true, value: { replayedStatus: 409, response: { body: 'offer already used' } } } as any)
+      .mockImplementationOnce(async () => {
+        coreEvidenceLedger.record({ id: 'ev_workflow_baseline', type: 'raw_response', data: '17 credits added', label: 'baseline' })
+        return { ok: true, value: { replayedStatus: 200, response: { body: '17 credits added' } } } as any
+      })
+      .mockImplementationOnce(async () => {
+        coreEvidenceLedger.record({ id: 'ev_workflow_replay', type: 'raw_response', data: 'offer already used', label: 'replay' })
+        return { ok: true, value: { replayedStatus: 409, response: { body: 'offer already used' } } } as any
+      })
 
     try {
       const result = await executePlannedExperiment.execute({ experimentId: experiment.id } as any, {} as any)
@@ -175,6 +183,7 @@ describe('workflow replay execution', () => {
       expect(replaySpy.mock.calls[1][0]).not.toHaveProperty('removeHeaderNames')
       expect((result as any).value.differential).toMatchObject({ interesting: false })
       expect(experiment.properties.status).toBe('rejected')
+      expect(experiment.properties.executionEvidenceRefs).toEqual(['ev_workflow_baseline', 'ev_workflow_replay'])
     } finally {
       replaySpy.mockRestore()
       setInteractionMode(undefined)

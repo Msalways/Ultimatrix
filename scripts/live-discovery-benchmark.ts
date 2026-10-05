@@ -38,6 +38,8 @@ interface RequestRecord {
   path: string
   status: number
   trace: 'benchmark-start-url' | 'target-provided' | 'observed-traffic' | 'untraced' | 'standard-robots-resource'
+  actor?: 'owner' | 'peer'
+  crossActor?: boolean
 }
 
 export interface Fixture {
@@ -280,7 +282,25 @@ export async function startTarget(fixture: Fixture, variant: DiscoveryVariant): 
     let response: { status: number; body: string; contentType?: string }
     try { response = renderTarget(fixture, variant, req as IncomingMessage & { bodyText?: string }, url, state) }
     catch { response = { status: 500, body: page(fixture.title, '<p>Local fixture error.</p>') } }
-    requests.push({ method, path: `${url.pathname}${url.search}`, status: response.status, trace })
+    let actor = state.sessions.get((req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')) as 'owner' | 'peer' | undefined
+    if (!actor && fixture.kind === 'case-3' && method === 'POST' && url.pathname === fixture.route && response.status === 200) {
+      try { actor = state.sessions.get(String(JSON.parse(response.body).session)) }
+      catch { /* unsuccessful or malformed logins do not contribute actor coverage */ }
+    }
+    const recordMatch = fixture.kind === 'case-3'
+      ? url.pathname.match(new RegExp(`^${fixture.route}/record/([a-f0-9]+)$`))
+      : null
+    const recordOwner = recordMatch?.[1] === fixture.ownerDocument
+      ? 'owner'
+      : recordMatch?.[1] === fixture.peerDocument && fixture.peerAvailable ? 'peer' : undefined
+    requests.push({
+      method,
+      path: `${url.pathname}${url.search}`,
+      status: response.status,
+      trace,
+      ...(actor ? { actor } : {}),
+      ...(actor && recordOwner ? { crossActor: actor !== recordOwner } : {}),
+    })
     observedPaths.add(url.pathname)
     if (response.contentType?.startsWith('text/html') || (!response.contentType && response.body.startsWith('<!doctype html>'))) {
       observeResources(response.body, url.toString(), targetResources)
@@ -423,6 +443,7 @@ export function mapExperiment(
     ...(typeof hypothesis?.properties.kind === 'string' ? { hypothesisKind: hypothesis.properties.kind } : {}),
     ...(typeof p.status === 'string' ? { status: p.status } : {}),
     ...(targetEndpoints.length ? { targetEndpoints } : {}),
+    ...(Array.isArray(p.executionEvidenceRefs) ? { executionEvidenceRefs: p.executionEvidenceRefs } : {}),
     outcome: p.outcome,
     retest: p.retest,
   }
@@ -512,6 +533,10 @@ async function executeRun(input: {
   const findings = graphNodes.filter(node => node.type === 'Finding').map(mapFinding)
   const experiments = graphNodes.filter(node => node.type === 'Experiment')
     .map(node => mapExperiment(node, hypothesesById, endpointById, endpointNodes))
+  const actorEvidence = {
+    actorsObserved: [...new Set(targetApp.requests.flatMap(request => request.actor ? [request.actor] : []))],
+    crossActorRequestCount: targetApp.requests.filter(request => request.crossActor === true).length,
+  }
   const learning = {
     workflowCount: graphNodes.filter(node => node.type === 'Workflow').length,
     entityCount: graphNodes.filter(node => node.type === 'Entity').length,
@@ -540,6 +565,13 @@ async function executeRun(input: {
   })
   const eventsRaw = await readFile(join(targetDir, 'logs', 'forensic.ndjson'), 'utf8').catch(() => '')
   const events = safeEvents(eventsRaw)
+  const observedEvidenceRefs = [...new Set(events.filter(event => event.type === 'http-request').flatMap(event => {
+    const url = event.args?.url
+    const evidenceId = event.result?.evidenceId
+    if (typeof url !== 'string' || typeof evidenceId !== 'string' || !evidenceId.startsWith('ev_')) return []
+    try { return new URL(url).origin === new URL(targetApp.target).origin ? [evidenceId] : [] }
+    catch { return [] }
+  }))]
   const externalRequests = events.filter(event => event.type === 'http-request').flatMap(event => {
     const url = event.args?.url
     if (typeof url !== 'string') return []
@@ -557,6 +589,8 @@ async function executeRun(input: {
     candidates,
     requiresSecondActor: input.fixture.kind === 'case-3',
     secondActorAvailable: input.fixture.kind !== 'case-3' || input.fixture.peerAvailable,
+    actorEvidence,
+    observedEvidenceRefs,
     untracedRequests,
     targetLearning: learning,
     expectedHypothesisKinds: EXPECTED_HYPOTHESIS_BY_CASE[input.fixture.kind],
@@ -613,6 +647,8 @@ async function executeRun(input: {
       endpointCount: endpointSummaries(graphNodes).length,
       endpoints: endpointSummaries(graphNodes),
       actor: score.actorCoverage,
+      actorsObserved: score.actorEvidence.actorsObserved,
+      crossActorRequests: score.actorEvidence.crossActorRequestCount,
     },
     targetLearning: {
       ...learning,

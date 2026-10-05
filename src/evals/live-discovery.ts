@@ -22,8 +22,16 @@ export interface DiscoveryExperiment {
   hypothesisKind?: string
   status?: string
   targetEndpoints?: Array<{ method?: string; path: string }>
-  outcome?: { status?: string; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } }
-  retest?: { outcome?: { status?: string; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } } }
+  executionEvidenceRefs?: string[]
+  outcome?: { status?: string; evidenceRefs?: string[]; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } }
+  retest?: { outcome?: { status?: string; evidenceRefs?: string[]; proof?: { experimentId?: string; phase?: string; evidenceRefs?: string[] } } }
+}
+
+export interface DiscoveryActorEvidence {
+  /** Synthetic actor labels observed on successful logins or authenticated requests. */
+  actorsObserved: string[]
+  /** Requests where an authenticated actor addressed a record owned by another actor. */
+  crossActorRequestCount: number
 }
 
 export interface DiscoveryTargetLearning {
@@ -44,6 +52,8 @@ export interface DiscoveryRunInput {
   candidates: Array<{ id: string; status?: string; blockers?: string[]; [key: string]: unknown }>
   requiresSecondActor: boolean
   secondActorAvailable: boolean
+  actorEvidence?: DiscoveryActorEvidence
+  observedEvidenceRefs?: string[]
   untracedRequests: string[]
   targetLearning?: DiscoveryTargetLearning
   expectedHypothesisKinds?: string[]
@@ -58,6 +68,7 @@ export interface DiscoveryRunScore {
   candidateIds: string[]
   confirmedFindingCount: number
   actorCoverage: ActorCoverage
+  actorEvidence: DiscoveryActorEvidence
   unsupportedCrossActorFinding: boolean
   requestTraceComplete: boolean
   withinRequestBudget: boolean
@@ -84,7 +95,7 @@ export interface DiscoveryRunScore {
   }
 }
 
-function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryExperiment[]): boolean {
+function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryExperiment[], observedEvidenceRefs: Set<string>): boolean {
   const ids = finding.experimentIds ?? []
   if (ids.length === 0) return false
   return ids.every(id => {
@@ -99,16 +110,30 @@ function hasIndependentRetest(finding: DiscoveryFinding, experiments: DiscoveryE
     ) return false
     const initialRefs = new Set(initial.evidenceRefs)
     return retest.evidenceRefs.every(ref => !initialRefs.has(ref)) &&
+      initial.evidenceRefs.some(ref => observedEvidenceRefs.has(ref)) &&
+      retest.evidenceRefs.some(ref => observedEvidenceRefs.has(ref)) &&
       initial.evidenceRefs.every(ref => ref.startsWith('ev_')) && retest.evidenceRefs.every(ref => ref.startsWith('ev_'))
   })
 }
 
+function hasAttemptEvidence(experiment: DiscoveryExperiment, observedEvidenceRefs: Set<string>): boolean {
+  // Require the baseline and mutation response IDs to also occur in the
+  // forensic HTTP trace; graph status and copied IDs alone are insufficient.
+  const refs = [
+    ...(experiment.executionEvidenceRefs ?? []),
+    ...(experiment.outcome?.evidenceRefs ?? []),
+    ...(experiment.outcome?.proof?.evidenceRefs ?? []),
+  ]
+  return new Set(refs.filter(ref => ref.startsWith('ev_') && observedEvidenceRefs.has(ref))).size >= 2
+}
+
 export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
+  const observedEvidenceRefs = new Set((input.observedEvidenceRefs ?? []).filter(ref => ref.startsWith('ev_')))
   const verifiedFindingIds = input.findings.filter(finding =>
     finding.confirmed === true && finding.lifecycleStatus === 'verified' &&
     finding.proofCheck?.passed === true &&
-    (finding.proofCheck.evidenceRefs ?? []).some(ref => ref.startsWith('ev_')) &&
-    hasIndependentRetest(finding, input.experiments),
+    (finding.proofCheck.evidenceRefs ?? []).some(ref => observedEvidenceRefs.has(ref)) &&
+    hasIndependentRetest(finding, input.experiments, observedEvidenceRefs),
   ).map(finding => finding.id)
 
   const confirmedFindingCount = input.findings.filter(finding =>
@@ -118,16 +143,27 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
   const hypothesisKinds = [...new Set(input.targetLearning?.hypothesisKinds ?? [])]
   const matchedHypothesisKinds = expectedHypothesisKinds.filter(kind => hypothesisKinds.includes(kind))
   const experimentStatuses = input.targetLearning?.experimentStatuses ?? []
-  const attemptedStatuses = new Set(['running', 'interesting', 'rejected'])
   const completedStatuses = new Set(['interesting', 'rejected'])
   const endpointKey = (endpoint: { method: string; path: string }) => `${endpoint.method.toUpperCase()} ${endpoint.path}`
   const observedEndpointKeys = new Set((input.targetLearning?.observedEndpoints ?? []).map(endpointKey))
   const expectedEndpoints = input.targetLearning?.expectedEndpoints ?? []
   const observedExpectedEndpointCount = expectedEndpoints.filter(endpoint => observedEndpointKeys.has(endpointKey(endpoint))).length
+  const actorEvidence: DiscoveryActorEvidence = {
+    actorsObserved: [...new Set(input.actorEvidence?.actorsObserved ?? [])].sort(),
+    crossActorRequestCount: Math.max(0, input.actorEvidence?.crossActorRequestCount ?? 0),
+  }
+  const observedBothActors = actorEvidence.actorsObserved.includes('owner') && actorEvidence.actorsObserved.includes('peer')
+  const actorCoverage: ActorCoverage = !input.requiresSecondActor
+    ? 'available'
+    : !input.secondActorAvailable
+      ? 'unknown'
+      : observedBothActors && actorEvidence.crossActorRequestCount > 0
+        ? 'available'
+        : 'blocked'
   const attackedHypothesisKinds = expectedHypothesisKinds.filter(kind => input.experiments.some(experiment =>
     experiment.hypothesisId
       && experiment.hypothesisKind === kind
-      && attemptedStatuses.has(experiment.status ?? '')
+      && hasAttemptEvidence(experiment, observedEvidenceRefs)
       && (experiment.targetEndpoints ?? []).some(target => expectedEndpoints.some(expected =>
         target.path === expected.path
         && (!target.method || target.method.toUpperCase() === expected.method.toUpperCase()),
@@ -154,9 +190,8 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
     verifiedFindingIds,
     candidateIds: input.candidates.map(candidate => candidate.id),
     confirmedFindingCount,
-    actorCoverage: input.requiresSecondActor
-      ? input.secondActorAvailable ? 'available' : 'unknown'
-      : 'available',
+    actorCoverage,
+    actorEvidence,
     unsupportedCrossActorFinding: input.requiresSecondActor && !input.secondActorAvailable && confirmedFindingCount > 0,
     requestTraceComplete: input.untracedRequests.length === 0,
     withinRequestBudget: input.requestCount === undefined || input.requestLimit === undefined || input.requestCount <= input.requestLimit,
@@ -179,7 +214,7 @@ export function scoreDiscoveryRun(input: DiscoveryRunInput): DiscoveryRunScore {
       attackedHypothesisKinds,
       attackedHypothesisRecall: expectedHypothesisKinds.length ? attackedHypothesisKinds.length / expectedHypothesisKinds.length : null,
       plannedExperiments: experimentStatuses.filter(status => status === 'planned').length,
-      attemptedExperiments: experimentStatuses.filter(status => attemptedStatuses.has(status)).length,
+      attemptedExperiments: input.experiments.filter(experiment => hasAttemptEvidence(experiment, observedEvidenceRefs)).length,
       completedExperiments: experimentStatuses.filter(status => completedStatuses.has(status)).length,
       blockedExperiments: experimentStatuses.filter(status => status === 'blocked').length,
     },
@@ -208,6 +243,7 @@ export interface DiscoveryBenchmarkScore {
     runsWithPlannedExperiments: number
     runsWithAttemptedExperiments: number
     runsWithBlockedExperiments: number
+    runsWithCompleteActorCoverage: number
     qualifiedVulnerableRuns: number
     qualifiedControlRuns: number
   }
@@ -224,13 +260,16 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const vulnerablePass = vulnerable.length === 9 && verifiedVulnerableRuns >= 7
   const controlPass = controls.length === 9 && confirmedControlFindings === 0
   const learningScores = runs.map(run => run.score.targetLearning)
-  const qualifiesAsLearnedAndAttacked = (score: DiscoveryRunScore['targetLearning']) =>
-    score.workflowCount > 0 && score.endpointRecall === 1
+  const qualifiesAsLearnedAndAttacked = (run: { score: DiscoveryRunScore }) => {
+    const score = run.score.targetLearning
+    return run.score.actorCoverage === 'available'
+      && score.workflowCount > 0 && score.endpointRecall === 1
       && score.hypothesisRecall === 1 && score.attackedHypothesisRecall === 1
       && score.attemptedExperiments > 0
       && (score.workflowSequenceRecall === null || score.workflowSequenceRecall === 1)
-  const qualifiedVulnerableRuns = vulnerable.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
-  const qualifiedControlRuns = controls.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
+  }
+  const qualifiedVulnerableRuns = vulnerable.filter(qualifiesAsLearnedAndAttacked).length
+  const qualifiedControlRuns = controls.filter(qualifiesAsLearnedAndAttacked).length
   const learningPass = vulnerable.length === 9 && controls.length === 9 &&
     qualifiedVulnerableRuns >= Math.ceil(vulnerable.length * (7 / 9)) &&
     qualifiedControlRuns >= Math.ceil(controls.length * (7 / 9))
@@ -267,6 +306,7 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
       runsWithPlannedExperiments: learningScores.filter(score => score.plannedExperiments > 0).length,
       runsWithAttemptedExperiments: learningScores.filter(score => score.attemptedExperiments > 0).length,
       runsWithBlockedExperiments: learningScores.filter(score => score.blockedExperiments > 0).length,
+      runsWithCompleteActorCoverage: runs.filter(run => run.score.actorCoverage === 'available').length,
       qualifiedVulnerableRuns,
       qualifiedControlRuns,
     },

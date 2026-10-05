@@ -108,6 +108,8 @@ export interface ResearchExperiment {
   requiredActors: string[]
   tools: string[]
   status: ExperimentStatus
+  /** Canonical request/response evidence produced by executing this experiment. */
+  executionEvidenceRefs?: string[]
   resultSummary?: string
   differential?: DifferentialResult
   oracle?: EvidenceOracle

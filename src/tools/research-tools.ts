@@ -577,6 +577,11 @@ export const executePlannedExperiment = createTool({
     const differential = statefulReplay
       ? compareStatefulReplayResponses(baselineResponse, mutatedResponse)
       : compareResponsesCore(baselineResponse, mutatedResponse, mergedAssertion)
+    node.properties.executionEvidenceRefs = [...new Set([
+      ...(node.properties.executionEvidenceRefs ?? []),
+      ...baselineEvidence.map(item => item.id),
+      ...mutationEvidence.map(item => item.id),
+    ].filter(ref => ref.startsWith('ev_')))]
     node.properties.differential = differential as unknown as Record<string, unknown>
     node.properties.resultSummary = differential.reason
     node.properties.status = differential.interesting ? 'interesting' : 'rejected'

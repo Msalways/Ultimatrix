@@ -220,6 +220,7 @@ export const ExperimentSchema = z.object({
   requiredActors: z.array(z.string()),
   tools: z.array(z.string()),
   status: z.enum(['planned', 'running', 'interesting', 'rejected', 'blocked']),
+  executionEvidenceRefs: z.array(z.string()).optional(),
   resultSummary: z.string().optional(),
   differential: z.record(z.string(), z.unknown()).optional(),
   oracle: z.record(z.string(), z.unknown()).optional(),
@@ -681,6 +682,7 @@ export interface ExperimentNode extends GraphNodeData {
     requiredActors: string[]
     tools: string[]
     status: ExperimentStatus
+    executionEvidenceRefs?: string[]
     resultSummary?: string
     differential?: Record<string, unknown>
     oracle?: import('../research/types').EvidenceOracle
@@ -959,7 +961,7 @@ export const NODE_PROPERTIES: Record<NodeType, string[]> = {
   [NodeType.WORKFLOW]: ['name', 'entryUrl', 'steps', 'relatedEndpoints', 'requiredAuth', 'inputFields', 'stateChanges', 'observedRoles', 'confidence'],
   [NodeType.ENTITY]: ['name', 'ids', 'endpoints', 'ownerFields', 'roleFields', 'sensitiveFields', 'lifecycleStates', 'confidence'],
   [NodeType.HYPOTHESIS]: ['title', 'kind', 'reason', 'targetEndpoints', 'targetParams', 'relatedWorkflowIds', 'relatedEntityIds', 'requiredSetup', 'risk', 'confidence', 'status', 'businessRule'],
-  [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'resultSummary', 'differential', 'oracle', 'outcome', 'retest'],
+  [NodeType.EXPERIMENT]: ['hypothesisId', 'title', 'setup', 'baselineRequest', 'mutation', 'expectedSecureBehavior', 'insecureSignal', 'requiredActors', 'tools', 'status', 'executionEvidenceRefs', 'resultSummary', 'differential', 'oracle', 'outcome', 'retest'],
   [NodeType.CANDIDATE_FINDING]: ['title', 'signalType', 'endpoint', 'evidence', 'experimentIds', 'confidence', 'nextVerificationSteps', 'blockers', 'status', 'severity'],
   [NodeType.HEADER_SEMANTIC]: ['header', 'role', 'endpoint', 'confidence'],
   [NodeType.AUTH_SCHEME]: ['scheme', 'decoded', 'reusedAcross', 'maskedCredential'],

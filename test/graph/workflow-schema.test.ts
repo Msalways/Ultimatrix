@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { WorkflowSchema } from '../../src/graph/schema'
+import { ExperimentSchema, WorkflowSchema } from '../../src/graph/schema'
 
 describe('WorkflowSchema', () => {
   it('retains whether an ordered request sequence was directly observed', () => {
@@ -20,5 +20,24 @@ describe('WorkflowSchema', () => {
     })
 
     expect(workflow.sequenceObserved).toBe(true)
+  })
+})
+
+describe('ExperimentSchema', () => {
+  it('retains canonical request/response evidence refs from execution', () => {
+    const experiment = ExperimentSchema.parse({
+      hypothesisId: '00000000-0000-4000-8000-000000000001',
+      title: 'Replay the observed terminal action',
+      setup: [],
+      mutation: 'Replay the captured request unchanged',
+      expectedSecureBehavior: 'The one-time action is rejected',
+      insecureSignal: 'The action changes state again',
+      requiredActors: [],
+      tools: ['executePlannedExperiment'],
+      status: 'rejected',
+      executionEvidenceRefs: ['ev_1_1', 'ev_1_2'],
+    })
+
+    expect(experiment.executionEvidenceRefs).toEqual(['ev_1_1', 'ev_1_2'])
   })
 })
