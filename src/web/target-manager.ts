@@ -28,6 +28,7 @@ interface ManagedEngine {
 
 export class TargetManager {
   private engines = new Map<string, ManagedEngine>()
+  private engineStarts = new Map<string, Promise<WebEngine>>()
   private cleanupTimer: ReturnType<typeof setInterval> | null = null
 
   constructor() {
@@ -61,26 +62,33 @@ export class TargetManager {
       return existing.engine
     }
 
-    // Concurrency lock: create placeholder immediately, init async
-    const { WebEngine } = await import('./engine')
-    const engine = new WebEngine(target)
-    const managed: ManagedEngine = {
-      engine,
-      lastAccessed: Date.now(),
+    const starting = this.engineStarts.get(target)
+    if (starting) return starting
+
+    const startPromise = (async () => {
+      const { WebEngine } = await import('./engine')
+      const engine = new WebEngine(target)
+      const managed: ManagedEngine = { engine, lastAccessed: Date.now() }
+      this.engines.set(target, managed)
+
+      const initPromise = engine.init({ target }).catch((err) => {
+        // Remove from map if init fails
+        this.engines.delete(target)
+        throw err
+      })
+      managed.initPromise = initPromise
+      await initPromise
+      managed.initPromise = undefined
+
+      log.info(`[TargetManager] Created engine for: ${target}`)
+      return engine
+    })()
+    this.engineStarts.set(target, startPromise)
+    try {
+      return await startPromise
+    } finally {
+      if (this.engineStarts.get(target) === startPromise) this.engineStarts.delete(target)
     }
-    this.engines.set(target, managed)
-
-    const initPromise = engine.init({ target }).catch((err) => {
-      // Remove from map if init fails
-      this.engines.delete(target)
-      throw err
-    })
-    managed.initPromise = initPromise
-    await initPromise
-    managed.initPromise = undefined
-
-    log.info(`[TargetManager] Created engine for: ${target}`)
-    return engine
   }
 
   getEngine(target: string): WebEngine | undefined {

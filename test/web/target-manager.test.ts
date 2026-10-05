@@ -44,4 +44,31 @@ describe('TargetManager', () => {
       vi.resetModules()
     }
   })
+
+  it('shares one startup when concurrent requests target the same engine', async () => {
+    vi.resetModules()
+    let releaseInit!: () => void
+    const initGate = new Promise<void>(resolve => { releaseInit = resolve })
+    let instanceCount = 0
+    vi.doMock('../../src/web/engine', () => ({
+      WebEngine: class {
+        id = `engine-${++instanceCount}`
+        init() { return initGate }
+      },
+    }))
+    try {
+      const { TargetManager } = await import('../../src/web/target-manager')
+      const manager = new TargetManager()
+      const first = manager.getOrCreateEngine('https://example.test')
+      const second = manager.getOrCreateEngine('https://example.test')
+      releaseInit()
+      const [firstEngine, secondEngine] = await Promise.all([first, second])
+
+      expect(firstEngine).toBe(secondEngine)
+      expect(instanceCount).toBe(1)
+    } finally {
+      vi.doUnmock('../../src/web/engine')
+      vi.resetModules()
+    }
+  })
 })
