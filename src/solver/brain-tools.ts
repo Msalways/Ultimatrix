@@ -21,6 +21,8 @@ import { getToolResultStore } from '../graph/tool-result-store'
 import { getGlobalGraphStore } from '../graph/store'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { NodeType } from '../graph/schema'
+import { isObservedWorkflowSource } from '../research/types'
+import { persistUnlinkedBrowserWorkflows } from '../tools/flow-tools'
 import { createExtensionTools } from '../extensions/tool-tools'
 import type { DynamicToolRegistry } from '../extensions/tool-registry'
 import type { LazySolverServices } from '../runtime/lazy-services'
@@ -202,7 +204,7 @@ function researchInputRevision(): string {
     const inputs = [NodeType.ENDPOINT, NodeType.ACTION, NodeType.INPUT]
       .flatMap(type => graph.queryNodes(type).map(node => `${type}:${node.id}:${node.updatedAt}`))
     const demonstratedWorkflows = graph.queryNodes(NodeType.WORKFLOW)
-      .filter(node => (node.properties as Record<string, unknown>)?.source === 'operator-demonstration')
+      .filter(node => isObservedWorkflowSource((node.properties as Record<string, unknown>)?.source))
       .map(node => {
         const properties = node.properties as Record<string, any>
         const steps = Array.isArray(properties.steps)
@@ -476,7 +478,35 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
             next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
           }
         }
-        return execute(...args)
+        const observer = getGlobalObserver()
+        const actionCountBefore = observer.getActions().length
+        const result = await execute(...args)
+        if (result?.success === true && ['stagehand_navigate', 'stagehand_act', 'browserInteract'].includes(id)) {
+          const input = args[0] && typeof args[0] === 'object' ? args[0] as Record<string, any> : {}
+          const action = id === 'stagehand_navigate'
+            ? 'navigate'
+            : String(result.action ?? input.action ?? '').toLowerCase()
+          const type = ['click', 'fill', 'navigate', 'select', 'press', 'hover', 'submit'].includes(action)
+            ? action as 'click' | 'fill' | 'navigate' | 'select' | 'press' | 'hover' | 'submit'
+            : ['check', 'uncheck'].includes(action) ? 'click' : undefined
+          if (type) {
+            const locator = result.locator && typeof result.locator === 'object' ? result.locator.value : undefined
+            const selector = id === 'stagehand_navigate'
+              ? undefined
+              : String(result.selector ?? locator ?? input.selector ?? '') || undefined
+            const url = String(result.url ?? input.url ?? '')
+            const alreadyObserved = observer.getActions().slice(actionCountBefore)
+              .some(observed => observed.type === type && observed.url === url)
+            if (url && !alreadyObserved) observer.record({
+              type,
+              url,
+              ...(selector ? { selector } : {}),
+              timestamp: Date.now(),
+              metadata: { source: 'solver-browser-tool' },
+            })
+          }
+        }
+        return result
       },
     }
     guardedMethodologyTools.set(tool, guarded)
@@ -609,6 +639,9 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
         // Setup is deterministic and already persisted in the graph. Reusing
         // the typed result prevents repeated work until new target traffic is
         // captured. A changed capture count must invalidate the old map/plan.
+        if (id === 'buildResearchMap') {
+          try { await persistUnlinkedBrowserWorkflows() } catch { /* graph and captured traffic still feed the map */ }
+        }
         const revision = researchInputRevision()
         if (id === 'buildResearchMap' && researchMapRevision !== undefined && researchMapRevision !== revision) {
           setupResults.delete('buildResearchMap')

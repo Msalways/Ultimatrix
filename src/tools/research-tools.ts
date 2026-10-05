@@ -22,6 +22,7 @@ import { requestAsActor } from './actor-tools'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { httpRequest } from './http-tools'
 import { getInteractionMode } from './interaction-tools'
+import { persistUnlinkedBrowserWorkflows } from './flow-tools'
 
 const responseLikeSchema = z.object({
   status: z.number().int(),
@@ -69,6 +70,7 @@ export const buildResearchMap = createTool({
   }),
   execute: async ({ maxHypotheses }) => {
     try {
+      await persistUnlinkedBrowserWorkflows()
       const store = getGlobalGraphStore()
       const workflows = extractWorkflows(store)
       const entities = extractEntities(store)
@@ -78,7 +80,7 @@ export const buildResearchMap = createTool({
       let captured: CapturedRequest[] = []
       try {
         const capturedStore = getCapturedRequestStore()
-        captured = capturedStore.list({ limit: 300 })
+        captured = capturedStore.list().slice(-300)
           .map(ref => capturedStore.get(ref.id))
           .filter((entry): entry is CapturedRequest => Boolean(entry))
       } catch { /* capture unavailable — hypotheses fall back to graph structure */ }

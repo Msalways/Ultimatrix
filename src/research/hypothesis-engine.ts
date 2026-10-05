@@ -2,6 +2,7 @@ import { NodeType, type EndpointNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import type { CapturedRequest } from '../capture/captured-request-store'
 import type { BusinessRuleObservation, ResearchEntity, ResearchHypothesis, ResearchWorkflow } from './types'
+import { isObservedWorkflowSource } from './types'
 import { looksLikeId, MIN_REFLECTION_VALUE_LENGTH, isTransportOrAssetUrl, stableId } from './utils'
 
 /** Case-insensitive response-header lookup (fetch lowercases; HAR preserves case). */
@@ -121,7 +122,7 @@ function sameObservedWorkflow(
   firstCaptureId: string,
   secondCaptureId: string,
 ): boolean {
-  if (workflow.source !== 'operator-demonstration' || workflow.sequenceObserved !== true) return false
+  if (!isObservedWorkflowSource(workflow.source) || workflow.sequenceObserved !== true) return false
   const ids = new Set([
     ...(workflow.capturedRequestIds ?? []),
     ...workflow.steps.map(step => step.requestId).filter((id): id is string => Boolean(id)),
@@ -138,7 +139,9 @@ function actionLimitHypotheses(
   const byRoute = new Map<string, EndpointNode>()
   for (const endpoint of endpoints.values()) {
     const key = endpointKey(endpoint.properties.url)
-    if (key && isHighValueEndpoint(endpoint)) byRoute.set(key, endpoint)
+    if (key && isHighValueEndpoint(endpoint)) {
+      byRoute.set(`${endpoint.properties.method.toUpperCase()}:${key}`, endpoint)
+    }
   }
 
   const ruleCaptures = captured.flatMap(entry => {
@@ -163,7 +166,7 @@ function actionLimitHypotheses(
       if (!sameOrigin) continue
       const workflow = workflows.find(item => sameObservedWorkflow(item, rule.entry.id, action.id))
       if (ruleRoute !== actionRoute && !workflow) continue
-      const endpoint = byRoute.get(actionRoute)
+      const endpoint = byRoute.get(`${action.method.toUpperCase()}:${actionRoute}`)
       const businessRule: BusinessRuleObservation = {
         kind: 'action_limit',
         allowedCount: rule.allowedCount,
@@ -288,9 +291,10 @@ export function generateHypotheses(
     // workflows usable when they have no explicit inferred provenance.
     const sequenceCanBeTested = workflow.source === 'endpoint-inference'
       ? workflow.sequenceObserved === true
-      : workflow.steps.length >= 2 || workflow.stateChanges.length > 0
-    if (sequenceCanBeTested && (workflow.source !== 'operator-demonstration' || workflow.sequenceObserved === true)
-      && endpointEvidenceAvailable && hasStructuredWorkflowSignal) {
+      : isObservedWorkflowSource(workflow.source)
+        ? workflow.sequenceObserved === true
+        : workflow.steps.length >= 2 || workflow.stateChanges.length > 0
+    if (sequenceCanBeTested && endpointEvidenceAvailable && hasStructuredWorkflowSignal) {
       hypotheses.push({
         id: stableId('hypothesis', ['workflow-bypass', workflow.id]),
         title: `${workflow.name} may be bypassable by direct API replay or step skipping`,

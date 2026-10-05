@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getGlobalGraphStore } from '../graph/store'
 import { NodeType, EdgeType, type AuthFlowNode, type ActionNode, type WorkflowNode } from '../graph/schema'
 import { getGlobalWorkspace } from '../workspace'
-import { getGlobalObserver } from '../capture/human-observer'
+import { getGlobalObserver, type HumanAction } from '../capture/human-observer'
 import { getGlobalSessionManager } from '../http/session-manager'
 import { getActiveBrowser, getActiveBrowserContext, getActivePage } from '../browser/manager'
 import { log } from '../utils/logger'
@@ -14,13 +14,25 @@ import { redactString } from '../security/secret-vault'
 import { getGlobalArtifactRegistry } from '../security/artifacts'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getEngagementServices } from '../runtime/engagement-context'
+import { isTransportOrAssetUrl } from '../research/utils'
+import { isObservedWorkflowSource } from '../research/types'
 
-/** Store a redacted operator demonstration and link it to the traffic it caused. */
-export async function persistOperatorWorkflow(startedAt: number, endedAt: number, actions = getGlobalObserver().getActionsSinceSnapshot()): Promise<string | undefined> {
+/** Store a redacted browser workflow and link it to the traffic it caused. */
+export async function persistOperatorWorkflow(
+  startedAt: number,
+  endedAt: number,
+  actions = getGlobalObserver().getActionsSinceSnapshot(),
+  source: 'operator-demonstration' | 'browser-observation' = 'operator-demonstration',
+  requestIds?: ReadonlySet<string>,
+): Promise<string | undefined> {
+  if (!isObservedWorkflowSource(source)) throw new Error(`Unsupported observed workflow source: ${source}`)
   const services = getEngagementServices()
   const store = services?.graph ?? getGlobalGraphStore()
-  const requests = (services?.capturedRequests ?? getCapturedRequestStore()).list({ limit: 500 })
-    .filter(r => r.source === 'browser' && r.capturedAt >= startedAt && r.capturedAt <= endedAt)
+  const captures = services?.capturedRequests ?? getCapturedRequestStore()
+  const requests = captures.list()
+    .filter(r => r.source === 'browser'
+      && (requestIds ? requestIds.has(r.id) : r.capturedAt >= startedAt && r.capturedAt <= endedAt))
+    .filter(r => !isTransportOrAssetUrl(r.url, r.method))
   if (!actions.length && !requests.length) return undefined
 
   const endpointIds: string[] = []
@@ -31,19 +43,24 @@ export async function persistOperatorWorkflow(startedAt: number, endedAt: number
     try { parsed = new URL(ref.url) } catch { continue }
     if (!isUrlInScope(parsed.toString(), services ? services.scopeConfig : undefined, { allowAny: services?.allowAny }).allowed) continue
     const routeUrl = `${parsed.origin}${parsed.pathname}`
-    const request = (services?.capturedRequests ?? getCapturedRequestStore()).get(ref.id)
+    const request = captures.get(ref.id)
     const names = new Set<string>()
     parsed.searchParams.forEach((_value, key) => names.add(key))
     if (request?.body) {
       try {
         const body = JSON.parse(request.body)
         if (body && typeof body === 'object' && !Array.isArray(body)) Object.keys(body).forEach(key => names.add(key))
-      } catch { /* retain URL parameter names only */ }
+      } catch {
+        const contentType = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? ''
+        if (contentType.toLowerCase().includes('application/x-www-form-urlencoded')) {
+          for (const key of new URLSearchParams(request.body).keys()) names.add(key)
+        }
+      }
     }
     const endpoint = store.addEndpoint({
       url: routeUrl,
       method: ref.method,
-      source: 'operator-demonstration',
+      source,
       params: [...names].map(name => ({ name, type: 'unknown', in: parsed.searchParams.has(name) ? 'query' : 'body' })),
     })
     endpointIds.push(endpoint.id)
@@ -58,18 +75,21 @@ export async function persistOperatorWorkflow(startedAt: number, endedAt: number
   const pageUrl = actions.find(a => a.url)?.url ?? requests[0]?.url
   const entryUrl = safeRouteUrl(pageUrl)
   const id = `workflow:${randomUUID()}`
+  const meaningfulActionObserved = actions.some(action => ['click', 'fill', 'select', 'press', 'submit'].includes(action.type))
   const workflow: WorkflowNode = {
-    id, type: NodeType.WORKFLOW, label: `Operator demonstrated workflow (${actions.length} actions, ${requestSteps.length} requests)`,
+    id, type: NodeType.WORKFLOW, label: `${source === 'operator-demonstration' ? 'Operator demonstrated' : 'Browser observed'} workflow (${actions.length} actions, ${requestSteps.length} requests)`,
     properties: {
-      name: 'operator-demonstration', entryUrl, steps, relatedEndpoints: uniqueEndpointIds,
+      name: source, entryUrl, steps, relatedEndpoints: uniqueEndpointIds,
       inputFields: [...new Set([
         ...[...paramNames.values()].flatMap(names => [...names]),
         ...actions.map(action => action.selector).filter((selector): selector is string => Boolean(selector)),
       ])],
       stateChanges: [...new Set(requestSteps.filter(event => !['GET', 'HEAD', 'OPTIONS'].includes(event.step.method ?? '')).map(event => event.step.method!))],
       observedRoles: [], confidence: 1, capturedRequestIds: requestSteps.map(event => event.step.requestId!).filter(Boolean),
-      source: 'operator-demonstration', capturedAt: startedAt,
-      sequenceObserved: requestSteps.length >= 2 && steps.filter(step => Boolean(step.requestId)).length >= 2,
+      source, capturedAt: startedAt,
+      sequenceObserved: requestSteps.length >= 2
+        && steps.filter(step => Boolean(step.requestId)).length >= 2
+        && (source === 'operator-demonstration' || meaningfulActionObserved),
     },
     createdAt: Date.now(), updatedAt: Date.now(),
   }
@@ -78,6 +98,69 @@ export async function persistOperatorWorkflow(startedAt: number, endedAt: number
   for (let i = 1; i < uniqueEndpointIds.length; i++) store.addEdge({ fromId: uniqueEndpointIds[i - 1]!, toId: uniqueEndpointIds[i]!, type: EdgeType.ORDERED_BEFORE })
   await store.save()
   return id
+}
+
+/** Persist newly captured browser flows before the research map is rebuilt. */
+export async function persistUnlinkedBrowserWorkflows(): Promise<string[]> {
+  const services = getEngagementServices()
+  const graph = services?.graph ?? getGlobalGraphStore()
+  const captures = services?.capturedRequests ?? getCapturedRequestStore()
+  const linked = new Set<string>()
+  for (const node of graph.queryNodes(NodeType.WORKFLOW)) {
+    const properties = node.properties as Record<string, unknown>
+    if (!isObservedWorkflowSource(properties.source)) continue
+    if (Array.isArray(properties.capturedRequestIds)) {
+      for (const id of properties.capturedRequestIds) if (typeof id === 'string') linked.add(id)
+    }
+    if (Array.isArray(properties.steps)) {
+      for (const step of properties.steps) {
+        if (step && typeof step === 'object' && typeof (step as Record<string, unknown>).requestId === 'string') {
+          linked.add((step as Record<string, unknown>).requestId as string)
+        }
+      }
+    }
+  }
+  const requests = captures.list().slice(-500)
+    .filter(ref => ref.source === 'browser' && !linked.has(ref.id) && !isTransportOrAssetUrl(ref.url, ref.method))
+    .sort((left, right) => {
+      const origin = (ref: typeof left) => { try { return new URL(ref.url).origin } catch { return '' } }
+      return origin(left).localeCompare(origin(right)) || left.capturedAt - right.capturedAt
+    })
+  if (requests.length < 2) return []
+
+  const groups: typeof requests[] = []
+  let current: typeof requests = []
+  const maxGapMs = 5 * 60_000
+  const originOf = (url: string) => { try { return new URL(url).origin } catch { return '' } }
+  for (const request of requests) {
+    const previous = current[current.length - 1]
+    if (previous && (originOf(previous.url) !== originOf(request.url) || request.capturedAt - previous.capturedAt > maxGapMs)) {
+      groups.push(current)
+      current = []
+    }
+    current.push(request)
+  }
+  if (current.length) groups.push(current)
+
+  const observer = getGlobalObserver()
+  const allActions: HumanAction[] = observer.getActions()
+  const persisted: string[] = []
+  for (const group of groups) {
+    if (group.length < 2) continue
+    const firstAt = group[0]!.capturedAt
+    const lastAt = group[group.length - 1]!.capturedAt
+    const actions = allActions.filter(action => action.timestamp >= firstAt - 15_000 && action.timestamp <= lastAt + 15_000)
+    if (!actions.some(action => ['click', 'fill', 'select', 'press', 'submit'].includes(action.type))) continue
+    const id = await persistOperatorWorkflow(
+      firstAt,
+      lastAt,
+      actions,
+      'browser-observation',
+      new Set(group.map(request => request.id)),
+    )
+    if (id) persisted.push(id)
+  }
+  return persisted
 }
 
 function safeRouteUrl(value?: string): string | undefined {

@@ -1,6 +1,6 @@
 import { NodeType, type ActionNode, type EndpointNode, type InputNode, type WorkflowNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
-import type { ResearchWorkflow } from './types'
+import { isObservedWorkflowSource, type ResearchWorkflow } from './types'
 import {stableId, uniq, isTransportOrAssetUrl} from './utils'
 import { getTechniqueRegistry } from '../skills/technique-registry'
 
@@ -97,7 +97,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
   // route-cluster workflows above remain useful context but are not sequences.
   for (const node of recorded) {
     const props = node.properties
-    if (props.source !== 'operator-demonstration') continue
+    if (!isObservedWorkflowSource(props.source)) continue
     const steps = Array.isArray(props.steps) ? props.steps : []
     const capturedRequestIds = Array.isArray(props.capturedRequestIds) ? props.capturedRequestIds : []
     const sequenceObserved = props.sequenceObserved === true
@@ -114,7 +114,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
       stateChanges: [...props.stateChanges],
       observedRoles: [...props.observedRoles],
       confidence: props.confidence,
-      source: 'operator-demonstration',
+      source: props.source,
       sequenceObserved,
       capturedRequestIds: [...capturedRequestIds],
       capturedAt: props.capturedAt,

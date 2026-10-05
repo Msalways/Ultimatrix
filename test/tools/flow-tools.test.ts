@@ -25,6 +25,13 @@ const mockStore = {
     type: 'ACTION',
     properties: { ...props, pageId },
   })),
+  addEndpoint: vi.fn().mockImplementation((props: any) => ({
+    id: `endpoint:${props.method}:${new URL(props.url).pathname}`,
+    type: 'Endpoint',
+    properties: props,
+  })),
+  upsertNode: vi.fn().mockImplementation((node: any) => node),
+  addEdge: vi.fn(),
   upsertPage: vi.fn().mockImplementation((url: string, data?: any) => ({
     id: `page:${url}`,
     type: 'PAGE',
@@ -119,6 +126,46 @@ describe('flow-tools', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockStore.queryNodes.mockReturnValue([])
+  })
+
+  it('persists unlinked browser request sequences as redacted observed workflows', async () => {
+    const { getCapturedRequestStore } = await import('../../src/capture/captured-request-store')
+    const { getGlobalObserver } = await import('../../src/capture/human-observer')
+    const captures = getCapturedRequestStore()
+    captures.clear()
+    const now = Date.now()
+    captures.record({
+      method: 'GET', url: 'https://example.com/offers', status: 200,
+      source: 'browser', capturedAt: now - 5,
+    })
+    captures.record({
+      method: 'POST', url: 'https://example.com/api/redeem', status: 200,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'offer=synthetic-secret', source: 'browser', capturedAt: now + 5,
+    })
+    const observer = getGlobalObserver()
+    vi.mocked(observer.getActions).mockReturnValue([
+      { type: 'fill', url: 'https://example.com/offers', selector: 'input[name="offer"]', value: 'synthetic-secret', timestamp: now },
+      { type: 'submit', url: 'https://example.com/offers', selector: 'form', timestamp: now + 1 },
+    ])
+
+    try {
+      const { persistUnlinkedBrowserWorkflows } = await import('../../src/tools/flow-tools')
+      const workflowIds = await persistUnlinkedBrowserWorkflows()
+
+      expect(workflowIds).toHaveLength(1)
+      const workflow = mockStore.upsertNode.mock.calls[0]![0]
+      expect(workflow.properties).toMatchObject({
+        source: 'browser-observation',
+        sequenceObserved: true,
+        capturedRequestIds: ['cap-1', 'cap-2'],
+        inputFields: expect.arrayContaining(['offer']),
+      })
+      expect(JSON.stringify(workflow)).not.toContain('synthetic-secret')
+      expect(mockStore.addEdge).toHaveBeenCalled()
+    } finally {
+      captures.clear()
+    }
   })
 
   describe('saveSession', () => {

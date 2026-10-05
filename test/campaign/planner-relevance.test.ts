@@ -132,7 +132,7 @@ describe('planCampaign signal routing', () => {
         ],
         relatedEndpoints: ['start', 'finish'],
         capturedRequestIds: ['cap-start', 'cap-finish'],
-        source: 'operator-demonstration',
+        source: 'browser-observation',
         sequenceObserved: true,
         capturedAt: 10,
       },

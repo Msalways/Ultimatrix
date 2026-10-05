@@ -29,6 +29,7 @@ import type {
   PrimitiveRef,
 } from './types'
 import { isTransportOrAssetUrl } from '../research/utils'
+import { isObservedWorkflowSource } from '../research/types'
 
 const DEFAULT_ROLE = 'anonymous'
 const ANONYMOUS_ROLE = 'anonymous'
@@ -82,7 +83,7 @@ function terminalWorkflowContexts(
     const observedRequestIds = new Set(steps
       .map(step => step.requestId)
       .filter((id): id is string => Boolean(id && capturedRequestIds.has(id))))
-    if (workflow.properties.source !== 'operator-demonstration'
+    if (!isObservedWorkflowSource(workflow.properties.source)
       || workflow.properties.sequenceObserved !== true
       || observedRequestIds.size < 2) continue
 

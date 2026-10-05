@@ -24,6 +24,12 @@ export type HypothesisKind =
   | 'client_side_only_validation'
   | 'race_condition'
 
+export const OBSERVED_WORKFLOW_SOURCES = ['operator-demonstration', 'browser-observation'] as const
+
+export function isObservedWorkflowSource(source: unknown): source is typeof OBSERVED_WORKFLOW_SOURCES[number] {
+  return OBSERVED_WORKFLOW_SOURCES.includes(source as typeof OBSERVED_WORKFLOW_SOURCES[number])
+}
+
 export interface ResearchWorkflow {
   id: string
   name: string

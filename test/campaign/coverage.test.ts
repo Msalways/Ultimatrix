@@ -347,7 +347,7 @@ describe('campaign prerequisites', () => {
     expect(observedHeaders).toEqual({ 'X-Trace': 'kept' })
   })
 
-  it('passes the observed workflow sequence and terminal capture to the primitive', async () => {
+  it('passes a browser-observed workflow sequence and terminal capture to the primitive', async () => {
     let observed: any
     registerPrimitive({
       id: 'workflowContextProbe',
@@ -364,7 +364,20 @@ describe('campaign prerequisites', () => {
       },
       oracle: async () => ({ confirmed: false, candidate: true, confidence: 0.5, evidence: [], note: 'fresh actor verification required' }),
     } as any)
-    const store = memoryGraph([endpoint({ params: [], headers: {} })])
+    const store = memoryGraph([
+      endpoint({ params: [], headers: {} }),
+      {
+        id: 'wf:browser', type: NodeType.WORKFLOW,
+        properties: {
+          source: 'browser-observation', sequenceObserved: true,
+          capturedRequestIds: ['cap-1', 'cap-2'],
+          steps: [
+            { action: 'GET items', endpointId: 'ep:fixture', method: 'GET', url: 'https://app.test/api/items', requestId: 'cap-1' },
+            { action: 'POST item', endpointId: 'ep:fixture', method: 'POST', url: 'https://app.test/api/items', requestId: 'cap-2' },
+          ],
+        },
+      },
+    ])
     const captureStore = new CapturedRequestStore()
     captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"workflow-terminal"}' })
     captureStore.record({ method: 'POST', url: 'https://app.test/api/items?search=old', headers: { 'Content-Type': 'application/json' }, body: '{"title":"later-unrelated-request"}' })
@@ -374,7 +387,7 @@ describe('campaign prerequisites', () => {
       id: 'workflow-unit',
       endpoint: { id: 'ep:fixture', url: 'https://app.test/api/items?search=old', method: 'POST' },
       input: { name: '', location: 'endpoint' }, params: [], role: 'anonymous', actor: 'anonymous',
-      state: 'baseline', workflowId: 'wf:test', workflowSteps: ['POST /draft', 'POST /finish'],
+      state: 'baseline', workflowId: 'wf:browser', workflowSteps: ['POST /draft', 'POST /finish'],
       workflowTerminalRequestId: 'cap-1',
       techniqueIds: ['workflowContextProbe'], priority: 1,
     }
@@ -403,7 +416,7 @@ describe('campaign prerequisites', () => {
     const result = await runner('workflowBypass', slice, { slice, graphStore: store, config, provider: 'test' })
 
     expect(result.coverageStatus).toBe('blocked')
-    expect(result.description).toContain('request-backed operator-observed workflow')
+    expect(result.description).toContain('request-backed observed workflow')
   })
 
   it('reports an out-of-scope endpoint as blocked before attempting HTTP', async () => {

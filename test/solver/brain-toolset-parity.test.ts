@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 const { captureState, graphState } = vi.hoisted(() => ({
-  captureState: { size: 0 },
+  captureState: { size: 0, actions: [] as Array<Record<string, unknown>>, nativeActionDuringTool: false },
   graphState: { nodes: [] as Array<{ id: string; type: string; updatedAt: number }> },
 }))
 
@@ -21,7 +21,13 @@ vi.mock('../../src/models/context-window-registry', () => ({ ContextWindowRegist
 vi.mock('../../src/models/schema-sanitizer', () => ({ createSanitizedInputSchema: (schema: unknown) => schema }))
 vi.mock('../../src/solver/brain-instructions', () => ({ getBrainInstructions: () => 'test' }))
 vi.mock('../../src/browser/manager', () => ({ getActivePage: () => null }))
-vi.mock('../../src/capture/human-observer', () => ({ getGlobalObserver: () => ({ getAuthDetector: () => ({ detectAuthState: async () => ({}) }) }) }))
+vi.mock('../../src/capture/human-observer', () => ({
+  getGlobalObserver: () => ({
+    getAuthDetector: () => ({ detectAuthState: async () => ({}) }),
+    getActions: () => [...captureState.actions],
+    record: (action: Record<string, unknown>) => { captureState.actions.push(action) },
+  }),
+}))
 vi.mock('../../src/graph/tool-result-store', () => ({ getToolResultStore: () => ({ get: () => null }) }))
 vi.mock('../../src/graph/store', () => ({
   getGlobalGraphStore: () => ({
@@ -55,6 +61,19 @@ function setup() {
           inputSchema: {},
           execute: async () => ({ success: true }),
         },
+        stagehand_act: {
+          description: 'Perform one action against the current page.',
+          inputSchema: {},
+          execute: async (input: any) => {
+            if (captureState.nativeActionDuringTool) captureState.actions.push({
+              type: input.action,
+              selector: input.selector,
+              url: 'https://example.test/workflow',
+              timestamp: Date.now(),
+            })
+            return { success: true, action: input.action, selector: input.selector, url: 'https://example.test/workflow' }
+          },
+        },
       }),
     } as any,
   })
@@ -83,6 +102,39 @@ describe('solver brain lazy tool view', () => {
     } finally {
       mapSpy.mockRestore()
     }
+  })
+
+  it('records solver browser actions without storing filled values', async () => {
+    captureState.actions = []
+    captureState.nativeActionDuringTool = false
+    const { brain, extensionRegistry } = setup()
+    brain.setMethodologyState({ methodologyLoaded: true, researchMapBuilt: true, experimentPlanned: true })
+    await extensionRegistry.activate('stagehand_act')
+    const tools = brain.tools()
+
+    await tools.stagehand_act.execute({ action: 'fill', selector: 'input[name="offer"]', value: 'private-value' })
+
+    expect(captureState.actions).toEqual([expect.objectContaining({
+      type: 'fill',
+      selector: 'input[name="offer"]',
+      url: 'https://example.test/workflow',
+      metadata: { source: 'solver-browser-tool' },
+    })])
+    expect(JSON.stringify(captureState.actions)).not.toContain('private-value')
+  })
+
+  it('does not duplicate browser actions already captured during the tool call', async () => {
+    captureState.actions = []
+    captureState.nativeActionDuringTool = true
+    const { brain, extensionRegistry } = setup()
+    brain.setMethodologyState({ methodologyLoaded: true, researchMapBuilt: true, experimentPlanned: true })
+    await extensionRegistry.activate('stagehand_act')
+
+    await brain.tools().stagehand_act.execute({ action: 'fill', selector: 'input[name="offer"]', value: 'private-value' })
+
+    expect(captureState.actions).toHaveLength(1)
+    expect(JSON.stringify(captureState.actions)).not.toContain('private-value')
+    captureState.nativeActionDuringTool = false
   })
 
   it('does not mistake workflow persistence timestamp changes for new observations', async () => {

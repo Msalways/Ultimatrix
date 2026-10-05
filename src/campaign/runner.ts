@@ -12,6 +12,7 @@ import { getCapturedRequestStore, type CapturedRequest } from '../capture/captur
 import { getGlobalSessionManager } from '../http/session-manager'
 import { hasActorIdentityHeader, stripActorIdentityHeaders } from '../http/auth-headers'
 import { isUrlInScope } from '../safety/scope-guard'
+import { isObservedWorkflowSource } from '../research/types'
 import { NodeType, type WorkflowNode } from '../graph/schema'
 import type { EvidenceGate } from '../intelligence/evidence-gate'
 import type { GraphStore } from '../graph/store'
@@ -47,7 +48,7 @@ function hasObservedWorkflowTerminal(slice: CampaignSlice, graphStore: GraphStor
   if (!node || node.type !== NodeType.WORKFLOW) return false
   const workflow = node as WorkflowNode
   const props = workflow.properties
-  if (props.source !== 'operator-demonstration' || props.sequenceObserved !== true) return false
+  if (!isObservedWorkflowSource(props.source) || props.sequenceObserved !== true) return false
   const capturedRequestIds = new Set(props.capturedRequestIds ?? [])
   const observedRequestIds = new Set((props.steps ?? [])
     .map(step => step.requestId)
@@ -262,7 +263,7 @@ export function createPrimitiveRunner(
     if (!primitive) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `unavailable primitive: ${primitiveId}` }
     if (primitiveId === 'workflowBypass'
       && ((slice.workflowSteps?.length ?? 0) < 2 || !hasObservedWorkflowTerminal(slice, graphStore))) {
-      return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: 'requires a request-backed operator-observed workflow and its exact terminal request' }
+      return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: 'requires a request-backed observed workflow and its exact terminal request' }
     }
     const scope = isUrlInScope(slice.endpoint.url)
     if (!scope.allowed) return { primitiveId, confirmed: false, confidence: 0, coverageStatus: 'blocked', description: `scope denied: ${scope.reason}` }

@@ -211,6 +211,32 @@ describe('generateHypotheses (evidence-linked and conservative)', () => {
     expect(hypothesis?.relatedWorkflowIds).toEqual(['wf-offer'])
   })
 
+  it('uses browser-observed ordered workflows for workflow and action-limit hypotheses', () => {
+    const store = makeStore([ep('redeem', 'https://app.test/api/coupon/redeem', 'POST')])
+    const captures = [
+      {
+        id: 'cap-rule', method: 'GET', url: 'https://app.test/offers', headers: {},
+        status: 200, responseBody: '<p>Maximum of 3 claims per account.</p>', source: 'browser' as const, capturedAt: 1,
+      },
+      {
+        id: 'cap-action', method: 'POST', url: 'https://app.test/api/coupon/redeem', headers: {},
+        status: 200, responseBody: '{"balance":10}', source: 'browser' as const, capturedAt: 2,
+      },
+    ]
+    const workflow: ResearchWorkflow = {
+      id: 'wf-browser', name: 'browser-observed', steps: [
+        { action: 'GET offers', requestId: 'cap-rule' }, { action: 'POST redeem', requestId: 'cap-action' },
+      ], capturedRequestIds: ['cap-rule', 'cap-action'], sequenceObserved: true,
+      source: 'browser-observation', relatedEndpoints: ['redeem'], inputFields: ['code'],
+      stateChanges: ['balance'], observedRoles: [], confidence: 0.8,
+    }
+
+    const hypotheses = generateHypotheses(store, [workflow], [], captures)
+
+    expect(hypotheses.find(item => item.kind === 'workflow_bypass')?.relatedWorkflowIds).toEqual(['wf-browser'])
+    expect(hypotheses.find(item => item.kind === 'action_limit')?.relatedWorkflowIds).toEqual(['wf-browser'])
+  })
+
   it('learns an explicit numeric cap without guessing above its bounded probe range', () => {
     const store = makeStore([ep('redeem', 'https://app.test/api/rewards/claim', 'POST')])
     const captures = [
