@@ -60,10 +60,12 @@ describe('research bootstrap state', () => {
     })
 
     expect(services.researchBootstrapState).toBe('pending')
-    services.markResearchBootstrapAttempted()
+    services.markResearchBootstrapAttempted('observed-revision-1')
     expect(services.researchBootstrapState).toBe('attempted')
-    services.markResearchBootstrapCompleted()
+    expect(services.researchBootstrapRevision).toBe('observed-revision-1')
+    services.markResearchBootstrapCompleted('observed-revision-2')
     expect(services.researchBootstrapState).toBe('completed')
+    expect(services.researchBootstrapRevision).toBe('observed-revision-2')
   })
 })
 

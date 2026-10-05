@@ -48,6 +48,7 @@ import { resolveProgressTimeoutMs } from "./model-fallback";
 import type { CampaignResult } from "../campaign/types";
 import { buildAssessmentReport, type AssessmentReport } from "./assessment-report";
 import { hasObservedWorkflowSequence } from '../research/types';
+import { persistUnlinkedBrowserWorkflows } from '../tools/flow-tools';
 
 // Backward-compatible model→context mapping for models not in ModelCapabilities config
 /**
@@ -690,8 +691,9 @@ export async function solve(
     observe?: () => Promise<{ requests: number; url: string }>;
     observationState?: { status: 'completed' | 'failed'; result?: { requests: number; url: string }; error?: string };
     researchBootstrapState?: 'pending' | 'attempted' | 'completed';
-    markResearchBootstrapAttempted?: () => void;
-    markResearchBootstrapCompleted?: () => void;
+    researchBootstrapRevision?: string;
+    markResearchBootstrapAttempted?: (revision?: string) => void;
+    markResearchBootstrapCompleted?: (revision?: string) => void;
     crawl?: () => Promise<unknown>;
     crawlState?: unknown;
     taskStates?: ReadonlyArray<{ taskId: string; status: string }>;
@@ -797,10 +799,18 @@ export async function solve(
   // engagement makes progress even when the model stalls before tool use.
   // Collaborative/ask mode auto-runs only idempotent GETs; explicit run mode
   // authorizes the bounded state-changing experiments selected by the graph.
+  try { await persistUnlinkedBrowserWorkflows() } catch { /* existing captures still contribute to the revision */ }
+  const getResearchInputRevision = (agent as any).getResearchInputRevision as (() => string) | undefined
+  const researchInputRevision = getResearchInputRevision?.()
   const researchBootstrapState = lazyServices?.researchBootstrapState
+  const researchRevisionChanged = researchInputRevision !== undefined
+    && (researchBootstrapState === 'attempted' || researchBootstrapState === 'completed')
+    && researchInputRevision !== lazyServices?.researchBootstrapRevision
   const researchBootstrapPending = !lazyServices || researchBootstrapState === undefined || researchBootstrapState === 'pending'
-  let researchBootstrapIncomplete = researchBootstrapState === 'attempted'
+    || ((researchBootstrapState === 'attempted' || researchBootstrapState === 'completed') && researchRevisionChanged)
+  let researchBootstrapIncomplete = researchBootstrapState === 'attempted' || researchRevisionChanged
   if (researchBootstrapPending) {
+  lazyServices?.markResearchBootstrapAttempted?.(researchInputRevision)
   const execute = async (tool: any, args: Record<string, unknown>): Promise<any> => {
     if (!tool || typeof tool.execute !== 'function') return { ok: false, error: 'bootstrap tool unavailable' }
     return tool.execute(args, {} as never)
@@ -846,6 +856,9 @@ export async function solve(
     if (!mapResult?.ok || !planResult?.ok) {
       throw new Error(String(mapResult?.error ?? planResult?.error ?? 'research map or experiment planning did not complete'));
     }
+    if (researchInputRevision !== undefined && getResearchInputRevision?.() !== researchInputRevision) {
+      throw new Error('Target observations changed while refreshing the workflow and experiment map; retry on the next turn.')
+    }
     const planned = planResult?.ok ? (planResult.value?.experiments ?? []) : [];
     const topHypotheses = Array.isArray(mapResult?.value?.topHypotheses)
       ? mapResult.value.topHypotheses as import('../research/types').ResearchHypothesis[]
@@ -873,14 +886,14 @@ export async function solve(
     // experiments regardless of relevance or missing workflow prerequisites.
     board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned and queued for current-goal selection. No experiment ran before goal routing.`, 'research-bootstrap');
     emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${planned.length} experiments queued for goal-aware selection`, status: "ok" });
-    lazyServices?.markResearchBootstrapCompleted?.();
+    lazyServices?.markResearchBootstrapCompleted?.(researchInputRevision);
+    researchBootstrapIncomplete = false
   } catch (error) {
     researchBootstrapIncomplete = true
+    ;(agent as any).setMethodologyState?.({ methodologyLoaded: false, researchMapBuilt: false, experimentPlanned: false })
     const message = error instanceof Error ? error.message : String(error);
     board.addFact(`Autonomous research bootstrap unavailable: ${message}; continue with model-selected tools.`, 'research-bootstrap-failure');
     emitMessage({ kind: "event", event: "research.bootstrap.failed", label: "research bootstrap unavailable; model path retained", status: "warn" });
-  } finally {
-    lazyServices?.markResearchBootstrapAttempted?.();
   }
   } else if (lazyServices?.researchBootstrapState === 'completed') {
     board.addFact('Research bootstrap already completed for this engagement; reusing its graph and captured evidence.', 'research-bootstrap-reused');
@@ -893,7 +906,10 @@ export async function solve(
   // Deterministic coverage consumes the workflow and experiment map built
   // above. Starting it before research bootstrap meant a cold engagement's
   // first campaign could only use the raw crawl graph and miss stateful paths.
-  if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
+  if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign && researchBootstrapIncomplete) {
+    board.addFact('Deterministic coverage was blocked because the current target workflow and experiment map is incomplete.', 'coverage-failure');
+    emitMessage({ kind: 'event', event: 'coverage.blocked', label: 'coverage blocked: refresh target learning before attacking', status: 'warn' });
+  } else if (params.interactionMode === 'run' && campaignEnabled && lazyServices?.runCoverageCampaign) {
     emitMessage({ kind: 'event', event: 'coverage.started', label: 'running deterministic input coverage', status: 'running' })
     try {
       campaignResult = await lazyServices.runCoverageCampaign(evidence, params.interactionRunId)

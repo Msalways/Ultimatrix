@@ -91,6 +91,7 @@ export class LazySolverServices {
    * browser/HTTP traffic detached from any turn or session. */
   private crawlController?: AbortController
   private researchBootstrapStatus: 'pending' | 'attempted' | 'completed' = 'pending'
+  private researchBootstrapInputRevision?: string
   // Observation is engagement-scoped, not model-turn-scoped. Once the
   // browser provider has failed, a model fallback must consume that fact
   // instead of launching the same 45s startup attempt again.
@@ -564,12 +565,18 @@ export class LazySolverServices {
     return this.researchBootstrapStatus
   }
 
-  markResearchBootstrapAttempted(): void {
-    if (this.researchBootstrapStatus === 'pending') this.researchBootstrapStatus = 'attempted'
+  get researchBootstrapRevision(): string | undefined {
+    return this.researchBootstrapInputRevision
   }
 
-  markResearchBootstrapCompleted(): void {
+  markResearchBootstrapAttempted(revision?: string): void {
+    this.researchBootstrapStatus = 'attempted'
+    this.researchBootstrapInputRevision = revision
+  }
+
+  markResearchBootstrapCompleted(revision?: string): void {
     this.researchBootstrapStatus = 'completed'
+    this.researchBootstrapInputRevision = revision
   }
 
   async close(): Promise<void> {

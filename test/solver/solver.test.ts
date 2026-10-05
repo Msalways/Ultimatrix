@@ -737,23 +737,49 @@ describe('solve', () => {
     expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
     expect(events.indexOf('coverage.started')).toBeLessThan(events.indexOf('campaign.called'))
   })
+  itEngagement('refreshes a completed research map when target observations have changed', async () => {
+    const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({ ok: true, value: { topHypotheses: [] } })
+    const planSpy = vi.spyOn(planResearchExperiments as any, 'execute').mockResolvedValue({ ok: true, value: { experiments: [] } })
+    const agent = createMockAgent(['Use the refreshed target model.']) as any
+    agent.getResearchInputRevision = vi.fn(() => 'revision-current')
+    agent.setMethodologyState = vi.fn()
+    const markAttempted = vi.fn()
+    const markCompleted = vi.fn()
+    const runCoverageCampaign = vi.fn().mockRejectedValue(new Error('coverage stub'))
+    const events: string[] = []
+
+    try {
+      await solve(agent, {
+        origin: 'https://example.com', goal: 'assess the observed target', interactionMode: 'run',
+        onMessage: (message: any) => { if (message.kind === 'event') events.push(message.event) },
+        lazyServices: {
+          observationState: { status: 'completed', result: { requests: 1, url: 'https://example.com' } },
+          crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
+          researchBootstrapState: 'completed', researchBootstrapRevision: 'revision-old',
+          markResearchBootstrapAttempted: markAttempted,
+          markResearchBootstrapCompleted: markCompleted,
+          runCoverageCampaign,
+        },
+      })
+
+      expect(mapSpy).toHaveBeenCalledOnce()
+      expect(planSpy).toHaveBeenCalledOnce()
+      expect(markAttempted).toHaveBeenCalledWith('revision-current')
+      expect(markCompleted).toHaveBeenCalledWith('revision-current')
+      expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
+      expect(runCoverageCampaign).toHaveBeenCalledOnce()
+    } finally {
+      mapSpy.mockRestore()
+      planSpy.mockRestore()
+    }
+  })
   itEngagement('keeps a failed research bootstrap incomplete across turns', async () => {
     const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({ ok: false, error: 'graph unavailable' })
     const planSpy = vi.spyOn(planResearchExperiments as any, 'execute')
     const events: string[] = []
     const markAttempted = vi.fn()
     const markCompleted = vi.fn()
-    const campaign = {
-      findings: [],
-      coverage: {
-        endpointsTotal: 0, endpointsCovered: 0, paramsTotal: 0, paramsCovered: 0,
-        rolesTotal: 0, rolesCovered: 0, actorsTotal: 0, actorsCovered: 0,
-        statesTotal: 0, statesCovered: 0, techniquesTotal: 0, techniquesPlanned: 0,
-        slicesPlanned: 0, slicesExecuted: 0, slicesConfirmed: 0, humanHypothesesConsidered: 0,
-      },
-      budgetExceeded: false, slicesRun: 0, status: 'complete', requestsUsed: 0,
-      remainingSlices: [], domains: [], units: [],
-    }
+    const runCoverageCampaign = vi.fn()
     try {
       const result = await solve(createMockAgent(['Continue from observed traffic.']) as any, {
         origin: 'https://example.com', goal: 'assess the observed target', interactionMode: 'run',
@@ -763,7 +789,7 @@ describe('solve', () => {
           crawlState: { stopReason: 'frontier_exhausted', pagesSeen: 1, frontier: [] },
           researchBootstrapState: 'pending', markResearchBootstrapAttempted: markAttempted,
           markResearchBootstrapCompleted: markCompleted,
-          runCoverageCampaign: vi.fn().mockResolvedValue(campaign),
+          runCoverageCampaign,
         },
       })
 
@@ -771,6 +797,10 @@ describe('solve', () => {
       expect(events).not.toContain('research.bootstrap.completed')
       expect(result.assessmentReport?.status).toBe('partial')
       expect(result.assessmentReport?.blockers).toContain('Target workflow and hypothesis learning did not complete.')
+      expect(result.assessmentReport?.testedCoverage.status).toBe('not_run')
+      expect(result.assessmentReport?.blockers).toContain('Deterministic coverage campaign did not run.')
+      expect(events).toContain('coverage.blocked')
+      expect(runCoverageCampaign).not.toHaveBeenCalled()
       expect(markAttempted).toHaveBeenCalledOnce()
       expect(markCompleted).not.toHaveBeenCalled()
       expect(planSpy).not.toHaveBeenCalled()

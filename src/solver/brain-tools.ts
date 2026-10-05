@@ -849,6 +849,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
 
   agent.id = 'ultimatrix-solver-brain'
   agent.name = 'Ultimatrix Solver Brain'
+  ;(agent as any).getResearchInputRevision = researchInputRevision
   // The deterministic solver bootstrap can complete research setup before the
   // first model turn. Keep the methodology gate in sync with that runtime
   // state; otherwise the brain is forced to repeat setup that already ran.

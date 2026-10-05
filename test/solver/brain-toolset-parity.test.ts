@@ -81,6 +81,17 @@ function setup() {
 }
 
 describe('solver brain lazy tool view', () => {
+  it('revisions the target map when captured traffic changes', () => {
+    captureState.size = 0
+    graphState.nodes = []
+    const { brain } = setup()
+    const before = brain.getResearchInputRevision()
+
+    captureState.size += 1
+
+    expect(brain.getResearchInputRevision()).not.toBe(before)
+  })
+
   it('keeps a map stale when target observations arrive while it is being built', async () => {
     captureState.size = 0
     graphState.nodes = []
