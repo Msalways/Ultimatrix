@@ -41,7 +41,7 @@ import type { WorkflowStore } from "../workflow/store";
 import type { DynamicToolRegistry } from "../extensions/tool-registry";
 import type { LazySolverServices } from "../runtime/lazy-services";
 import { buildResearchMap, planResearchExperiments } from "../tools/research-tools";
-import { actionLimitBootstrapFacts } from './research-context';
+import { actionLimitBootstrapFacts, plannedResearchBootstrapFacts } from './research-context';
 import { useCredential } from "../tools/credential-tools";
 import { discoverSkillsForTarget, loadSkillBodyTool } from "../tools/skill-tools";
 import { resolveProgressTimeoutMs } from "./model-fallback";
@@ -840,14 +840,17 @@ export async function solve(
       ? await execute(planResearchExperiments, { maxExperiments: 6 })
       : undefined;
     const planned = planResult?.ok ? (planResult.value?.experiments ?? []) : [];
-    const actionLimitHypotheses = Array.isArray(mapResult?.value?.topHypotheses)
+    const topHypotheses = Array.isArray(mapResult?.value?.topHypotheses)
       ? mapResult.value.topHypotheses as import('../research/types').ResearchHypothesis[]
       : [];
     const researchExperiments = Array.isArray(planned)
       ? planned as import('../research/types').ResearchExperiment[]
       : [];
-    for (const fact of actionLimitBootstrapFacts(actionLimitHypotheses, researchExperiments)) {
+    for (const fact of actionLimitBootstrapFacts(topHypotheses, researchExperiments)) {
       board.addFact(fact, 'business-rule-learning');
+    }
+    for (const fact of plannedResearchBootstrapFacts(topHypotheses, researchExperiments)) {
+      board.addFact(fact, 'workflow-research');
     }
     // Synchronize deterministic setup with the brain's methodology gate.
     // Without this, bootstrap-generated maps/plans are invisible to the gate,

@@ -27,3 +27,19 @@ export function actionLimitBootstrapFacts(
     return details
   })
 }
+
+/** Give the brain direct references to pending workflow and business-rule work. */
+export function plannedResearchBootstrapFacts(
+  hypotheses: readonly ResearchHypothesis[],
+  experiments: readonly ResearchExperiment[],
+): string[] {
+  const byId = new Map(hypotheses.map(hypothesis => [hypothesis.id, hypothesis]))
+  return experiments.flatMap(experiment => {
+    if (experiment.status !== 'planned') return []
+    const hypothesis = byId.get(experiment.hypothesisId)
+    if (!hypothesis || (!hypothesis.relatedWorkflowIds.length && !hypothesis.businessRule)) return []
+    const workflow = hypothesis.relatedWorkflowIds[0]
+    const actors = experiment.requiredActors?.slice(0, 2).join(', ') || 'unspecified'
+    return [`Research candidate (not a finding): ${experiment.id} tests ${hypothesis.kind}; workflow=${workflow ?? 'none'}; actors=${actors}. Inspect observed steps and prerequisites before selecting a probe.`]
+  }).slice(0, 3)
+}

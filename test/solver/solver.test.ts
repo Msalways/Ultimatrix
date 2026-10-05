@@ -749,6 +749,10 @@ describe('solve', () => {
         id: 'hyp-limit', title: 'Observed action limit of 1 may be unenforced', kind: 'action_limit',
         reason: 'captured rule and request', targetEndpoints: [], relatedWorkflowIds: [], relatedEntityIds: [],
         requiredSetup: [], risk: 'medium', confidence: 0.62, status: 'open', businessRule: rule,
+      }, {
+        id: 'hyp-checkout', title: 'Checkout may allow replay', kind: 'workflow_bypass',
+        reason: 'ordered requests', targetEndpoints: ['endpoint-finalize'], relatedWorkflowIds: ['workflow-checkout'], relatedEntityIds: [],
+        requiredSetup: ['same actor'], risk: 'high', confidence: 0.7, status: 'open',
       }] },
     })
     const planSpy = vi.spyOn(planResearchExperiments as any, 'execute').mockResolvedValue({
@@ -756,6 +760,9 @@ describe('solve', () => {
       value: { experiments: [{
         id: 'exp-limit', hypothesisId: 'hyp-limit', title: 'Verify the observed 1-action limit',
         mutation: 'Run businessLogicAbuse with capturedRequestId=cap-action, allowedCount=1, iterations=2.',
+      }, {
+        id: 'exp-checkout-replay', hypothesisId: 'hyp-checkout', title: 'Replay the terminal checkout request',
+        requiredActors: ['buyer-session'], status: 'planned', mutation: 'Replay the observed final request.',
       }] },
     })
     try {
@@ -779,6 +786,8 @@ describe('solve', () => {
       expect(prompt).toContain('keep the same actor for baseline and replay')
       expect(prompt).toContain('iterations=2')
       expect(prompt).toContain('not a finding')
+      expect(prompt).toContain('exp-checkout-replay tests workflow_bypass; workflow=workflow-checkout; actors=buyer-session')
+      expect(prompt).toContain('Inspect observed steps and prerequisites before selecting a probe.')
     } finally {
       mapSpy.mockRestore()
       planSpy.mockRestore()

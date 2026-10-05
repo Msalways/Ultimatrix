@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actionLimitBootstrapFacts } from '../../src/solver/research-context'
+import { actionLimitBootstrapFacts, plannedResearchBootstrapFacts } from '../../src/solver/research-context'
 import type { ResearchExperiment, ResearchHypothesis } from '../../src/research/types'
 
 describe('actionLimitBootstrapFacts', () => {
@@ -53,5 +53,43 @@ describe('actionLimitBootstrapFacts', () => {
 
     expect(actionLimitBootstrapFacts([...candidates, unrelated], [])).toHaveLength(6)
     expect(actionLimitBootstrapFacts([unrelated], [])).toEqual([])
+  })
+})
+
+describe('plannedResearchBootstrapFacts', () => {
+  it('surfaces workflow links and actor prerequisites for pending plans without treating them as findings', () => {
+    const hypothesis: ResearchHypothesis = {
+      id: 'hyp-workflow', title: 'Observed checkout flow may allow replay', kind: 'workflow_bypass',
+      reason: 'ordered state-changing requests were captured', targetEndpoints: ['endpoint-finalize'],
+      relatedWorkflowIds: ['workflow-checkout'], relatedEntityIds: [], requiredSetup: [],
+      risk: 'high', confidence: 0.7, status: 'open',
+    }
+    const experiment = {
+      id: 'exp-checkout-replay', hypothesisId: hypothesis.id, title: 'Replay the final checkout request',
+      setup: [], baselineRequest: { method: 'POST', url: 'https://app.test/api/checkout' },
+      mutation: 'Replay the observed final request.', expectedSecureBehavior: 'reject duplicate',
+      insecureSignal: 'duplicate state change', requiredActors: ['buyer-session'], tools: ['executePlannedExperiment'],
+      status: 'planned',
+    } as ResearchExperiment
+
+    expect(plannedResearchBootstrapFacts([hypothesis], [experiment])).toEqual([
+      'Research candidate (not a finding): exp-checkout-replay tests workflow_bypass; workflow=workflow-checkout; actors=buyer-session. Inspect observed steps and prerequisites before selecting a probe.',
+    ])
+  })
+
+  it('omits completed, unlinked, and unmapped plans', () => {
+    const hypothesis: ResearchHypothesis = {
+      id: 'hyp-generic', title: 'Generic endpoint check', kind: 'information_disclosure', reason: 'observed',
+      targetEndpoints: ['endpoint'], relatedWorkflowIds: [], relatedEntityIds: [], requiredSetup: [],
+      risk: 'medium', confidence: 0.4, status: 'open',
+    }
+    const base = {
+      id: 'exp-generic', hypothesisId: hypothesis.id, title: 'Compare auth state', setup: [],
+      mutation: 'remove auth', expectedSecureBehavior: 'deny', insecureSignal: 'allow', requiredActors: [],
+      tools: [],
+    }
+    expect(plannedResearchBootstrapFacts([hypothesis], [{ ...base, status: 'planned' } as ResearchExperiment])).toEqual([])
+    expect(plannedResearchBootstrapFacts([hypothesis], [{ ...base, status: 'rejected' } as ResearchExperiment])).toEqual([])
+    expect(plannedResearchBootstrapFacts([], [{ ...base, status: 'planned' } as ResearchExperiment])).toEqual([])
   })
 })
