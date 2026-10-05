@@ -250,6 +250,38 @@ describe('live discovery scoring', () => {
     expect(result.pass).toBe(false)
     expect(result.targetLearning.qualifiedControlRuns).toBe(0)
   })
+
+  it('does not qualify a run as learned when expected endpoint mapping is incomplete', () => {
+    const incomplete = score('control', {
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 1,
+        hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['rejected'],
+        expectedEndpoints: [{ method: 'GET', path: '/private-random-route' }],
+        observedEndpoints: [],
+      },
+    })
+    const complete = score('control', {
+      targetLearning: {
+        workflowCount: 1,
+        entityCount: 1,
+        hypothesisKinds: ['workflow_bypass'],
+        experimentStatuses: ['rejected'],
+        expectedEndpoints: [{ method: 'GET', path: '/private-random-route' }],
+        observedEndpoints: [{ method: 'GET', path: '/private-random-route' }],
+      },
+    })
+    const benchmark = (controlScore: DiscoveryRunScore) => scoreDiscoveryBenchmark([
+      ...Array.from({ length: 9 }, () => ({ variant: 'vulnerable' as const, score: score('vulnerable') })),
+      ...Array.from({ length: 9 }, () => ({ variant: 'control' as const, score: controlScore })),
+    ])
+
+    expect(benchmark(incomplete).learningPass).toBe(false)
+    expect(benchmark(incomplete).targetLearning.qualifiedControlRuns).toBe(0)
+    expect(benchmark(complete).learningPass).toBe(true)
+    expect(benchmark(complete).targetLearning.qualifiedControlRuns).toBe(9)
+  })
 })
 
 describe('blinded loopback targets', () => {

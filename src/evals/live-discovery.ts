@@ -206,7 +206,8 @@ export function scoreDiscoveryBenchmark(runs: Array<{ variant: DiscoveryVariant;
   const controlPass = controls.length === 9 && confirmedControlFindings === 0
   const learningScores = runs.map(run => run.score.targetLearning)
   const qualifiesAsLearnedAndAttacked = (score: DiscoveryRunScore['targetLearning']) =>
-    score.workflowCount > 0 && score.hypothesisRecall === 1 && score.attemptedExperiments > 0
+    score.workflowCount > 0 && (score.endpointRecall === null || score.endpointRecall === 1)
+      && score.hypothesisRecall === 1 && score.attemptedExperiments > 0
       && (score.workflowSequenceRecall === null || score.workflowSequenceRecall === 1)
   const qualifiedVulnerableRuns = vulnerable.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
   const qualifiedControlRuns = controls.filter(run => qualifiesAsLearnedAndAttacked(run.score.targetLearning)).length
