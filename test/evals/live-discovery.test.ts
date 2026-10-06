@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, startTarget } from '../../scripts/live-discovery-benchmark'
+import { makeConfig, makeFixture, makeProvidersConfig, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, startTarget } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -540,6 +540,33 @@ describe('blinded loopback targets', () => {
     expect(config.scope).toMatchObject({
       allowedDomains: ['127.0.0.1'], allowedOrigins: ['http://127.0.0.1:41235'],
       allowedProtocols: ['http'], allowPrivateAddresses: true, enforcement: 'hard',
+    })
+  })
+
+  it('builds a pinned OpenRouter config for one generated origin', () => {
+    const model = 'nvidia/nemotron-3-ultra-550b-a55b:free'
+    const target = 'http://127.0.0.1:41235/'
+    const raw = load(makeConfig(model, target, 'openrouter')) as Record<string, unknown>
+    const config = validateConfig({ ...raw, creds: { openrouter: { apiKey: 'fixture-key' } } })
+    expect(config.provider).toBe('openrouter')
+    expect(config.model).toBe(model)
+    expect(config.modelTiers?.balanced).toEqual({ provider: 'openrouter', model })
+    expect(config.scope).toMatchObject({
+      allowedDomains: ['127.0.0.1'], allowedOrigins: ['http://127.0.0.1:41235'],
+      allowedProtocols: ['http'], allowPrivateAddresses: true, enforcement: 'hard',
+    })
+  })
+
+  it('pins the requested benchmark model instead of copying a provider default-model fallback', () => {
+    const configuredCredentials = {
+      apiKey: 'fixture-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'configured-provider-default',
+    }
+    const providers = JSON.parse(makeProvidersConfig('openrouter', configuredCredentials))
+
+    expect(providers).toEqual({
+      openrouter: { apiKey: 'fixture-key', baseUrl: 'https://openrouter.ai/api/v1' },
     })
   })
 

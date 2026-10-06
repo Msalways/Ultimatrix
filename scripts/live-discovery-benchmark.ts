@@ -12,6 +12,7 @@ import { hasObservedWorkflowSequence } from '../src/research/types'
 import { getTargetWorkspaceDir } from '../src/workspace'
 import { loadConfig, loadProvidersConfig } from '../src/config'
 
+const DEFAULT_PROVIDER = 'nvidia'
 const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b'
 const DEFAULT_RUNS = 3
 const MAX_HTTP_REQUESTS = 100
@@ -33,6 +34,7 @@ let activeChild: { kill: () => boolean } | undefined
 let activeConfigDir: string | undefined
 
 type CaseKind = 'case-1' | 'case-2' | 'case-3'
+type BenchmarkProvider = 'nvidia' | 'openrouter'
 
 interface RequestRecord {
   method: string
@@ -372,6 +374,11 @@ async function runInteract(target: string, configPath: string): Promise<{ exitCo
   child.stdout.on('data', onData)
   child.stderr.on('data', onData)
   child.once('error', error => { childError = error })
+  // Pipe input can be queued before the interactive REPL is ready. Sending
+  // the one benchmark goal immediately avoids waiting forever for an ANSI or
+  // terminal-specific prompt that may never appear in this non-TTY child.
+  child.stdin.write(`${GOAL}\n`)
+  goalsSent++
   const timer = setTimeout(() => {
     timedOut = true
     child.kill()
@@ -545,6 +552,7 @@ function redactUrlQuery(value: string): string {
 async function executeRun(input: {
   fixture: Fixture
   variant: DiscoveryVariant
+  provider: BenchmarkProvider
   model: string
   configPath: string
   iteration: number
@@ -555,7 +563,7 @@ async function executeRun(input: {
   const runId = randomUUID()
   let cli: Awaited<ReturnType<typeof runInteract>> | undefined
   try {
-    await writeFile(input.configPath, makeConfig(input.model, targetApp.target), 'utf8')
+    await writeFile(input.configPath, makeConfig(input.model, targetApp.target, input.provider), 'utf8')
     cli = await runInteract(targetApp.target, input.configPath)
   }
   finally { await targetApp.close() }
@@ -668,7 +676,7 @@ async function executeRun(input: {
     iteration: input.iteration,
     variant: input.variant,
     target: targetApp.target,
-    provider: 'nvidia',
+    provider: input.provider,
     model: input.model,
     startedAt,
     durationMs: cli?.durationMs ?? 0,
@@ -732,12 +740,12 @@ async function executeRun(input: {
   }
 }
 
-export function makeConfig(model: string, target: string): string {
+export function makeConfig(model: string, target: string, provider: BenchmarkProvider = DEFAULT_PROVIDER): string {
   const quote = (value: string) => JSON.stringify(value)
-  const tiers = ['fast', 'balanced', 'powerful'].map(tier => `  ${tier}: { provider: nvidia, model: ${quote(model)} }`).join('\n')
+  const tiers = ['fast', 'balanced', 'powerful'].map(tier => `  ${tier}: { provider: ${provider}, model: ${quote(model)} }`).join('\n')
   const roles = ['brain', 'spider', 'crawlSummarizer', 'verifier', 'reporter', 'council'].map(role => `  ${role}: balanced`).join('\n')
   return [
-    'provider: nvidia',
+    `provider: ${provider}`,
     `model: ${quote(model)}`,
     `target: ${quote(target)}`,
     'engine: solver',
@@ -764,58 +772,80 @@ export function makeConfig(model: string, target: string): string {
   ].join('\n') + '\n'
 }
 
-function readArgs(args: string[]): { live: boolean; runs: number; model: string; output?: string; help: boolean } {
-  const parsed = { live: false, runs: DEFAULT_RUNS, model: process.env.ULTIMATRIX_BENCHMARK_MODEL || DEFAULT_MODEL, output: undefined as string | undefined, help: false }
+export function makeProvidersConfig(
+  provider: BenchmarkProvider,
+  credentials: { apiKey: string; baseUrl?: string },
+): string {
+  const credential = {
+    apiKey: credentials.apiKey,
+    ...(credentials.baseUrl ? { baseUrl: credentials.baseUrl } : {}),
+  }
+  return JSON.stringify({ [provider]: credential }, null, 2) + '\n'
+}
+
+function resolveProviderCredential(provider: BenchmarkProvider): { apiKey: string; baseUrl?: string; model?: string } | undefined {
+  const envKey = process.env[provider === 'nvidia' ? 'NVIDIA_API_KEY' : 'OPENROUTER_API_KEY']
+  if (envKey) return { apiKey: envKey }
+  try {
+    const credential = loadProvidersConfig()[provider]
+    if (credential && 'apiKey' in credential && credential.apiKey) return credential
+  } catch { /* use the canonical config fallback below */ }
+  try {
+    const credential = loadConfig({ requireCredentials: false }).creds[provider]
+    if (credential && 'apiKey' in credential && credential.apiKey) return credential
+  } catch { /* no configured provider credential */ }
+  return undefined
+}
+
+function readArgs(args: string[]): { live: boolean; runs: number; provider: BenchmarkProvider; model: string; output?: string; help: boolean } {
+  const parsed = {
+    live: false,
+    runs: DEFAULT_RUNS,
+    provider: (process.env.ULTIMATRIX_BENCHMARK_PROVIDER || DEFAULT_PROVIDER) as BenchmarkProvider,
+    model: process.env.ULTIMATRIX_BENCHMARK_MODEL || '',
+    output: undefined as string | undefined,
+    help: false,
+  }
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') parsed.live = true
     else if (args[i] === '--runs') parsed.runs = Number(args[++i])
+    else if (args[i] === '--provider') parsed.provider = args[++i] as BenchmarkProvider
     else if (args[i] === '--model') parsed.model = args[++i]
     else if (args[i] === '--out') parsed.output = args[++i]
     else if (args[i] === '--help' || args[i] === '-h') parsed.help = true
   }
   if (!Number.isInteger(parsed.runs) || parsed.runs < 1 || parsed.runs > 3) throw new Error('--runs must be an integer from 1 to 3')
-  if (!parsed.model) throw new Error('A pinned NVIDIA model is required')
+  if (!['nvidia', 'openrouter'].includes(parsed.provider)) throw new Error('--provider must be nvidia or openrouter')
+  parsed.model ||= resolveProviderCredential(parsed.provider)?.model ?? (parsed.provider === 'nvidia' ? DEFAULT_MODEL : '')
+  if (!parsed.model) throw new Error(`A pinned ${parsed.provider} model is required via --model or provider configuration`)
   return parsed
-}
-
-function resolveNvidiaApiKey(): string | undefined {
-  if (process.env.NVIDIA_API_KEY) return process.env.NVIDIA_API_KEY
-  try {
-    const credentials = loadProvidersConfig().nvidia
-    if (credentials && 'apiKey' in credentials && credentials.apiKey) return credentials.apiKey
-  } catch { /* use the canonical config fallback below */ }
-  try {
-    const credentials = loadConfig({ requireCredentials: false }).creds.nvidia
-    if (credentials && 'apiKey' in credentials && credentials.apiKey) return credentials.apiKey
-  } catch { /* no configured NVIDIA credential */ }
-  return undefined
 }
 
 async function main(): Promise<void> {
   const args = readArgs(process.argv.slice(2))
   if (args.help || !args.live) {
-    process.stdout.write('Usage: npm run benchmark:discovery -- [--live] [--runs 1..3] [--model <nvidia-model>] [--out <report.json>]\n')
+    process.stdout.write('Usage: npm run benchmark:discovery -- [--live] [--provider nvidia|openrouter] [--runs 1..3] [--model <model>] [--out <report.json>]\n')
     process.stdout.write('The live benchmark runs real interact sessions against disposable loopback targets.\n')
     return
   }
-  const outPath = resolve(args.output ?? join(process.cwd(), 'evals', `live-discovery-${new Date().toISOString().replace(/[:.]/g, '-')}.json`))
+  const outPath = resolve(args.output ?? join(process.cwd(), 'evals', `live-discovery-${args.provider}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`))
   await mkdir(resolve(outPath, '..'), { recursive: true })
   const baseline: any = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     status: 'untested',
-    provider: 'nvidia',
+    provider: args.provider,
     model: args.model,
     bounds: { maxHttpRequestsPerRun: MAX_HTTP_REQUESTS, maxDurationMsPerRun: RUN_WALL_MS },
     requiredRuns: { vulnerable: 9, control: 9, noSecondActor: 1 },
     runs: [],
     benchmarkScore: null,
   }
-  const apiKey = resolveNvidiaApiKey()
-  if (!apiKey) {
-    baseline.reason = 'No NVIDIA API credential is available in the environment or project configuration; live discovery is untested.'
+  const credentials = resolveProviderCredential(args.provider)
+  if (!credentials?.apiKey) {
+    baseline.reason = `No ${args.provider} API credential is available in the environment or project configuration; live discovery is untested.`
     await writeFile(outPath, JSON.stringify(baseline, null, 2), 'utf8')
-    process.stdout.write(`Live discovery untested: no NVIDIA API credential is available. Report: ${outPath}\n`)
+    process.stdout.write(`Live discovery untested: no ${args.provider} API credential is available. Report: ${outPath}\n`)
     return
   }
 
@@ -839,21 +869,21 @@ async function main(): Promise<void> {
   process.once('SIGINT', onSigint)
   process.once('SIGTERM', onSigterm)
   try {
-    await writeFile(secretConfigPath, `nvidia:\n  apiKey: ${JSON.stringify(apiKey)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await writeFile(secretConfigPath, makeProvidersConfig(args.provider, credentials), { encoding: 'utf8', mode: 0o600 })
     const runs: any[] = []
     for (let iteration = 1; iteration <= args.runs; iteration++) {
       for (const kind of ['case-1', 'case-2', 'case-3'] as CaseKind[]) {
         const matchedFixture = makeFixture(kind)
         const variants: DiscoveryVariant[] = randomBytes(1)[0] % 2 ? ['vulnerable', 'control'] : ['control', 'vulnerable']
         for (const variant of variants) {
-          const report = await executeRun({ fixture: matchedFixture, variant, model: args.model, configPath, iteration })
+          const report = await executeRun({ fixture: matchedFixture, variant, provider: args.provider, model: args.model, configPath, iteration })
           runs.push(report)
           process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedWorkflowSequenceCount}/${report.score.targetLearning.expectedWorkflowSequenceCount} expected ordered workflows mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, experiments ${report.score.targetLearning.plannedExperiments} planned/${report.score.targetLearning.attemptedExperiments} attempted/${report.score.targetLearning.blockedExperiments} blocked; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
         }
       }
     }
     const noPeerFixture = makeFixture('case-3', false)
-    const noPeer = await executeRun({ fixture: noPeerFixture, variant: 'vulnerable', model: args.model, configPath, iteration: args.runs, noSecondActor: true })
+    const noPeer = await executeRun({ fixture: noPeerFixture, variant: 'vulnerable', provider: args.provider, model: args.model, configPath, iteration: args.runs, noSecondActor: true })
     runs.push(noPeer)
     baseline.status = runs.some(run => run.exitCode !== 0 || run.durationMs === 0 || run.modelUsage.modelCalls === 0)
       ? 'partial' : 'complete'
