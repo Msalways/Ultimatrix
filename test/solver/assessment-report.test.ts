@@ -62,7 +62,7 @@ describe('assessment report', () => {
         entities: 2,
         businessLogicFacts: 4,
         hypotheses: [{ kind: 'workflow_bypass' }, { kind: 'workflow_bypass' }, { kind: 'idor' }],
-        experiments: [{ status: 'planned' }, { status: 'blocked' }],
+        experiments: [{ status: 'planned' }, { status: 'blocked' }, { status: 'interesting' }],
       },
       spiderEnabled: true,
       observation: { status: 'completed' },
@@ -83,8 +83,11 @@ describe('assessment report', () => {
       businessLogicFacts: 4,
       hypotheses: 3,
       hypothesesByKind: { workflow_bypass: 2, idor: 1 },
-      experimentsByStatus: { planned: 1, blocked: 1 },
+      experimentsByStatus: { planned: 1, blocked: 1, interesting: 1 },
     })
+    expect(report.status).toBe('partial')
+    expect(report.blockers).toContain('3 target research experiment(s) remain unresolved.')
+    expect(report.remainingWork).toContain('Research experiments need execution or fresh verification (planned: 1, blocked: 1, interesting: 1).')
     expect(report.testedCoverage.workflowUnits).toEqual({ candidate: 1 })
     expect(report.testedCoverage.businessLogicUnits).toEqual({ tested: 1, blocked: 1 })
   })

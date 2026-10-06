@@ -90,6 +90,15 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
   for (const experiment of input.research?.experiments ?? []) {
     experimentsByStatus[experiment.status] = (experimentsByStatus[experiment.status] ?? 0) + 1
   }
+  const unresolvedExperiments = (input.research?.experiments ?? []).filter(experiment => experiment.status !== 'rejected')
+  if (unresolvedExperiments.length > 0) {
+    const unresolvedStatuses = Object.entries(experimentsByStatus)
+      .filter(([status]) => status !== 'rejected')
+      .map(([status, count]) => `${status}: ${count}`)
+      .join(', ')
+    blockers.push(`${unresolvedExperiments.length} target research experiment(s) remain unresolved.`)
+    remainingWork.push(`Research experiments need execution or fresh verification (${unresolvedStatuses}).`)
+  }
 
   if (!input.observation) blockers.push('Baseline target observation did not complete.')
   else if (input.observation.status === 'failed') blockers.push('Baseline target observation failed.')

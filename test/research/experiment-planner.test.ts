@@ -39,3 +39,23 @@ describe('planExperiments action-limit plans', () => {
     expect(experiment.setup.join(' ')).toContain('same actor')
   })
 })
+
+describe('planExperiments workflow plans', () => {
+  it('includes the typed executor that owns captured workflow replay', () => {
+    const endpoint: EndpointNode = {
+      id: 'finalize', type: NodeType.ENDPOINT,
+      properties: { url: 'https://app.test/api/checkout/finalize', method: 'POST', params: [] },
+    }
+    const store = { getNode: (id: string) => id === endpoint.id ? endpoint : undefined } as any
+    const hypothesis: ResearchHypothesis = {
+      id: 'h-workflow', title: 'Observed checkout finalization can be replayed', kind: 'workflow_bypass',
+      reason: 'captured multi-step workflow', targetEndpoints: [endpoint.id], relatedWorkflowIds: ['wf-checkout'],
+      relatedEntityIds: [], requiredSetup: [], risk: 'high', confidence: 0.8, status: 'open',
+    }
+
+    const [experiment] = planExperiments(store, [hypothesis])
+
+    expect(experiment.tools).toContain('executePlannedExperiment')
+    expect(experiment.baselineRequest).toEqual({ method: 'POST', url: 'https://app.test/api/checkout/finalize', headers: undefined })
+  })
+})

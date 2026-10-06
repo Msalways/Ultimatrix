@@ -90,7 +90,7 @@ export function planExperiments(store: GraphStore, hypotheses: ResearchHypothesi
         expectedSecureBehavior: 'Server enforces workflow state and rejects skipped/replayed steps.',
         insecureSignal: 'State changes without required prior steps or accepts repeated finalization.',
         requiredActors: ['normal-user'],
-        tools: ['observeHumanActions', 'getCapturedHeaders', 'httpRequest', 'compareResearchResponses', 'recordFindingCandidate'],
+        tools: ['observeHumanActions', 'getCapturedHeaders', 'httpRequest', 'executePlannedExperiment', 'compareResearchResponses', 'recordFindingCandidate'],
         status: 'planned',
       })
     } else if (hypothesis.kind === 'action_limit' && hypothesis.businessRule) {

@@ -738,8 +738,41 @@ describe('solve', () => {
     expect(events.indexOf('coverage.started')).toBeLessThan(events.indexOf('campaign.called'))
   })
   itEngagement('refreshes a completed research map when target observations have changed', async () => {
-    const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({ ok: true, value: { topHypotheses: [] } })
-    const planSpy = vi.spyOn(planResearchExperiments as any, 'execute').mockResolvedValue({ ok: true, value: { experiments: [] } })
+    const hypotheses = [
+      {
+        id: 'hyp-action-limit', title: 'Observed single-use rule', kind: 'action_limit', reason: 'target-stated limit',
+        targetEndpoints: ['redeem'], relatedWorkflowIds: [], relatedEntityIds: [], requiredSetup: [],
+        risk: 'high', confidence: 0.95, status: 'open',
+        businessRule: {
+          kind: 'action_limit', allowedCount: 1, actionRequestId: 'cap-redeem', actionMethod: 'POST',
+          actionUrl: 'https://example.com/api/redeem', ruleCaptureId: 'cap-rule',
+          ruleUrl: 'https://example.com/terms', ruleText: 'This offer may only be used once.',
+        },
+      },
+      {
+        id: 'hyp-workflow', title: 'Finalization replay', kind: 'workflow_bypass', reason: 'observed final step',
+        targetEndpoints: ['finalize'], relatedWorkflowIds: ['workflow-finalize'], relatedEntityIds: [],
+        requiredSetup: [], risk: 'high', confidence: 0.9, status: 'open',
+      },
+    ]
+    const experiments = [
+      {
+        id: 'exp-action-limit', hypothesisId: 'hyp-action-limit', title: 'Verify the single-use limit', setup: [],
+        baselineRequest: { method: 'POST', url: 'https://example.com/api/redeem' },
+        mutation: 'Run runPrimitive with primitiveId=businessLogicAbuse.',
+        expectedSecureBehavior: 'Reject a second redemption.', insecureSignal: 'The measured state changes twice.',
+        requiredActors: ['same authenticated actor'], tools: ['runPrimitive'], status: 'planned',
+      },
+      {
+        id: 'exp-workflow', hypothesisId: 'hyp-workflow', title: 'Replay finalization', setup: [],
+        baselineRequest: { method: 'POST', url: 'https://example.com/api/finalize' },
+        mutation: 'Replay the captured state-changing finalize request.',
+        expectedSecureBehavior: 'Reject duplicate finalization.', insecureSignal: 'The final state changes twice.',
+        requiredActors: ['buyer'], tools: ['executePlannedExperiment'], status: 'planned',
+      },
+    ]
+    const mapSpy = vi.spyOn(buildResearchMap as any, 'execute').mockResolvedValue({ ok: true, value: { topHypotheses: hypotheses } })
+    const planSpy = vi.spyOn(planResearchExperiments as any, 'execute').mockResolvedValue({ ok: true, value: { experiments } })
     const agent = createMockAgent(['Use the refreshed target model.']) as any
     agent.getResearchInputRevision = vi.fn(() => 'revision-current')
     agent.setMethodologyState = vi.fn()
@@ -769,6 +802,14 @@ describe('solve', () => {
       expect(events.indexOf('research.bootstrap.completed')).toBeLessThan(events.indexOf('coverage.started'))
       expect(runCoverageCampaign).toHaveBeenCalledOnce()
       expect(runCoverageCampaign.mock.calls[0]?.[2]).toBe('revision-current')
+      const prompt = agent.stream.mock.calls[0]?.[0] as string
+      expect(prompt).toContain('## Target research')
+      expect(prompt).toContain('exp-action-limit')
+      expect(prompt).toContain('runPrimitive/businessLogicAbuse')
+      expect(prompt).toContain('phase=retest')
+      expect(prompt).toContain('exp-workflow (planned)')
+      expect(prompt).toContain('executePlannedExperiment with experimentId=exp-workflow')
+      expect(prompt).toContain('workflow=workflow-finalize; actors=buyer')
     } finally {
       mapSpy.mockRestore()
       planSpy.mockRestore()
@@ -874,8 +915,8 @@ describe('solve', () => {
       expect(prompt).toContain('keep the same actor for baseline and replay')
       expect(prompt).toContain('iterations=2')
       expect(prompt).toContain('not a finding')
-      expect(prompt).toContain('exp-checkout-replay tests workflow_bypass; workflow=workflow-checkout; actors=buyer-session')
-      expect(prompt).toContain('Inspect observed steps and prerequisites before selecting a probe.')
+      expect(prompt).toContain('exp-checkout-replay (planned) Replay the terminal checkout request; kind=workflow_bypass; workflow=workflow-checkout; actors=buyer-session')
+      expect(prompt).toContain('executePlannedExperiment with experimentId=exp-checkout-replay')
     } finally {
       mapSpy.mockRestore()
       planSpy.mockRestore()
