@@ -72,18 +72,22 @@ export class BudgetDashboard {
 
   private buildFromLog(): void {
     const events = this.forensicLog.getEvents({ type: 'model-call' })
+    const usageByCall = new Map(this.forensicLog.getEvents({ type: 'model-usage' })
+      .flatMap(event => event.metadata?.callId ? [[event.metadata.callId, event.metadata] as const] : []))
 
     for (const event of events) {
       const meta = event.metadata
       if (!meta) continue
+      const usage = meta.callId ? usageByCall.get(meta.callId) : undefined
+      const tokens = usage ?? meta
 
       this.tokenHistory.push({
         timestamp: event.timestamp,
         provider: meta.provider || 'unknown',
         modelId: meta.modelId || 'unknown',
-        inputTokens: meta.inputTokens || 0,
-        outputTokens: meta.outputTokens || 0,
-        totalTokens: meta.totalTokens || 0,
+        inputTokens: tokens.inputTokens || 0,
+        outputTokens: tokens.outputTokens || 0,
+        totalTokens: tokens.totalTokens || 0,
         toolName: event.tool,
         agentRole: event.agent,
       })

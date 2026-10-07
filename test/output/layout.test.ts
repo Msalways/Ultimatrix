@@ -181,7 +181,7 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     const report = {
       status: 'partial',
       discovery: {
-        pages: 1, endpoints: 2, inputs: 1, workflows: 1, authFlows: 0, roles: 1,
+        pages: 1, endpoints: 2, formEndpoints: 1, inputs: 1, workflows: 1, authFlows: 0, roles: 1,
         unknowns: ['Cross-account authorization remains unknown.'],
       },
       targetModel: { entities: 1, businessLogicFacts: 3, hypotheses: 2, hypothesesByKind: { workflow_bypass: 1, idor: 1 }, experimentsByStatus: { planned: 2 } },
@@ -208,12 +208,12 @@ describe('chat: card boundaries (normal scrollback, no alternate screen)', () =>
     cs.final(model)
     const joined = writes.join('')
 
-    expect(joined).toContain('observed workflow sequences 1, 1 entities, 3 business-logic facts, 2 hypotheses across 2 classes')
+    expect(joined).toContain('observed workflow sequences 1, 1 entities, 3 business-logic facts, 2 hypotheses across 2 classes; 1 endpoints from forms')
     expect(joined).toContain('3 business-logic facts')
     expect(joined).toContain('workflow probes: candidate 1; business-logic probes: blocked 1')
     expect(joined).toContain('hypothesis classes: workflow_bypass 1, idor 1')
     expect(joined).toContain('research experiments: planned 2')
-    expect(joined).toContain('endpoints 1/2, actors 1/1, states 1/2')
+    expect(joined).toContain('endpoints 1/2, input params 1/1, actors 1/1, states 1/2')
     expect(joined).toContain('Cross-account authorization remains unknown.')
     expect(joined).toContain('Second actor credentials unavailable.')
   })

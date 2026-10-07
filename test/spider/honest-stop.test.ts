@@ -30,6 +30,7 @@ import { SpiderRuntime } from '../../src/spider/runtime'
 import type { SpiderRuntimeState } from '../../src/spider/runtime'
 import { runSpiderRuntime } from '../../src/spider/runtime'
 import { getTargetTransportGovernor } from '../../src/runtime/target-governor'
+import { planCampaign } from '../../src/campaign/planner'
 
 function config(overrides: Record<string, unknown> = {}) {
   return {
@@ -41,19 +42,21 @@ function config(overrides: Record<string, unknown> = {}) {
   } as any
 }
 
-function fakeBrowserPage(links: string[]) {
+function fakeBrowserPage(links: string[], forms: any[] | ((url: string) => any[]) = []) {
+  let currentUrl = 'https://example.com/'
   const page = {
     goto: vi.fn(async () => ({ status: () => 200 })),
-    url: vi.fn(() => 'https://example.com/'),
+    url: vi.fn(() => currentUrl),
     title: vi.fn(async () => 'Home'),
-    $$eval: vi.fn(async (selector: string) => {
-      if (selector === 'a[href]') return links
-      if (selector === 'form') return []
+    evaluate: vi.fn(async (extractor: Function) => {
+      if (extractor.name === 'extractLinksInPage') return links
+      if (extractor.name === 'extractFormsInPage') return typeof forms === 'function' ? forms(currentUrl) : forms
       return []
     }),
   }
   return {
     requireStagehand: () => ({ context: { activePage: () => page } }),
+    setPageUrl: (url: string) => { currentUrl = url },
   }
 }
 
@@ -154,6 +157,169 @@ describe('C3 â€” baseline endpoint hygiene', () => {
 
     // Plain links still queued for traversal.
     expect(result.state.frontier.some((f) => f.url === 'https://example.com/about')).toBe(true)
+  })
+})
+
+describe('browser form target mapping', () => {
+  it('uses Stagehand evaluate to read forms and links', async () => {
+    h.streamFactory = async function* () { /* end immediately */ }
+    const forms = [{
+      selector: '#recover', method: 'POST', action: 'https://example.com/recover',
+      fields: [{ name: 'email', type: 'email', required: true }],
+    }]
+    const browser = fakeBrowserPage([], forms)
+    const page = browser.requireStagehand().context.activePage()
+    const mergeEndpoint = vi.fn()
+
+    const result = await runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com/',
+      allowAny: false,
+      browser,
+      graphStore: {
+        queryNodes: () => [],
+        mergePage: vi.fn(),
+        mergeEndpoint,
+        addReachability: vi.fn(),
+        save: vi.fn(),
+      },
+    })
+
+    expect(result.state.discoveredForms).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fields: [{ name: 'email', type: 'email', required: true }] }),
+    ]))
+    expect(page.evaluate.mock.calls.map(([extractor]: [Function]) => extractor.name)).toContain('extractFormsInPage')
+    expect(mergeEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      url: 'https://example.com/recover',
+      tags: ['html-form', 'target-provided'],
+    }))
+  })
+
+  it('persists target-provided form routes and field schemas without values', async () => {
+    h.streamFactory = async function* () { /* end immediately */ }
+    const browser = fakeBrowserPage([], [{
+      selector: '#redeem',
+      method: 'POST',
+      action: 'https://example.com/redeem?campaign=welcome&ticket=private-value',
+      submitLabel: 'Apply offer',
+      fields: [
+        { name: 'offer', type: 'text', required: true, label: 'Offer code', value: 'WELCOME-SECRET' },
+      ],
+    }])
+    const mergeEndpoint = vi.fn()
+    const graphStore = {
+      queryNodes: () => [],
+      mergePage: vi.fn(),
+      mergeEndpoint,
+      addReachability: vi.fn(),
+      save: vi.fn(),
+    }
+
+    const result = await runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com/',
+      allowAny: false,
+      browser,
+      graphStore,
+    })
+
+    expect(result.state.discoveredForms[0]).toMatchObject({
+      selector: '#redeem',
+      method: 'POST',
+      action: 'https://example.com/redeem',
+      submitLabel: 'Apply offer',
+      fields: [{ name: 'offer', type: 'text', required: true, label: 'Offer code' }],
+    })
+    expect(JSON.stringify(result.state.discoveredForms)).not.toContain('WELCOME-SECRET')
+    expect(mergeEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      url: 'https://example.com/redeem',
+      source: 'browser-form',
+      tags: ['html-form', 'target-provided'],
+      params: [
+        { name: 'campaign', type: 'string', in: 'query' },
+        { name: 'ticket', type: 'string', in: 'query' },
+        { name: 'offer', type: 'text', in: 'body', required: true },
+      ],
+    }))
+    expect(JSON.stringify(mergeEndpoint.mock.calls)).not.toContain('private-value')
+    expect(JSON.stringify(mergeEndpoint.mock.calls)).not.toContain('WELCOME-SECRET')
+
+    const formEndpoint = { id: 'ep-form', type: 'Endpoint', properties: mergeEndpoint.mock.calls[0][0] }
+    const campaign = planCampaign({
+      queryNodes: (type: string) => type === 'Endpoint' ? [formEndpoint] : [],
+      getAllEdges: () => [],
+    } as any, { primitives: [
+      { id: 'businessLogicAbuse', description: 'stateful business logic checks', tags: ['business'] },
+      { id: 'workflowBypass', description: 'observed sequence replay', tags: ['workflow', 'business'] },
+    ] })
+    expect(campaign.slices.some(slice => slice.endpoint.id === 'ep-form' && slice.params.includes('offer'))).toBe(true)
+    expect(campaign.slices.some(slice => slice.techniqueIds.includes('workflowBypass'))).toBe(false)
+  })
+
+  it('captures form schemas after the crawler reaches a later page', async () => {
+    const browser = fakeBrowserPage([], url => url === 'https://example.com/account/recover' ? [{
+      selector: '#reset',
+      method: 'POST',
+      action: 'https://example.com/account/recover',
+      fields: [{ name: 'email', type: 'email', required: true }],
+    }] : [])
+    h.streamFactory = async function* () {
+      browser.setPageUrl('https://example.com/account/recover')
+      yield { type: 'tool-result', payload: { toolName: 'stagehand_navigate', result: { success: true } } }
+    }
+    const mergeEndpoint = vi.fn()
+    const graphStore = {
+      queryNodes: () => [],
+      mergePage: vi.fn(),
+      mergeEndpoint,
+      addReachability: vi.fn(),
+      save: vi.fn(),
+    }
+
+    const result = await runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com/',
+      allowAny: false,
+      browser,
+      graphStore,
+    })
+
+    expect(result.state.discoveredForms).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: 'https://example.com/account/recover', fields: [{ name: 'email', type: 'email', required: true }] }),
+    ]))
+    expect(mergeEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      url: 'https://example.com/account/recover',
+      params: [{ name: 'email', type: 'email', in: 'body', required: true }],
+    }))
+  })
+
+  it('does not promote a proposed cross-origin form action into the target graph', async () => {
+    h.streamFactory = async function* () { /* end immediately */ }
+    const mergeEndpoint = vi.fn()
+    const result = await runSpiderRuntime({
+      config: config(),
+      target: 'https://example.com/',
+      allowAny: false,
+      browser: fakeBrowserPage([], [{
+        selector: '#external',
+        method: 'POST',
+        action: 'https://other.example/submit',
+        fields: [{ name: 'email', type: 'email', required: true }],
+      }]),
+      graphStore: {
+        queryNodes: () => [],
+        mergePage: vi.fn(),
+        mergeEndpoint,
+        addReachability: vi.fn(),
+        save: vi.fn(),
+      },
+    })
+
+    expect(result.state.discoveredForms[0]?.action).toBe('https://other.example/submit')
+    expect(mergeEndpoint).not.toHaveBeenCalled()
   })
 })
 

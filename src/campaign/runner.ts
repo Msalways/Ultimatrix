@@ -336,7 +336,7 @@ export function createPrimitiveRunner(
         : output.error == null ? undefined : String(output.error)
       if (outputError?.startsWith('cannot safely apply generated payload')) blockedReason = outputError
       if (outputError?.startsWith('campaign request/time budget')) blockedReason = outputError
-      if (/Target request budget reached/i.test(outputError ?? '')) {
+      if (/request budget reached/i.test(outputError ?? '')) {
         blockedReason = outputError
         ctx.onTargetBudgetReached?.()
       }

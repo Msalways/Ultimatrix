@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, makeProvidersConfig, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, startTarget } from '../../scripts/live-discovery-benchmark'
+import { makeConfig, makeFixture, makeProvidersConfig, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, resolveLegacyProviderCredential, startTarget } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -539,7 +542,7 @@ describe('blinded loopback targets', () => {
     expect(config.modelTiers?.powerful?.model).toBe(model)
     expect(config.scope).toMatchObject({
       allowedDomains: ['127.0.0.1'], allowedOrigins: ['http://127.0.0.1:41235'],
-      allowedProtocols: ['http'], allowPrivateAddresses: true, enforcement: 'hard',
+      allowedProtocols: ['http'], allowPrivateAddresses: true, requireObservedRoutes: true, enforcement: 'hard',
     })
   })
 
@@ -568,6 +571,20 @@ describe('blinded loopback targets', () => {
     expect(providers).toEqual({
       openrouter: { apiKey: 'fixture-key', baseUrl: 'https://openrouter.ai/api/v1' },
     })
+  })
+
+  it('can read a legacy provider credential without migrating it into project config', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'ultimatrix-provider-credential-test-'))
+    const path = join(directory, 'providers.yaml')
+    try {
+      writeFileSync(path, 'nvidia:\n  apiKey: fixture-secret\n  baseUrl: https://integrate.api.nvidia.com/v1\n', 'utf8')
+      expect(resolveLegacyProviderCredential('nvidia', path)).toEqual({
+        apiKey: 'fixture-secret',
+        baseUrl: 'https://integrate.api.nvidia.com/v1',
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('allows only the configured disposable loopback origin', () => {

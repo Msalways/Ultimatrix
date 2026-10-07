@@ -2,11 +2,12 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
-import { rmSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { load as parseYaml } from 'js-yaml'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun, type DiscoveryExperiment, type DiscoveryFinding, type DiscoveryVariant } from '../src/evals/live-discovery'
 import { hasObservedWorkflowSequence } from '../src/research/types'
 import { getTargetWorkspaceDir } from '../src/workspace'
@@ -648,12 +649,14 @@ async function executeRun(input: {
     durationLimitMs: RUN_WALL_MS,
   })
   const modelEvents = events.filter(event => event.type === 'model-call')
-  const modelUsage = modelEvents.reduce((sum, event) => ({
-    modelCalls: sum.modelCalls + 1,
-    inputTokens: sum.inputTokens + Number(event.metadata?.inputTokens ?? 0),
-    outputTokens: sum.outputTokens + Number(event.metadata?.outputTokens ?? 0),
-    totalTokens: sum.totalTokens + Number(event.metadata?.totalTokens ?? 0),
-  }), { modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 })
+  const tokenEvents = events.filter(event => event.type === 'model-usage'
+    || (event.type === 'model-call' && Number(event.metadata?.totalTokens ?? 0) > 0))
+  const modelUsage = {
+    modelCalls: modelEvents.length,
+    inputTokens: tokenEvents.length ? tokenEvents.reduce((sum, event) => sum + Number(event.metadata?.inputTokens ?? 0), 0) : null,
+    outputTokens: tokenEvents.length ? tokenEvents.reduce((sum, event) => sum + Number(event.metadata?.outputTokens ?? 0), 0) : null,
+    totalTokens: tokenEvents.length ? tokenEvents.reduce((sum, event) => sum + Number(event.metadata?.totalTokens ?? 0), 0) : null,
+  }
   const blockers = [
     ...(cli?.timedOut ? ['interact exceeded the five-minute run limit'] : []),
     ...(cli?.exitCode !== 0 ? [`interact exited with code ${String(cli?.exitCode)}`] : []),
@@ -766,6 +769,7 @@ export function makeConfig(model: string, target: string, provider: BenchmarkPro
     `  allowedOrigins: [${quote(new URL(target).origin)}]`,
     '  allowPrivateAddresses: true',
     '  allowedProtocols: [http]',
+    '  requireObservedRoutes: true',
     '  enforcement: hard',
     'browser:',
     '  headless: true',
@@ -783,6 +787,23 @@ export function makeProvidersConfig(
   return JSON.stringify({ [provider]: credential }, null, 2) + '\n'
 }
 
+export function resolveLegacyProviderCredential(
+  provider: BenchmarkProvider,
+  path = join(homedir(), '.config', 'ultimatrix', 'providers.yaml'),
+): { apiKey: string; baseUrl?: string; model?: string } | undefined {
+  try {
+    const raw = parseYaml(readFileSync(path, 'utf8')) as Record<string, unknown> | undefined
+    const entry = raw?.[provider]
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined
+    const config = entry as Record<string, unknown>
+    const apiKey = String(config.apiKey ?? config.api_key ?? config.key ?? '')
+    if (!apiKey) return undefined
+    const baseUrl = String(config.baseUrl ?? config.base_url ?? config.endpoint ?? '')
+    const model = typeof config.model === 'string' && config.model.trim() ? config.model.trim() : undefined
+    return { apiKey, ...(baseUrl ? { baseUrl } : {}), ...(model ? { model } : {}) }
+  } catch { return undefined }
+}
+
 function resolveProviderCredential(provider: BenchmarkProvider): { apiKey: string; baseUrl?: string; model?: string } | undefined {
   const envKey = process.env[provider === 'nvidia' ? 'NVIDIA_API_KEY' : 'OPENROUTER_API_KEY']
   if (envKey) return { apiKey: envKey }
@@ -794,7 +815,7 @@ function resolveProviderCredential(provider: BenchmarkProvider): { apiKey: strin
     const credential = loadConfig({ requireCredentials: false }).creds[provider]
     if (credential && 'apiKey' in credential && credential.apiKey) return credential
   } catch { /* no configured provider credential */ }
-  return undefined
+  return resolveLegacyProviderCredential(provider)
 }
 
 function readArgs(args: string[]): { live: boolean; runs: number; provider: BenchmarkProvider; model: string; output?: string; help: boolean } {

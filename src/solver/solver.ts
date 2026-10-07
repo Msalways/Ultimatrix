@@ -1931,6 +1931,13 @@ export async function solve(
           return {
             pages: count(NodeType.PAGE),
             endpoints: count(NodeType.ENDPOINT),
+            formEndpoints: (() => {
+              try {
+                return (graph?.queryNodes(NodeType.ENDPOINT) ?? []).filter(node =>
+                  (node as any).properties?.tags?.includes('html-form'),
+                ).length
+              } catch { return 0 }
+            })(),
             inputs: count(NodeType.INPUT),
             workflows: (() => {
               try {

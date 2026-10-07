@@ -6,7 +6,7 @@ export type ForensicEventType =
   | 'http-request' | 'http-response'
   | 'graph-mutation' | 'agent-turn' | 'error'
   | 'human-action' | 'screenshot'
-  | 'model-call' | 'rate-limit-event' | 'budget-status'
+  | 'model-call' | 'model-usage' | 'rate-limit-event' | 'budget-status'
   | 'tool-token-record' | 'config-mismatch'
   | 'model-selection' | 'context-validation'
   | 'solver-phase' | 'ui-reaction' | 'council-timeout'
@@ -15,6 +15,7 @@ export type ForensicEventType =
 export interface ForensicEventMetadata {
   provider?: string
   modelId?: string
+  callId?: string
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number

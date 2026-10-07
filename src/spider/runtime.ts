@@ -29,6 +29,28 @@ import {
 import type { AuthFlowType } from '../types/shared'
 
 export type ScopeClassification = 'allowed' | 'proposed' | 'denied'
+
+export interface ObservedFormField {
+  name: string
+  type: string
+  required: boolean
+  label?: string
+  placeholder?: string
+  autocomplete?: string
+  maxLength?: number
+}
+
+export interface ObservedForm {
+  url: string
+  selector?: string
+  method?: string
+  action?: string
+  role?: string
+  submitLabel?: string
+  fields?: ObservedFormField[]
+  identity?: IdentityContext
+  provenanceId?: string
+}
 /**
  * Why the crawl ended. `agent_stopped` means the model stream ended while
  * actionable frontier items (allowed, within depth) remained — the frontier
@@ -63,7 +85,7 @@ export interface SpiderRuntimeState {
   target: string
   frontier: FrontierItem[]
   visitedUrls: string[]
-  discoveredForms: Array<{ url: string; selector?: string; method?: string; action?: string; role?: string; identity?: IdentityContext; provenanceId?: string }>
+  discoveredForms: ObservedForm[]
   endpoints: Array<{ method: string; url: string; params: string[]; scope: ScopeClassification; sourcePage?: string; identity?: IdentityContext; provenanceId?: string }>
   authStates: Array<{ url: string; state: string; role?: string }>
   /** Origins of discovered URLs classified `proposed` — surfaced for user approval. */
@@ -110,6 +132,8 @@ export interface SpiderRuntimeEvent {
   /** Slice 06 — auth transition origin/target identities (auth_transition events). */
   from?: IdentityContext
   to?: IdentityContext
+  /** Target-provided HTML form structure; values are deliberately omitted. */
+  form?: ObservedForm
 }
 
 export interface SpiderRuntimeOptions {
@@ -264,7 +288,10 @@ export class SpiderRuntime {
       ...state,
       frontier: [...state.frontier],
       visitedUrls: [...state.visitedUrls],
-      discoveredForms: [...state.discoveredForms],
+      discoveredForms: state.discoveredForms.map(form => ({
+        ...form,
+        ...(form.fields ? { fields: form.fields.map(field => ({ ...field })) } : {}),
+      })),
       endpoints: [...state.endpoints],
       authStates: [...state.authStates],
       proposedOrigins: [...state.proposedOrigins],
@@ -361,7 +388,14 @@ export class SpiderRuntime {
     emitSpiderEndpoint(method, url, params)
   }
 
-  recordForm(url: string, selector?: string, method?: string, action?: string, role?: string): void {
+  recordForm(
+    url: string,
+    selector?: string,
+    method?: string,
+    action?: string,
+    role?: string,
+    details: { submitLabel?: string; fields?: ObservedFormField[] } = {},
+  ): void {
     const key = `${url}:${selector ?? action ?? ''}`
     const identity = this.state.currentIdentity
     let provenanceId: string | undefined
@@ -372,11 +406,15 @@ export class SpiderRuntime {
         pageUrl: url,
         actionId: selector ?? action,
       }).id
-      this.state.discoveredForms.push({ url, selector, method, action, role, identity, provenanceId })
+      this.state.discoveredForms.push({ url, selector, method, action, role, ...details, identity, provenanceId })
+    } else {
+      const existing = this.state.discoveredForms.find(form => `${form.url}:${form.selector ?? form.action ?? ''}` === key)
+      if (existing) Object.assign(existing, { method, action, role, ...details, identity })
     }
     this.recordReach('form', url)
     this.touch()
-    this.emit({ type: 'form_seen', url, method, identity, provenanceId, forms: this.state.discoveredForms.length, state: this.snapshot() })
+    const form = this.state.discoveredForms.find(item => `${item.url}:${item.selector ?? item.action ?? ''}` === key)
+    this.emit({ type: 'form_seen', url, method, identity, provenanceId, form: form ? { ...form } : undefined, forms: this.state.discoveredForms.length, state: this.snapshot() })
   }
 
   recordAuth(url: string, state: string, role?: string): void {
@@ -658,6 +696,9 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
 
       if (chunk?.type === 'tool-result') {
         pendingTextChars = 0
+        try {
+          await recordPageFormSurfaces(runtime, graphStore, getStagehandPage(browser))
+        } catch { /* page inspection is passive and must not fail the crawl */ }
         const nextCounts = collectGraphState(graphStore)
         ingestGraphDiff(runtime, counts, nextCounts)
         const useful = nextCounts.endpoints.size > counts.endpoints.size || nextCounts.pages.size > counts.pages.size || nextCounts.forms.size > counts.forms.size
@@ -701,6 +742,9 @@ export async function runSpiderRuntime(options: SpiderRunOptions): Promise<Spide
         if (options.signal?.aborted || Date.now() > deadline) break
         stopReason = consumeSpiderChunk(chunk, runtime, options)
         if (chunk?.type === 'tool-result') {
+          try {
+            await recordPageFormSurfaces(runtime, graphStore, getStagehandPage(browser))
+          } catch { /* page inspection is passive and must not fail the crawl */ }
           const nextCounts = collectGraphState(graphStore)
           ingestGraphDiff(runtime, counts, nextCounts)
           counts = nextCounts
@@ -826,7 +870,7 @@ async function groundLandingPage(
     }
   }
   for (const form of forms.slice(0, 50)) {
-    runtime.recordForm(finalUrl, form.selector, form.method, form.action)
+    recordFormSurface(runtime, options.graphStore, finalUrl, form)
   }
 }
 
@@ -898,23 +942,13 @@ async function safePageTitle(page: any): Promise<string | undefined> {
 
 async function readLinks(page: any, baseUrl: string): Promise<string[]> {
   try {
-    if (typeof page?.$$eval !== 'function') return []
-    const hrefs: string[] = await page.$$eval('a[href]', (els: Element[]) =>
-      els.map((el) => (el as HTMLAnchorElement).href || el.getAttribute('href') || ''),
-    )
+    // Stagehand v3 and Playwright both expose evaluate; Stagehand does not
+    // implement Playwright's $$eval API.
+    if (typeof page?.evaluate !== 'function') return []
+    const allHrefs: string[] = await page.evaluate(extractLinksInPage)
     // Framework routers often render route targets without a real anchor.
     // Read only URL-shaped attributes here; arbitrary button labels remain
     // Stagehand's semantic-action responsibility and are not guessed.
-    const routerHrefs: string[] = await page.$$eval(
-      '[routerlink],[routerLink],[data-route],[data-href]',
-      (els: Element[]) => els.flatMap((el) => [
-        el.getAttribute('routerlink'),
-        el.getAttribute('routerLink'),
-        el.getAttribute('data-route'),
-        el.getAttribute('data-href'),
-      ].filter((value): value is string => Boolean(value))),
-    )
-    const allHrefs = [...hrefs, ...routerHrefs]
     return [...new Set(allHrefs.map((href: string) => {
       try { return new URL(href, baseUrl).toString() } catch { return '' }
     }).filter(Boolean))]
@@ -923,23 +957,133 @@ async function readLinks(page: any, baseUrl: string): Promise<string[]> {
   }
 }
 
-async function readForms(page: any, baseUrl: string): Promise<Array<{ selector: string; method: string; action?: string }>> {
+async function readForms(page: any, baseUrl: string): Promise<Array<{
+  selector: string
+  method: string
+  action?: string
+  submitLabel?: string
+  fields: ObservedFormField[]
+}>> {
   try {
-    if (typeof page?.$$eval !== 'function') return []
-    return await page.$$eval('form', (els: Element[], base: string) => els.map((el, index) => {
-      const form = el as HTMLFormElement
-      const rawAction = form.getAttribute('action') || base
-      let action = rawAction
-      try { action = new URL(rawAction, base).toString() } catch {}
-      return {
-        selector: form.id ? `form#${form.id}` : `form:nth-of-type(${index + 1})`,
-        method: (form.getAttribute('method') || 'GET').toUpperCase(),
-        action,
-      }
-    }), baseUrl)
+    if (typeof page?.evaluate !== 'function') return []
+    return await page.evaluate(extractFormsInPage, baseUrl)
   } catch {
     return []
   }
+}
+
+/** Self-contained page callbacks so they also work with Stagehand's CDP Page. */
+function extractLinksInPage(): string[] {
+  const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
+    .map(el => el.href || el.getAttribute('href') || '')
+  const routerLinks = Array.from(document.querySelectorAll<HTMLElement>('[routerlink],[routerLink],[data-route],[data-href]'))
+    .flatMap(el => [el.getAttribute('routerlink'), el.getAttribute('routerLink'), el.getAttribute('data-route'), el.getAttribute('data-href')])
+    .filter((value): value is string => Boolean(value))
+  return [...anchors, ...routerLinks]
+}
+
+function extractFormsInPage(base: string): Array<{
+  selector: string
+  method: string
+  action?: string
+  submitLabel?: string
+  fields: ObservedFormField[]
+}> {
+  return Array.from(document.querySelectorAll<HTMLFormElement>('form')).map((form, index) => {
+    const rawAction = form.getAttribute('action') || base
+    let action = rawAction
+    try { action = new URL(rawAction, base).toString() } catch {}
+    const compact = (value: string | null | undefined, max: number) => (value ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
+    const fields = Array.from(form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input[name],select[name],textarea[name]'))
+      .filter(field => !(['submit', 'button', 'reset', 'image', 'file'].includes((field as HTMLInputElement).type)))
+      .slice(0, 100)
+      .map(field => {
+        const input = field as HTMLInputElement
+        const labels = 'labels' in field ? Array.from(field.labels ?? []).map(label => label.textContent ?? '').join(' ') : ''
+        const type = field.tagName.toLowerCase() === 'select'
+          ? 'select'
+          : field.tagName.toLowerCase() === 'textarea'
+            ? 'textarea'
+            : input.type || 'text'
+        return {
+          name: compact(field.name, 128),
+          type: compact(type, 32),
+          required: field.required,
+          ...(compact(labels || field.getAttribute('aria-label'), 100) ? { label: compact(labels || field.getAttribute('aria-label'), 100) } : {}),
+          ...(compact(field.getAttribute('placeholder'), 100) ? { placeholder: compact(field.getAttribute('placeholder'), 100) } : {}),
+          ...(compact(field.getAttribute('autocomplete'), 64) ? { autocomplete: compact(field.getAttribute('autocomplete'), 64) } : {}),
+          ...(Number.isFinite(input.maxLength) && input.maxLength > 0 ? { maxLength: input.maxLength } : {}),
+        }
+      })
+      .filter(field => field.name.length > 0)
+    const submit = form.querySelector<HTMLElement>('button[type="submit"],input[type="submit"],button:not([type])')
+    const submitLabel = compact(submit?.textContent || submit?.getAttribute('value') || submit?.getAttribute('aria-label'), 100)
+    return {
+      selector: form.id ? `form#${form.id}` : `form:nth-of-type(${index + 1})`,
+      method: (form.getAttribute('method') || 'GET').toUpperCase(),
+      action,
+      ...(submitLabel ? { submitLabel } : {}),
+      fields,
+    }
+  })
+}
+
+async function recordPageFormSurfaces(runtime: SpiderRuntime, graphStore: SpiderRunOptions['graphStore'], page: any): Promise<void> {
+  if (!page || typeof page.url !== 'function') return
+  const pageUrl = String(page.url())
+  const forms = await readForms(page, pageUrl)
+  for (const form of forms.slice(0, 50)) recordFormSurface(runtime, graphStore, pageUrl, form)
+}
+
+function recordFormSurface(
+  runtime: SpiderRuntime,
+  graphStore: SpiderRunOptions['graphStore'],
+  pageUrl: string,
+  form: { selector: string; method: string; action?: string; submitLabel?: string; fields: ObservedFormField[] },
+): void {
+  let action: URL
+  try { action = new URL(form.action || pageUrl, pageUrl) } catch { return }
+  const method = form.method.toUpperCase()
+  const formUrl = redactUrl(pageUrl)
+  const formAction = redactUrl(`${action.origin}${action.pathname}`)
+  const fields = form.fields.map(field => ({
+    name: field.name.slice(0, 128),
+    type: field.type.slice(0, 32),
+    required: field.required === true,
+    ...(field.label ? { label: field.label.slice(0, 100) } : {}),
+    ...(field.placeholder ? { placeholder: field.placeholder.slice(0, 100) } : {}),
+    ...(field.autocomplete ? { autocomplete: field.autocomplete.slice(0, 64) } : {}),
+    ...(Number.isFinite(field.maxLength) && (field.maxLength ?? 0) > 0 ? { maxLength: field.maxLength } : {}),
+  })).filter(field => field.name.length > 0)
+  const details = {
+    ...(form.submitLabel ? { submitLabel: form.submitLabel } : {}),
+    fields,
+  }
+  runtime.recordForm(formUrl, form.selector, method, formAction, undefined, details)
+
+  if (method !== 'GET' && method !== 'POST') return
+  if (runtime.boundary.classifyUrl(formAction).scope !== 'allowed') return
+
+  const queryNames = [...action.searchParams.keys()]
+  const params = [
+    ...queryNames.map(name => ({ name, type: 'string', in: 'query' })),
+    ...fields.map(field => ({
+      name: field.name,
+      type: field.type,
+      in: method === 'GET' ? 'query' : 'body',
+      required: field.required,
+    })),
+  ]
+  runtime.recordEndpoint(method, formAction, params.map(param => param.name), formUrl)
+  graphStore?.mergeEndpoint?.({
+    method,
+    url: formAction,
+    params,
+    source: 'browser-form',
+    tags: ['html-form', 'target-provided'],
+    description: 'Target-provided HTML form; field values were not stored.',
+    origin: 'target',
+  })
 }
 
 /** Slice 06 — fold the crawl's reachability observations into the graph. */

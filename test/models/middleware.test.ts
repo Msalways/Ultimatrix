@@ -424,6 +424,33 @@ describe('wrapModel', () => {
       setForensicLog(null as any)
     }
   })
+
+  it('records usage from a completed streaming model call', async () => {
+    const flog = new ForensicLog(`${osTmpDir()}/mw-model-usage-stream.ndjson`)
+    setForensicLog(flog)
+    try {
+      const model = createMockModel()
+      model.doStream.mockResolvedValue({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'finish', usage: { inputTokens: 120, outputTokens: 35, totalTokens: 155 } })
+            controller.close()
+          },
+        }),
+      } as any)
+      const wrapped = wrapModel(model as any, makeConfig({ requestsPerMinute: 60, maxConcurrent: 5 }))
+      const result = await (wrapped as any).doStream({ prompt: 'test', model: 'openai/gpt-4o' })
+      const reader = result.stream.getReader()
+      while (!(await reader.read()).done) { /* consume to the finish usage chunk */ }
+
+      expect(flog.getEvents({ type: 'model-call' })).toHaveLength(1)
+      expect(flog.getEvents({ type: 'model-usage' })[0].metadata).toMatchObject({
+        provider: 'openai', modelId: 'openai/gpt-4o', inputTokens: 120, outputTokens: 35, totalTokens: 155,
+      })
+    } finally {
+      setForensicLog(null as any)
+    }
+  })
 })
 
 function osTmpDir(): string {

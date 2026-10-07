@@ -200,6 +200,21 @@ describe('BudgetDashboard', () => {
       expect(summary.totalTokens.total).toBe(600)
       expect(summary.byProvider.groq.calls).toBe(1)
     })
+
+    it('joins streaming token usage to its model call', () => {
+      forensicLog.log({
+        type: 'model-call', agent: 'solver-brain',
+        metadata: { provider: 'openai', modelId: 'gpt-4o', callId: 'call-1' },
+      })
+      forensicLog.log({
+        type: 'model-usage', agent: 'openai',
+        metadata: { provider: 'openai', modelId: 'openai/gpt-4o', callId: 'call-1', inputTokens: 90, outputTokens: 30, totalTokens: 120 },
+      })
+
+      const summary = new BudgetDashboard(forensicLog, budgetPolicy).getSessionSummary()
+      expect(summary.totalModelCalls).toBe(1)
+      expect(summary.totalTokens).toEqual({ input: 90, output: 30, total: 120 })
+    })
   })
 
   describe('getTokenHistory', () => {

@@ -38,10 +38,10 @@ export function logSolveSummary(result: SolveResult): void {
     const label = report.status === 'complete' ? log.success : log.warn
     const workflowUnits = Object.entries(t.workflowUnits).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
     const businessLogicUnits = Object.entries(t.businessLogicUnits).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
-    label(`Assessment ${report.status}: observed workflow sequences ${d.workflows}, ${m.entities} entities, ${m.businessLogicFacts} business-logic facts, ${m.hypotheses} hypotheses; discovered ${d.endpoints} endpoints, ${d.inputs} inputs, ${d.roles} roles; tested ${t.executed}/${t.planned} units, ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP requests.`)
+    label(`Assessment ${report.status}: observed workflow sequences ${d.workflows}, ${m.entities} entities, ${m.businessLogicFacts} business-logic facts, ${m.hypotheses} hypotheses; discovered ${d.endpoints} endpoints (${d.formEndpoints ?? 0} from forms), ${d.inputs} inputs, ${d.roles} roles; tested ${t.executed}/${t.planned} units, ${t.confirmed} confirmed, ${t.remaining} remaining, ${t.requestsUsed} HTTP requests.`)
     log.dim(`Hypothesis classes: ${hypotheses}.`)
     log.dim(`Workflow probes: ${workflowUnits}. Business-logic probes: ${businessLogicUnits}.`)
-    log.dim(`Coverage dimensions: endpoints ${t.dimensions.endpoints.covered}/${t.dimensions.endpoints.total}, actors ${t.dimensions.actors.covered}/${t.dimensions.actors.total}, roles ${t.dimensions.roles.covered}/${t.dimensions.roles.total}, states ${t.dimensions.states.covered}/${t.dimensions.states.total}, techniques ${t.dimensions.techniques.planned}/${t.dimensions.techniques.total}.`)
+    log.dim(`Coverage dimensions: endpoints ${t.dimensions.endpoints.covered}/${t.dimensions.endpoints.total}, input params ${t.dimensions.inputs.covered}/${t.dimensions.inputs.total}, actors ${t.dimensions.actors.covered}/${t.dimensions.actors.total}, roles ${t.dimensions.roles.covered}/${t.dimensions.roles.total}, states ${t.dimensions.states.covered}/${t.dimensions.states.total}, techniques ${t.dimensions.techniques.planned}/${t.dimensions.techniques.total}.`)
     log.dim(`Research experiments: ${experiments}.`)
     for (const unknown of d.unknowns) log.dim(`Unknown: ${unknown}`)
     for (const blocker of report.blockers) log.warn(`Blocker: ${blocker}`)

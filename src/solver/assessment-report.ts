@@ -4,6 +4,8 @@ export interface AssessmentReportInput {
   discovery: {
     pages: number
     endpoints: number
+    /** Endpoints learned from same-origin HTML forms. */
+    formEndpoints?: number
     inputs: number
     /** Observed ordered multi-request workflows, excluding route-only inference. */
     workflows: number
@@ -146,6 +148,7 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
     status: blockers.length === 0 ? 'complete' : 'partial',
     discovery: {
       ...input.discovery,
+      formEndpoints: input.discovery.formEndpoints ?? 0,
       ...(input.observation?.status === 'completed' ? { observedRequests: input.observation.requests } : {}),
       ...(input.crawl ? { crawl: input.crawl } : {}),
       unknowns: [

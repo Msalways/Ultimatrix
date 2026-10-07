@@ -11,6 +11,7 @@ import { runCampaign } from '../../src/campaign/executor'
 import { createPrimitiveRunner } from '../../src/campaign/runner'
 import type { CampaignPlan, CampaignSlice, PlanOptions, PrimitiveRef } from '../../src/campaign/types'
 import { registerPrimitive } from '../../src/primitives/framework'
+import { TargetTransportGovernor } from '../../src/runtime/target-governor'
 import { writeFinding } from '../../src/tools/control-tools'
 import { listPrimitiveMetadata } from '../../src/primitives'
 
@@ -160,6 +161,53 @@ describe('campaign input coverage and resume', () => {
     expect(result.status).toBe('partial')
     expect(result.budgetExceeded).toBe(true)
     expect(result.remainingSlices).toHaveLength(plan.slices.length)
+  })
+
+  it('stops remaining slices when an exact URL reaches its repeated-request cap', async () => {
+    const url = 'http://127.0.0.1:49127/api/items?search=old'
+    const capturedRequests = new CapturedRequestStore()
+    capturedRequests.record({ method: 'POST', url, headers: { 'content-type': 'application/json' }, body: '{"title":"old"}' })
+    const targetGovernor = new TargetTransportGovernor({ requestsPerMinute: 1000, maxConcurrent: 1, maxRequests: 100, maxRequestsPerUrl: 1 })
+    __setTestFallback(testServices({ capturedRequests, targetGovernor }))
+    ;(await targetGovernor.acquire(url, 'http-tool'))()
+
+    registerPrimitive({
+      id: 'repeatedBudgetRegressionProbe',
+      name: 'repeated budget regression probe',
+      description: 'test repeated-request budget handling',
+      appliesTo: () => true,
+      generate: async (context: any) => [{
+        id: 'same-route-step',
+        description: 'repeat the captured route',
+        request: context.requestTemplate,
+      }],
+      oracle: async () => ({ confirmed: false, confidence: 0, evidence: [] }),
+    } as any)
+
+    const store = memoryGraph([endpoint({ url, method: 'POST', params: [], headers: { 'content-type': 'application/json' } })])
+    const planned = makePlan(store, [])
+    const templateSlice: CampaignSlice = {
+      id: 'repeat-budget-0',
+      endpoint: { id: 'ep:fixture', url, method: 'POST' },
+      params: [],
+      role: 'anonymous',
+      state: 'baseline',
+      techniqueIds: ['repeatedBudgetRegressionProbe'],
+      priority: 1,
+    }
+    planned.slices = [0, 1].map(index => ({ ...templateSlice, id: `repeat-budget-${index}` }))
+    planned.coverage.slicesPlanned = planned.slices.length
+    const result = await runCampaign(planned, {
+      graphStore: store,
+      config,
+      maxRequests: 100,
+      maxConcurrency: 1,
+      executor: createPrimitiveRunner(store, config, new EvidenceGate()),
+    })
+
+    expect(result.coverage.slicesExecuted).toBe(1)
+    expect(result.budgetExceeded).toBe(true)
+    expect(result.remainingSlices).toHaveLength(2)
   })
 
   it('retests a fully completed plan on a later campaign run', async () => {

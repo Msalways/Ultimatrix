@@ -1,4 +1,5 @@
 import type { LanguageModelV2 } from '@ai-sdk/provider'
+import { randomUUID } from 'node:crypto'
 import type { UltimatrixConfig } from '../config'
 import { DEFAULTS } from '../config'
 import { log } from '../utils/logger'
@@ -104,6 +105,7 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
       const originalMethod = Reflect.get(target, prop, receiver) as (...args: unknown[]) => Promise<unknown>
 
       return async function (this: any, args: any) {
+        const callId = randomUUID()
         // Enforce OpenAI-compatible message ordering before sending to the API
         // (NVIDIA/Mistral reject `user` after `tool` with HTTP 400).
         if (args && Array.isArray(args.messages)) {
@@ -182,6 +184,12 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                       transform(part: any, controller) {
                         if (part?.type === 'finish') {
                           const streamUsage = normalizeUsage(part.usage)
+                          if (streamUsage) {
+                            getForensicLog()?.log({
+                              type: 'model-usage', agent: provider, tool: String(prop), duration: Math.round(performance.now() - start),
+                              metadata: { provider, modelId: String(modelIdStr), callId, ...streamUsage },
+                            })
+                          }
                           const streamBudgetError = streamUsage ? reportModelUsage(streamUsage, taskAttribution) : undefined
                           if (streamUsage && (streamUsage.inputTokens > 0 || streamUsage.outputTokens > 0)) {
                             const [prov = 'unknown', model = 'unknown'] = String(modelIdStr).split('/')
@@ -197,7 +205,7 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                     }))
                     getForensicLog()?.log({
                       type: 'model-call', agent: provider, tool: String(prop), duration,
-                      metadata: { provider, modelId: String(modelIdStr), inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+                      metadata: { provider, modelId: String(modelIdStr), callId },
                     })
                     return { ...(result as any), stream }
                   }
@@ -216,6 +224,7 @@ export function wrapModel(model: LanguageModelV2, config: UltimatrixConfig): Lan
                     metadata: {
                       provider,
                       modelId: String(modelIdStr),
+                      callId,
                       inputTokens,
                       outputTokens,
                       totalTokens,

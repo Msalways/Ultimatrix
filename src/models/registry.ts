@@ -40,6 +40,7 @@ const BUNDLED_SEEDS: ModelProfile[] = [
   { provider: 'google', modelId: 'gemini-2.5-pro', contextWindow: 1048576, maxOutputTokens: 8192, toolCalling: true, vision: true, reasoningClass: 'strong', costClass: 'medium', latencyClass: 'medium', source: 'seed' },
   { provider: 'nvidia', modelId: 'nemotron-3-ultra-550b', contextWindow: 131072, maxOutputTokens: 4096, toolCalling: true, reasoningClass: 'strong', costClass: 'medium', latencyClass: 'medium', source: 'seed' },
   { provider: 'nvidia', modelId: 'nemotron-3-ultra-550b-a55b', contextWindow: 1000000, maxOutputTokens: 32768, toolCalling: true, structuredOutput: false, reasoningClass: 'strong', costClass: 'low', latencyClass: 'medium', source: 'seed' },
+  { provider: 'nvidia', modelId: 'nemotron-3-super-120b-a12b', contextWindow: 1000000, maxOutputTokens: 32768, toolCalling: true, structuredOutput: false, reasoningClass: 'strong', source: 'seed' },
   { provider: 'nvidia', modelId: 'nemotron-3.5-lightning-30b-a3b', contextWindow: 1000000, maxOutputTokens: 32768, toolCalling: true, reasoningClass: 'strong', costClass: 'low', latencyClass: 'low', source: 'seed' },
   // OpenRouter's free route publishes its own context/output limits and uses a
   // nested upstream slug. Keep the route profile so safe dispatch can resolve
