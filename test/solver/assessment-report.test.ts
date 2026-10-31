@@ -23,7 +23,8 @@ function completeCampaign(overrides: Partial<CampaignResult> = {}): CampaignResu
 }
 
 const observed = {
-  pages: 3, endpoints: 4, formEndpoints: 2, inputs: 5, workflows: 1, authFlows: 1, roles: 2,
+  pages: 3, endpoints: 4, formEndpoints: 2, pageInteractionMaps: 1, routeInferences: 3,
+  inputs: 5, workflows: 1, authFlows: 1, roles: 2,
 }
 
 describe('assessment report', () => {
@@ -41,6 +42,7 @@ describe('assessment report', () => {
 
     expect(report.status).toBe('complete')
     expect(report.discovery).toMatchObject({ ...observed, observedRequests: 12, endpoints: 4 })
+    expect(report.discovery).toMatchObject({ workflows: 1, pageInteractionMaps: 1, routeInferences: 3 })
     expect(report.discovery.unknowns).toHaveLength(4)
     expect(report.testedCoverage).toMatchObject({ status: 'complete', planned: 2, executed: 2, confirmed: 1, remaining: 0, requestsUsed: 8 })
     expect(report.testedCoverage.unitOutcomes).toEqual({ confirmed: 1, tested: 1 })

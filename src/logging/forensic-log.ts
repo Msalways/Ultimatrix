@@ -9,7 +9,7 @@ export type ForensicEventType =
   | 'model-call' | 'model-usage' | 'rate-limit-event' | 'budget-status'
   | 'tool-token-record' | 'config-mismatch'
   | 'model-selection' | 'context-validation'
-  | 'solver-phase' | 'ui-reaction' | 'council-timeout'
+  | 'solver-phase' | 'solver-tool-result' | 'ui-reaction' | 'council-timeout'
   | 'render-trace'
 
 export interface ForensicEventMetadata {

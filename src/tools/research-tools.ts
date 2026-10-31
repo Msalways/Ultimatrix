@@ -62,9 +62,19 @@ async function executeTool(tool: any, args: Record<string, unknown>, context: { 
   return tool.execute(args, context as never)
 }
 
+function mapUrl(raw?: string): string | undefined {
+  if (!raw) return undefined
+  try {
+    const url = new URL(raw)
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return undefined
+  }
+}
+
 export const buildResearchMap = createTool({
   id: 'buildResearchMap',
-  description: 'Extract workflows, entities, and explicit action-limit rules from observed target traffic; generate grounded hypotheses and persist the research map. Use before choosing what to test.',
+  description: 'Extract workflows, same-origin page interactions, entities, and explicit action-limit rules from observed traffic and rendered DOM. Keep inferred affordances distinct from captured request sequences; generate grounded hypotheses and persist the research map before choosing what to test.',
   inputSchema: z.object({
     maxHypotheses: z.number().int().positive().optional().default(25),
   }),
@@ -132,8 +142,31 @@ export const buildResearchMap = createTool({
       try {
         locationSignals = findLocationEchoes(captured).length
       } catch { /* observability only — never fail the map */ }
+      const workflowMapCandidates = [
+        ...workflows.filter(workflow => workflow.sequenceObserved === true),
+        ...workflows.filter(workflow => workflow.source === 'render-inference'),
+        ...workflows.filter(workflow => workflow.source !== 'render-inference' && workflow.sequenceObserved !== true),
+      ]
       const value = {
         workflows: workflows.length,
+        workflowCoverage: {
+          observedSequences: workflows.filter(workflow => workflow.sequenceObserved === true).length,
+          inferredWorkflows: workflows.filter(workflow => workflow.sequenceObserved !== true).length,
+          routeInferences: workflows.filter(workflow => workflow.source === 'endpoint-inference').length,
+          pageInteractionMaps: workflows.filter(workflow => workflow.source === 'render-inference').length,
+        },
+        workflowMap: workflowMapCandidates.slice(0, 12).map(workflow => ({
+          name: workflow.name,
+          entryUrl: mapUrl(workflow.entryUrl),
+          source: workflow.source,
+          sequenceObserved: workflow.sequenceObserved === true,
+          inputFields: workflow.inputFields.slice(0, 12),
+          steps: workflow.steps.slice(0, 8).map(step => ({
+            ...step,
+            action: step.method && step.url ? `${step.method} ${mapUrl(step.url) ?? '[unparseable route]'}` : step.action,
+            url: mapUrl(step.url),
+          })),
+        })),
         entities: entities.length,
         hypotheses: hypotheses.length,
         topHypotheses: hypotheses.slice(0, 8),

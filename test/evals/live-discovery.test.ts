@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { load } from 'js-yaml'
-import { makeConfig, makeFixture, makeProvidersConfig, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, resolveLegacyProviderCredential, startTarget } from '../../scripts/live-discovery-benchmark'
+import { hasProviderQuotaError, makeConfig, makeFixture, makeProvidersConfig, mapExperiment, observedWorkflowSequences, requestBackedEndpoints, resolveLegacyProviderCredential, startTarget, summarizeToolSelection } from '../../scripts/live-discovery-benchmark'
 import { validateConfig } from '../../src/config'
 import { scoreDiscoveryBenchmark, scoreDiscoveryRun } from '../../src/evals/live-discovery'
 import { isUrlInScope } from '../../src/safety/scope-guard'
@@ -456,6 +456,33 @@ describe('live discovery scoring', () => {
     expect(benchmark(incomplete).targetLearning.qualifiedControlRuns).toBe(0)
     expect(benchmark(complete).learningPass).toBe(true)
     expect(benchmark(complete).targetLearning.qualifiedControlRuns).toBe(9)
+  })
+})
+
+describe('live benchmark provider failure handling', () => {
+  it('detects provider quota errors from forensic events without retaining error text', () => {
+    expect(hasProviderQuotaError([
+      { type: 'tool-error', tool: 'quota-tracker', error: 'Exhaustion #1, cooldown 999999ms' },
+    ])).toBe(true)
+    expect(hasProviderQuotaError([
+      { type: 'error', error: 'Rate limit exceeded: free-models-per-day' },
+    ])).toBe(true)
+    expect(hasProviderQuotaError([
+      { type: 'tool-error', tool: 'httpRequest', error: 'connection reset' },
+      { type: 'http-response', status: 429 },
+    ])).toBe(false)
+  })
+
+  it('distinguishes actual solver tool selections from model-call volume', () => {
+    expect(summarizeToolSelection([
+      { type: 'model-call', agent: 'nvidia', tool: 'doStream' },
+      { type: 'tool-call', agent: 'solver-brain', tool: 'stagehand_observe' },
+      { type: 'tool-result', agent: 'solver-brain', tool: 'httpRequest' },
+      { type: 'solver-tool-result', agent: 'solver-brain', tool: 'stagehand_observe', result: { ok: false } },
+    ])).toEqual({ modelSelectedCalls: 1, selectedTools: ['stagehand_observe'], toolCounts: { stagehand_observe: 1 }, successes: 0, failures: 1 })
+    expect(summarizeToolSelection([
+      { type: 'solver-phase', agent: 'solver-brain', args: { phase: 'reason', toolName: 'browserInteract' } },
+    ])).toMatchObject({ modelSelectedCalls: 1, selectedTools: ['browserInteract'], toolCounts: { browserInteract: 1 }, successes: null, failures: null })
   })
 })
 

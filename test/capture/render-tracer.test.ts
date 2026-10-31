@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { traceRender, summarizeTrace } from '../../src/capture/render-tracer'
+import { safeFormAttributes, traceRender, summarizeTrace } from '../../src/capture/render-tracer'
 
 const HTML = `<!doctype html><html><body><form>
 <input id="q" name="q" type="text" value="<script>alert(1)</script>">
@@ -11,6 +11,8 @@ describe('render-tracer (WS-E)', () => {
     const trace = traceRender(HTML, { payloads: ['<script>alert(1)</script>'] })
     expect(trace.html).toBe(true)
     expect(trace.formFields.map((f) => f.selector)).toContain('#q')
+    expect(trace.formFields.map((f) => f.selector)).not.toContain('#go')
+    expect(trace.elements.find((element) => element.selector === '#go')?.isFormField).toBe(false)
     expect(trace.inlineHandlers).toContain('#go@onclick')
     expect(trace.scripts.length).toBeGreaterThan(0)
   })
@@ -26,6 +28,13 @@ describe('render-tracer (WS-E)', () => {
     const trace = traceRender('{"ok":true}', { payloads: ['x'] })
     expect(trace.html).toBe(false)
     expect(trace.formFields.length).toBe(0)
+  })
+
+  it('keeps only structural form attributes when persisting observations', () => {
+    expect(safeFormAttributes({
+      id: 'amount', name: 'amount', type: 'number', placeholder: 'Amount',
+      value: '125', onclick: 'steal()', 'data-private': 'secret',
+    })).toEqual({ id: 'amount', name: 'amount', type: 'number', placeholder: 'Amount' })
   })
 
   it('summarizes into a compact LLM-facing string', () => {

@@ -65,10 +65,10 @@ const READ_ONLY = new Set([
 
 const BROWSER_DESCRIPTORS: Record<string, string> = {
   stagehand_navigate: 'Navigate the authorized browser session to a URL.',
-  stagehand_act: 'Perform one described action in the authorized browser session.',
+  stagehand_act: 'Perform one provider-assisted action in the authorized browser session. When a recent observation gives an exact visible control, prefer the deterministic browserInteract operation to avoid an extra model call.',
   stagehand_extract: 'Extract structured information from the current browser page.',
   stagehand_observe: 'Read visible page text and actionable DOM controls from the current browser without a secondary model call. Its returned locators are grounded in the current page.',
-  browserInteract: 'Perform one deterministic click, fill, or key press on exactly one visible control described by the latest page inspection. Fill and press are separate actions; inspect again after each action.',
+  browserInteract: 'Preferred deterministic action: click, fill, or press exactly one visible control using its locator from the latest page inspection. Fill and press are separate actions; inspect again after each action.',
   stagehand_screenshot: 'Capture a screenshot of the current browser page.',
   stagehand_tabs: 'Inspect or change tabs in the current browser session.',
 }
@@ -201,7 +201,7 @@ function researchInputRevision(): string {
   let graphRevision = ''
   try {
     const graph = getGlobalGraphStore()
-    const inputs = [NodeType.ENDPOINT, NodeType.ACTION, NodeType.INPUT]
+    const inputs = [NodeType.ENDPOINT, NodeType.ACTION, NodeType.INPUT, NodeType.RENDERED_ELEMENT]
       .flatMap(type => graph.queryNodes(type).map(node => `${type}:${node.id}:${node.updatedAt}`))
     const demonstratedWorkflows = graph.queryNodes(NodeType.WORKFLOW)
       .filter(node => isObservedWorkflowSource((node.properties as Record<string, unknown>)?.source))
@@ -235,7 +235,7 @@ function researchInputRevision(): string {
         return `${NodeType.WORKFLOW}:${node.id}:${JSON.stringify(input)}`
       })
     graphRevision = [...inputs, ...demonstratedWorkflows].sort().join('|')
-  } catch { /* a capture-count revision still detects new traffic */ }
+  } catch { /* persisted request count still detects new traffic */ }
   try { return `${getCapturedRequestStore().size}:${graphRevision}` } catch { return `0:${graphRevision}` }
 }
 
@@ -473,7 +473,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
             ok: false,
             code: researchMapStale ? 'RESEARCH_MAP_STALE' : 'METHODOLOGY_REQUIRED',
             error: researchMapStale
-              ? 'New captured target traffic arrived after the research map. Refresh the map and experiment plan before another attack.'
+              ? 'New target observations or captured traffic arrived after the research map. Refresh the map and experiment plan before another attack.'
               : 'Complete target methodology, research map, and falsifiable experiment plan before active testing.',
             next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
           }
@@ -637,8 +637,8 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
       ...tool,
       execute: async (...args: any[]) => {
         // Setup is deterministic and already persisted in the graph. Reusing
-        // the typed result prevents repeated work until new target traffic is
-        // captured. A changed capture count must invalidate the old map/plan.
+        // the typed result prevents repeated work until new target evidence is
+        // observed. A changed graph/request revision invalidates the map/plan.
         if (id === 'buildResearchMap') {
           try { await persistUnlinkedBrowserWorkflows() } catch { /* graph and captured traffic still feed the map */ }
         }
@@ -659,7 +659,7 @@ export function createSolverBrain(config: UltimatrixConfig, options: SolverBrain
           return {
             ok: false,
             code: 'RESEARCH_MAP_STALE',
-            error: 'New captured target traffic arrived after the research map. Rebuild the map before planning experiments.',
+            error: 'New target observations or captured traffic arrived after the research map. Rebuild the map before planning experiments.',
             next: ['build the research map from current captures', 'plan experiments from the refreshed hypotheses'],
           }
         }

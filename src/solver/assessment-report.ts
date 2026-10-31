@@ -6,6 +6,10 @@ export interface AssessmentReportInput {
     endpoints: number
     /** Endpoints learned from same-origin HTML forms. */
     formEndpoints?: number
+    /** Same-origin page and SPA controls learned from rendered DOM, not executed sequences. */
+    pageInteractionMaps?: number
+    /** Route clusters inferred from observed endpoints, not executed sequences. */
+    routeInferences?: number
     inputs: number
     /** Observed ordered multi-request workflows, excluding route-only inference. */
     workflows: number
@@ -149,6 +153,8 @@ export function buildAssessmentReport(input: AssessmentReportInput): AssessmentR
     discovery: {
       ...input.discovery,
       formEndpoints: input.discovery.formEndpoints ?? 0,
+      pageInteractionMaps: input.discovery.pageInteractionMaps ?? 0,
+      routeInferences: input.discovery.routeInferences ?? 0,
       ...(input.observation?.status === 'completed' ? { observedRequests: input.observation.requests } : {}),
       ...(input.crawl ? { crawl: input.crawl } : {}),
       unknowns: [

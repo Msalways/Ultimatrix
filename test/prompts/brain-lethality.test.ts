@@ -38,6 +38,19 @@ describe('brain instructions — hunting mandate', () => {
     expect(prompt).toMatch(/Never fire actions blindly in sequence/i)
   })
 
+  it('requires safe UI discovery and a baseline before state-changing workflow tests', () => {
+    expect(prompt).toMatch(/follow observed same-origin links and non-submitting tabs, menus, or accordions one at a time/i)
+    expect(prompt).toMatch(/Use read-only discovery/i)
+    expect(prompt).toMatch(/authorized baseline/i)
+  })
+
+  it('treats inferred routes without observed request sequences as incomplete learning', () => {
+    expect(prompt).toMatch(/zero observed request sequences means the route map is incomplete/i)
+    expect(prompt).toMatch(/mark it unknown/i)
+    expect(prompt).toMatch(/prefer deterministic actions on exact observed controls/i)
+    expect(prompt).toMatch(/do not repeat setup reads without new target traffic/i)
+  })
+
   it('restores the [PATH:] declaration contract (anti-loop participation)', () => {
     expect(prompt).toMatch(/\[PATH: <class>\]/)
     expect(prompt).toMatch(/anti-loop system tracks these tags/)

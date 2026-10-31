@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
     upsertNode: vi.fn(),
   },
   logWarn: vi.fn(),
+  forensicLog: vi.fn(),
 }))
 vi.mock('../../src/utils/logger', () => ({
   log: { info: vi.fn(), warn: h.logWarn, error: vi.fn(), dim: vi.fn(), success: vi.fn(), nl: vi.fn() },
@@ -31,7 +32,7 @@ vi.mock('../../src/tools/report-tools', () => ({
     log: vi.fn(),
   }),
   getForensicLog: vi.fn().mockReturnValue({
-    log: vi.fn(),
+    log: h.forensicLog,
   }),
 }))
 
@@ -174,6 +175,7 @@ describe('solve', () => {
   beforeEach(() => {
     h.runActiveChainingMock.mockClear()
     h.exploitLoopMock.mockClear()
+    h.forensicLog.mockClear()
     h.graphStoreMock.hasFinding = false
   })
 
@@ -591,6 +593,7 @@ describe('solve', () => {
     }
     const result = await solve(agent as any, { origin: 'https://example.com', goal: 'inspect' })
     expect(result.text).toBe('Assessment stopped after 1 tool call; no new verified findings were produced.')
+    expect(h.forensicLog).toHaveBeenCalledWith({ type: 'tool-call', agent: 'solver-brain', tool: 'queryGraph' })
   })
   itEngagement('validates context against active next-step tools and rechecks after activation', async () => {
     const registry = new DynamicToolRegistry()

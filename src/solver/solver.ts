@@ -869,6 +869,21 @@ export async function solve(
     const topHypotheses = Array.isArray(mapResult?.value?.topHypotheses)
       ? mapResult.value.topHypotheses as import('../research/types').ResearchHypothesis[]
       : [];
+    const workflowMap = Array.isArray(mapResult?.value?.workflowMap) ? mapResult.value.workflowMap as Array<{
+      name?: string; source?: string; sequenceObserved?: boolean; steps?: Array<{ action?: string; url?: string; method?: string }>
+    }> : [];
+    const workflowCoverage = mapResult?.value?.workflowCoverage ?? {};
+    const workflowSummary = workflowMap.slice(0, 8).map(workflow => {
+      const provenance = workflow.sequenceObserved ? 'observed sequence' : `inferred${workflow.source ? ` from ${workflow.source}` : ''}`;
+      const steps = (workflow.steps ?? []).slice(0, 4).map(step => `${step.method ? `${step.method} ` : ''}${step.url ?? step.action ?? 'interaction'}`).join(' → ');
+      return `${workflow.name ?? 'unnamed workflow'} [${provenance}]${steps ? `: ${steps}` : ''}`;
+    });
+    board.addFact(
+      workflowSummary.length
+        ? `Target behavior map (${workflowCoverage.observedSequences ?? 0} observed sequence(s); ${workflowCoverage.inferredWorkflows ?? workflowMap.length} inferred workflow(s), not executed): ${workflowSummary.join('; ')}`
+        : 'Target behavior map is empty; application workflows and business rules are unknown until observed.',
+      'target-workflow-map',
+    );
     const researchExperiments = Array.isArray(planned)
       ? planned as import('../research/types').ResearchExperiment[]
       : [];
@@ -894,7 +909,19 @@ export async function solve(
     // goal-aware solver turn. Pre-goal replay used to run the first three GET
     // experiments regardless of relevance or missing workflow prerequisites.
     board.addFact(`Autonomous research bootstrap: ${planned.length} experiments planned and queued for current-goal selection. No experiment ran before goal routing.`, 'research-bootstrap');
-    emitMessage({ kind: "event", event: "research.bootstrap.completed", label: `research bootstrap: ${planned.length} experiments queued for goal-aware selection`, status: "ok" });
+    emitMessage({
+      kind: "event",
+      event: "research.bootstrap.completed",
+      label: `target map: ${workflowCoverage.observedSequences ?? 0} observed sequence(s), ${workflowCoverage.inferredWorkflows ?? 0} inferred workflow(s); ${planned.length} experiments queued`,
+      status: "ok",
+      data: {
+        observedSequences: workflowCoverage.observedSequences ?? 0,
+        inferredWorkflows: workflowCoverage.inferredWorkflows ?? 0,
+        routeInferences: workflowCoverage.routeInferences ?? 0,
+        pageInteractionMaps: workflowCoverage.pageInteractionMaps ?? 0,
+        experimentsPlanned: planned.length,
+      },
+    });
     lazyServices?.markResearchBootstrapCompleted?.(researchInputRevision);
     researchBootstrapIncomplete = false
   } catch (error) {
@@ -1375,6 +1402,10 @@ export async function solve(
         case "tool-call":
           if (chunk.payload.toolName && chunk.payload.toolName !== "askUser") {
             toolCallCount++;
+            // Keep the forensic trail sufficient to tell whether the model
+            // actually acted, without logging arguments that may contain
+            // credentials, tokens, or user data.
+            forensicLog?.log({ type: 'tool-call', agent: 'solver-brain', tool: chunk.payload.toolName });
             const currentToolCallId = `tc-${++toolCallIdCounter}`;
             lastToolCallArgs = chunk.payload.args as Record<string, unknown> | undefined;
             lastToolCallId = currentToolCallId;
@@ -1430,6 +1461,12 @@ export async function solve(
               typeof result === "object" &&
               (result.ok === false || result.success === false || result.status === "failed" || result.error)
             );
+            forensicLog?.log({
+              type: 'solver-tool-result',
+              agent: 'solver-brain',
+              tool: chunk.payload.toolName,
+              result: { ok: toolOk },
+            });
 
             // Record tool output in evidence gate
             evidence.recordToolOutput(output);
@@ -1942,6 +1979,16 @@ export async function solve(
             workflows: (() => {
               try {
                 return graph?.queryNodes(NodeType.WORKFLOW).filter(node => hasObservedWorkflowSequence((node as any).properties)).length ?? 0
+              } catch { return 0 }
+            })(),
+            routeInferences: (() => {
+              try {
+                return graph?.queryNodes(NodeType.WORKFLOW).filter(node => (node as any).properties?.source === 'endpoint-inference').length ?? 0
+              } catch { return 0 }
+            })(),
+            pageInteractionMaps: (() => {
+              try {
+                return graph?.queryNodes(NodeType.WORKFLOW).filter(node => (node as any).properties?.source === 'render-inference').length ?? 0
               } catch { return 0 }
             })(),
             authFlows: count(NodeType.AUTH_FLOW),

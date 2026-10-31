@@ -297,7 +297,7 @@ export class ChatStream {
       const experiments = Object.entries(m.experimentsByStatus).map(([status, count]) => `${status} ${count}`).join(', ') || 'none queued'
       const workflowUnits = Object.entries(t.workflowUnits ?? {}).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
       const businessLogicUnits = Object.entries(t.businessLogicUnits ?? {}).map(([status, count]) => `${status} ${count}`).join(', ') || 'none'
-      this.write(`${this.c(ESC.dim)}  learned target: observed workflow sequences ${d.workflows}, ${m.entities} entities, ${m.businessLogicFacts ?? 0} business-logic facts, ${m.hypotheses} hypotheses across ${Object.keys(m.hypothesesByKind).length} classes; ${d.formEndpoints ?? 0} endpoints from forms${this.c(ESC.reset)}\n`)
+      this.write(`${this.c(ESC.dim)}  learned target: observed workflow sequences ${d.workflows}, page interaction maps ${d.pageInteractionMaps ?? 0}, route inferences ${d.routeInferences ?? 0}; ${m.entities} entities, ${m.businessLogicFacts ?? 0} business-logic facts, ${m.hypotheses} hypotheses across ${Object.keys(m.hypothesesByKind).length} classes; ${d.formEndpoints ?? 0} endpoints from forms${this.c(ESC.reset)}\n`)
       this.write(`${this.c(ESC.dim)}  hypothesis classes: ${hypotheses}${this.c(ESC.reset)}\n`)
       this.write(`${this.c(ESC.dim)}  research experiments: ${experiments}${this.c(ESC.reset)}\n`)
       this.write(`${this.c(ESC.dim)}  workflow probes: ${workflowUnits}; business-logic probes: ${businessLogicUnits}${this.c(ESC.reset)}\n`)

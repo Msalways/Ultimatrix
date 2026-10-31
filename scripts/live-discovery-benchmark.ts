@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import { readFileSync, rmSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -464,6 +464,52 @@ function safeEvents(raw: string): any[] {
   })
 }
 
+export function hasProviderQuotaError(events: readonly unknown[]): boolean {
+  return events.some(value => {
+    if (!value || typeof value !== 'object') return false
+    const event = value as Record<string, any>
+    if (event.type !== 'error' && event.type !== 'tool-error') return false
+    const tool = String(event.tool ?? event.payload?.toolName ?? '').toLowerCase()
+    const error = String(event.error ?? event.payload?.error ?? '')
+    return tool === 'quota-tracker' || tool === 'rate-limiter' ||
+      /free-models-per-day|insufficient[_ ]quota|quota (?:exhausted|exceeded)|rate limit exceeded/i.test(error)
+  })
+}
+
+export function summarizeToolSelection(events: readonly unknown[]): { modelSelectedCalls: number; selectedTools: string[]; toolCounts: Record<string, number>; successes: number | null; failures: number | null } {
+  const loggedCalls = events.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const event = value as Record<string, unknown>
+    return event.type === 'tool-call' && event.agent === 'solver-brain' && typeof event.tool === 'string'
+      ? [event.tool]
+      : []
+  })
+  const phaseCalls = loggedCalls.length ? [] : events.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const args = (value as Record<string, any>).args
+    return (value as Record<string, unknown>).type === 'solver-phase' && args?.phase === 'reason' && typeof args.toolName === 'string'
+      ? [args.toolName]
+      : []
+  })
+  const calls = loggedCalls.length ? loggedCalls : phaseCalls
+  const toolCounts: Record<string, number> = {}
+  for (const tool of calls) toolCounts[tool] = (toolCounts[tool] ?? 0) + 1
+  const results = events.flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const event = value as Record<string, any>
+    return event.type === 'solver-tool-result' && event.agent === 'solver-brain' && typeof event.result?.ok === 'boolean'
+      ? [event.result.ok]
+      : []
+  })
+  return {
+    modelSelectedCalls: calls.length,
+    selectedTools: [...new Set(calls)],
+    toolCounts,
+    successes: results.length ? results.filter(Boolean).length : null,
+    failures: results.length ? results.filter(ok => !ok).length : null,
+  }
+}
+
 function endpointSummaries(nodes: GraphNode[]): Array<{ method?: string; url: string; origin?: string }> {
   return nodes.filter(node => node.type === 'Endpoint').map(node => ({
     method: typeof node.properties.method === 'string' ? node.properties.method : undefined,
@@ -614,6 +660,7 @@ async function executeRun(input: {
   })
   const eventsRaw = await readFile(join(targetDir, 'logs', 'forensic.ndjson'), 'utf8').catch(() => '')
   const events = safeEvents(eventsRaw)
+  const providerQuotaExhausted = hasProviderQuotaError(events)
   const observedEvidenceRefs = [...new Set(events.filter(event => event.type === 'http-request').flatMap(event => {
     const url = event.args?.url
     const evidenceId = event.result?.evidenceId
@@ -649,6 +696,7 @@ async function executeRun(input: {
     durationLimitMs: RUN_WALL_MS,
   })
   const modelEvents = events.filter(event => event.type === 'model-call')
+  const toolSelection = summarizeToolSelection(events)
   const tokenEvents = events.filter(event => event.type === 'model-usage'
     || (event.type === 'model-call' && Number(event.metadata?.totalTokens ?? 0) > 0))
   const modelUsage = {
@@ -661,6 +709,7 @@ async function executeRun(input: {
     ...(cli?.timedOut ? ['interact exceeded the five-minute run limit'] : []),
     ...(cli?.exitCode !== 0 ? [`interact exited with code ${String(cli?.exitCode)}`] : []),
     ...(modelUsage.modelCalls === 0 ? ['no model calls were recorded; provider startup or CLI setup may have failed'] : []),
+    ...(providerQuotaExhausted ? ['provider quota exhausted; remaining sessions skipped'] : []),
     ...(!graph ? ['no graph artifact was written'] : []),
     ...(events.filter(event => event.type === 'error' || event.type === 'tool-error').length
       ? [`${events.filter(event => event.type === 'error' || event.type === 'tool-error').length} runtime error event(s) recorded`] : []),
@@ -733,6 +782,8 @@ async function executeRun(input: {
     initialProofStatus: experiments.map(experiment => ({ id: experiment.id, status: experiment.outcome?.status ?? 'missing' })),
     independentRetestStatus: experiments.map(experiment => ({ id: experiment.id, status: experiment.retest?.outcome?.status ?? 'missing' })),
     modelUsage,
+    providerQuotaExhausted,
+    toolSelection,
     blockers: [...new Set(blockers)],
     noSecondActorRun: input.noSecondActor === true,
     score,
@@ -879,10 +930,10 @@ async function main(): Promise<void> {
     try { rmSync(activeConfigDir, { recursive: true, force: true }) } catch { /* best effort during process shutdown */ }
     activeConfigDir = undefined
   }
+  let signalExitCode: number | undefined
   const stopForSignal = (code: number) => () => {
+    signalExitCode = code
     activeChild?.kill()
-    cleanupSecret()
-    process.exit(code)
   }
   const onSigint = stopForSignal(130)
   const onSigterm = stopForSignal(143)
@@ -892,33 +943,86 @@ async function main(): Promise<void> {
   try {
     await writeFile(secretConfigPath, makeProvidersConfig(args.provider, credentials), { encoding: 'utf8', mode: 0o600 })
     const runs: any[] = []
-    for (let iteration = 1; iteration <= args.runs; iteration++) {
+    let stopReason: string | undefined
+    let noPeer: any
+    const checkpoint = async (reason?: string) => {
+      baseline.reason = reason
+      baseline.runs = runs
+      baseline.benchmarkScore = runs.length
+        ? scoreDiscoveryBenchmark(runs.filter(run => !run.noSecondActorRun).map(run => ({ variant: run.variant, score: run.score })))
+        : null
+      baseline.overallPass = false
+      baseline.noSecondActor = noPeer ? {
+        runId: noPeer.runId,
+        coverage: noPeer.score.actorCoverage,
+        unsupportedCrossActorFinding: noPeer.score.unsupportedCrossActorFinding,
+        expectedCoverage: 'blocked or unknown; never clean or disproven',
+      } : {
+        ran: false,
+        coverage: 'unknown',
+        unsupportedCrossActorFinding: false,
+        expectedCoverage: 'blocked or unknown; never clean or disproven',
+      }
+      const tempPath = `${outPath}.${process.pid}.tmp`
+      await writeFile(tempPath, JSON.stringify(baseline, null, 2), 'utf8')
+      await rename(tempPath, outPath)
+    }
+    baseline.status = 'partial'
+    await checkpoint('Benchmark is in progress; report contains completed runs only.')
+    runMatrix: for (let iteration = 1; iteration <= args.runs; iteration++) {
       for (const kind of ['case-1', 'case-2', 'case-3'] as CaseKind[]) {
         const matchedFixture = makeFixture(kind)
         const variants: DiscoveryVariant[] = randomBytes(1)[0] % 2 ? ['vulnerable', 'control'] : ['control', 'vulnerable']
         for (const variant of variants) {
+          if (signalExitCode) {
+            stopReason = 'Benchmark interrupted; report contains completed runs only.'
+            break runMatrix
+          }
           const report = await executeRun({ fixture: matchedFixture, variant, provider: args.provider, model: args.model, configPath, iteration })
           runs.push(report)
           process.stdout.write(`${report.variant} ${report.caseId} ${report.iteration}: ${report.score.verifiedFindingIds.length} verified; ${report.score.targetLearning.workflowCount} workflows, ${report.score.targetLearning.observedExpectedEndpointCount}/${report.score.targetLearning.expectedEndpointCount} expected endpoints mapped, ${report.score.targetLearning.matchedWorkflowSequenceCount}/${report.score.targetLearning.expectedWorkflowSequenceCount} expected ordered workflows mapped, ${report.score.targetLearning.matchedHypothesisKinds.length}/${report.score.targetLearning.expectedHypothesisKinds.length} expected hypothesis classes mapped, experiments ${report.score.targetLearning.plannedExperiments} planned/${report.score.targetLearning.attemptedExperiments} attempted/${report.score.targetLearning.blockedExperiments} blocked; ${report.requestCount} requests, ${(report.durationMs / 1000).toFixed(1)}s\n`)
+          if (report.providerQuotaExhausted) stopReason = 'Provider quota exhausted; further model sessions were skipped.'
+          else if (report.modelUsage.modelCalls === 0) stopReason = 'No model calls were recorded; further sessions were skipped because provider availability could not be established.'
+          else if (report.toolSelection.modelSelectedCalls === 0 && report.score.targetLearning.workflowCount === 0) {
+            stopReason = 'The model selected no tools and learned no observed workflow; remaining sessions were skipped.'
+          }
+          else if (signalExitCode) stopReason = 'Benchmark interrupted; report contains completed runs only.'
+          await checkpoint(stopReason)
+          if (stopReason) break runMatrix
         }
       }
     }
-    const noPeerFixture = makeFixture('case-3', false)
-    const noPeer = await executeRun({ fixture: noPeerFixture, variant: 'vulnerable', provider: args.provider, model: args.model, configPath, iteration: args.runs, noSecondActor: true })
-    runs.push(noPeer)
-    baseline.status = runs.some(run => run.exitCode !== 0 || run.durationMs === 0 || run.modelUsage.modelCalls === 0)
-      ? 'partial' : 'complete'
+    if (!stopReason && !signalExitCode) {
+      const noPeerFixture = makeFixture('case-3', false)
+      noPeer = await executeRun({ fixture: noPeerFixture, variant: 'vulnerable', provider: args.provider, model: args.model, configPath, iteration: args.runs, noSecondActor: true })
+      runs.push(noPeer)
+      if (noPeer.providerQuotaExhausted || noPeer.modelUsage.modelCalls === 0) {
+        stopReason = noPeer.providerQuotaExhausted
+          ? 'Provider quota exhausted during the no-second-actor session.'
+          : 'No model calls were recorded during the no-second-actor session.'
+      }
+    }
+    const completeMatrix = runs.length === args.runs * 6 + 1
+    const runtimeFailure = runs.some(run => run.exitCode !== 0 || run.durationMs === 0 || run.modelUsage.modelCalls === 0)
+    baseline.status = completeMatrix && !runtimeFailure && !stopReason && !signalExitCode ? 'complete' : 'partial'
+    baseline.reason = stopReason ?? (baseline.status === 'complete' ? undefined : 'Benchmark ended before a clean full matrix completed.')
     baseline.runs = runs
     baseline.benchmarkScore = scoreDiscoveryBenchmark(runs.filter(run => !run.noSecondActorRun).map(run => ({ variant: run.variant, score: run.score })))
-    baseline.noSecondActor = {
+    baseline.noSecondActor = noPeer ? {
       runId: noPeer.runId,
+      ran: true,
       coverage: noPeer.score.actorCoverage,
       unsupportedCrossActorFinding: noPeer.score.unsupportedCrossActorFinding,
       expectedCoverage: 'blocked or unknown; never clean or disproven',
+    } : {
+      ran: false,
+      coverage: 'unknown',
+      unsupportedCrossActorFinding: false,
+      expectedCoverage: 'blocked or unknown; never clean or disproven',
     }
     baseline.overallPass = args.runs === 3 && baseline.status === 'complete' && baseline.benchmarkScore.pass &&
-      noPeer.score.actorCoverage === 'unknown' && !noPeer.score.unsupportedCrossActorFinding
-    await writeFile(outPath, JSON.stringify(baseline, null, 2), 'utf8')
+      noPeer?.score.actorCoverage === 'unknown' && !noPeer?.score.unsupportedCrossActorFinding
+    await checkpoint(baseline.reason)
     process.stdout.write(`Benchmark ${baseline.overallPass ? 'PASS' : 'did not meet all criteria'}: ${outPath}\n`)
   } catch (error) {
     baseline.status = 'failed'
@@ -926,6 +1030,7 @@ async function main(): Promise<void> {
     await writeFile(outPath, JSON.stringify(baseline, null, 2), 'utf8')
     throw error
   } finally {
+    if (signalExitCode) process.exitCode = signalExitCode
     await rm(configDir, { recursive: true, force: true })
     activeConfigDir = undefined
     process.removeListener('exit', cleanupSecret)

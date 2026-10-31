@@ -9,7 +9,7 @@
  */
 import { getGlobalGraphStore } from '../graph/store'
 import { getForensicLog } from '../tools/report-tools'
-import { isHtmlBody, traceRender, type RenderTrace } from './render-tracer'
+import { isHtmlBody, safeFormAttributes, traceRender, type RenderTrace } from './render-tracer'
 import { NodeType, type EndpointNode, type RenderedElementNode } from '../graph/schema'
 import { normalizedEndpointKey } from '../graph/relations'
 
@@ -19,6 +19,17 @@ export interface RenderCaptureInput {
   status?: number
   contentType?: string
   body?: string
+}
+
+function sameOriginPath(raw: string | undefined, baseUrl: string): string | undefined {
+  try {
+    const base = new URL(baseUrl)
+    const url = new URL(raw || base.pathname, base)
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== base.origin) return undefined
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return undefined
+  }
 }
 
 export function recordRenderTraceFromResponse(input: RenderCaptureInput): RenderTrace | null {
@@ -44,23 +55,67 @@ export function recordRenderTraceFromResponse(input: RenderCaptureInput): Render
 
   let nodes = 0
   if (store) {
+    const sourceUrl = sameOriginPath(undefined, input.url) ?? input.url
     for (const f of trace.formFields) {
-      const dup = existing.some((n) => n.properties.url === input.url && n.properties.selector === f.selector)
+      const dup = existing.some((n) => n.properties.url === sourceUrl && n.properties.selector === f.selector)
       if (dup) continue
+      const attributes = safeFormAttributes(f.attributes)
       store.addRenderedElement(endpointId, {
-        url: input.url,
+        url: sourceUrl,
         method: input.method,
         selector: f.selector,
         tag: f.tag,
         name: f.name,
         inputType: f.type,
-        value: f.value,
         isFormField: true,
-        attributes: f.attributes,
-        text: f.text,
+        attributes,
+        // A textarea's content is represented as text in HTML. Keep form
+        // structure only; the current/default value is never target-map data.
         payloadHit: trace.payloadHits.length > 0,
       })
       nodes++
+    }
+
+    // Keep same-origin page actions in the graph and remove query values so
+    // signed links and user data do not become target-map context.
+    if (sourceUrl) {
+      const seen = new Set(existing.filter((node) => node.properties.url === sourceUrl).map((node) => node.properties.selector))
+      for (const element of trace.elements.filter(isPageInteraction)) {
+        const attrs = element.attributes
+        const tag = element.tag
+        const isLink = tag === 'a' || String(attrs.role ?? '').toLowerCase() === 'link'
+        const isForm = tag === 'form'
+        const rawDestination = isLink
+          ? attrs.href || attrs.routerlink || attrs.routerLink || attrs['data-route'] || attrs['data-href']
+          : isForm ? attrs.action : undefined
+        const destination = (rawDestination || isForm) ? sameOriginPath(rawDestination, input.url) : undefined
+        if ((isLink || isForm) && rawDestination && !destination) continue
+        const path = destination ? new URL(destination).pathname : undefined
+        const method = isForm ? (attrs.method || 'GET').toUpperCase() : undefined
+        const inputAction = tag === 'input' && ['button', 'submit'].includes(String(attrs.type ?? '').toLowerCase())
+        const label = (element.text || attrs['aria-label'] || attrs.title || attrs.name || (inputAction ? attrs.value : '') || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        const selector = inputAction && attrs.value
+          ? `input[type=${JSON.stringify(attrs.type)}][value=${JSON.stringify(attrs.value)}]`
+          : path
+          ? isLink ? `a[href=${JSON.stringify(path)}]` : `form[action=${JSON.stringify(path)}]`
+          : interactionSelector(element, label)
+        if (!selector) continue
+        if (seen.has(selector)) continue
+        seen.add(selector)
+        store.addRenderedElement(endpointId, {
+          url: sourceUrl,
+          method: input.method,
+          selector,
+          tag,
+          ...(element.type ? { inputType: element.type } : {}),
+          isFormField: false,
+          attributes: path
+            ? isLink ? { href: path } : { action: path, method: method === 'POST' ? 'POST' : 'GET' }
+            : safeInteractionAttributes(attrs, inputAction),
+          text: (element.text || (inputAction ? attrs.value : undefined))?.replace(/\s+/g, ' ').trim().slice(0, 120),
+        })
+        nodes++
+      }
     }
   }
 
@@ -69,11 +124,58 @@ export function recordRenderTraceFromResponse(input: RenderCaptureInput): Render
     agent: 'render-bridge',
     tool: 'recordRenderTrace',
     metadata: {
-      phase: `formFields=${trace.formFields.length} payloadHits=${trace.payloadHits.length} nodes=${nodes}`,
+      phase: `formFields=${trace.formFields.length} interactions=${trace.elements.filter(isPageInteraction).length} payloadHits=${trace.payloadHits.length} nodes=${nodes}`,
     },
   } as any)
 
   return trace
+}
+
+function isPageInteraction(element: RenderTrace['elements'][number]): boolean {
+  const { tag, attributes } = element
+  const role = (attributes.role ?? '').toLowerCase()
+  const inputType = (attributes.type ?? '').toLowerCase()
+  return (tag === 'a' && Boolean(attributes.href || attributes.routerlink || attributes.routerLink || attributes['data-route'] || attributes['data-href']))
+    || tag === 'form'
+    || tag === 'button'
+    || (tag === 'input' && ['button', 'submit'].includes(inputType))
+    || ['button', 'link', 'tab', 'menuitem'].includes(role)
+    || Boolean(attributes.onclick && (element.text || attributes['aria-label'] || attributes.title))
+}
+
+function interactionSelector(element: RenderTrace['elements'][number], label: string): string | undefined {
+  const { tag, attributes } = element
+  const base = attributes.id
+    ? `#${attributes.id}`
+    : attributes['data-testid']
+      ? `[data-testid=${JSON.stringify(attributes['data-testid'])}]`
+      : attributes.name
+        ? `${tag}[name=${JSON.stringify(attributes.name)}]`
+        : attributes['aria-label']
+          ? `${tag}[aria-label=${JSON.stringify(attributes['aria-label'])}]`
+          : tag
+  if (label) return `${base}:has-text(${JSON.stringify(label)})`
+  if (attributes.id || attributes['data-testid'] || attributes.name || attributes['aria-label']) return base
+  return undefined
+}
+
+function safeInteractionAttributes(attributes: Record<string, string>, includeButtonValue = false): Record<string, string> {
+  const allowed = ['role', 'type', 'name', 'aria-label', 'title', 'data-route', 'data-href', 'routerlink', 'routerLink']
+  if (includeButtonValue) allowed.push('value')
+  return Object.fromEntries(Object.entries(attributes).filter(([name]) => allowed.includes(name)))
+}
+
+/** Capture the current browser DOM, including SPA-rendered controls that have no response body. */
+export async function recordRenderTraceFromPage(page: any): Promise<void> {
+  try {
+    const url = String(await page?.url?.() ?? '')
+    if (!/^https?:\/\//i.test(url) || typeof page?.content !== 'function') return
+    const body = await page.content()
+    if (typeof body !== 'string' || !body || body.length > 1_000_000) return
+    recordRenderTraceFromResponse({ url, method: 'GET', contentType: 'text/html', body })
+  } catch {
+    // Best-effort learning; browser interaction and evidence paths continue.
+  }
 }
 
 /**

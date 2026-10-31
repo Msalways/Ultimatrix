@@ -16,12 +16,17 @@ import { join } from 'path'
 import { getGlobalWorkspace } from '../workspace'
 import { getCapturedRequestStore } from '../capture/captured-request-store'
 import { getEvolutionSummary } from '../intelligence/evolution'
+import { extractWorkflows } from '../research/workflow-extractor'
 
 export interface Briefing {
   prose: string
   /** Machine-readable counts backing each section (for tests/envelope). */
   stats: {
     endpoints: number
+    workflows: number
+    observedSequences: number
+    routeInferences: number
+    inferredPageInteractions: number
     findings: number
     tests: number
     untestedWorkflows: number
@@ -110,9 +115,26 @@ export function buildBriefing(): Briefing {
   const evolution = getEvolutionSummary()
   const drafts = countDraftSkills(workspace.getCurrentTarget())
   const rulings = summarizeRulings(store)
+  const workflows = store ? extractWorkflows(store) : []
+  const observedSequences = workflows.filter(workflow => workflow.sequenceObserved === true).length
+  const routeInferences = workflows.filter(workflow => workflow.source === 'endpoint-inference').length
+  const inferredPageInteractions = workflows.filter(workflow => workflow.source === 'render-inference').length
 
   const lines: string[] = []
   lines.push(`Engagement state — ${summary?.totalEndpoints ?? 0} endpoints, ${summary?.totalFindings ?? 0} findings, ${summary?.totalTests ?? 0} tests run.`)
+
+  if (workflows.length > 0) {
+    lines.push(`Target understanding: ${observedSequences} ordered workflow sequence(s) captured; ${routeInferences} route-inferred cluster(s); ${inferredPageInteractions} page interaction map(s). Inferred paths have not been executed.`)
+    const pageMaps = workflows.filter(workflow => workflow.source === 'render-inference').slice(0, 3)
+    if (pageMaps.length > 0) {
+      lines.push(`Page interactions mapped: ${pageMaps.map(workflow => `${workflow.entryUrl}: ${workflow.steps.slice(0, 6).map(step => `${step.action}${step.url ? ` → ${new URL(step.url).pathname}` : ''}`).join(', ')}`).join('; ')}.`)
+    }
+  } else {
+    lines.push('Target understanding: no application workflows have been captured or inferred yet; business flows remain unknown.')
+  }
+  if (observedSequences === 0 && workflows.length > 0) {
+    lines.push('Knowledge gap: no ordered multi-request user workflow has been captured, so state transitions and business rules remain unknown.')
+  }
 
   const untested = summary?.untestedActions ?? 0
   if (untested > 0) lines.push(`Coverage gap: ${untested} actions never tested.`)
@@ -149,6 +171,10 @@ export function buildBriefing(): Briefing {
     prose: lines.join('\n'),
     stats: {
       endpoints: summary?.totalEndpoints ?? 0,
+      workflows: workflows.length,
+      observedSequences,
+      routeInferences,
+      inferredPageInteractions,
       findings: summary?.totalFindings ?? 0,
       tests: summary?.totalTests ?? 0,
       untestedWorkflows: untested,

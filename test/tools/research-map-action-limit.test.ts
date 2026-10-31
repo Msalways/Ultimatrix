@@ -104,4 +104,31 @@ describe('buildResearchMap action-limit evidence', () => {
       && node.properties.relatedWorkflowIds.includes(workflow.id)
       && node.properties.targetEndpoints.includes('coupon-redeem'))).toBe(true)
   })
+
+  it('keeps observed sequences and page interaction maps in the model-facing workflow summary', async () => {
+    const makeWorkflow = (id: string, name: string, source: string, sequenceObserved: boolean, confidence: number) => ({
+      id,
+      type: NodeType.WORKFLOW,
+      label: name,
+      createdAt: 1,
+      updatedAt: 1,
+      properties: {
+        name, entryUrl: 'https://app.test/', steps: [{ action: 'link available: Login', url: 'https://app.test/login' }],
+        relatedEndpoints: [], inputFields: [], stateChanges: [], observedRoles: [], confidence, source, sequenceObserved,
+        capturedRequestIds: sequenceObserved ? ['cap-1', 'cap-2'] : [],
+      },
+    })
+    nodes.set('workflow:route', makeWorkflow('workflow:route', 'Route cluster', 'endpoint-inference', false, 0.95))
+    nodes.set('workflow:page', makeWorkflow('workflow:page', 'Homepage actions', 'render-inference', false, 0.55))
+    nodes.set('workflow:observed', makeWorkflow('workflow:observed', 'Observed checkout', 'browser-observation', true, 0.8))
+
+    const result = await buildResearchMap.execute({ maxHypotheses: 25 }) as any
+
+    expect(result.ok).toBe(true)
+    expect(result.value.workflowMap.map((workflow: any) => workflow.name)).toEqual([
+      'Observed checkout', 'Homepage actions', 'Route cluster',
+    ])
+    expect(result.value.workflowCoverage).toMatchObject({ observedSequences: 1, pageInteractionMaps: 1, routeInferences: 1 })
+    expect(result.value.workflowMap[1].sequenceObserved).toBe(false)
+  })
 })

@@ -92,6 +92,17 @@ describe('solver brain lazy tool view', () => {
     expect(brain.getResearchInputRevision()).not.toBe(before)
   })
 
+  it('revisions the target map when a browser observation reveals new controls', () => {
+    captureState.size = 0
+    graphState.nodes = []
+    const { brain } = setup()
+    const before = brain.getResearchInputRevision()
+
+    graphState.nodes.push({ id: 'rendered:button:transfer', type: NodeType.RENDERED_ELEMENT, updatedAt: 1 })
+
+    expect(brain.getResearchInputRevision()).not.toBe(before)
+  })
+
   it('keeps a map stale when target observations arrive while it is being built', async () => {
     captureState.size = 0
     graphState.nodes = []

@@ -17,6 +17,7 @@ import { isBountyProfile } from '../safety/bounty-policy'
 import { z } from 'zod'
 import { getEngagementServices } from '../runtime/engagement-context'
 import { enforceAction, enforceHttpMethod } from '../safety/scope-guard'
+import { safeFormAttributes } from '../capture/render-tracer'
 import {
   getPrimitive,
   listPrimitives,
@@ -484,6 +485,7 @@ export async function runPrimitiveById(
     for (const trace of result.renderTraces) {
       if (store) {
         for (const f of trace.formFields) {
+          const attributes = safeFormAttributes(f.attributes)
           store.addRenderedElement(
             endpoint?.id,
             {
@@ -493,10 +495,8 @@ export async function runPrimitiveById(
               tag: f.tag,
               name: f.name,
               inputType: f.type,
-              value: f.value,
               isFormField: true,
-              attributes: f.attributes,
-              text: f.text,
+              attributes,
               payloadHit: trace.payloadHits.length > 0,
             },
           )

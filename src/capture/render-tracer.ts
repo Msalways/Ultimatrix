@@ -37,7 +37,18 @@ export interface RenderTrace {
   payloadHits: Array<{ payload: string; selector: string; where: 'attribute' | 'value' | 'text' }>
 }
 
-const FORM_TAGS = new Set(['input', 'textarea', 'select', 'button'])
+const FORM_TAGS = new Set(['input', 'textarea', 'select'])
+const NON_INPUT_FIELDS = new Set(['button', 'submit', 'reset', 'image', 'hidden', 'file'])
+const SAFE_FORM_ATTRIBUTES = new Set([
+  'id', 'name', 'type', 'placeholder', 'autocomplete', 'required', 'aria-label',
+  'aria-labelledby', 'aria-describedby', 'disabled', 'readonly', 'multiple',
+  'checked', 'min', 'max', 'step', 'minlength', 'maxlength', 'pattern', 'inputmode',
+])
+
+/** Preserve form structure without values or arbitrary/event-handler attributes. */
+export function safeFormAttributes(attributes: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(attributes).filter(([name]) => SAFE_FORM_ATTRIBUTES.has(name.toLowerCase())))
+}
 
 function looksLikeHtml(s: string): boolean {
   if (!s) return false
@@ -92,6 +103,8 @@ export function traceRender(
     for (const a of names) attributes[a] = el.getAttribute(a) ?? ''
 
     const selector = buildSelector(tag, attributes)
+    const inputType = (attributes.type ?? '').toLowerCase()
+    const isFormField = FORM_TAGS.has(tag) && !(tag === 'input' && NON_INPUT_FIELDS.has(inputType))
     const node: RenderedElement = {
       tag,
       selector,
@@ -99,7 +112,7 @@ export function traceRender(
       name: attributes.name,
       type: attributes.type,
       value: attributes.value,
-      isFormField: FORM_TAGS.has(tag),
+      isFormField,
       attributes,
       text: (el.textContent ?? '').slice(0, 200),
     }

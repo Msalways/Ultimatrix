@@ -23,7 +23,7 @@ import { getGlobalGraphStore } from '../graph/store'
 import { isUrlInScope, enforceAction } from '../safety/scope-guard'
 import { recordBrowserEffectEvidence } from '../tools/control-tools'
 import { getGlobalBotHandler } from './anti-bot'
-import { wireRenderTrace } from '../capture/render-bridge'
+import { recordRenderTraceFromPage, wireRenderTrace } from '../capture/render-bridge'
 import { getGlobalObserver } from '../capture/human-observer'
 import { getActivePage, resolveContextPageAsync } from './manager'
 import { getEngagementServices } from '../runtime/engagement-context'
@@ -626,6 +626,13 @@ export function wrapStagehandTools(browser: any, captureFlush?: () => Promise<un
           try {
             reactionResult = await reactionObserver.detectReaction()
           } catch {}
+        }
+
+        // Snapshot the resulting DOM after browser actions and inspections.
+        // SPA transitions often update controls without returning new HTML or
+        // changing the URL, so network-only render tracing misses those states.
+        if (result?.success !== false && ['stagehand_observe', 'stagehand_extract', navigateToolName, 'stagehand_act', 'browserInteract'].includes(name)) {
+          try { await recordRenderTraceFromPage(page) } catch { /* learning is best-effort */ }
         }
 
         // Build evidence strings

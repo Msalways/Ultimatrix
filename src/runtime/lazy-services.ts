@@ -418,6 +418,21 @@ export class LazySolverServices {
         'Target navigation',
       )
       if (typeof page.waitForTimeout === 'function') await page.waitForTimeout(1000)
+      // The network response can be only an empty SPA shell. Snapshot the
+      // post-load DOM as passive evidence so client-rendered forms and routes
+      // enter the same render/workflow map as server-rendered pages.
+      try {
+        const body = await page.content?.()
+        if (typeof body === 'string' && body && body.length <= 1_000_000) {
+          const { recordRenderTraceFromResponse } = await import('../capture/render-bridge')
+          recordRenderTraceFromResponse({
+            url: String(page.url?.() ?? target),
+            method: 'GET',
+            contentType: 'text/html',
+            body,
+          })
+        }
+      } catch { /* DOM learning is best-effort; network observation remains authoritative */ }
       const requests = await this.persistCapture(capture)
       if (requests === 0) throw new Error('Baseline observation captured zero network requests')
       const result = { requests, url: String(page.url?.() ?? target) }

@@ -9,6 +9,7 @@ import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { getCapturedRequestStore } from '../../src/capture/captured-request-store'
+import { GraphStore } from '../../src/graph/store'
 
 beforeEach(() => {
   getCapturedRequestStore().clear()
@@ -61,5 +62,29 @@ describe('buildBriefing', () => {
     expect(briefing.prose).toMatch(/Evolution this session/)
     expect(briefing.stats.evolvedTechniques).toBeGreaterThan(0)
     evolution.resetEvolution()
+  })
+
+  it('shows inferred page interactions while keeping workflow knowledge gaps explicit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'brief-map-'))
+    const workspace = new (await import('../../src/workspace')).WorkspaceManager(root)
+    const graph = new GraphStore(join(root, 'graph.json'))
+    workspace.useTargetStores('https://brief-map.example', graph, null as any)
+    graph.addRenderedElement(undefined, {
+      url: 'https://brief-map.example/', selector: 'a[href="/orders"]', tag: 'a',
+      attributes: { href: '/orders' }, text: 'Orders', isFormField: false,
+    })
+    graph.addRenderedElement(undefined, {
+      url: 'https://brief-map.example/', selector: 'form[action="/checkout"]', tag: 'form',
+      attributes: { action: '/checkout', method: 'POST' }, isFormField: false,
+    })
+    const engCtx = await import('../../src/runtime/engagement-context')
+    const services = { workspace, allowAny: false } as any
+    const { buildBriefing } = await import('../../src/runtime/briefing')
+    const briefing = engCtx.runWithEngagementServices(services, () => buildBriefing())
+
+    expect(briefing.stats.inferredPageInteractions).toBe(1)
+    expect(briefing.stats.observedSequences).toBe(0)
+    expect(briefing.prose).toContain('link available: Orders')
+    expect(briefing.prose).toContain('business rules remain unknown')
   })
 })

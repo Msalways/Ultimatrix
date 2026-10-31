@@ -51,6 +51,7 @@ vi.mock('../../src/browser/anti-bot', () => ({
 }))
 
 vi.mock('../../src/capture/render-bridge', () => ({
+  recordRenderTraceFromPage: vi.fn().mockResolvedValue(null),
   wireRenderTrace: vi.fn(),
 }))
 
@@ -81,6 +82,7 @@ vi.mock('../../src/utils/logger', () => ({
 import { wrapStagehandTools } from '../../src/browser/dialog-inject'
 import { recordBrowserEffectEvidence } from '../../src/tools/control-tools'
 import { getGlobalReactionObserver } from '../../src/browser/reaction-observer'
+import { recordRenderTraceFromPage } from '../../src/capture/render-bridge'
 
 function makeBrowser() {
   const page: any = {
@@ -123,6 +125,7 @@ describe('browser action wrapper', () => {
       expect.objectContaining({ page }),
     )
     expect(result.success).toBe(true)
+    expect(recordRenderTraceFromPage).toHaveBeenCalledWith(page)
     expect(result.browserAction).toMatchObject({ pageUrl: 'https://target.test/start' })
     expect(result.browserAction.evidenceIds.length).toBeGreaterThan(0)
     expect(recordBrowserEffectEvidence).toHaveBeenCalledWith(

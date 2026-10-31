@@ -1,4 +1,4 @@
-import { NodeType, type ActionNode, type EndpointNode, type InputNode, type WorkflowNode } from '../graph/schema'
+import { NodeType, type ActionNode, type EndpointNode, type InputNode, type RenderedElementNode, type WorkflowNode } from '../graph/schema'
 import type { GraphStore } from '../graph/store'
 import { hasObservedWorkflowSequence, isObservedWorkflowSource, type ResearchWorkflow } from './types'
 import {stableId, uniq, isTransportOrAssetUrl} from './utils'
@@ -24,6 +24,7 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
   const endpoints = store.queryNodes(NodeType.ENDPOINT) as EndpointNode[]
   const actions = store.queryNodes(NodeType.ACTION) as ActionNode[]
   const inputs = store.queryNodes(NodeType.INPUT) as InputNode[]
+  const rendered = store.queryNodes(NodeType.RENDERED_ELEMENT) as RenderedElementNode[]
   const recorded = store.queryNodes(NodeType.WORKFLOW) as WorkflowNode[]
   const workflows = new Map<string, ResearchWorkflow>()
 
@@ -92,6 +93,75 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
     })
   }
 
+  // Reconstruct page affordances from captured HTML/browser DOM. These are
+  // candidates only: declarations are not executed workflow sequences.
+  const renderedByPage = new Map<string, RenderedElementNode[]>()
+  for (const node of rendered) {
+    const page = node.properties.url
+    if (!page || isTransportOrAssetUrl(page)) continue
+    const key = routeOf(page)
+    if (!key) continue
+    const list = renderedByPage.get(key) ?? []
+    list.push(node)
+    renderedByPage.set(key, list)
+  }
+  for (const [pageUrl, elements] of renderedByPage) {
+    const steps: ResearchWorkflow['steps'] = []
+    const fields = elements
+      .filter(({ properties }) => properties.isFormField && ['input', 'textarea', 'select'].includes(properties.tag.toLowerCase()))
+      .map(({ properties }) => properties.name || properties.selector)
+      .filter(Boolean) as string[]
+    const relatedEndpoints: string[] = []
+    for (const node of elements) {
+      const props = node.properties
+      const attrs = props.attributes ?? {}
+      const tag = props.tag.toLowerCase()
+      let destination: string | undefined
+      let method: string | undefined
+      let action: string | undefined
+      if (tag === 'a') {
+        destination = sameOriginRoute(attrs.href, pageUrl)
+        if (destination) action = `link available: ${(props.text || props.selector).replace(/\s+/g, ' ').trim().slice(0, 80)}`
+      } else if (tag === 'form') {
+        destination = sameOriginRoute(attrs.action || pageUrl, pageUrl)
+        method = (attrs.method || 'GET').toUpperCase()
+        if (!['GET', 'POST'].includes(method)) method = 'GET'
+        if (destination) action = `form available: ${method} ${new URL(destination).pathname}`
+      } else if (tag === 'button' || (tag === 'input' && ['submit', 'button'].includes((props.inputType || '').toLowerCase()))) {
+        const label = (props.text || props.name || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        if (label) action = `button available: ${label}`
+      }
+      if (!action) continue
+      const step = { action, url: destination, method, selector: props.selector }
+      const signature = `${step.action}|${step.url ?? ''}|${step.method ?? ''}|${step.selector}`
+      if (steps.some((item) => `${item.action}|${item.url ?? ''}|${item.method ?? ''}|${item.selector}` === signature)) continue
+      steps.push(step)
+      if (destination) {
+        const endpoint = endpoints.find((candidate) =>
+          routeOf(candidate.properties.url) === destination
+          && String(candidate.properties.method ?? 'GET').toUpperCase() === (method ?? 'GET'),
+        )
+        if (endpoint) relatedEndpoints.push(endpoint.id)
+      }
+    }
+    if (!steps.length) continue
+    const prioritizedSteps = [...steps].sort((left, right) => Number(Boolean(right.url)) - Number(Boolean(left.url)))
+    const id = stableId('workflow', ['render-inference', pageUrl])
+    workflows.set(id, {
+      id,
+      name: `Page interactions on ${new URL(pageUrl).pathname}`,
+      entryUrl: pageUrl,
+      steps: prioritizedSteps.slice(0, 30),
+      relatedEndpoints: uniq(relatedEndpoints),
+      inputFields: uniq(fields),
+      stateChanges: [],
+      observedRoles: [],
+      confidence: 0.55,
+      source: 'render-inference',
+      sequenceObserved: false,
+    })
+  }
+
   // Explicit demonstrations already preserve event chronology and captured
   // request IDs. Reuse those traces as the authoritative workflow sequence;
   // route-cluster workflows above remain useful context but are not sequences.
@@ -120,4 +190,16 @@ export function extractWorkflows(store: GraphStore): ResearchWorkflow[] {
   }
 
   return [...workflows.values()].sort((a, b) => b.confidence - a.confidence)
+}
+
+function sameOriginRoute(raw: string | undefined, pageUrl: string): string | undefined {
+  if (!raw) return undefined
+  try {
+    const page = new URL(pageUrl)
+    const target = new URL(raw, page)
+    if (target.origin !== page.origin || !['http:', 'https:'].includes(target.protocol)) return undefined
+    return `${target.origin}${target.pathname}`
+  } catch {
+    return undefined
+  }
 }
